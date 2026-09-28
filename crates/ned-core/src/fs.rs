@@ -1,7 +1,9 @@
 //! Atomic writes of edited files.
 
-use std::io;
-use std::path::PathBuf;
+use std::fs::{self, File};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Replaces the contents of every file in `files`, preserving permissions and
 /// writing through symlinks to their targets.
@@ -10,7 +12,61 @@ use std::path::PathBuf;
 /// only once every one is staged are they renamed into place. A failure while
 /// staging leaves every target untouched and removes the staged files.
 pub fn write_atomic(files: &[(PathBuf, String)]) -> io::Result<()> {
-    todo!()
+    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(files.len());
+    for (path, contents) in files {
+        match stage(path, contents) {
+            Ok(pair) => staged.push(pair),
+            Err(err) => {
+                for (temp, _) in &staged {
+                    let _ = fs::remove_file(temp);
+                }
+                return Err(err);
+            }
+        }
+    }
+    for (i, (temp, target)) in staged.iter().enumerate() {
+        if let Err(err) = fs::rename(temp, target) {
+            for (temp, _) in &staged[i..] {
+                let _ = fs::remove_file(temp);
+            }
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
+/// Writes `contents` to a new temporary file beside the file `path` resolves
+/// to, returning the temporary and target paths.
+fn stage(path: &Path, contents: &str) -> io::Result<(PathBuf, PathBuf)> {
+    let target = match fs::canonicalize(path) {
+        Ok(resolved) => resolved,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(err) => return Err(err),
+    };
+    let temp = temp_path(&target);
+    let result = (|| {
+        let mut file = File::create_new(&temp)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        if let Ok(meta) = fs::metadata(&target) {
+            fs::set_permissions(&temp, meta.permissions())?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok((temp, target)),
+        Err(err) => {
+            let _ = fs::remove_file(&temp);
+            Err(err)
+        }
+    }
+}
+
+fn temp_path(target: &Path) -> PathBuf {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    target.with_file_name(format!(".{name}.ned-{}-{n}.tmp", std::process::id()))
 }
 
 #[cfg(test)]
