@@ -1,5 +1,6 @@
 //! Running scripts against files, and the errors that can stop a run.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::fs;
 use std::ops::Range;
@@ -9,9 +10,12 @@ use tree_sitter::Node;
 use crate::edit::{Edit, EditError, EditSet};
 use crate::lang::Language;
 use crate::script::Script;
-use crate::script::ast::{Command, CommandKind, Pattern, Position, Target, Text, TextKind};
+use crate::script::ast::{
+    Command, CommandKind, Part, Pattern, Position, Primary, Target, Text, TextKind,
+};
 use crate::script::error::{excerpt, location};
 use crate::select::{self, Match, SourceFile, line_numbers, same_path};
+use crate::syntax::{self, Item};
 use crate::text;
 
 /// The result of running a script: the output of the reads that ran, in
@@ -165,9 +169,9 @@ impl Executor<'_> {
                 target,
                 text,
             } => {
-                for m in self.resolve(target)? {
-                    let (at, new) = insert(&self.files[m.file].file, m.range, *position, text);
-                    self.push(index, span, m.file, at..at, new)?;
+                for m in self.resolve(&implied_body(target, *position))? {
+                    let (range, new) = insert(&self.files[m.file].file, m.range, *position, text);
+                    self.push(index, span, m.file, range, new)?;
                 }
             }
             CommandKind::Delete(target) => {
@@ -350,6 +354,54 @@ impl Executor<'_> {
     }
 }
 
+/// `target`, with `.body` added when `insert start|end` targets a syntax
+/// step with no parts (§4.2).
+fn implied_body(target: &Target, position: Position) -> Cow<'_, Target> {
+    let last = target.selector.steps.last();
+    let syntax =
+        last.is_some_and(|s| matches!(s.primary, Primary::Syntax { .. }) && s.parts.is_empty());
+    if !syntax || matches!(position, Position::Before | Position::After) {
+        return Cow::Borrowed(target);
+    }
+    let mut target = target.clone();
+    if let Some(step) = target.selector.steps.last_mut() {
+        step.parts.push(Part::Body);
+    }
+    Cow::Owned(target)
+}
+
+/// The item whose `.body` is the empty span `range`, if any.
+fn empty_body<'f>(f: &'f SourceFile, range: &Range<usize>) -> Option<&'f Item> {
+    if !range.is_empty() {
+        return None;
+    }
+    f.items()?
+        .iter()
+        .find(|i| syntax::part(i, Part::Body, &f.text).as_ref() == Some(range))
+}
+
+/// The span and text that fill `item`'s empty body with `new` (§4.2):
+/// line-oriented, one indent unit inside the item, and on lines of its own.
+fn fill_body(
+    f: &SourceFile,
+    item: &Item,
+    range: Range<usize>,
+    new: &Text,
+) -> (Range<usize>, String) {
+    let t = &f.text;
+    let unit = indent_unit(f);
+    let indent = format!("{}{unit}", text::indent_at(t, item.node.start));
+    let lines = line_oriented(new, &indent, &unit);
+    let body = item.body.clone().expect("an empty body is a body");
+    let inner = body.start + 1..body.end - 1;
+    if t[inner.clone()].contains('\n') {
+        (range.start..range.start, lines)
+    } else {
+        let closer = text::indent_at(t, body.end - 1);
+        (inner, format!("\n{lines}{closer}"))
+    }
+}
+
 /// Rejects `new`, the edited text of `f`, if it has more tree-sitter error
 /// nodes than the original (§4.3).
 fn guard(f: &SourceFile, new: &str) -> Result<(), ExecError> {
@@ -410,6 +462,9 @@ fn indent_unit(f: &SourceFile) -> String {
 
 /// The span and text that replace `range` (§5.1).
 fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, String) {
+    if let Some(item) = empty_body(f, &range) {
+        return fill_body(f, item, range, new);
+    }
     let t = &f.text;
     let trailing_comma = f
         .items()
@@ -442,8 +497,17 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, St
     }
 }
 
-/// The offset and text of an insertion at `position` of `range` (§4.2, §5).
-fn insert(f: &SourceFile, range: Range<usize>, position: Position, new: &Text) -> (usize, String) {
+/// The span and text of an insertion at `position` of `range` (§4.2, §5):
+/// an empty span, unless it opens an empty body.
+fn insert(
+    f: &SourceFile,
+    range: Range<usize>,
+    position: Position,
+    new: &Text,
+) -> (Range<usize>, String) {
+    if let Some(item) = empty_body(f, &range) {
+        return fill_body(f, item, range, new);
+    }
     let t = &f.text;
     let unit = indent_unit(f);
     if !text::is_whole_line(t, &range) {
@@ -451,7 +515,10 @@ fn insert(f: &SourceFile, range: Range<usize>, position: Position, new: &Text) -
             Position::Before | Position::Start => range.start,
             Position::After | Position::End => range.end,
         };
-        return (at, verbatim(new, text::indent_at(t, range.start), &unit));
+        return (
+            at..at,
+            verbatim(new, text::indent_at(t, range.start), &unit),
+        );
     }
     let full = text::full_lines(t, range);
     let first = text::indent_at(t, full.start);
@@ -468,7 +535,7 @@ fn insert(f: &SourceFile, range: Range<usize>, position: Position, new: &Text) -
         new.pop();
         new.insert(0, '\n');
     }
-    (at, new)
+    (at..at, new)
 }
 
 /// The span removed by deleting `range`: whole lines, tidied, or the span
@@ -518,6 +585,10 @@ pub enum ExecErrorKind {
     },
     #[error("{selector} needs a language, but {files} has none; use --lang")]
     NoLanguage { selector: String, files: String },
+    #[error("{item} has no .{part}")]
+    MissingPart { item: String, part: String },
+    #[error(".{part} needs a syntax item (kind:name)")]
+    PartNeedsItem { part: String },
     #[error("{lang} has no `{kind}` items; use one of: {kinds}")]
     UnknownKind {
         kind: String,
@@ -1178,6 +1249,76 @@ mod tests {
         assert_eq!(
             edited(text, "replace 2 with \"D\""),
             "enum A {\n    D\n    C,\n}\n"
+        );
+    }
+
+    const ITEMS: &str = "impl A {\n    fn f() {}\n\n    fn g() {\n    }\n\n    fn h() { x() }\n}\n\nfn main() {\n    let x = 1;\n}\n";
+
+    #[test]
+    fn insert_start_and_end_imply_body() {
+        assert_eq!(
+            edited(ITEMS, "insert start fn:main \"a();\""),
+            ITEMS.replace("fn main() {\n", "fn main() {\n    a();\n")
+        );
+        assert_eq!(
+            edited(ITEMS, "insert end fn:main \"a();\""),
+            ITEMS.replace("let x = 1;\n", "let x = 1;\n    a();\n")
+        );
+        assert_eq!(
+            edited(ITEMS, "insert end impl:A \"fn i() {}\""),
+            ITEMS.replace("x() }\n}\n", "x() }\n    fn i() {}\n}\n")
+        );
+        assert_eq!(
+            edited(ITEMS, "insert after fn:main \"fn b() {}\""),
+            format!("{ITEMS}fn b() {{}}\n")
+        );
+    }
+
+    #[test]
+    fn empty_bodies_open_onto_separate_lines() {
+        let f = |script| edited(ITEMS, script);
+        assert_eq!(
+            f("insert end fn:f \"a();\\nb();\""),
+            ITEMS.replace("fn f() {}", "fn f() {\n        a();\n        b();\n    }")
+        );
+        assert_eq!(
+            f("replace fn:f.body with \"a();\""),
+            ITEMS.replace("fn f() {}", "fn f() {\n        a();\n    }")
+        );
+        assert_eq!(
+            f("insert start fn:g \"a();\""),
+            ITEMS.replace("fn g() {\n    }", "fn g() {\n        a();\n    }")
+        );
+        assert_eq!(
+            edited("fn f() {  }\n", "insert end fn:f <<'END'\n  raw\nEND"),
+            "fn f() {\n  raw\n}\n"
+        );
+    }
+
+    #[test]
+    fn inline_parts_take_verbatim_text() {
+        assert_eq!(
+            edited(ITEMS, "replace fn:h.body with \"y()\""),
+            ITEMS.replace("{ x() }", "{ y() }")
+        );
+        assert_eq!(
+            edited(ITEMS, "replace fn:h.params with \"a: u8\""),
+            ITEMS.replace("fn h()", "fn h(a: u8)")
+        );
+        assert_eq!(
+            edited(ITEMS, "replace fn:h.name with \"k\""),
+            ITEMS.replace("fn h()", "fn k()")
+        );
+    }
+
+    #[test]
+    fn replacing_a_whole_line_body_rebases() {
+        assert_eq!(
+            edited(
+                ITEMS,
+                "replace fn:main.body with <<END\nif y {\n    z();\n}\nEND"
+            ),
+            ITEMS.replace("    let x = 1;\n", "    if y {\n        z();\n    }\n")
         );
     }
 }

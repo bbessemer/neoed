@@ -50,12 +50,12 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [x] Language detection (extension, shebang, `--lang`) and grammar registry
 - [x] `queries/rust/selectors.scm` (other languages: §12)
 - [x] Syntax selectors and nesting; ambiguity errors with candidates
-- [ ] Parts (`.body`, `.sig`, `.params`, `.name`, `.doc`); `insert start|end`
+- [x] Parts (`.body`, `.sig`, `.params`, `.name`, `.doc`); `insert start|end`
       on an item implies `.body`
 - [ ] `outline` verb (compact symbol tree with line numbers)
 - [x] Parse-error guard (reject new ERROR/MISSING nodes unless `--force`)
 - [x] Go tab default for re-basing
-- [ ] Re-basing empty spans (enclosing item's indent)
+- [x] Re-basing empty spans (enclosing item's indent)
 - [ ] Raw tree-sitter query selector
 
 ## 6. Formatting

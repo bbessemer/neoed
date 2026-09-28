@@ -3,13 +3,16 @@
 //!
 //! A query in `queries/<lang>/selectors.scm` captures each item node as its
 //! kind (`@fn`, `@struct`, ...) and the item's name node as `@name`, in one
-//! pattern. Standalone `@doc` and `@attr` patterns capture the doc comments
-//! and attributes that extend an item's default span when they directly
-//! precede it.
+//! pattern, with optional `@body` and `@params` nodes for those parts.
+//! Standalone `@doc` and `@attr` patterns capture the doc comments and
+//! attributes that extend an item's default span when they directly precede
+//! it.
 
 use std::cmp::Reverse;
 use std::ops::Range;
 
+use crate::script::ast::Part;
+use crate::text::full_lines;
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator, Tree};
 
 /// The core kinds a query may capture.
@@ -39,22 +42,33 @@ pub struct Item {
     pub range: Range<usize>,
     /// Whether `range` ends with a trailing `,`.
     pub trailing_comma: bool,
+    /// The item node alone.
+    pub node: Range<usize>,
+    pub name_range: Range<usize>,
+    /// The `@body` and `@params` nodes, delimiters included.
+    pub body: Option<Range<usize>>,
+    pub params: Option<Range<usize>>,
+    /// The leading doc comments.
+    pub doc: Option<Range<usize>>,
 }
 
 /// Every item `query` finds in `tree`, ordered by start, outer items first.
 pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
     let names = query.capture_names();
-    // (kind, item node, name node) for each match, and every @doc/@attr node.
-    let mut found: Vec<(&'static str, Node, Node)> = Vec::new();
-    let mut leading: Vec<Range<usize>> = Vec::new();
+    let mut found: Vec<Found> = Vec::new();
+    // Every @doc and @attr node, and whether it's a doc.
+    let mut leading: Vec<(Range<usize>, bool)> = Vec::new();
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
     while let Some(m) = matches.next() {
-        let (mut item, mut name) = (None, None);
+        let (mut item, mut name, mut body, mut params) = (None, None, None, None);
         for capture in m.captures() {
             match names[capture.index as usize] {
                 "name" => name = Some(capture.node),
-                "doc" | "attr" => leading.push(capture.node.byte_range()),
+                "body" => body = Some(capture.node.byte_range()),
+                "params" => params = Some(capture.node.byte_range()),
+                "doc" => leading.push((capture.node.byte_range(), true)),
+                "attr" => leading.push((capture.node.byte_range(), false)),
                 other => {
                     if let Some(kind) = KINDS.iter().find(|&&k| k == other) {
                         item = Some((*kind, capture.node));
@@ -63,54 +77,85 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
             }
         }
         if let (Some((kind, node)), Some(name)) = (item, name) {
-            found.push((kind, node, name));
+            found.push(Found {
+                kind,
+                node,
+                name,
+                body,
+                params,
+            });
         }
     }
-    leading.sort_by_key(|r| r.start);
+    leading.sort_by_key(|(r, _)| r.start);
 
     // A wrapper and the node it wraps can both match; keep the widest.
-    found.sort_by_key(|(kind, node, name)| {
+    found.sort_by_key(|f| {
         (
-            *kind,
-            name.start_byte(),
-            node.start_byte(),
-            Reverse(node.end_byte()),
+            f.kind,
+            f.name.start_byte(),
+            f.node.start_byte(),
+            Reverse(f.node.end_byte()),
         )
     });
-    found.dedup_by(|b, a| a.0 == b.0 && a.2 == b.2);
+    found.dedup_by(|b, a| a.kind == b.kind && a.name == b.name);
 
-    let mut items: Vec<Item> = found
-        .into_iter()
-        .map(|(kind, node, name)| {
-            let mut range = node.byte_range();
-            let comma = node
-                .next_sibling()
-                .filter(|n| n.kind() == "," && !n.is_named())
-                .filter(|n| {
-                    text[range.end..n.start_byte()]
-                        .trim_matches([' ', '\t'])
-                        .is_empty()
-                });
-            if let Some(comma) = comma {
-                range.end = comma.end_byte();
-            }
-            while let Some(doc) = leading
-                .iter()
-                .rev()
-                .find(|l| l.end <= range.start && directly_before(text, l, range.start))
-            {
-                range.start = doc.start;
-            }
-            Item {
-                kind,
-                name: text[name.byte_range()].to_string(),
-                range,
-                trailing_comma: comma.is_some(),
-            }
-        })
-        .collect();
+    let mut items: Vec<Item> =
+        found
+            .into_iter()
+            .map(
+                |Found {
+                     kind,
+                     node,
+                     name,
+                     body,
+                     params,
+                 }| {
+                    let mut range = node.byte_range();
+                    let comma = node
+                        .next_sibling()
+                        .filter(|n| n.kind() == "," && !n.is_named())
+                        .filter(|n| {
+                            text[range.end..n.start_byte()]
+                                .trim_matches([' ', '\t'])
+                                .is_empty()
+                        });
+                    if let Some(comma) = comma {
+                        range.end = comma.end_byte();
+                    }
+                    let mut doc: Option<Range<usize>> = None;
+                    while let Some((l, is_doc)) = leading.iter().rev().find(|(l, _)| {
+                        l.end <= range.start && directly_before(text, l, range.start)
+                    }) {
+                        range.start = l.start;
+                        if *is_doc {
+                            doc = Some(l.start..doc.map_or(l.end, |d| d.end));
+                        }
+                    }
+                    Item {
+                        kind,
+                        name: text[name.byte_range()].to_string(),
+                        range,
+                        trailing_comma: comma.is_some(),
+                        node: node.byte_range(),
+                        name_range: name.byte_range(),
+                        body,
+                        params,
+                        doc,
+                    }
+                },
+            )
+            .collect();
     items.sort_by_key(|i| (i.range.start, Reverse(i.range.end)));
     items
+}
+
+/// An item pattern's captures.
+struct Found<'t> {
+    kind: &'static str,
+    node: Node<'t>,
+    name: Node<'t>,
+    body: Option<Range<usize>>,
+    params: Option<Range<usize>>,
 }
 
 /// Whether only whitespace, and no blank line, separates `leading` from
@@ -119,6 +164,48 @@ fn directly_before(text: &str, leading: &Range<usize>, start: usize) -> bool {
     let gap = &text[leading.end..start];
     let newlines = gap.matches('\n').count() + usize::from(text[..leading.end].ends_with('\n'));
     gap.trim().is_empty() && newlines <= 1
+}
+
+/// The span of `part` of `item` (§3.4); `None` if the item doesn't have it.
+/// `.lines` isn't an item part.
+pub fn part(item: &Item, part: Part, text: &str) -> Option<Range<usize>> {
+    match part {
+        Part::Body => item.body.clone().map(|r| inside(text, r)),
+        Part::Params => item.params.clone().map(|r| inside(text, r)),
+        Part::Name => Some(item.name_range.clone()),
+        Part::Sig => Some(match &item.body {
+            Some(body) => {
+                let start = item.node.start;
+                start..start + text[start..body.start].trim_end().len()
+            }
+            None => item.node.clone(),
+        }),
+        Part::Doc => item.doc.clone().map(|r| full_lines(text, r)),
+        Part::Lines => None,
+    }
+}
+
+/// The inside of a node with one-byte delimiters (§3.4): the whole lines
+/// between them if the opener ends its line and the closer starts its line,
+/// otherwise the text between them with surrounding whitespace trimmed.
+fn inside(text: &str, delimited: Range<usize>) -> Range<usize> {
+    let (open, close) = (delimited.start + 1, delimited.end - 1);
+    let inner = &text[open..close];
+    if let Some(newline) = inner.find('\n')
+        && inner[..newline].trim().is_empty()
+    {
+        let first = open + newline + 1;
+        let last = text[..close].rfind('\n').map_or(0, |i| i + 1);
+        if last >= first && text[last..close].trim().is_empty() {
+            return first..last;
+        }
+    }
+    let trimmed = inner.trim();
+    if trimmed.is_empty() {
+        return open..open;
+    }
+    let start = open + (inner.len() - inner.trim_start().len());
+    start..start + trimmed.len()
 }
 
 /// The kinds `query` captures, in `KINDS` order.
@@ -361,5 +448,159 @@ mod tests {}
         assert_eq!(distance("new", "nwe"), 1);
         assert_eq!(distance("abc", "xyz"), 3);
         assert_eq!(distance("", "ab"), 2);
+    }
+
+    /// The text of `part` of the only item of `kind` named `name` in `text`.
+    fn part_of<'t>(kind: &str, name: &str, p: Part, text: &'t str) -> Option<&'t str> {
+        let found: Vec<Item> = items_in(text)
+            .into_iter()
+            .filter(|i| i.kind == kind && i.name == name)
+            .collect();
+        assert_eq!(found.len(), 1, "{found:?}");
+        part(&found[0], p, text).map(|r| &text[r])
+    }
+
+    const PARTS: &str = r#"/// A parser.
+/// Two lines.
+#[derive(Debug)]
+pub struct Parser {
+    src: String,
+}
+
+impl Parser {
+    /// Makes one.
+    pub fn new(src: &str) -> Self {
+        Parser { src }
+    }
+
+    fn inline(a: u8) { a }
+
+    fn tall(
+        a: u8,
+        b: u8,
+    ) -> u8 {
+        a + b
+    }
+
+    fn empty() {}
+
+    fn spaced() {  }
+
+    fn open() {
+    }
+}
+
+trait T {
+    fn f(&self);
+}
+
+enum E {
+    A { x: u8 },
+    B,
+}
+
+const C: u8 = 1;
+"#;
+
+    #[test]
+    fn whole_line_body_and_params() {
+        assert_eq!(
+            part_of("fn", "new", Part::Body, PARTS),
+            Some("        Parser { src }\n")
+        );
+        assert_eq!(
+            part_of("fn", "tall", Part::Params, PARTS),
+            Some("        a: u8,\n        b: u8,\n")
+        );
+        assert_eq!(
+            part_of("fn", "tall", Part::Body, PARTS),
+            Some("        a + b\n")
+        );
+        assert_eq!(
+            part_of("struct", "Parser", Part::Body, PARTS),
+            Some("    src: String,\n")
+        );
+        assert!(
+            part_of("impl", "Parser", Part::Body, PARTS)
+                .unwrap()
+                .starts_with("    /// Makes one.\n")
+        );
+        assert!(
+            part_of("impl", "Parser", Part::Body, PARTS)
+                .unwrap()
+                .ends_with("    fn open() {\n    }\n")
+        );
+        assert_eq!(
+            part_of("enum", "E", Part::Body, PARTS),
+            Some("    A { x: u8 },\n    B,\n")
+        );
+        assert_eq!(
+            part_of("trait", "T", Part::Body, PARTS),
+            Some("    fn f(&self);\n")
+        );
+    }
+
+    #[test]
+    fn inline_body_and_params_are_trimmed() {
+        assert_eq!(part_of("fn", "inline", Part::Body, PARTS), Some("a"));
+        assert_eq!(part_of("fn", "inline", Part::Params, PARTS), Some("a: u8"));
+        assert_eq!(part_of("fn", "new", Part::Params, PARTS), Some("src: &str"));
+        assert_eq!(part_of("variant", "A", Part::Body, PARTS), Some("x: u8"));
+    }
+
+    #[test]
+    fn empty_bodies_are_empty_spans() {
+        let empty = |name| {
+            let item = items_in(PARTS)
+                .into_iter()
+                .find(|i| i.name == name)
+                .unwrap();
+            let range = part(&item, Part::Body, PARTS).unwrap();
+            assert!(range.is_empty(), "{name}: {range:?}");
+            range.start
+        };
+        let inline = PARTS.find("fn empty() {}").unwrap() + "fn empty() {".len();
+        assert_eq!(empty("empty"), inline);
+        let spaced = PARTS.find("fn spaced() {  }").unwrap() + "fn spaced() {".len();
+        assert!((spaced..=spaced + 2).contains(&empty("spaced")));
+        let open = PARTS.find("fn open() {\n").unwrap() + "fn open() {\n".len();
+        assert_eq!(empty("open"), open);
+        assert_eq!(part_of("fn", "empty", Part::Params, PARTS), Some(""));
+    }
+
+    #[test]
+    fn name_sig_and_doc() {
+        assert_eq!(part_of("fn", "new", Part::Name, PARTS), Some("new"));
+        assert_eq!(part_of("impl", "Parser", Part::Name, PARTS), Some("Parser"));
+        assert_eq!(
+            part_of("fn", "new", Part::Sig, PARTS),
+            Some("pub fn new(src: &str) -> Self")
+        );
+        assert_eq!(
+            part_of("fn", "tall", Part::Sig, PARTS),
+            Some("fn tall(\n        a: u8,\n        b: u8,\n    ) -> u8")
+        );
+        assert_eq!(
+            part_of("struct", "Parser", Part::Sig, PARTS),
+            Some("pub struct Parser")
+        );
+        assert_eq!(part_of("fn", "f", Part::Sig, PARTS), Some("fn f(&self);"));
+        assert_eq!(
+            part_of("fn", "new", Part::Doc, PARTS),
+            Some("    /// Makes one.\n")
+        );
+        assert_eq!(
+            part_of("struct", "Parser", Part::Doc, PARTS),
+            Some("/// A parser.\n/// Two lines.\n")
+        );
+    }
+
+    #[test]
+    fn missing_parts() {
+        assert_eq!(part_of("const", "C", Part::Body, PARTS), None);
+        assert_eq!(part_of("const", "C", Part::Doc, PARTS), None);
+        assert_eq!(part_of("struct", "Parser", Part::Params, PARTS), None);
+        assert_eq!(part_of("fn", "f", Part::Body, PARTS), None);
+        assert_eq!(part_of("variant", "B", Part::Body, PARTS), None);
     }
 }

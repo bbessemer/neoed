@@ -1,22 +1,29 @@
 ; Selector items for Rust. Capture conventions: see crates/ned-core/src/syntax.rs.
+; @body and @params nodes include their delimiters.
 
-(function_item name: (identifier) @name) @fn
-(function_signature_item name: (identifier) @name) @fn
+(function_item
+  name: (identifier) @name
+  parameters: (parameters) @params
+  body: (block) @body) @fn
+(function_signature_item
+  name: (identifier) @name
+  parameters: (parameters) @params) @fn
 
-(struct_item name: (type_identifier) @name) @struct
+(struct_item name: (type_identifier) @name body: (_)? @body) @struct
 (field_declaration name: (field_identifier) @name) @field
 
-(enum_item name: (type_identifier) @name) @enum
-(enum_variant name: (identifier) @name) @variant
+(enum_item name: (type_identifier) @name body: (enum_variant_list) @body) @enum
+(enum_variant name: (identifier) @name body: (_)? @body) @variant
 
-(trait_item name: (type_identifier) @name) @trait
+(trait_item name: (type_identifier) @name body: (declaration_list) @body) @trait
 
 (impl_item
   type: [
     (type_identifier) @name
     (generic_type type: (type_identifier) @name)
     (scoped_type_identifier name: (type_identifier) @name)
-  ]) @impl
+  ]
+  body: (declaration_list)? @body) @impl
 
 (type_item name: (type_identifier) @name) @type
 (associated_type name: (type_identifier) @name) @type
@@ -26,7 +33,7 @@
 
 (let_declaration pattern: (identifier) @name) @var
 
-(mod_item name: (identifier) @name) @mod
+(mod_item name: (identifier) @name body: (declaration_list)? @body) @mod
 
 (use_declaration argument: (_) @name) @import
 

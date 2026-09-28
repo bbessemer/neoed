@@ -109,18 +109,41 @@ pub fn resolve(target: &Target, files: &[&SourceFile], src: &str) -> Result<Vec<
 }
 
 fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result<Vec<Match>, E> {
+    // Only a syntax item has parts other than `.lines`, and a part's span is
+    // no longer an item.
+    let mut item = matches!(step.primary, Primary::Syntax { .. });
     for part in &step.parts {
-        if *part != Part::Lines {
-            return Err(E::Unsupported(format!("part `.{}`", part_name(*part))));
+        if *part != Part::Lines && !item {
+            return Err(E::PartNeedsItem {
+                part: part_name(*part).into(),
+            });
         }
+        item = false;
     }
     let matcher = Matcher::new(&step.primary, files, parents)?;
     let mut out: Vec<Match> = Vec::new();
     for parent in parents {
         let f = &files[parent.file];
         for mut range in matcher.find(f, parent.range.clone()) {
-            if !step.parts.is_empty() {
-                range = full_lines(&f.text, range);
+            let mut item = match &step.primary {
+                Primary::Syntax { kind, .. } => f
+                    .items()
+                    .unwrap_or_default()
+                    .iter()
+                    .find(|i| i.kind == kind && i.range == range),
+                _ => None,
+            };
+            for part in &step.parts {
+                range = match (part, item.take()) {
+                    (Part::Lines, _) => full_lines(&f.text, range),
+                    (part, Some(item)) => {
+                        syntax::part(item, *part, &f.text).ok_or_else(|| E::MissingPart {
+                            item: syntax::selector(item.kind, &item.name),
+                            part: part_name(*part).into(),
+                        })?
+                    }
+                    (_, None) => unreachable!("checked above"),
+                };
             }
             let m = Match {
                 file: parent.file,
@@ -828,11 +851,52 @@ mod tests {
     }
 
     #[test]
-    fn query_and_parts_are_not_yet_supported() {
-        for script in ["delete query{(identifier) @sel}", "delete /x/.body"] {
-            let err = resolve_in(script, &files(&[("a.rs", TEXT)])).unwrap_err();
-            assert!(matches!(err.kind, ExecErrorKind::Unsupported(_)), "{err:?}");
-        }
+    fn query_is_not_yet_supported() {
+        let err =
+            resolve_in("delete query{(identifier) @sel}", &files(&[("a.rs", TEXT)])).unwrap_err();
+        assert!(matches!(err.kind, ExecErrorKind::Unsupported(_)), "{err:?}");
+    }
+
+    #[test]
+    fn parts_narrow_syntax_items() {
+        assert_eq!(select("delete fn:main.body", RUST), ["    let x = 1;\n"]);
+        assert_eq!(
+            select("delete impl:Parser>fn:new.params", RUST),
+            ["src: &str"]
+        );
+        assert_eq!(
+            select("delete all fn:*.name", RUST),
+            ["new", "parse", "new", "main"]
+        );
+        assert_eq!(select("delete fn:main.body>var:x.name", RUST), ["x"]);
+        assert_eq!(
+            select("delete fn:main.body.lines", RUST),
+            ["    let x = 1;\n"]
+        );
+    }
+
+    #[test]
+    fn parts_need_syntax_items_that_have_them() {
+        assert_eq!(
+            error("delete fn:main.doc", &[("a.rs", RUST)]),
+            "error: script:1:8: fn:main has no .doc"
+        );
+        assert_eq!(
+            error("delete import:std::fmt.body", &[("a.rs", RUST)]),
+            "error: script:1:8: import:std::fmt has no .body"
+        );
+        assert_eq!(
+            error("delete /x/.body", &[("a.rs", RUST)]),
+            "error: script:1:8: .body needs a syntax item (kind:name)"
+        );
+        assert_eq!(
+            error("delete fn:main.body.name", &[("a.rs", RUST)]),
+            "error: script:1:8: .name needs a syntax item (kind:name)"
+        );
+        assert_eq!(
+            error("delete fn:main.lines.body", &[("a.rs", RUST)]),
+            "error: script:1:8: .body needs a syntax item (kind:name)"
+        );
     }
 
     const RUST: &str = "\
