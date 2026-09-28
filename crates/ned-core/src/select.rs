@@ -4,7 +4,9 @@ use std::cell::OnceCell;
 use std::ops::Range;
 
 use regex::Regex;
-use tree_sitter::Tree;
+use std::cmp::Reverse;
+
+use tree_sitter::{Query, QueryCursor, QueryError, QueryErrorKind, StreamingIterator, Tree};
 
 use crate::buffer::{Buffer, LineEnding};
 use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
@@ -158,13 +160,23 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
 }
 
 enum Matcher<'a> {
-    Lines { start: LineNo, end: LineNo },
+    Lines {
+        start: LineNo,
+        end: LineNo,
+    },
     Regex(Regex),
     Str(&'a str),
-    Heredoc { lines: Vec<String>, raw: bool },
+    Heredoc {
+        lines: Vec<String>,
+        raw: bool,
+    },
     File(&'a str),
-    Syntax { kind: &'a str, name: &'a str },
-    Query(&'a str),
+    Syntax {
+        kind: &'a str,
+        name: &'a str,
+    },
+    /// The query compiled for each searched language.
+    Query(Vec<(Language, Query)>),
 }
 
 impl<'a> Matcher<'a> {
@@ -208,7 +220,7 @@ impl<'a> Matcher<'a> {
                 check_syntax(kind, name, files, parents)?;
                 Matcher::Syntax { kind, name }
             }
-            Primary::Query(source) => Matcher::Query(source),
+            Primary::Query(source) => Matcher::Query(compile_query(source, files, parents)?),
         })
     }
 
@@ -276,9 +288,35 @@ impl<'a> Matcher<'a> {
                     Vec::new()
                 }
             }
-            Matcher::Query(source) => {
-                let _ = source;
-                Vec::new()
+            Matcher::Query(queries) => {
+                let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
+                    return Vec::new();
+                };
+                let (_, query) = queries
+                    .iter()
+                    .find(|(l, _)| *l == lang)
+                    .expect("compiled for every searched language");
+                let sel = query.capture_index_for_name("sel");
+                let mut cursor = QueryCursor::new();
+                cursor.set_byte_range(parent.clone());
+                let mut matches = cursor.matches(query, tree.root_node(), f.text.as_bytes());
+                let mut out = Vec::new();
+                while let Some(m) = matches.next() {
+                    let ranges = m.captures().iter().map(|c| c.node.byte_range());
+                    match sel {
+                        Some(sel) if m.captures().iter().any(|c| c.index == sel) => out.extend(
+                            m.captures()
+                                .iter()
+                                .filter(|c| c.index == sel)
+                                .map(|c| c.node.byte_range()),
+                        ),
+                        _ => out.extend(ranges.min_by_key(|r| (r.start, Reverse(r.end)))),
+                    }
+                }
+                out.retain(within);
+                out.sort_by_key(|r| (r.start, r.end));
+                out.dedup();
+                out
             }
             Matcher::Syntax { kind, name } => f
                 .items()
@@ -362,6 +400,53 @@ fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]
             .collect::<Vec<_>>()
             .join(", "),
     })
+}
+
+/// `source` compiled for each language among the searched files.
+fn compile_query(
+    source: &str,
+    files: &[&SourceFile],
+    parents: &[Match],
+) -> Result<Vec<(Language, Query)>, E> {
+    let mut searched: Vec<usize> = parents.iter().map(|m| m.file).collect();
+    searched.dedup();
+    let mut queries: Vec<(Language, Query)> = Vec::new();
+    for &i in &searched {
+        let Some(lang) = files[i].lang else { continue };
+        if queries.iter().any(|(l, _)| *l == lang) {
+            continue;
+        }
+        let query = Query::new(&lang.grammar(), source).map_err(|err| E::InvalidQuery {
+            lang: lang.to_string(),
+            message: query_error(&err),
+        })?;
+        queries.push((lang, query));
+    }
+    if queries.is_empty() && !searched.is_empty() {
+        return Err(E::NoLanguage {
+            selector: format!("query{{{}}}", source.replace('}', "\\}")),
+            files: searched
+                .iter()
+                .map(|&i| files[i].path.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        });
+    }
+    Ok(queries)
+}
+
+fn query_error(err: &QueryError) -> String {
+    let message = &err.message;
+    let what = match err.kind {
+        QueryErrorKind::NodeType => format!("unknown node type `{}`", message.trim_matches('"')),
+        QueryErrorKind::Field => format!("unknown field `{message}`"),
+        QueryErrorKind::Capture => format!("unknown capture `@{message}`"),
+        QueryErrorKind::Predicate => "bad predicate".into(),
+        QueryErrorKind::Structure => "impossible pattern".into(),
+        QueryErrorKind::Syntax => "syntax error".into(),
+        QueryErrorKind::Language => return message.clone(),
+    };
+    format!("{what} at column {}", err.column + 1)
 }
 
 /// `; did you mean SEL (LINES)?`, naming the item closest in name to a syntax
@@ -874,8 +959,12 @@ mod tests {
             ["x", "x"]
         );
         assert_eq!(
-            select(r#"delete query{(identifier) @sel (#eq? @sel "src")}"#, RUST).len(),
-            1
+            select(
+                r#"delete all query{((identifier) @sel (#eq? @sel "src"))}"#,
+                RUST
+            )
+            .len(),
+            2
         );
     }
 
@@ -901,10 +990,7 @@ mod tests {
             3
         );
         let found = select("delete all impl:Parser>query{(identifier) @sel}", RUST);
-        assert_eq!(
-            found,
-            ["src", "src", "self", "x", "self", "next"].map(String::from)
-        );
+        assert_eq!(found, ["new", "src", "src", "parse", "x"].map(String::from));
     }
 
     #[test]

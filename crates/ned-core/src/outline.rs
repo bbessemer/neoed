@@ -2,13 +2,66 @@
 
 use std::ops::Range;
 
-use crate::select::SourceFile;
+use crate::select::{SourceFile, line_numbers};
+use crate::syntax::{self, Item, KINDS};
 
 /// The outline entries of the items in `f`, one per line, or of the items
 /// strictly inside `within`. Empty if `f` has no items.
 pub fn render(f: &SourceFile, within: Option<&Range<usize>>) -> String {
-    let _ = (f, within);
-    String::new()
+    let Some(items) = f.items() else {
+        return String::new();
+    };
+    let rank = |kind: &str| KINDS.iter().position(|k| *k == kind);
+    let listed = items.iter().filter(|i| {
+        within.is_none_or(|w| w.start <= i.range.start && i.range.end <= w.end && i.range != *w)
+            // One entry per node, preferring the earliest kind (`fn`).
+            && !items.iter().any(|o| o.node == i.node && rank(o.kind) < rank(i.kind))
+    });
+    let mut out = String::new();
+    let mut stack: Vec<&Item> = Vec::new();
+    // Consecutive imports at one depth: (depth, span, count).
+    let mut imports: Option<(usize, Range<usize>, usize)> = None;
+    let flush = |out: &mut String, imports: &mut Option<(usize, Range<usize>, usize)>| {
+        if let Some((depth, range, count)) = imports.take() {
+            let lines = line_numbers(&f.buffer, &range);
+            out.push_str(&format!("{}{lines} import ({count})\n", "  ".repeat(depth)));
+        }
+    };
+    for item in listed {
+        while stack
+            .last()
+            .is_some_and(|p| !(p.range.start <= item.range.start && item.range.end <= p.range.end))
+        {
+            stack.pop();
+        }
+        if stack.iter().any(|p| p.kind == "fn") {
+            continue;
+        }
+        let depth = stack.len();
+        if matches!(item.kind, "field" | "variant") && !(within.is_some() && depth == 0) {
+            continue;
+        }
+        stack.push(item);
+        if item.kind == "import" {
+            match &mut imports {
+                Some((d, range, count)) if *d == depth => {
+                    range.end = item.range.end;
+                    *count += 1;
+                }
+                _ => {
+                    flush(&mut out, &mut imports);
+                    imports = Some((depth, item.range.clone(), 1));
+                }
+            }
+            continue;
+        }
+        flush(&mut out, &mut imports);
+        let lines = line_numbers(&f.buffer, &item.range);
+        let selector = syntax::selector(item.kind, &item.name);
+        out.push_str(&format!("{}{lines} {selector}\n", "  ".repeat(depth)));
+    }
+    flush(&mut out, &mut imports);
+    out
 }
 
 #[cfg(test)]

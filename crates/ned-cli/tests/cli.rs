@@ -687,8 +687,7 @@ fn outline_in_a_deferred_language_exits_2() {
 #[test]
 fn query_selector_edits_matches() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
-    let script =
-        r#"delete query{(macro_invocation macro: (identifier) @m (#eq? @m "eprintln")) @sel}"#;
+    let script = r#"delete query{(expression_statement (macro_invocation macro: (identifier) @m (#eq? @m "eprintln"))) @sel}"#;
     let out = ned(dir.path(), &["parser.rs", "-e", script], "");
     assert_snapshot!(out, @r#"
     exit: 0

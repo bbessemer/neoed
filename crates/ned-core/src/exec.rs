@@ -9,6 +9,7 @@ use tree_sitter::Node;
 
 use crate::edit::{Edit, EditError, EditSet};
 use crate::lang::Language;
+use crate::outline;
 use crate::script::Script;
 use crate::script::ast::{
     Command, CommandKind, Part, Pattern, Position, Primary, Target, Text, TextKind,
@@ -155,7 +156,7 @@ impl Executor<'_> {
         }
         match &command.kind {
             CommandKind::Show(target) => self.show(target.as_ref())?,
-            CommandKind::Outline(target) => self.outline(target.as_ref())?,
+            CommandKind::Outline(target) => self.outline(span, target.as_ref())?,
             CommandKind::Replace { target, text } => {
                 for m in self.resolve(target)? {
                     let (range, new) = replace(&self.files[m.file].file, m.range, text);
@@ -286,8 +287,51 @@ impl Executor<'_> {
         Ok(())
     }
 
-    fn outline(&mut self, target: Option<&Target>) -> Result<(), ExecError> {
-        let _ = target;
+    fn outline(&mut self, span: &Range<usize>, target: Option<&Target>) -> Result<(), ExecError> {
+        let error = |kind| ExecError::new(kind, Some(span.clone()));
+        let spans: Vec<(usize, Option<Range<usize>>)> = match target {
+            None => self.set.iter().map(|&i| (i, None)).collect(),
+            Some(target) => self
+                .resolve(target)?
+                .into_iter()
+                .map(|m| (m.file, Some(m.range)))
+                .collect(),
+        };
+        let mut files: Vec<usize> = spans.iter().map(|(i, _)| *i).collect();
+        files.dedup();
+        let mut any = false;
+        for &i in &files {
+            let Some(lang) = self.files[i].file.lang else {
+                continue;
+            };
+            if lang.selectors().is_none() {
+                let what = format!("`outline` in {lang} files");
+                return Err(error(ExecErrorKind::Unsupported(what)));
+            }
+            any = true;
+        }
+        if !any {
+            return Err(error(ExecErrorKind::NoLanguage {
+                selector: "outline".into(),
+                files: files
+                    .iter()
+                    .map(|&i| self.files[i].file.path.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            }));
+        }
+        let mut last = None;
+        for (i, range) in spans {
+            let f = &self.files[i].file;
+            if f.lang.is_none() {
+                continue;
+            }
+            if last != Some(i) {
+                self.output.push_str(&format!("{}\n", f.path));
+                last = Some(i);
+            }
+            self.output.push_str(&outline::render(f, range.as_ref()));
+        }
         Ok(())
     }
 
