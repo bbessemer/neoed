@@ -3,5 +3,8 @@
 pub mod ast;
 pub mod error;
 pub mod lexer;
+pub mod parser;
 
+pub use ast::Script;
 pub use error::{ParseError, ParseErrorKind};
+pub use parser::parse;

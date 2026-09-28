@@ -430,9 +430,9 @@ error: src/parser.rs:15:19: edit introduces a syntax error (use --force to apply
 15:        let tok = (self.next();
                      ^
 
-error: script:2:23: unterminated heredoc <<END (started here)
-2:replace fn:parse.body <<END
-                        ^
+error: script:2:28: unterminated heredoc <<END (started here)
+2:replace fn:parse.body with <<END
+                             ^
 ```
 
 | Code | Meaning                                                                                              |
@@ -491,7 +491,7 @@ impl Parser {
 | 2   | Add a method to an impl         |  41 |   — |     93 |                    78 |
 | 3   | Delete a function               |  13 | 18† |     65 |                    45 |
 | 4   | Change a function's params      |  20 |  28 |     68 |                    37 |
-| 5   | Replace a function body         |  37 |   — |     90 |                    63 |
+| 5   | Replace a function body         |  38 |   — |     90 |                    63 |
 | 6   | Add an import                   |  21 |  23 |     62 |                    39 |
 | 7   | Insert into a Python block      |  30 |   — |     70 |                    42 |
 | 8   | Rename an identifier in 5 files |  18 |  25 |     64 | 1 call per occurrence |
@@ -544,7 +544,7 @@ ned src/parser.rs -e 'replace fn:new.params with "src: impl Into<String>"'
 
 ```sh
 ned src/parser.rs <<'EOF'
-replace fn:parse.body <<END
+replace fn:parse.body with <<END
 let tok = self.next().ok_or(Error::Eof)?;
 self.parse_expr(tok)
 END
