@@ -230,7 +230,11 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
   closing delimiter starts its line, the part is the whole lines between them.
   Otherwise it's the text between the delimiters, with surrounding whitespace
   trimmed.
+- `.doc` covers whole lines. On an item with no body (such as a trait method
+  declaration), `.sig` is the whole item.
 - A part the item doesn't have (e.g. `.body` on a Rust `const`) is an error.
+  Parts other than `.lines` need a syntax item: `/x/.body` is an error, and so
+  is a part after another part, as in `.body.name`.
 
 ### 3.5 Ambiguity and `all`
 
@@ -290,8 +294,10 @@ Notes:
 - **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
   lines in a row, or leaves a blank line right after an opening delimiter or
   right before a closing one, one blank line is removed.
-- An empty single-line body such as `fn f() {}` is opened onto separate lines
-  when it receives line-oriented text.
+- Text that `replace` or `insert` puts into an empty `.body` is always
+  line-oriented, re-based to the enclosing item's indentation plus one indent
+  unit (§5.2). An empty single-line body such as `fn f() {}` is opened onto
+  separate lines.
 
 _(reserved)_ `rename SEL to NAME` does a workspace-wide rename via LSP. `check`
 reports diagnostics for the edited files.

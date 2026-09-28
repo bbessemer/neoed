@@ -1184,4 +1184,74 @@ mod tests {
             "enum A {\n    D\n    C,\n}\n"
         );
     }
+
+    const ITEMS: &str = "impl A {\n    fn f() {}\n\n    fn g() {\n    }\n\n    fn h() { x() }\n}\n\nfn main() {\n    let x = 1;\n}\n";
+
+    #[test]
+    fn insert_start_and_end_imply_body() {
+        assert_eq!(
+            edited(ITEMS, "insert start fn:main \"a();\""),
+            ITEMS.replace("fn main() {\n", "fn main() {\n    a();\n")
+        );
+        assert_eq!(
+            edited(ITEMS, "insert end fn:main \"a();\""),
+            ITEMS.replace("let x = 1;\n", "let x = 1;\n    a();\n")
+        );
+        assert_eq!(
+            edited(ITEMS, "insert end impl:A \"fn i() {}\""),
+            ITEMS.replace("x() }\n}\n", "x() }\n    fn i() {}\n}\n")
+        );
+        assert_eq!(
+            edited(ITEMS, "insert after fn:main \"fn b() {}\""),
+            format!("{ITEMS}fn b() {{}}\n")
+        );
+    }
+
+    #[test]
+    fn empty_bodies_open_onto_separate_lines() {
+        let f = |script| edited(ITEMS, script);
+        assert_eq!(
+            f("insert end fn:f \"a();\\nb();\""),
+            ITEMS.replace("fn f() {}", "fn f() {\n        a();\n        b();\n    }")
+        );
+        assert_eq!(
+            f("replace fn:f.body with \"a();\""),
+            ITEMS.replace("fn f() {}", "fn f() {\n        a();\n    }")
+        );
+        assert_eq!(
+            f("insert start fn:g \"a();\""),
+            ITEMS.replace("fn g() {\n    }", "fn g() {\n        a();\n    }")
+        );
+        assert_eq!(
+            edited("fn f() {  }\n", "insert end fn:f <<'END'\n  raw\nEND"),
+            "fn f() {\n  raw\n}\n"
+        );
+    }
+
+    #[test]
+    fn inline_parts_take_verbatim_text() {
+        assert_eq!(
+            edited(ITEMS, "replace fn:h.body with \"y()\""),
+            ITEMS.replace("{ x() }", "{ y() }")
+        );
+        assert_eq!(
+            edited(ITEMS, "replace fn:h.params with \"a: u8\""),
+            ITEMS.replace("fn h()", "fn h(a: u8)")
+        );
+        assert_eq!(
+            edited(ITEMS, "replace fn:h.name with \"k\""),
+            ITEMS.replace("fn h()", "fn k()")
+        );
+    }
+
+    #[test]
+    fn replacing_a_whole_line_body_rebases() {
+        assert_eq!(
+            edited(
+                ITEMS,
+                "replace fn:main.body with <<END\nif y {\n    z();\n}\nEND"
+            ),
+            ITEMS.replace("    let x = 1;\n", "    if y {\n        z();\n    }\n")
+        );
+    }
 }

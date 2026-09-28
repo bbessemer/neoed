@@ -383,4 +383,158 @@ mod tests {}
         assert_eq!(distance("abc", "xyz"), 3);
         assert_eq!(distance("", "ab"), 2);
     }
+
+    /// The text of `part` of the only item of `kind` named `name` in `text`.
+    fn part_of<'t>(kind: &str, name: &str, p: Part, text: &'t str) -> Option<&'t str> {
+        let found: Vec<Item> = items_in(text)
+            .into_iter()
+            .filter(|i| i.kind == kind && i.name == name)
+            .collect();
+        assert_eq!(found.len(), 1, "{found:?}");
+        part(&found[0], p, text).map(|r| &text[r])
+    }
+
+    const PARTS: &str = r#"/// A parser.
+/// Two lines.
+#[derive(Debug)]
+pub struct Parser {
+    src: String,
+}
+
+impl Parser {
+    /// Makes one.
+    pub fn new(src: &str) -> Self {
+        Parser { src }
+    }
+
+    fn inline(a: u8) { a }
+
+    fn tall(
+        a: u8,
+        b: u8,
+    ) -> u8 {
+        a + b
+    }
+
+    fn empty() {}
+
+    fn spaced() {  }
+
+    fn open() {
+    }
+}
+
+trait T {
+    fn f(&self);
+}
+
+enum E {
+    A { x: u8 },
+    B,
+}
+
+const C: u8 = 1;
+"#;
+
+    #[test]
+    fn whole_line_body_and_params() {
+        assert_eq!(
+            part_of("fn", "new", Part::Body, PARTS),
+            Some("        Parser { src }\n")
+        );
+        assert_eq!(
+            part_of("fn", "tall", Part::Params, PARTS),
+            Some("        a: u8,\n        b: u8,\n")
+        );
+        assert_eq!(
+            part_of("fn", "tall", Part::Body, PARTS),
+            Some("        a + b\n")
+        );
+        assert_eq!(
+            part_of("struct", "Parser", Part::Body, PARTS),
+            Some("    src: String,\n")
+        );
+        assert!(
+            part_of("impl", "Parser", Part::Body, PARTS)
+                .unwrap()
+                .starts_with("    /// Makes one.\n")
+        );
+        assert!(
+            part_of("impl", "Parser", Part::Body, PARTS)
+                .unwrap()
+                .ends_with("    fn open() {\n    }\n")
+        );
+        assert_eq!(
+            part_of("enum", "E", Part::Body, PARTS),
+            Some("    A { x: u8 },\n    B,\n")
+        );
+        assert_eq!(
+            part_of("trait", "T", Part::Body, PARTS),
+            Some("    fn f(&self);\n")
+        );
+    }
+
+    #[test]
+    fn inline_body_and_params_are_trimmed() {
+        assert_eq!(part_of("fn", "inline", Part::Body, PARTS), Some("a"));
+        assert_eq!(part_of("fn", "inline", Part::Params, PARTS), Some("a: u8"));
+        assert_eq!(part_of("fn", "new", Part::Params, PARTS), Some("src: &str"));
+        assert_eq!(part_of("variant", "A", Part::Body, PARTS), Some("x: u8"));
+    }
+
+    #[test]
+    fn empty_bodies_are_empty_spans() {
+        let empty = |name| {
+            let item = items_in(PARTS)
+                .into_iter()
+                .find(|i| i.name == name)
+                .unwrap();
+            let range = part(&item, Part::Body, PARTS).unwrap();
+            assert!(range.is_empty(), "{name}: {range:?}");
+            range.start
+        };
+        let inline = PARTS.find("fn empty() {}").unwrap() + "fn empty() {".len();
+        assert_eq!(empty("empty"), inline);
+        let spaced = PARTS.find("fn spaced() {  }").unwrap() + "fn spaced() {".len();
+        assert!((spaced..=spaced + 2).contains(&empty("spaced")));
+        let open = PARTS.find("fn open() {\n").unwrap() + "fn open() {\n".len();
+        assert_eq!(empty("open"), open);
+        assert_eq!(part_of("fn", "empty", Part::Params, PARTS), Some(""));
+    }
+
+    #[test]
+    fn name_sig_and_doc() {
+        assert_eq!(part_of("fn", "new", Part::Name, PARTS), Some("new"));
+        assert_eq!(part_of("impl", "Parser", Part::Name, PARTS), Some("Parser"));
+        assert_eq!(
+            part_of("fn", "new", Part::Sig, PARTS),
+            Some("pub fn new(src: &str) -> Self")
+        );
+        assert_eq!(
+            part_of("fn", "tall", Part::Sig, PARTS),
+            Some("fn tall(\n        a: u8,\n        b: u8,\n    ) -> u8")
+        );
+        assert_eq!(
+            part_of("struct", "Parser", Part::Sig, PARTS),
+            Some("pub struct Parser")
+        );
+        assert_eq!(part_of("fn", "f", Part::Sig, PARTS), Some("fn f(&self);"));
+        assert_eq!(
+            part_of("fn", "new", Part::Doc, PARTS),
+            Some("    /// Makes one.\n")
+        );
+        assert_eq!(
+            part_of("struct", "Parser", Part::Doc, PARTS),
+            Some("/// A parser.\n/// Two lines.\n")
+        );
+    }
+
+    #[test]
+    fn missing_parts() {
+        assert_eq!(part_of("const", "C", Part::Body, PARTS), None);
+        assert_eq!(part_of("const", "C", Part::Doc, PARTS), None);
+        assert_eq!(part_of("struct", "Parser", Part::Params, PARTS), None);
+        assert_eq!(part_of("fn", "f", Part::Body, PARTS), None);
+        assert_eq!(part_of("variant", "B", Part::Body, PARTS), None);
+    }
 }

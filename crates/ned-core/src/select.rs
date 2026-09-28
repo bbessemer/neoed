@@ -828,11 +828,52 @@ mod tests {
     }
 
     #[test]
-    fn query_and_parts_are_not_yet_supported() {
-        for script in ["delete query{(identifier) @sel}", "delete /x/.body"] {
-            let err = resolve_in(script, &files(&[("a.rs", TEXT)])).unwrap_err();
-            assert!(matches!(err.kind, ExecErrorKind::Unsupported(_)), "{err:?}");
-        }
+    fn query_is_not_yet_supported() {
+        let err =
+            resolve_in("delete query{(identifier) @sel}", &files(&[("a.rs", TEXT)])).unwrap_err();
+        assert!(matches!(err.kind, ExecErrorKind::Unsupported(_)), "{err:?}");
+    }
+
+    #[test]
+    fn parts_narrow_syntax_items() {
+        assert_eq!(select("delete fn:main.body", RUST), ["    let x = 1;\n"]);
+        assert_eq!(
+            select("delete impl:Parser>fn:new.params", RUST),
+            ["src: &str"]
+        );
+        assert_eq!(
+            select("delete all fn:*.name", RUST),
+            ["new", "parse", "new", "main"]
+        );
+        assert_eq!(select("delete fn:main.body>var:x.name", RUST), ["x"]);
+        assert_eq!(
+            select("delete fn:main.body.lines", RUST),
+            ["    let x = 1;\n"]
+        );
+    }
+
+    #[test]
+    fn parts_need_syntax_items_that_have_them() {
+        assert_eq!(
+            error("delete fn:main.doc", &[("a.rs", RUST)]),
+            "error: script:1:8: fn:main has no .doc"
+        );
+        assert_eq!(
+            error("delete import:std::fmt.body", &[("a.rs", RUST)]),
+            "error: script:1:8: import:std::fmt has no .body"
+        );
+        assert_eq!(
+            error("delete /x/.body", &[("a.rs", RUST)]),
+            "error: script:1:8: .body needs a syntax item (kind:name)"
+        );
+        assert_eq!(
+            error("delete fn:main.body.name", &[("a.rs", RUST)]),
+            "error: script:1:8: .name needs a syntax item (kind:name)"
+        );
+        assert_eq!(
+            error("delete fn:main.lines.body", &[("a.rs", RUST)]),
+            "error: script:1:8: .body needs a syntax item (kind:name)"
+        );
     }
 
     const RUST: &str = "\

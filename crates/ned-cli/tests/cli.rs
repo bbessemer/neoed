@@ -542,3 +542,88 @@ fn ambiguous_syntax_selector_lists_candidates() {
       impl:Lexer>fn:new    lexer.rs:2
     ");
 }
+
+#[test]
+fn insert_method_at_end_of_impl() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let script = "insert end impl:Parser <<END\n\nfn peek(&self) -> Option<char> {\n    self.src[self.pos..].chars().next()\n}\nEND\n";
+    let out = ned(dir.path(), &["parser.rs"], script);
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    parser.rs: 1 edit, +4 -0
+    @@ -21,2 +21,6 @@
+         }
+    +
+    +    fn peek(&self) -> Option<char> {
+    +        self.src[self.pos..].chars().next()
+    +    }
+     }
+    --- stderr
+    ");
+}
+
+#[test]
+fn replace_function_params() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let script = r#"replace fn:new.params with "src: impl Into<String>""#;
+    let out = ned(dir.path(), &["parser.rs", "-e", script], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    parser.rs: 1 edit, +1 -1
+    @@ -9,3 +9,3 @@
+     impl Parser {
+    -    pub fn new(src: &str) -> Self {
+    +    pub fn new(src: impl Into<String>) -> Self {
+             Parser { src: src.to_string(), pos: 0 }
+    --- stderr
+    ");
+}
+
+#[test]
+fn replace_function_body() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let script = "replace fn:parse.body with <<END\nlet tok = self.next().ok_or(Error::Eof)?;\nself.parse_expr(tok)\nEND\n";
+    let out = ned(dir.path(), &["parser.rs"], script);
+    assert_snapshot!(out, @r#"
+    exit: 0
+    --- stdout
+    parser.rs: 1 edit, +1 -1
+    @@ -14,3 +14,3 @@
+         pub fn parse(&mut self) -> Result<Ast, Error> {
+    -        let tok = self.next().expect("unexpected end");
+    +        let tok = self.next().ok_or(Error::Eof)?;
+             self.parse_expr(tok)
+    --- stderr
+    "#);
+}
+
+#[test]
+fn insert_import_after_import() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let script = r#"insert after import:std::fmt "use std::io;""#;
+    let out = ned(dir.path(), &["parser.rs", "-q", "-e", script], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    parser.rs: 1 edit, +1 -0
+    --- stderr
+    ");
+    assert_eq!(
+        read(&dir, "parser.rs"),
+        PARSER.replacen("use std::fmt;\n", "use std::fmt;\nuse std::io;\n", 1)
+    );
+}
+
+#[test]
+fn missing_part_exits_1() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let out = ned(dir.path(), &["parser.rs", "-e", "show fn:new.doc"], "");
+    assert_snapshot!(out, @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: script:1:6: fn:new has no .doc
+    ");
+}
