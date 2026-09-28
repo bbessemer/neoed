@@ -518,6 +518,10 @@ pub enum ExecErrorKind {
     },
     #[error("{selector} needs a language, but {files} has none; use --lang")]
     NoLanguage { selector: String, files: String },
+    #[error("{item} has no .{part}")]
+    MissingPart { item: String, part: String },
+    #[error(".{part} needs a syntax item (kind:name)")]
+    PartNeedsItem { part: String },
     #[error("{lang} has no `{kind}` items; use one of: {kinds}")]
     UnknownKind {
         kind: String,

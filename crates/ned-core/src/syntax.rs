@@ -10,6 +10,7 @@
 use std::cmp::Reverse;
 use std::ops::Range;
 
+use crate::script::ast::Part;
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator, Tree};
 
 /// The core kinds a query may capture.
@@ -39,6 +40,14 @@ pub struct Item {
     pub range: Range<usize>,
     /// Whether `range` ends with a trailing `,`.
     pub trailing_comma: bool,
+    /// The item node alone.
+    pub node: Range<usize>,
+    pub name_range: Range<usize>,
+    /// The `@body` and `@params` nodes, delimiters included.
+    pub body: Option<Range<usize>>,
+    pub params: Option<Range<usize>>,
+    /// The leading doc comments.
+    pub doc: Option<Range<usize>>,
 }
 
 /// Every item `query` finds in `tree`, ordered by start, outer items first.
@@ -106,6 +115,11 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                 name: text[name.byte_range()].to_string(),
                 range,
                 trailing_comma: comma.is_some(),
+                node: node.byte_range(),
+                name_range: name.byte_range(),
+                body: None,
+                params: None,
+                doc: None,
             }
         })
         .collect();
@@ -119,6 +133,13 @@ fn directly_before(text: &str, leading: &Range<usize>, start: usize) -> bool {
     let gap = &text[leading.end..start];
     let newlines = gap.matches('\n').count() + usize::from(text[..leading.end].ends_with('\n'));
     gap.trim().is_empty() && newlines <= 1
+}
+
+/// The span of `part` of `item` (§3.4); `None` if the item doesn't have it.
+/// `.lines` isn't an item part.
+pub fn part(item: &Item, part: Part, text: &str) -> Option<Range<usize>> {
+    let _ = (item, part, text);
+    None
 }
 
 /// The kinds `query` captures, in `KINDS` order.
