@@ -44,6 +44,23 @@ pub enum ParseErrorKind {
     UnterminatedHeredoc(String),
     #[error("expected a name after `{0}:`, e.g. {0}:foo or {0}:*")]
     MissingName(String),
+    #[error("unknown command `{0}`; commands are show outline replace insert delete sub move file")]
+    UnknownCommand(String),
+    #[error("`{0}` is not yet supported")]
+    Reserved(String),
+    #[error("expected {expected}, found {found}")]
+    Expected {
+        expected: &'static str,
+        found: String,
+    },
+    #[error("selectors can't contain spaces; write e.g. `impl:Parser>fn:new`")]
+    SpaceInSelector,
+    #[error("`all` can't be used here; a `move` destination must be a single span")]
+    AllNotAllowed,
+    #[error("`sub` needs a regex before `with`, e.g. sub fn:parse /old/ with \"new\"")]
+    MissingSubPattern,
+    #[error("invalid regex: {0}")]
+    InvalidRegex(String),
 }
 
 impl ParseError {
