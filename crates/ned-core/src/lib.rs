@@ -4,3 +4,4 @@ pub mod buffer;
 pub mod diff;
 pub mod edit;
 pub mod fs;
+pub mod script;

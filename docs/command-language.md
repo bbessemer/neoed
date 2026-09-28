@@ -92,7 +92,7 @@ literal    = string | heredoc ;
 syntax     = kind ":" name ;
 kind       = ident ;
 name       = name-char { name-char } | string ;   (* name-char: [A-Za-z0-9_:*] *)
-query      = "query{" { any } "}" ;               (* ends at the first unescaped "}" *)
+query      = "query{" { any } "}" ;   (* ends at the first unescaped "}"; one line *)
 
 text       = string | heredoc ;
 path       = path-char { path-char } | string ;   (* globs allowed; see 2.4 *)
@@ -239,7 +239,7 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 
 `query{...}` runs a tree-sitter query. The span is taken from the `@sel` capture
 if there is one, and otherwise from the outermost capture of each match. Write
-`\}` for a literal `}` in the query.
+`\}` for a literal `}` in the query. The query must fit on one line.
 
 ```
 delete all query{(call_expression function: (identifier) @f (#eq? @f "dbg")) @sel}

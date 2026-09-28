@@ -33,9 +33,9 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 
 ## 3. Script parser
 
-- [ ] Lexer with source positions
+- [x] Lexer with source positions
 - [ ] Parser to AST (commands, selectors, text blocks)
-- [ ] Error messages with line/column and a caret excerpt
+- [x] Error messages with line/column and a caret excerpt
 
 ## 4. Line-based editing, end to end
 
