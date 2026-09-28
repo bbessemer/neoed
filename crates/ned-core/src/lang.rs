@@ -1,6 +1,7 @@
 //! Languages with a linked-in tree-sitter grammar (command-language spec, §1).
 
 use std::fmt;
+use std::path::Path;
 use std::str::FromStr;
 
 use tree_sitter::{Parser, Tree};
@@ -39,8 +40,17 @@ impl Language {
 
     /// The language of a file, from its extension, then its shebang.
     pub fn detect(path: &str, text: &str) -> Option<Language> {
-        let _ = (path, text);
-        None
+        let extension = Path::new(path).extension().and_then(|e| e.to_str());
+        let by_extension = match extension.unwrap_or_default() {
+            "rs" => Some(Language::Rust),
+            "py" | "pyi" => Some(Language::Python),
+            "ts" | "mts" | "cts" => Some(Language::TypeScript),
+            "tsx" => Some(Language::Tsx),
+            "js" | "mjs" | "cjs" | "jsx" => Some(Language::JavaScript),
+            "go" => Some(Language::Go),
+            _ => None,
+        };
+        by_extension.or_else(|| from_shebang(text))
     }
 
     pub fn grammar(self) -> tree_sitter::Language {
@@ -56,7 +66,10 @@ impl Language {
 
     /// The indent unit of a file with no indented lines (§5.2).
     pub fn default_indent(self) -> &'static str {
-        "    "
+        match self {
+            Language::Go => "\t",
+            _ => "    ",
+        }
     }
 
     pub fn parse(self, text: &str) -> Tree {
@@ -67,6 +80,25 @@ impl Language {
         parser
             .parse(text, None)
             .expect("parsing without a timeout or cancellation succeeds")
+    }
+}
+
+/// The language of the interpreter named on a `#!` first line, looking past
+/// `env` and its flags.
+fn from_shebang(text: &str) -> Option<Language> {
+    let line = text.lines().next()?.strip_prefix("#!")?;
+    let basename = |word: &str| word.rsplit('/').next().unwrap_or(word).to_string();
+    let mut words = line.split_whitespace();
+    let mut program = basename(words.next()?);
+    if program == "env" {
+        program = basename(words.find(|w| !w.starts_with('-'))?);
+    }
+    if program.starts_with("python") {
+        Some(Language::Python)
+    } else if program == "node" {
+        Some(Language::JavaScript)
+    } else {
+        None
     }
 }
 

@@ -4,11 +4,13 @@ use std::fmt;
 use std::fs;
 use std::ops::Range;
 
+use tree_sitter::Node;
+
 use crate::edit::{Edit, EditError, EditSet};
 use crate::lang::Language;
 use crate::script::Script;
 use crate::script::ast::{Command, CommandKind, Pattern, Position, Target, Text, TextKind};
-use crate::script::error::location;
+use crate::script::error::{excerpt, location};
 use crate::select::{self, Match, SourceFile, line_numbers, same_path};
 use crate::text;
 
@@ -350,8 +352,54 @@ impl Executor<'_> {
 /// Rejects `new`, the edited text of `f`, if it has more tree-sitter error
 /// nodes than the original (§4.3).
 fn guard(f: &SourceFile, new: &str) -> Result<(), ExecError> {
-    let _ = (f, new);
-    Ok(())
+    let (Some(lang), Some(old)) = (f.lang, f.tree()) else {
+        return Ok(());
+    };
+    let before = error_nodes(old.root_node()).len();
+    let tree = lang.parse(new);
+    let errors = error_nodes(tree.root_node());
+    if errors.len() <= before {
+        return Ok(());
+    }
+    // The edits all lie between the texts' common prefix and suffix.
+    let prefix = common_len(f.text.bytes(), new.bytes());
+    let suffix = common_len(f.text.bytes().rev(), new.bytes().rev())
+        .min(f.text.len().min(new.len()) - prefix);
+    let changed = prefix..new.len() - suffix;
+    let node = errors
+        .iter()
+        .find(|n| n.start_byte() <= changed.end && changed.start <= n.end_byte())
+        .unwrap_or(&errors[0]);
+    let (line, column) = location(new, node.start_byte());
+    Err(ExecError::new(
+        ExecErrorKind::SyntaxError {
+            location: format!("{}:{line}:{column}", f.path),
+            excerpt: excerpt(new, node.start_byte())
+                .map(|e| format!("\n{e}"))
+                .unwrap_or_default(),
+        },
+        None,
+    ))
+}
+
+/// The `ERROR` and `MISSING` nodes under `root`, in source order.
+fn error_nodes(root: Node<'_>) -> Vec<Node<'_>> {
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.is_error() || node.is_missing() {
+            out.push(node);
+        }
+        if node.has_error() {
+            stack.extend(node.children(&mut node.walk()));
+        }
+    }
+    out.sort_by_key(|n| (n.start_byte(), n.end_byte()));
+    out
+}
+
+fn common_len(a: impl Iterator<Item = u8>, b: impl Iterator<Item = u8>) -> usize {
+    a.zip(b).take_while(|(x, y)| x == y).count()
 }
 
 /// The indent unit of `f`, falling back to its language's default (§5.2).
@@ -542,8 +590,18 @@ mod tests {
         }
     }
 
+    /// Runs `script` with the parse-error guard off: most tests edit
+    /// Rust-like text without keeping it valid.
     fn exec_with(files: &[(&str, &str)], initial: usize, script: &str) -> Outcome {
-        exec_with_options(files, initial, script, &Options::default())
+        let force = Options {
+            force: true,
+            ..Options::default()
+        };
+        exec_with_options(files, initial, script, &force)
+    }
+
+    fn guarded(path: &str, text: &str, script: &str) -> Outcome {
+        exec_with_options(&[(path, text)], 1, script, &Options::default())
     }
 
     /// Writes `files` to a temporary directory and runs `script` with the
@@ -984,7 +1042,7 @@ mod tests {
 
     #[test]
     fn guard_rejects_new_syntax_errors() {
-        let out = exec(TEXT, "replace \"let y = 2;\" with \"let y = (2;\"");
+        let out = guarded("a.rs", TEXT, "replace \"let y = 2;\" with \"let y = (2;\"");
         let err = out.error();
         assert!(err.starts_with("error: a.rs:3:"), "{err}");
         assert!(err.contains(GUARD_ERROR), "{err}");
@@ -997,44 +1055,36 @@ mod tests {
     #[test]
     fn guard_points_at_the_edited_text() {
         let text = "fn a() {\n    let x = (1;\n}\n\nfn b() {\n    let y = 2;\n}\n";
-        let out = exec(text, "replace \"let y = 2;\" with \"let y = [2;\"");
+        let out = guarded("a.rs", text, "replace \"let y = 2;\" with \"let y = [2;\"");
         assert!(out.error().starts_with("error: a.rs:6:"), "{}", out.error());
     }
 
     #[test]
     fn guard_allows_errors_that_were_already_there() {
         let text = "fn a() {\n    let x = (1;\n}\n\nfn b() {\n    let y = 2;\n}\n";
+        let out = guarded("a.rs", text, "replace \"let y = 2;\" with \"let y = 3;\"");
         assert_eq!(
-            edited(text, "replace \"let y = 2;\" with \"let y = 3;\""),
+            out.new_text(),
             "fn a() {\n    let x = (1;\n}\n\nfn b() {\n    let y = 3;\n}\n"
         );
     }
 
     #[test]
     fn guard_skips_files_without_a_language() {
-        let out = exec_with(&[("a.txt", TEXT)], 1, "replace \"let y = 2;\" with \"(\"");
+        let out = guarded("a.txt", TEXT, "replace \"let y = 2;\" with \"(\"");
         assert!(out.result.is_ok(), "{}", out.error());
     }
 
     #[test]
     fn force_skips_the_guard() {
-        let force = Options {
-            force: true,
-            ..Options::default()
-        };
-        let out = exec_with_options(
-            &[("a.rs", TEXT)],
-            1,
-            "replace \"let y = 2;\" with \"(\"",
-            &force,
-        );
+        let out = exec(TEXT, "replace \"let y = 2;\" with \"(\"");
         assert!(out.new_text().contains("    (\n"), "{:?}", out.result);
     }
 
     #[test]
     fn lang_option_overrides_detection() {
         let script = "replace \"let y = 2;\" with \"let y = (2;\"";
-        let out = exec_with(&[("a.txt", TEXT)], 1, script);
+        let out = guarded("a.txt", TEXT, script);
         assert!(out.result.is_ok());
         let rust = Options {
             lang: Some(Language::Rust),

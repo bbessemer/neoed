@@ -51,3 +51,25 @@
 {"run_id":"1790625269-406940000","line":418,"new":null,"old":null}
 {"run_id":"1790625269-406940000","line":144,"new":null,"old":null}
 {"run_id":"1790625269-406940000","line":432,"new":{"module_name":"cli","snapshot_name":"edit_introducing_syntax_error_exits_1","metadata":{"source":"crates/ned-cli/tests/cli.rs","assertion_line":432,"expression":"out"},"snapshot":"exit: 0\n--- stdout\nparser.rs: 1 edit, +1 -1\n@@ -14,3 +14,3 @@\n     pub fn parse(&mut self) -> Result<Ast, Error> {\n-        let tok = self.next().expect(\"unexpected end\");\n+        let tok = (self.next();\n         self.parse_expr(tok)\n--- stderr"},"old":{"module_name":"cli","metadata":{},"snapshot":"exit: 1\n--- stdout\n--- stderr\nerror: parser.rs:15:19: edit introduces a syntax error (use --force to apply anyway)\n15:        let tok = (self.next();\n                     ^"}}
+{"run_id":"1790625344-646688000","line":293,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":384,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":220,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":345,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":402,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":203,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":320,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":452,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":84,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":276,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":261,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":238,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":188,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":167,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":372,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":418,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":358,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":432,"new":{"module_name":"cli","snapshot_name":"edit_introducing_syntax_error_exits_1","metadata":{"source":"crates/ned-cli/tests/cli.rs","assertion_line":432,"expression":"out"},"snapshot":"exit: 1\n--- stdout\n--- stderr\nerror: parser.rs:15:31: edit introduces a syntax error (use --force to apply anyway)\n15:        let tok = (self.next();\n                                 ^"},"old":{"module_name":"cli","metadata":{},"snapshot":"exit: 1\n--- stdout\n--- stderr\nerror: parser.rs:15:19: edit introduces a syntax error (use --force to apply anyway)\n15:        let tok = (self.next();\n                     ^"}}
+{"run_id":"1790625344-646688000","line":106,"new":null,"old":null}
+{"run_id":"1790625344-646688000","line":144,"new":null,"old":null}
+{"run_id":"1790625349-511031000","line":432,"new":{"module_name":"cli","snapshot_name":"edit_introducing_syntax_error_exits_1","metadata":{"source":"crates/ned-cli/tests/cli.rs","assertion_line":432,"expression":"out"},"snapshot":"exit: 1\n--- stdout\n--- stderr\nerror: parser.rs:15:31: edit introduces a syntax error (use --force to apply anyway)\n15:        let tok = (self.next();\n                                 ^"},"old":{"module_name":"cli","metadata":{},"snapshot":"exit: 1\n--- stdout\n--- stderr\nerror: parser.rs:15:19: edit introduces a syntax error (use --force to apply anyway)\n15:        let tok = (self.next();\n                     ^"}}
+{"run_id":"1790625354-797510000","line":432,"new":{"module_name":"cli","snapshot_name":"edit_introducing_syntax_error_exits_1","metadata":{"source":"crates/ned-cli/tests/cli.rs","assertion_line":432,"expression":"out"},"snapshot":"exit: 1\n--- stdout\n--- stderr\nerror: parser.rs:15:31: edit introduces a syntax error (use --force to apply anyway)\n15:        let tok = (self.next();\n                                 ^"},"old":{"module_name":"cli","metadata":{},"snapshot":"exit: 1\n--- stdout\n--- stderr\nerror: parser.rs:15:19: edit introduces a syntax error (use --force to apply anyway)\n15:        let tok = (self.next();\n                     ^"}}
