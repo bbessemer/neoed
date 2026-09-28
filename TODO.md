@@ -25,11 +25,11 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 
 ## 2. Buffer and transactions
 
-- [ ] Rope-backed buffer with byte/line/point conversions
-- [ ] Edit set: collect edits against original coordinates, reject overlaps,
+- [x] Rope-backed buffer with byte/line/point conversions
+- [x] Edit set: collect edits against original coordinates, reject overlaps,
       apply in one pass
-- [ ] Atomic file write (temp file + rename, preserve permissions and line endings)
-- [ ] Diff summary rendering (`similar`)
+- [x] Atomic file write (temp file + rename, preserve permissions and line endings)
+- [x] Diff summary rendering (`similar`)
 
 ## 3. Script parser
 
