@@ -433,9 +433,9 @@ fn edit_introducing_syntax_error_exits_1() {
     exit: 1
     --- stdout
     --- stderr
-    error: parser.rs:15:19: edit introduces a syntax error (use --force to apply anyway)
+    error: parser.rs:15:31: edit introduces a syntax error (use --force to apply anyway)
     15:        let tok = (self.next();
-                         ^
+                                     ^
     ");
     assert_eq!(read(&dir, "parser.rs"), PARSER);
 }
