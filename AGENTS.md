@@ -112,9 +112,9 @@ CLI; a human REPL and an MCP server come later.
 
 ## Status
 
-Bootstrap only: Cargo workspace with core deps; `ned --version` works. Build,
-clippy, fmt, and (empty) tests pass. Command-language spec signed off.
-Next: buffer and transactions (TODO.md §2).
+Spec signed off. `ned-core` has the buffer (`buffer`), edit set (`edit`),
+atomic multi-file write (`fs`), and diff rendering (`diff`); the CLI is still a
+stub. Next: script parser (TODO.md §3).
 
 ## Key Documentation
 

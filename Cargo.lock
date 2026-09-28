@@ -308,6 +308,7 @@ dependencies = [
  "ropey",
  "serde",
  "similar 3.2.0",
+ "tempfile",
  "thiserror",
  "toml",
  "tree-sitter",
