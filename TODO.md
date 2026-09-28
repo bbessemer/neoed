@@ -42,8 +42,8 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [x] Line/range/regex/literal selector resolution
 - [x] Verbs: `show`, `replace`, `insert`, `delete`, `sub`
 - [x] Indentation re-basing for inserted/replaced blocks
-- [ ] CLI wiring: args, stdin script, multiple files, exit codes
-- [ ] E2E snapshot tests in `crates/ned-cli/tests/`
+- [x] CLI wiring: args, stdin script, multiple files, exit codes
+- [x] E2E snapshot tests in `crates/ned-cli/tests/`
 
 ## 5. Tree-sitter integration _(split)_
 
