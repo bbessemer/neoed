@@ -39,8 +39,9 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 
 ## 4. Line-based editing, end to end
 
-- [ ] Line/range/regex/literal selector resolution
+- [x] Line/range/regex/literal selector resolution
 - [ ] Verbs: `show`, `replace`, `insert`, `delete`, `sub`
+- [ ] Indentation re-basing for inserted/replaced blocks
 - [ ] CLI wiring: args, stdin script, multiple files, exit codes
 - [ ] E2E snapshot tests in `crates/ned-cli/tests/`
 
@@ -51,7 +52,8 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] Syntax selectors, nesting, and parts; ambiguity errors with candidates
 - [ ] `outline` verb (compact symbol tree with line numbers)
 - [ ] Parse-error guard (reject new ERROR/MISSING nodes unless `--force`)
-- [ ] Indentation re-basing for inserted/replaced blocks
+- [ ] Re-basing cases that need syntax: empty spans (enclosing item's indent)
+      and the Go tab default
 - [ ] Raw tree-sitter query selector
 
 ## 6. Formatting

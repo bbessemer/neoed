@@ -2,8 +2,6 @@
 
 use std::ops::Range;
 
-use regex::RegexBuilder;
-
 use super::ast::*;
 use super::error::{ParseError, ParseErrorKind as E};
 use super::lexer::{Lexer, Token, TokenKind};
@@ -287,12 +285,8 @@ fn validate_regex(
     flags: RegexFlags,
     span: Range<usize>,
 ) -> Result<Pattern, ParseError> {
-    if let Err(err) = RegexBuilder::new(&source)
-        .multi_line(true)
-        .case_insensitive(flags.case_insensitive)
-        .dot_matches_new_line(flags.dot_all)
-        .build()
-    {
+    let pattern = Pattern { source, flags };
+    if let Err(err) = pattern.regex() {
         // The regex crate's message is a multi-line excerpt ending in
         // `error: <reason>`; keep only the reason.
         let message = err.to_string();
@@ -302,7 +296,7 @@ fn validate_regex(
             .unwrap_or(&message);
         return Err(ParseError::new(E::InvalidRegex(reason.into()), span));
     }
-    Ok(Pattern { source, flags })
+    Ok(pattern)
 }
 
 fn expected(what: &'static str, token: &Token) -> ParseError {

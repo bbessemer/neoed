@@ -2,8 +2,6 @@
 
 use std::ops::Range;
 
-use crate::buffer::Buffer;
-
 /// An error at `span`, a byte range of the script.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{kind}")]
@@ -69,33 +67,34 @@ impl ParseError {
     }
 
     /// Renders the error as `error: script:LINE:COL: message`, followed by the
-    /// offending script line and a caret under the error's start. `COL` is
-    /// 1-based and counts characters.
+    /// offending script line and a caret under the error's start.
     pub fn render(&self, src: &str) -> String {
-        let buf = Buffer::new(src);
-        let Ok(point) = buf.byte_to_point(self.span.start) else {
-            return format!("error: script: {}", self.kind);
-        };
-        let line_no = point.line + 1;
-        let Ok(range) = buf.line_range(point.line) else {
-            return format!("error: script:{line_no}:1: {}", self.kind);
-        };
-        let line = &src[range];
-        let line = line.strip_suffix('\n').unwrap_or(line);
+        let (line_no, column) = location(src, self.span.start);
+        let header = format!("error: script:{line_no}:{column}: {}", self.kind);
+        let offset = self.span.start.min(src.len());
+        let start = src[..offset].rfind('\n').map_or(0, |i| i + 1);
+        if start == src.len() {
+            return header;
+        }
+        let line = src[start..].split('\n').next().unwrap_or_default();
         let line = line.strip_suffix('\r').unwrap_or(line);
-        let before = &line[..point.column];
-        let column = before.chars().count() + 1;
         let label = format!("{line_no}:");
         let pad: String = " ".repeat(label.len())
-            + &before
+            + &src[start..offset]
                 .chars()
                 .map(|c| if c == '\t' { '\t' } else { ' ' })
                 .collect::<String>();
-        format!(
-            "error: script:{line_no}:{column}: {}\n{label}{line}\n{pad}^",
-            self.kind
-        )
+        format!("{header}\n{label}{line}\n{pad}^")
     }
+}
+
+/// The 1-based line and column of byte `offset` in `src`, where the column
+/// counts characters.
+pub fn location(src: &str, offset: usize) -> (usize, usize) {
+    let before = &src[..offset.min(src.len())];
+    let start = before.rfind('\n').map_or(0, |i| i + 1);
+    let line = before.matches('\n').count() + 1;
+    (line, before[start..].chars().count() + 1)
 }
 
 #[cfg(test)]
