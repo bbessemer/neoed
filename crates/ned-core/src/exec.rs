@@ -35,6 +35,7 @@ pub struct Change {
     pub old: String,
     pub new: String,
     pub edits: usize,
+    pub lang: Option<Language>,
 }
 
 /// Settings from the command line that affect a run.
@@ -96,6 +97,7 @@ impl Executor<'_> {
                 old: l.file.text.clone(),
                 new: l.edits.apply(),
                 edits: l.edits.len(),
+                lang: l.file.lang,
             })
             .collect();
         if !self.options.force {

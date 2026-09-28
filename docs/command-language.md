@@ -425,11 +425,12 @@ formatted.
 
 - Changes the formatter makes are reported after the file's edit hunks, under
   their own header: `fmt rustfmt: +0 -1`, followed by hunks against the
-  post-edit text.
-- A formatter that isn't installed, or that exits non-zero, produces
-  `note: rustfmt not found; skipped formatting src/parser.rs` (or
-  `... failed: <first stderr line>`). The file is written unformatted and the
-  exit code stays 0.
+  post-edit text. `--quiet` keeps the header and drops its hunks.
+- A formatter that isn't installed, or that exits non-zero or prints non-UTF-8
+  output, produces a note on stderr:
+  `note: rustfmt not found; skipped formatting src/parser.rs`, or
+  `note: rustfmt failed: <first stderr line>; skipped formatting src/parser.rs`.
+  The file is written unformatted and the exit code stays 0.
 - `--dry-run` still runs formatters, on in-memory copies.
 
 A formatter gets the file's text on stdin and prints the formatted text on

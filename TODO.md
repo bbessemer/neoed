@@ -63,8 +63,8 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [x] Config: `.ned.toml` (walk up from file) merged over user config
 - [x] Per-language formatter commands with sensible defaults (rustfmt, gofmt,
       black/ruff, prettier)
-- [ ] Run after edits; `--no-fmt`; skip with note when formatter is missing
-- [ ] Report formatter-introduced changes separately from the agent's edits
+- [x] Run after edits; `--no-fmt`; skip with note when formatter is missing
+- [x] Report formatter-introduced changes separately from the agent's edits
 
 ## 7. Multi-file and advanced edits
 

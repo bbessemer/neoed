@@ -117,9 +117,10 @@ atomic multi-file write (`fs`), diff rendering (`diff`), the script lexer,
 parser, and error rendering (`script::parse`), selector resolution (`select`),
 whole-line/re-basing text helpers (`text`), the executor (`exec::run`),
 language detection and parsing (`lang`), syntax items and parts from
-`queries/<lang>/selectors.scm` (`syntax`; Rust only until TODO.md §12), and
-`outline`. The CLI supports every selector and verb except `move`, with the
-parse-error guard. Next: formatting (TODO.md §6).
+`queries/<lang>/selectors.scm` (`syntax`; Rust only until TODO.md §12),
+`outline`, and external formatters with `.ned.toml` config (`format`). The CLI
+supports every selector and verb except `move`, with the parse-error guard and
+formatting. Next: multi-file and advanced edits (TODO.md §7).
 
 ## Key Documentation
 
