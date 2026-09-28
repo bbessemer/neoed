@@ -11,17 +11,17 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 
 ## 1. Command-language spec
 
-- [ ] `docs/command-language.md`: invocation (`-e`, stdin, file args), script
+- [x] `docs/command-language.md`: invocation (`-e`, stdin, file args), script
       grammar (EBNF), comments, quoting/escaping
-- [ ] Selectors: lines/ranges/`$`, regex, literal, syntax kinds, nesting (`>`),
+- [x] Selectors: lines/ranges/`$`, regex, literal, syntax kinds, nesting (`>`),
       parts (`.body`, `.sig`, `.params`, `.doc`), `all`, raw query escape hatch
-- [ ] Verbs: `show`, `outline`, `replace`, `insert before|after`, `delete`,
+- [x] Verbs: `show`, `outline`, `replace`, `insert before|after`, `delete`,
       `sub`, `move`; reserved: `rename`, `check`, `refs:`
-- [ ] Text blocks (heredoc) and indentation re-basing rules
-- [ ] Output format (summary, diff hunks, `show` line numbering), errors,
+- [x] Text blocks (heredoc) and indentation re-basing rules
+- [x] Output format (summary, diff hunks, `show` line numbering), errors,
       exit codes, `--dry-run`/`--quiet`/`--force`/`--no-fmt`
-- [ ] Worked examples comparing token cost against `sed`/Python equivalents
-- [ ] Engineer review and sign-off
+- [x] Worked examples comparing token cost against `sed`/Python equivalents
+- [x] Engineer review and sign-off
 
 ## 2. Buffer and transactions
 
