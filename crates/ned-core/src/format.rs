@@ -1,8 +1,10 @@
 //! External formatters and their configuration (command-language spec, §6.4).
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::{env, fmt, fs, io};
+use std::process::{Command, Stdio};
+use std::{env, fmt, fs, io, thread};
 
 use serde::Deserialize;
 use toml::{Spanned, Value};
@@ -92,8 +94,29 @@ pub fn user_config() -> Option<PathBuf> {
 
 /// Formats the new text of each of `changes`, in parallel.
 pub fn run(changes: &[Change], formatters: &mut Formatters) -> Result<Vec<Outcome>, ConfigError> {
-    let _ = formatters;
-    Ok(vec![Outcome::Unchanged; changes.len()])
+    let found = changes
+        .iter()
+        .map(|c| match c.lang {
+            Some(lang) => formatters.get(Path::new(&c.path), lang),
+            None => Ok(None),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(thread::scope(|scope| {
+        let handles: Vec<_> = changes
+            .iter()
+            .zip(&found)
+            .map(|(change, formatter)| {
+                scope.spawn(move || match formatter {
+                    Some(formatter) => formatter.format(&change.path, &change.new),
+                    None => Outcome::Unchanged,
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("formatting doesn't panic"))
+            .collect()
+    }))
 }
 
 impl Formatters {
@@ -152,8 +175,56 @@ impl Formatters {
 impl Formatter {
     /// Formats `text`, the new contents of the file at `path`.
     fn format(&self, path: &str, text: &str) -> Outcome {
-        let _ = (path, text);
-        Outcome::Unchanged
+        let skipped = |name: &str, why: &str| {
+            Outcome::Skipped(format!("{name} {why}; skipped formatting {path}"))
+        };
+        let mut missing = String::new();
+        for command in &self.commands {
+            let name = name(&command[0]);
+            let spawned = Command::new(&command[0])
+                .args(&command[1..])
+                .current_dir(&self.dir)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn();
+            let mut child = match spawned {
+                Ok(child) => child,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    missing = name;
+                    continue;
+                }
+                Err(err) => return skipped(&name, &format!("failed: {err}")),
+            };
+            // Feed stdin from another thread so a formatter that writes before
+            // reading everything can't fill its stdout pipe and deadlock.
+            let mut stdin = child.stdin.take().expect("stdin is piped");
+            let output = thread::scope(|scope| {
+                // A formatter may exit without reading all its input; its
+                // exit status says whether that's a failure.
+                scope.spawn(move || stdin.write_all(text.as_bytes()).ok());
+                child.wait_with_output()
+            });
+            let output = match output {
+                Ok(output) => output,
+                Err(err) => return skipped(&name, &format!("failed: {err}")),
+            };
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let first = stderr.lines().map(str::trim).find(|l| !l.is_empty());
+                let why = first.map_or(output.status.to_string(), String::from);
+                return skipped(&name, &format!("failed: {why}"));
+            }
+            return match String::from_utf8(output.stdout) {
+                Ok(formatted) if formatted == text => Outcome::Unchanged,
+                Ok(formatted) => Outcome::Formatted {
+                    name,
+                    text: formatted,
+                },
+                Err(_) => skipped(&name, "failed: output is not UTF-8"),
+            };
+        }
+        skipped(&missing, "not found")
     }
 }
 

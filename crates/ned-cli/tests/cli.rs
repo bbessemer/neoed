@@ -861,15 +861,37 @@ fn invalid_config_exits_2_and_writes_nothing() {
 }
 
 #[test]
-fn rustfmt_formats_rust_by_default() {
+fn rustfmt_formats_rust() {
     let dir = dir_with(&[
-        ("parser.rs", PARSER),
+        ("a.rs", "struct S {\n    a: u8,\n}\n"),
         (
             ".ned.toml",
             "[format]\nrust = [\"rustfmt\", \"--edition\", \"{edition}\"]\n",
         ),
     ]);
-    let script = "insert after /pos: usize,/ \"extra:   u8,\"";
-    let out = ned(dir.path(), &["parser.rs", "-e", script], "");
-    assert_snapshot!(out, @"");
+    let out = ned(
+        dir.path(),
+        &["a.rs", "-e", r#"insert after /a: u8,/ "b:   u8,""#],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs: 1 edit, +1 -0
+    @@ -2,2 +2,3 @@
+         a: u8,
+    +    b:   u8,
+     }
+    fmt rustfmt: +1 -1
+    @@ -2,3 +2,3 @@
+         a: u8,
+    -    b:   u8,
+    +    b: u8,
+     }
+    --- stderr
+    ");
+    assert_eq!(
+        read(&dir, "a.rs"),
+        "struct S {\n    a: u8,\n    b: u8,\n}\n"
+    );
 }
