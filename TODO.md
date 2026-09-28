@@ -39,7 +39,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 
 ## 4. Line-based editing, end to end
 
-- [ ] Line/range/regex/literal selector resolution
+- [x] Line/range/regex/literal selector resolution
 - [ ] Verbs: `show`, `replace`, `insert`, `delete`, `sub`
 - [ ] Indentation re-basing for inserted/replaced blocks
 - [ ] CLI wiring: args, stdin script, multiple files, exit codes
