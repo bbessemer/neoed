@@ -52,3 +52,63 @@ impl ParseError {
         todo!()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn err(kind: ParseErrorKind, span: Range<usize>) -> ParseError {
+        ParseError { kind, span }
+    }
+
+    #[test]
+    fn renders_spec_example() {
+        let src = "show\nreplace fn:parse.body <<END\nfoo\n";
+        let e = err(ParseErrorKind::UnterminatedHeredoc("END".into()), 27..32);
+        assert_eq!(
+            e.render(src),
+            "error: script:2:23: unterminated heredoc <<END (started here)\n\
+             2:replace fn:parse.body <<END\n\
+             \x20                       ^"
+        );
+    }
+
+    #[test]
+    fn caret_keeps_tabs_aligned() {
+        let e = err(ParseErrorKind::UnterminatedString, 6..10);
+        assert_eq!(
+            e.render("\tshow \"abc"),
+            format!(
+                "error: script:1:7: {}\n1:\tshow \"abc\n  \t     ^",
+                ParseErrorKind::UnterminatedString
+            )
+        );
+    }
+
+    #[test]
+    fn column_counts_characters() {
+        let e = err(ParseErrorKind::UnexpectedChar('@'), 5..6);
+        assert_eq!(
+            e.render("\"é\" @"),
+            "error: script:1:5: unexpected character `@`\n1:\"é\" @\n      ^"
+        );
+    }
+
+    #[test]
+    fn excerpt_strips_line_ending() {
+        let e = err(ParseErrorKind::ZeroLine, 7..8);
+        assert_eq!(
+            e.render("show\r\nx 0\r\n"),
+            "error: script:2:2: line numbers start at 1\n2:x 0\n  ^"
+        );
+    }
+
+    #[test]
+    fn error_past_last_line_has_no_excerpt() {
+        let e = err(ParseErrorKind::ZeroLine, 5..5);
+        assert_eq!(
+            e.render("show\n"),
+            "error: script:2:1: line numbers start at 1"
+        );
+    }
+}
