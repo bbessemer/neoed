@@ -3,7 +3,7 @@
 
 use std::ops::Range;
 
-use crate::buffer::{Buffer, BufferError};
+use crate::buffer::{Buffer, BufferError, LineEnding};
 
 /// Replaces `range` of the original buffer with `text`. An empty range is an
 /// insertion. `command` is the index of the script command that produced it.
@@ -35,27 +35,78 @@ pub struct EditSet<'a> {
 
 impl<'a> EditSet<'a> {
     pub fn new(buffer: &'a Buffer) -> Self {
-        todo!()
+        EditSet {
+            buffer,
+            edits: Vec::new(),
+        }
     }
 
     /// Adds an edit, rejecting it if it is out of bounds, splits a
     /// character, or overlaps an edit already in the set.
     pub fn push(&mut self, edit: Edit) -> Result<(), EditError> {
-        todo!()
+        self.buffer.check_range(&edit.range)?;
+        if let Some(prior) = self.edits.iter().find(|e| overlaps(&e.range, &edit.range)) {
+            return Err(EditError::Overlap {
+                first: prior.command,
+                second: edit.command,
+                range: prior.range.clone(),
+            });
+        }
+        self.edits.push(edit);
+        Ok(())
     }
 
     pub fn is_empty(&self) -> bool {
-        todo!()
+        self.edits.is_empty()
     }
 
     pub fn len(&self) -> usize {
-        todo!()
+        self.edits.len()
     }
 
     /// The buffer's text with every edit applied. Inserted `\n` line endings
     /// are converted to the buffer's line ending.
     pub fn apply(&self) -> String {
-        todo!()
+        let original = self.buffer.text();
+        let mut edits: Vec<&Edit> = self.edits.iter().collect();
+        // At one offset, insertions precede a replacement starting there, and
+        // insertions keep command order, then push order (the sort is stable).
+        edits.sort_by_key(|e| (e.range.start, !e.range.is_empty(), e.command));
+
+        let mut out = String::with_capacity(original.len());
+        let mut pos = 0;
+        for edit in edits {
+            out.push_str(&original[pos..edit.range.start]);
+            match self.buffer.line_ending() {
+                LineEnding::Lf => out.push_str(&edit.text),
+                LineEnding::Crlf => push_crlf(&mut out, &edit.text),
+            }
+            pos = edit.range.end;
+        }
+        out.push_str(&original[pos..]);
+        out
+    }
+}
+
+/// An insertion overlaps a span only strictly inside it; two insertions never
+/// overlap.
+fn overlaps(a: &Range<usize>, b: &Range<usize>) -> bool {
+    match (a.is_empty(), b.is_empty()) {
+        (true, true) => false,
+        (true, false) => b.start < a.start && a.start < b.end,
+        (false, true) => a.start < b.start && b.start < a.end,
+        (false, false) => a.start < b.end && b.start < a.end,
+    }
+}
+
+fn push_crlf(out: &mut String, text: &str) {
+    let mut prev = '\0';
+    for c in text.chars() {
+        if c == '\n' && prev != '\r' {
+            out.push('\r');
+        }
+        out.push(c);
+        prev = c;
     }
 }
 
