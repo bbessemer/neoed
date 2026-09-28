@@ -164,6 +164,7 @@ enum Matcher<'a> {
     Heredoc { lines: Vec<String>, raw: bool },
     File(&'a str),
     Syntax { kind: &'a str, name: &'a str },
+    Query(&'a str),
 }
 
 impl<'a> Matcher<'a> {
@@ -207,7 +208,7 @@ impl<'a> Matcher<'a> {
                 check_syntax(kind, name, files, parents)?;
                 Matcher::Syntax { kind, name }
             }
-            Primary::Query(_) => return Err(E::Unsupported("`query{}` selector".into())),
+            Primary::Query(source) => Matcher::Query(source),
         })
     }
 
@@ -274,6 +275,10 @@ impl<'a> Matcher<'a> {
                 } else {
                     Vec::new()
                 }
+            }
+            Matcher::Query(source) => {
+                let _ = source;
+                Vec::new()
             }
             Matcher::Syntax { kind, name } => f
                 .items()

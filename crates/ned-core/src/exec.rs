@@ -147,9 +147,6 @@ impl Executor<'_> {
                     .collect::<Result<_, _>>()?;
                 return Ok(());
             }
-            CommandKind::Outline(_) => {
-                return Err(error(ExecErrorKind::Unsupported("`outline`".into())));
-            }
             CommandKind::Move { .. } => {
                 return Err(error(ExecErrorKind::Unsupported("`move`".into())));
             }
@@ -158,6 +155,7 @@ impl Executor<'_> {
         }
         match &command.kind {
             CommandKind::Show(target) => self.show(target.as_ref())?,
+            CommandKind::Outline(target) => self.outline(target.as_ref())?,
             CommandKind::Replace { target, text } => {
                 for m in self.resolve(target)? {
                     let (range, new) = replace(&self.files[m.file].file, m.range, text);
@@ -185,7 +183,7 @@ impl Executor<'_> {
                 pattern,
                 text,
             } => self.sub(index, span, scope.as_ref(), pattern, text)?,
-            CommandKind::File(_) | CommandKind::Outline(_) | CommandKind::Move { .. } => {
+            CommandKind::File(_) | CommandKind::Move { .. } => {
                 unreachable!("handled above")
             }
         }
@@ -285,6 +283,11 @@ impl Executor<'_> {
                 self.output.push_str(&format!("{}:{content}\n", line + 1));
             }
         }
+        Ok(())
+    }
+
+    fn outline(&mut self, target: Option<&Target>) -> Result<(), ExecError> {
+        let _ = target;
         Ok(())
     }
 
@@ -589,6 +592,8 @@ pub enum ExecErrorKind {
     MissingPart { item: String, part: String },
     #[error(".{part} needs a syntax item (kind:name)")]
     PartNeedsItem { part: String },
+    #[error("invalid {lang} query: {message}")]
+    InvalidQuery { lang: String, message: String },
     #[error("{lang} has no `{kind}` items; use one of: {kinds}")]
     UnknownKind {
         kind: String,
