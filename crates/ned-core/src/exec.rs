@@ -242,8 +242,12 @@ impl Executor<'_> {
         }
         for (file, first, last) in regions {
             let f = &self.files[file].file;
-            self.output
-                .push_str(&format!("{}:{}-{}\n", f.path, first + 1, last + 1));
+            let lines = if first == last {
+                format!("{}", first + 1)
+            } else {
+                format!("{}-{}", first + 1, last + 1)
+            };
+            self.output.push_str(&format!("{}:{lines}\n", f.path));
             for line in first..=last {
                 let range = f.buffer.line_range(line).expect("line within the file");
                 let content = f.text[range].trim_end_matches('\n');
@@ -543,24 +547,24 @@ mod tests {
         let out = exec(TEXT, "show 2-3");
         assert_eq!(out.output, "a.rs:2-3\n2:    let x = 1;\n3:    let y = 2;\n");
         assert_eq!(out.result, Ok(vec![]));
-        assert_eq!(exec("a\r\nb\r\n", "show $").output, "a.rs:2-2\n2:b\n");
+        assert_eq!(exec("a\r\nb\r\n", "show $").output, "a.rs:2\n2:b\n");
     }
 
     #[test]
     fn show_without_selector_prints_every_file() {
         let out = exec_with(&[("a.rs", "x\ny\n"), ("b.rs", "z")], 2, "show");
-        assert_eq!(out.output, "a.rs:1-2\n1:x\n2:y\nb.rs:1-1\n1:z\n");
+        assert_eq!(out.output, "a.rs:1-2\n1:x\n2:y\nb.rs:1\n1:z\n");
     }
 
     #[test]
     fn show_merges_regions_within_one_line() {
         assert_eq!(
             exec(TEXT, "show all /let/").output,
-            "a.rs:2-3\n2:    let x = 1;\n3:    let y = 2;\na.rs:7-7\n7:    let x = 3;\n"
+            "a.rs:2-3\n2:    let x = 1;\n3:    let y = 2;\na.rs:7\n7:    let x = 3;\n"
         );
         assert_eq!(
             exec("a\nb\na\nc\nd\na\n", "show all /a/").output,
-            "a.rs:1-3\n1:a\n2:b\n3:a\na.rs:6-6\n6:a\n"
+            "a.rs:1-3\n1:a\n2:b\n3:a\na.rs:6\n6:a\n"
         );
     }
 
@@ -792,7 +796,7 @@ mod tests {
             "    let x = 1;\n    z();\n}\n\nfn b() {\n    let x = 3;\n}\n"
         );
         let out = exec(TEXT, "delete 2\nshow 2");
-        assert_eq!(out.output, "a.rs:2-2\n2:    let x = 1;\n");
+        assert_eq!(out.output, "a.rs:2\n2:    let x = 1;\n");
     }
 
     #[test]
@@ -822,7 +826,7 @@ mod tests {
     #[test]
     fn reads_before_an_error_are_kept() {
         let out = exec(TEXT, "show 1\ndelete /nope/\nshow 2");
-        assert_eq!(out.output, "a.rs:1-1\n1:fn a() {\n");
+        assert_eq!(out.output, "a.rs:1\n1:fn a() {\n");
         assert_eq!(
             out.error(),
             "error: script:2:8: /nope/ matches nothing in a.rs"
@@ -836,7 +840,7 @@ mod tests {
             1,
             "show\nfile {dir}/b.rs\nsub /x/ with \"y\"\nshow",
         );
-        assert_eq!(out.output, "a.rs:1-1\n1:x\nb.rs:1-1\n1:x\n");
+        assert_eq!(out.output, "a.rs:1\n1:x\nb.rs:1\n1:x\n");
         let changes = out.result.unwrap();
         assert_eq!(changes.len(), 1);
         assert_eq!(
