@@ -1,6 +1,9 @@
 //! Diff summaries and hunks for edit output (command-language spec, §6.3).
 
-use std::fmt;
+use std::fmt::{self, Write};
+use std::ops::Range;
+
+use similar::{ChangeTag, TextDiff};
 
 /// Lines added and removed between two texts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -11,27 +14,79 @@ pub struct DiffStat {
 
 impl DiffStat {
     pub fn between(old: &str, new: &str) -> Self {
-        todo!()
+        let mut stat = DiffStat::default();
+        for change in TextDiff::from_lines(old, new).iter_all_changes() {
+            match change.tag() {
+                ChangeTag::Insert => stat.added += 1,
+                ChangeTag::Delete => stat.removed += 1,
+                ChangeTag::Equal => {}
+            }
+        }
+        stat
     }
 }
 
 /// Formats as `+A -D`.
 impl fmt::Display for DiffStat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        write!(f, "+{} -{}", self.added, self.removed)
     }
 }
 
 /// The per-file summary line: `PATH: N edits, +A -D`, prefixed with
 /// `(dry run) ` when `dry_run` is set.
 pub fn summary(path: &str, edits: usize, stat: DiffStat, dry_run: bool) -> String {
-    todo!()
+    let prefix = if dry_run { "(dry run) " } else { "" };
+    let plural = if edits == 1 { "" } else { "s" };
+    format!("{prefix}{path}: {edits} edit{plural}, {stat}")
 }
 
 /// Unified-diff hunks with `@@ -a,b +c,d @@` headers and no file headers,
 /// rendered with `\n` line endings.
 pub fn hunks(old: &str, new: &str, context: usize) -> String {
-    todo!()
+    let diff = TextDiff::from_lines(old, new);
+    let mut out = String::new();
+    for hunk in diff.unified_diff().context_radius(context).iter_hunks() {
+        let ops = hunk.ops();
+        let (first, last) = (&ops[0], &ops[ops.len() - 1]);
+        let old_range = first.old_range().start..last.old_range().end;
+        let new_range = first.new_range().start..last.new_range().end;
+        // similar's own header drops a count of 1; the spec always shows both.
+        let _ = writeln!(
+            out,
+            "@@ -{} +{} @@",
+            HunkRange(old_range),
+            HunkRange(new_range)
+        );
+        for change in hunk.iter_changes() {
+            let sign = match change.tag() {
+                ChangeTag::Insert => '+',
+                ChangeTag::Delete => '-',
+                ChangeTag::Equal => ' ',
+            };
+            let line = change.value();
+            let line = line.strip_suffix('\n').unwrap_or(line);
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            let _ = writeln!(out, "{sign}{line}");
+        }
+    }
+    out
+}
+
+/// A 0-based line range, formatted as unified diff's 1-based `start,len`.
+/// An empty range starts at the line before it.
+struct HunkRange(Range<usize>);
+
+impl fmt::Display for HunkRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let len = self.0.len();
+        let start = if len == 0 {
+            self.0.start
+        } else {
+            self.0.start + 1
+        };
+        write!(f, "{start},{len}")
+    }
 }
 
 #[cfg(test)]
