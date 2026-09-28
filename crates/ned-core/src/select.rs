@@ -7,6 +7,7 @@ use regex::Regex;
 use crate::buffer::{Buffer, LineEnding};
 use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
 use crate::script::ast::{LineNo, Part, Primary, Step, Target, TextKind};
+use crate::text::{full_lines, strip_indent};
 
 const MAX_CANDIDATES: usize = 10;
 
@@ -83,7 +84,7 @@ fn resolve_step(step: &Step, files: &[SourceFile], parents: &[Match]) -> Result<
         let f = &files[parent.file];
         for mut range in matcher.find(f, parent.range.clone()) {
             if !step.parts.is_empty() {
-                range = full_lines(&f.buffer, range);
+                range = full_lines(&f.text, range);
             }
             let m = Match {
                 file: parent.file,
@@ -268,22 +269,6 @@ fn line_range(buffer: &Buffer, line: usize) -> Range<usize> {
         .expect("line index within the buffer")
 }
 
-/// Widens `range` to the whole lines it touches, including the last line's
-/// ending.
-fn full_lines(buffer: &Buffer, range: Range<usize>) -> Range<usize> {
-    let Ok(first) = buffer.byte_to_line(range.start) else {
-        return range;
-    };
-    let last = match range.end.checked_sub(1) {
-        Some(end) if !range.is_empty() => buffer.byte_to_line(end).unwrap_or(first),
-        _ => first,
-    };
-    match (buffer.line_range(first), buffer.line_range(last)) {
-        (Ok(a), Ok(b)) => a.start..b.end,
-        _ => range,
-    }
-}
-
 /// Whether `window` equals the body lines, each non-blank line behind one
 /// shared whitespace prefix (or exactly, if `raw`).
 fn heredoc_matches<'w>(body: &[String], raw: bool, window: impl Iterator<Item = &'w str>) -> bool {
@@ -307,35 +292,6 @@ fn heredoc_matches<'w>(body: &[String], raw: bool, window: impl Iterator<Item = 
         }
     }
     true
-}
-
-/// Splits `text` into lines, strips their common indentation, and empties
-/// blank lines.
-fn strip_indent(text: &str) -> Vec<String> {
-    let lines: Vec<&str> = text.split('\n').collect();
-    let indent = common_indent(&lines);
-    lines
-        .iter()
-        .map(|l| {
-            if l.trim().is_empty() {
-                String::new()
-            } else {
-                l[indent.len()..].to_string()
-            }
-        })
-        .collect()
-}
-
-fn common_indent<'a>(lines: &[&'a str]) -> &'a str {
-    lines
-        .iter()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| &l[..l.len() - l.trim_start_matches([' ', '\t']).len()])
-        .reduce(|a, b| {
-            let n = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
-            &a[..n]
-        })
-        .unwrap_or("")
 }
 
 fn same_path(a: &str, b: &str) -> bool {

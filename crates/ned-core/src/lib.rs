@@ -7,3 +7,4 @@ pub mod exec;
 pub mod fs;
 pub mod script;
 pub mod select;
+pub mod text;
