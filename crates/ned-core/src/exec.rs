@@ -1134,11 +1134,7 @@ mod tests {
     }
 
     #[test]
-    fn outline_and_move_are_not_yet_supported() {
-        assert_eq!(
-            exec(TEXT, "show 1\noutline").error(),
-            "error: script:2:1: `outline` is not yet supported"
-        );
+    fn move_is_not_yet_supported() {
         assert_eq!(
             exec(TEXT, "move 2 after 3").error(),
             "error: script:1:1: `move` is not yet supported"
@@ -1324,6 +1320,33 @@ mod tests {
                 "replace fn:main.body with <<END\nif y {\n    z();\n}\nEND"
             ),
             ITEMS.replace("    let x = 1;\n", "    if y {\n        z();\n    }\n")
+        );
+    }
+
+    #[test]
+    fn outline_prints_one_header_per_file() {
+        let out = exec_with(
+            &[
+                ("a.rs", "fn a() {}\nfn b() {}\n"),
+                ("b.rs", "struct S;\n"),
+                ("c.txt", "x\n"),
+            ],
+            3,
+            "outline",
+        );
+        assert_eq!(out.output, "a.rs\n1 fn:a\n2 fn:b\nb.rs\n1 struct:S\n");
+        let out = exec("fn a() {}\nfn b() {}\n", "outline all fn:*");
+        assert_eq!(out.output, "a.rs\n");
+        let out = exec(ITEMS, "outline fn:main");
+        assert_eq!(out.output, "a.rs\n11 var:x\n");
+    }
+
+    #[test]
+    fn outline_needs_a_language() {
+        let out = exec_with(&[("a.txt", "x\n")], 1, "outline");
+        assert_eq!(
+            out.error(),
+            "error: script:1:1: outline needs a language, but a.txt has none; use --lang"
         );
     }
 }

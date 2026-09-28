@@ -568,6 +568,15 @@ mod tests {
             .collect()
     }
 
+    /// The text of each span `script` selects in a single file `path`.
+    fn select_in(script: &str, path: &str, text: &str) -> Vec<String> {
+        resolve_in(script, &files(&[(path, text)]))
+            .unwrap()
+            .into_iter()
+            .map(|m| text[m.range].to_string())
+            .collect()
+    }
+
     fn error(script: &str, texts: &[(&str, &str)]) -> String {
         resolve_in(script, &files(texts))
             .unwrap_err()
@@ -856,10 +865,79 @@ mod tests {
     }
 
     #[test]
-    fn query_is_not_yet_supported() {
-        let err =
-            resolve_in("delete query{(identifier) @sel}", &files(&[("a.rs", TEXT)])).unwrap_err();
-        assert!(matches!(err.kind, ExecErrorKind::Unsupported(_)), "{err:?}");
+    fn query_selects_sel_captures() {
+        assert_eq!(
+            select(
+                "delete all query{(let_declaration pattern: (identifier) @sel)}",
+                RUST
+            ),
+            ["x", "x"]
+        );
+        assert_eq!(
+            select(r#"delete query{(identifier) @sel (#eq? @sel "src")}"#, RUST).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn query_without_sel_takes_the_outermost_capture() {
+        assert_eq!(
+            select(
+                "delete fn:main>query{(let_declaration pattern: (identifier) @p) @whole}",
+                RUST
+            ),
+            ["let x = 1;"]
+        );
+    }
+
+    #[test]
+    fn query_matches_are_distinct_and_in_order() {
+        assert_eq!(
+            select(
+                "delete all query{(identifier) @a (identifier) @b}",
+                "fn a() { b; c; }\n"
+            )
+            .len(),
+            3
+        );
+        let found = select("delete all impl:Parser>query{(identifier) @sel}", RUST);
+        assert_eq!(
+            found,
+            ["src", "src", "self", "x", "self", "next"].map(String::from)
+        );
+    }
+
+    #[test]
+    fn invalid_queries_are_errors() {
+        assert_eq!(
+            error("delete query{(nope) @sel}", &[("a.rs", RUST)]),
+            "error: script:1:8: invalid rust query: unknown node type `nope` at column 2"
+        );
+        assert_eq!(
+            error(
+                "delete query{(identifier) @sel (#eq? @sel)}",
+                &[("a.rs", RUST)]
+            ),
+            "error: script:1:8: invalid rust query: bad predicate at column 1"
+        );
+        let err = resolve_in("delete query{(identifier}", &files(&[("a.rs", RUST)])).unwrap_err();
+        assert!(
+            matches!(err.kind, ExecErrorKind::InvalidQuery { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn query_works_in_every_detected_language() {
+        let py = "def main():\n    return 1\n";
+        assert_eq!(
+            select_in("delete query{(return_statement) @sel}", "a.py", py),
+            ["return 1"]
+        );
+        assert_eq!(
+            error("delete query{(identifier) @sel}", &[("a.txt", RUST)]),
+            "error: script:1:8: query{(identifier) @sel} needs a language, but a.txt has none; use --lang"
+        );
     }
 
     #[test]
