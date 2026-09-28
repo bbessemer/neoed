@@ -52,11 +52,11 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [x] Syntax selectors and nesting; ambiguity errors with candidates
 - [x] Parts (`.body`, `.sig`, `.params`, `.name`, `.doc`); `insert start|end`
       on an item implies `.body`
-- [ ] `outline` verb (compact symbol tree with line numbers)
+- [x] `outline` verb (compact symbol tree with line numbers)
 - [x] Parse-error guard (reject new ERROR/MISSING nodes unless `--force`)
 - [x] Go tab default for re-basing
 - [x] Re-basing empty spans (enclosing item's indent)
-- [ ] Raw tree-sitter query selector
+- [x] Raw tree-sitter query selector
 
 ## 6. Formatting
 

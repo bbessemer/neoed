@@ -114,13 +114,12 @@ CLI; a human REPL and an MCP server come later.
 
 Spec signed off. `ned-core` has the buffer (`buffer`), edit set (`edit`),
 atomic multi-file write (`fs`), diff rendering (`diff`), the script lexer,
-parser, and error rendering (`script::parse`), and line/regex/literal selector
-resolution (`select`), whole-line/re-basing text helpers (`text`), and the
-executor that runs a script over the file set (`exec::run`), language
-detection and parsing (`lang`), the parse-error guard, and syntax items from
-`queries/<lang>/selectors.scm` (`syntax`; Rust only). The CLI edits files end
-to end with line, regex, literal, and Rust `kind:name` selectors, including
-parts. Next: `outline` and `query{}` (TODO.md §5).
+parser, and error rendering (`script::parse`), selector resolution (`select`),
+whole-line/re-basing text helpers (`text`), the executor (`exec::run`),
+language detection and parsing (`lang`), syntax items and parts from
+`queries/<lang>/selectors.scm` (`syntax`; Rust only until TODO.md §12), and
+`outline`. The CLI supports every selector and verb except `move`, with the
+parse-error guard. Next: formatting (TODO.md §6).
 
 ## Key Documentation
 
