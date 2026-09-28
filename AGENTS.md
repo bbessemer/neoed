@@ -104,57 +104,96 @@ pause and ask for approval, then commit when permitted.
 
 ## Project Overview
 
-<!-- 2-4 sentences: what this project does and why. -->
+Neoed (`ned`) is a line editor for AI coding agents, replacing `sed`/ad-hoc
+Python. LLMs, like teletypes, work over an append-only text stream where every
+token costs, so `ned` offers a concise, word-based command language, syntax-aware
+addressing (tree-sitter, later LSP), and automatic formatting. MVP is a one-shot
+CLI; a human REPL and an MCP server come later.
 
 ## Status
 
-<!-- What's complete, what's in progress, which build/test commands pass cleanly.
-Implementation must stay consistent with the design doc. -->
+Bootstrap only: Cargo workspace with core deps; `ned --version` works. Build,
+clippy, fmt, and (empty) tests pass. Next: command-language spec (TODO.md §1).
 
 ## Key Documentation
 
-<!-- Docs agents should reference, and when each must be updated. E.g.:
-  - Background and requirements: `docs/BRIEF.md`
-  - Architecture and design decisions: `docs/DESIGN.md`
-  - Prioritized task list: `docs/TODO.md`
--->
+- `TODO.md` — milestone plan; check items off as they land.
+- `docs/command-language.md` (to be written) — authoritative spec for syntax,
+  selectors, verbs, output, and exit codes. Tests are written against it;
+  update it _before_ changing behaviour.
 
 ## Tech Stack / Dependencies
 
-| Technology | Role |
-| ---------- | ---- |
-| ...        | ...  |
+| Technology                        | Role                                         |
+| --------------------------------- | -------------------------------------------- |
+| Rust (edition 2024)               | Language; single fast-starting binary        |
+| `tree-sitter` + grammar crates    | Parsing: Rust, Python, TS/JS, Go (linked in) |
+| `ropey`                           | Rope text buffer                             |
+| `regex`                           | Regex selectors and `sub`                    |
+| `similar`                         | Diff output                                  |
+| `serde` + `toml`                  | Config (`.ned.toml`)                         |
+| `thiserror` / `anyhow`            | Errors in core / CLI                         |
+| `clap` (derive)                   | CLI arguments                                |
+| `insta`, `assert_cmd`, `tempfile` | Snapshot, CLI, and fs tests                  |
+
+Deferred: `lsp-types`, `tokio` (LSP daemon milestone).
 
 ## Repository Structure
 
-<!-- Annotated directory tree: purpose of each top-level directory and any key files. -->
+```
+Cargo.toml         workspace; shared version, edition, lints
+crates/ned-core/   library: buffer, script parser, selectors, languages, exec, formatting
+crates/ned-cli/    `ned` binary: args, I/O, output rendering only
+queries/<lang>/    tree-sitter selector queries (.scm), one dir per language
+docs/              specs
+```
+
+Planned crates: `ned-daemon` (LSP), `ned-repl`, `ned-mcp`. All logic lives in
+`ned-core` so frontends stay thin.
 
 ## Design Decisions
 
-<!-- Non-obvious decisions that constrain implementation, each with its rationale.
-Agents must not violate these without explicit approval. -->
+- **One-shot, stateless CLI.** `ned FILE... -e SCRIPT` (or script on stdin).
+  Startup latency matters, so grammars are statically linked. LSP features go
+  through a lazily-spawned per-workspace daemon (later) that keeps servers warm;
+  the CLI must work fully without it.
+- **Tokens, not characters.** Verbs are short words (`show`, `replace`,
+  `insert after`, `delete`, `sub`, `outline`), not sigils. Output is terse:
+  per-file summary plus minimal diff hunks.
+- **Selectors over line numbers.** Lines/ranges and regex/literal matches, plus
+  syntax selectors (`fn:parse`, `impl:Parser>fn:new`, `fn:parse.body`).
+  Ambiguous matches are errors listing candidates unless `all` is given.
+- **Data-driven languages.** Selector kinds map to per-language `.scm` queries;
+  adding a language should need a grammar crate and query files, not code.
+- **Transactional scripts.** All commands in a script apply or none do; files
+  are written atomically. Edits that introduce new tree-sitter parse errors are
+  rejected unless `--force`.
+- **Indentation re-basing.** Inserted text blocks are re-indented to the
+  target site; agents need not reproduce indentation.
+- **Formatting** runs configured external formatters (per language, via
+  `.ned.toml`/user config) after edits; LSP formatting is a fallback when the
+  daemon is available. Missing formatters are skipped with a note, not an error.
 
 ## Coding Conventions
 
-<!-- Linting/type-checking requirements, test command, logging approach, comment policy,
-generated-code directories that must not be hand-edited, naming conventions. -->
+- `cargo fmt` defaults; `cargo clippy --all-targets -- -D warnings` clean.
+- `thiserror` error enums in `ned-core`; `anyhow` only in binaries.
+- Unit tests beside code; CLI end-to-end tests in `crates/ned-cli/tests/` using
+  `assert_cmd` + `insta` snapshots (review snapshots with `cargo insta review`).
+- Query files under `queries/` are code: every selector kind needs a test per
+  language.
 
 ## Local Development
 
-<!-- Starting/stopping the local stack: build images, start services, view logs, check
-status, and the URLs services are reachable at. -->
-
-| Target / Script | Description |
-| --------------- | ----------- |
-| `build`         | ...         |
-| `test`          | ...         |
-| `lint`          | ...         |
-
-<!-- Stateful services (databases, brokers): how state persists and what's needed for a
-clean-slate restart (e.g. volume wipes). -->
-
-<!-- Per-service configuration: where configs live and the key fields agents need. -->
+| Target / Script                             | Description           |
+| ------------------------------------------- | --------------------- |
+| `cargo build`                               | Build workspace       |
+| `cargo test`                                | Run all tests         |
+| `cargo clippy --all-targets -- -D warnings` | Lint                  |
+| `cargo fmt --check`                         | Format check          |
+| `cargo run -q -p ned-cli -- ARGS`           | Run `ned` from source |
 
 ## Deployment Notes
 
-<!-- Where and how the project runs in production. -->
+Local install: `cargo install --path crates/ned-cli`. Release packaging TBD
+(TODO.md §12).
