@@ -542,10 +542,19 @@ mod tests {
         }
     }
 
+    fn exec_with(files: &[(&str, &str)], initial: usize, script: &str) -> Outcome {
+        exec_with_options(files, initial, script, &Options::default())
+    }
+
     /// Writes `files` to a temporary directory and runs `script` with the
     /// first `initial` of them as the file set. `{dir}` in the script is
     /// replaced by the directory.
-    fn exec_with(files: &[(&str, &str)], initial: usize, script: &str) -> Outcome {
+    fn exec_with_options(
+        files: &[(&str, &str)],
+        initial: usize,
+        script: &str,
+        options: &Options,
+    ) -> Outcome {
         let dir = tempfile::tempdir().unwrap();
         let root = format!("{}/", dir.path().display());
         for (name, text) in files {
@@ -557,7 +566,7 @@ mod tests {
             .collect();
         let src = script.replace("{dir}/", &root);
         let parsed = parse(&src).unwrap();
-        let run = run(&parsed, &src, &paths, &Options::default());
+        let run = run(&parsed, &src, &paths, options);
         let strip = |s: &str| s.replace(&root, "");
         Outcome {
             output: strip(&run.output),
@@ -968,6 +977,108 @@ mod tests {
         assert_eq!(
             exec(TEXT, "move 2 after 3").error(),
             "error: script:1:1: `move` is not yet supported"
+        );
+    }
+
+    const GUARD_ERROR: &str = "edit introduces a syntax error (use --force to apply anyway)";
+
+    #[test]
+    fn guard_rejects_new_syntax_errors() {
+        let out = exec(TEXT, "replace \"let y = 2;\" with \"let y = (2;\"");
+        let err = out.error();
+        assert!(err.starts_with("error: a.rs:3:"), "{err}");
+        assert!(err.contains(GUARD_ERROR), "{err}");
+        let excerpt: Vec<&str> = err.lines().skip(1).collect();
+        assert_eq!(excerpt.len(), 2, "{err}");
+        assert_eq!(excerpt[0], "3:    let y = (2;");
+        assert!(excerpt[1].trim_start() == "^", "{err}");
+    }
+
+    #[test]
+    fn guard_points_at_the_edited_text() {
+        let text = "fn a() {\n    let x = (1;\n}\n\nfn b() {\n    let y = 2;\n}\n";
+        let out = exec(text, "replace \"let y = 2;\" with \"let y = [2;\"");
+        assert!(out.error().starts_with("error: a.rs:6:"), "{}", out.error());
+    }
+
+    #[test]
+    fn guard_allows_errors_that_were_already_there() {
+        let text = "fn a() {\n    let x = (1;\n}\n\nfn b() {\n    let y = 2;\n}\n";
+        assert_eq!(
+            edited(text, "replace \"let y = 2;\" with \"let y = 3;\""),
+            "fn a() {\n    let x = (1;\n}\n\nfn b() {\n    let y = 3;\n}\n"
+        );
+    }
+
+    #[test]
+    fn guard_skips_files_without_a_language() {
+        let out = exec_with(&[("a.txt", TEXT)], 1, "replace \"let y = 2;\" with \"(\"");
+        assert!(out.result.is_ok(), "{}", out.error());
+    }
+
+    #[test]
+    fn force_skips_the_guard() {
+        let force = Options {
+            force: true,
+            ..Options::default()
+        };
+        let out = exec_with_options(
+            &[("a.rs", TEXT)],
+            1,
+            "replace \"let y = 2;\" with \"(\"",
+            &force,
+        );
+        assert!(out.new_text().contains("    (\n"), "{:?}", out.result);
+    }
+
+    #[test]
+    fn lang_option_overrides_detection() {
+        let script = "replace \"let y = 2;\" with \"let y = (2;\"";
+        let out = exec_with(&[("a.txt", TEXT)], 1, script);
+        assert!(out.result.is_ok());
+        let rust = Options {
+            lang: Some(Language::Rust),
+            ..Options::default()
+        };
+        let out = exec_with_options(&[("a.txt", TEXT)], 1, script, &rust);
+        assert!(
+            out.error().starts_with("error: a.txt:3:"),
+            "{}",
+            out.error()
+        );
+        let python = Options {
+            lang: Some(Language::Python),
+            ..Options::default()
+        };
+        let out = exec_with_options(
+            &[("a.rs", "x = 1\n")],
+            1,
+            "replace 1 with \"y = 2\"",
+            &python,
+        );
+        assert_eq!(out.new_text(), "y = 2\n");
+    }
+
+    #[test]
+    fn go_files_default_to_tab_indents() {
+        let text = "package a\n\nfunc f() {\n}\n";
+        let out = exec_with(
+            &[("a.go", text)],
+            1,
+            "insert after 3 \"if x {\\n    y()\\n}\"",
+        );
+        assert_eq!(
+            out.new_text(),
+            "package a\n\nfunc f() {\nif x {\n\ty()\n}\n}\n"
+        );
+        let out = exec_with(
+            &[("a.txt", text)],
+            1,
+            "insert after 3 \"if x {\\n\\ty()\\n}\"",
+        );
+        assert_eq!(
+            out.new_text(),
+            "package a\n\nfunc f() {\nif x {\n    y()\n}\n}\n"
         );
     }
 }

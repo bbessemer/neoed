@@ -92,3 +92,87 @@ impl FromStr for Language {
             })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_by_extension() {
+        let cases = [
+            ("src/a.rs", Language::Rust),
+            ("a.py", Language::Python),
+            ("a.pyi", Language::Python),
+            ("a.ts", Language::TypeScript),
+            ("a.mts", Language::TypeScript),
+            ("a.cts", Language::TypeScript),
+            ("a.tsx", Language::Tsx),
+            ("a.js", Language::JavaScript),
+            ("a.mjs", Language::JavaScript),
+            ("a.cjs", Language::JavaScript),
+            ("a.jsx", Language::JavaScript),
+            ("./dir.d/a.go", Language::Go),
+        ];
+        for (path, lang) in cases {
+            assert_eq!(Language::detect(path, ""), Some(lang), "{path}");
+        }
+        assert_eq!(Language::detect("a.txt", ""), None);
+        assert_eq!(Language::detect("Makefile", ""), None);
+        assert_eq!(Language::detect("a.RS", ""), None);
+    }
+
+    #[test]
+    fn detects_by_shebang() {
+        let cases = [
+            ("#!/usr/bin/env python3\nx = 1\n", Some(Language::Python)),
+            ("#!/usr/bin/python\n", Some(Language::Python)),
+            ("#!/usr/bin/python3.12 -u\n", Some(Language::Python)),
+            ("#! /usr/local/bin/node\n", Some(Language::JavaScript)),
+            (
+                "#!/usr/bin/env -S node --no-warnings\n",
+                Some(Language::JavaScript),
+            ),
+            ("#!/bin/sh\n", None),
+            ("#![allow(dead_code)]\n", None),
+            ("x = 1\n#!/usr/bin/python\n", None),
+            ("", None),
+        ];
+        for (text, lang) in cases {
+            assert_eq!(Language::detect("script", text), lang, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn extension_wins_over_shebang() {
+        assert_eq!(
+            Language::detect("a.js", "#!/usr/bin/env python3\n"),
+            Some(Language::JavaScript)
+        );
+    }
+
+    #[test]
+    fn parses_names() {
+        for lang in Language::ALL {
+            assert_eq!(lang.name().parse(), Ok(lang));
+        }
+        assert_eq!(
+            "ruby".parse::<Language>(),
+            Err("unknown language `ruby`; expected one of rust, python, typescript, tsx, javascript, go".into())
+        );
+    }
+
+    #[test]
+    fn go_defaults_to_tabs() {
+        assert_eq!(Language::Go.default_indent(), "\t");
+        for lang in Language::ALL.into_iter().filter(|&l| l != Language::Go) {
+            assert_eq!(lang.default_indent(), "    ", "{lang}");
+        }
+    }
+
+    #[test]
+    fn every_grammar_parses() {
+        for lang in Language::ALL {
+            assert!(!lang.parse("").root_node().has_error(), "{lang}");
+        }
+    }
+}
