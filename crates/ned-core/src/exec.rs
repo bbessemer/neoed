@@ -9,6 +9,7 @@ use tree_sitter::Node;
 
 use crate::edit::{Edit, EditError, EditSet};
 use crate::lang::Language;
+use crate::outline;
 use crate::script::Script;
 use crate::script::ast::{
     Command, CommandKind, Part, Pattern, Position, Primary, Target, Text, TextKind,
@@ -147,9 +148,6 @@ impl Executor<'_> {
                     .collect::<Result<_, _>>()?;
                 return Ok(());
             }
-            CommandKind::Outline(_) => {
-                return Err(error(ExecErrorKind::Unsupported("`outline`".into())));
-            }
             CommandKind::Move { .. } => {
                 return Err(error(ExecErrorKind::Unsupported("`move`".into())));
             }
@@ -158,6 +156,7 @@ impl Executor<'_> {
         }
         match &command.kind {
             CommandKind::Show(target) => self.show(target.as_ref())?,
+            CommandKind::Outline(target) => self.outline(span, target.as_ref())?,
             CommandKind::Replace { target, text } => {
                 for m in self.resolve(target)? {
                     let (range, new) = replace(&self.files[m.file].file, m.range, text);
@@ -185,7 +184,7 @@ impl Executor<'_> {
                 pattern,
                 text,
             } => self.sub(index, span, scope.as_ref(), pattern, text)?,
-            CommandKind::File(_) | CommandKind::Outline(_) | CommandKind::Move { .. } => {
+            CommandKind::File(_) | CommandKind::Move { .. } => {
                 unreachable!("handled above")
             }
         }
@@ -284,6 +283,54 @@ impl Executor<'_> {
                 let content = content.strip_suffix('\r').unwrap_or(content);
                 self.output.push_str(&format!("{}:{content}\n", line + 1));
             }
+        }
+        Ok(())
+    }
+
+    fn outline(&mut self, span: &Range<usize>, target: Option<&Target>) -> Result<(), ExecError> {
+        let error = |kind| ExecError::new(kind, Some(span.clone()));
+        let spans: Vec<(usize, Option<Range<usize>>)> = match target {
+            None => self.set.iter().map(|&i| (i, None)).collect(),
+            Some(target) => self
+                .resolve(target)?
+                .into_iter()
+                .map(|m| (m.file, Some(m.range)))
+                .collect(),
+        };
+        let mut files: Vec<usize> = spans.iter().map(|(i, _)| *i).collect();
+        files.dedup();
+        let mut any = false;
+        for &i in &files {
+            let Some(lang) = self.files[i].file.lang else {
+                continue;
+            };
+            if lang.selectors().is_none() {
+                let what = format!("`outline` in {lang} files");
+                return Err(error(ExecErrorKind::Unsupported(what)));
+            }
+            any = true;
+        }
+        if !any {
+            return Err(error(ExecErrorKind::NoLanguage {
+                selector: "outline".into(),
+                files: files
+                    .iter()
+                    .map(|&i| self.files[i].file.path.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            }));
+        }
+        let mut last = None;
+        for (i, range) in spans {
+            let f = &self.files[i].file;
+            if f.lang.is_none() {
+                continue;
+            }
+            if last != Some(i) {
+                self.output.push_str(&format!("{}\n", f.path));
+                last = Some(i);
+            }
+            self.output.push_str(&outline::render(f, range.as_ref()));
         }
         Ok(())
     }
@@ -589,6 +636,8 @@ pub enum ExecErrorKind {
     MissingPart { item: String, part: String },
     #[error(".{part} needs a syntax item (kind:name)")]
     PartNeedsItem { part: String },
+    #[error("invalid {lang} query: {message}")]
+    InvalidQuery { lang: String, message: String },
     #[error("{lang} has no `{kind}` items; use one of: {kinds}")]
     UnknownKind {
         kind: String,
@@ -1129,11 +1178,7 @@ mod tests {
     }
 
     #[test]
-    fn outline_and_move_are_not_yet_supported() {
-        assert_eq!(
-            exec(TEXT, "show 1\noutline").error(),
-            "error: script:2:1: `outline` is not yet supported"
-        );
+    fn move_is_not_yet_supported() {
         assert_eq!(
             exec(TEXT, "move 2 after 3").error(),
             "error: script:1:1: `move` is not yet supported"
@@ -1319,6 +1364,33 @@ mod tests {
                 "replace fn:main.body with <<END\nif y {\n    z();\n}\nEND"
             ),
             ITEMS.replace("    let x = 1;\n", "    if y {\n        z();\n    }\n")
+        );
+    }
+
+    #[test]
+    fn outline_prints_one_header_per_file() {
+        let out = exec_with(
+            &[
+                ("a.rs", "fn a() {}\nfn b() {}\n"),
+                ("b.rs", "struct S;\n"),
+                ("c.txt", "x\n"),
+            ],
+            3,
+            "outline",
+        );
+        assert_eq!(out.output, "a.rs\n1 fn:a\n2 fn:b\nb.rs\n1 struct:S\n");
+        let out = exec("fn a() {}\nfn b() {}\n", "outline all fn:*");
+        assert_eq!(out.output, "a.rs\n");
+        let out = exec(ITEMS, "outline fn:main");
+        assert_eq!(out.output, "a.rs\n11 var:x\n");
+    }
+
+    #[test]
+    fn outline_needs_a_language() {
+        let out = exec_with(&[("a.txt", "x\n")], 1, "outline");
+        assert_eq!(
+            out.error(),
+            "error: script:1:1: outline needs a language, but a.txt has none; use --lang"
         );
     }
 }

@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 
 use tree_sitter::{Parser, Query, Tree};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Language {
     Rust,
     Python,

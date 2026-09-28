@@ -251,8 +251,11 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 
 ### 3.6 Raw query
 
-`query{...}` runs a tree-sitter query. The span is taken from the `@sel` capture
-if there is one, and otherwise from the outermost capture of each match. Write
+`query{...}` runs a tree-sitter query against each file's grammar, so it works
+in every language `ned` detects. The span is taken from the `@sel` capture if
+there is one, and otherwise from the outermost capture of each match. Files
+without a language are skipped, as for syntax steps. A query that doesn't
+compile is a script error (exit 2). Write
 `\}` for a literal `}` in the query. The query must fit on one line.
 
 ```
@@ -381,6 +384,10 @@ straight back. The line range covers the item's default span.
 - Items inside function bodies are omitted.
 - `field` and `variant` items are listed only when `outline SEL` targets their
   parent.
+- `outline SEL` lists the items strictly inside each span of `SEL`, starting
+  at the left margin, under one header per file.
+- Like syntax steps, `outline` skips files without a language, and is an error
+  if no file in the set has one.
 
 ```
 src/parser.rs
@@ -457,7 +464,7 @@ error: script:2:28: unterminated heredoc <<END (started here)
 | ---- | ---------------------------------------------------------------------------------------------------- |
 | 0    | Success, including dry runs and skipped formatters                                                   |
 | 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unsupported kind, parse-error guard |
-| 2    | Usage error (bad flags or arguments), script syntax error, or reserved feature                       |
+| 2    | Usage error (bad flags or arguments), script syntax error, invalid query, or reserved feature        |
 | 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, or write failure                      |
 
 On any non-zero exit, no file is modified. Reads that ran before the failure

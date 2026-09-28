@@ -368,12 +368,12 @@ fn syntax_error_exits_2_with_caret() {
 #[test]
 fn unsupported_feature_exits_2() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
-    let out = ned(dir.path(), &["parser.rs", "-e", "outline"], "");
+    let out = ned(dir.path(), &["parser.rs", "-e", "move 1 after 2"], "");
     assert_snapshot!(out, @r"
     exit: 2
     --- stdout
     --- stderr
-    error: script:1:1: `outline` is not yet supported
+    error: script:1:1: `move` is not yet supported
     ");
 }
 
@@ -625,5 +625,94 @@ fn missing_part_exits_1() {
     --- stdout
     --- stderr
     error: script:1:6: fn:new has no .doc
+    ");
+}
+
+#[test]
+fn outline_prints_the_symbol_tree() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let out = ned(dir.path(), &["parser.rs", "-e", "outline"], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    parser.rs
+    1 import (1)
+    3-7 struct:Parser
+    9-22 impl:Parser
+      10-12 fn:new
+      14-17 fn:parse
+      19-21 fn:debug_dump
+    --- stderr
+    ");
+}
+
+#[test]
+fn outline_of_a_selector_lists_the_items_inside() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let out = ned(
+        dir.path(),
+        &[
+            "parser.rs",
+            "-e",
+            "outline struct:Parser; outline impl:Parser",
+        ],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    parser.rs
+    5 field:src
+    6 field:pos
+    parser.rs
+    10-12 fn:new
+    14-17 fn:parse
+    19-21 fn:debug_dump
+    --- stderr
+    ");
+}
+
+#[test]
+fn outline_in_a_deferred_language_exits_2() {
+    let dir = dir_with(&[("app.py", APP)]);
+    let out = ned(dir.path(), &["app.py", "-e", "outline"], "");
+    assert_snapshot!(out, @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:1: `outline` in python files is not yet supported
+    ");
+}
+
+#[test]
+fn query_selector_edits_matches() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let script = r#"delete query{(expression_statement (macro_invocation macro: (identifier) @m (#eq? @m "eprintln"))) @sel}"#;
+    let out = ned(dir.path(), &["parser.rs", "-e", script], "");
+    assert_snapshot!(out, @r#"
+    exit: 0
+    --- stdout
+    parser.rs: 1 edit, +0 -1
+    @@ -19,3 +19,2 @@
+         fn debug_dump(&self) {
+    -        eprintln!("{}", self.src);
+         }
+    --- stderr
+    "#);
+}
+
+#[test]
+fn invalid_query_exits_2() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let out = ned(
+        dir.path(),
+        &["parser.rs", "-e", "show query{(no_such_node) @sel}"],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:6: invalid rust query: unknown node type `no_such_node` at column 2
     ");
 }
