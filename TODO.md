@@ -47,13 +47,13 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 
 ## 5. Tree-sitter integration _(split)_
 
-- [ ] Language detection (extension, shebang, `--lang`) and grammar registry
+- [x] Language detection (extension, shebang, `--lang`) and grammar registry
 - [ ] `queries/rust/selectors.scm` (other languages: §12)
 - [ ] Syntax selectors, nesting, and parts; ambiguity errors with candidates
 - [ ] `outline` verb (compact symbol tree with line numbers)
-- [ ] Parse-error guard (reject new ERROR/MISSING nodes unless `--force`)
-- [ ] Re-basing cases that need syntax: empty spans (enclosing item's indent)
-      and the Go tab default
+- [x] Parse-error guard (reject new ERROR/MISSING nodes unless `--force`)
+- [x] Go tab default for re-basing
+- [ ] Re-basing empty spans (enclosing item's indent)
 - [ ] Raw tree-sitter query selector
 
 ## 6. Formatting
