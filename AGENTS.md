@@ -113,12 +113,13 @@ CLI; a human REPL and an MCP server come later.
 ## Status
 
 Bootstrap only: Cargo workspace with core deps; `ned --version` works. Build,
-clippy, fmt, and (empty) tests pass. Next: command-language spec (TODO.md §1).
+clippy, fmt, and (empty) tests pass. Command-language spec signed off.
+Next: buffer and transactions (TODO.md §2).
 
 ## Key Documentation
 
 - `TODO.md` — milestone plan; check items off as they land.
-- `docs/command-language.md` (to be written) — authoritative spec for syntax,
+- `docs/command-language.md` — authoritative spec for syntax,
   selectors, verbs, output, and exit codes. Tests are written against it;
   update it _before_ changing behaviour.
 
