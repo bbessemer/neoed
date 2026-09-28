@@ -341,6 +341,7 @@ impl Executor<'_> {
                         .map(|&i| self.files[i].file.path.as_str())
                         .collect::<Vec<_>>()
                         .join(", "),
+                    hint: String::new(),
                 },
                 Some(span.clone()),
             ));
@@ -491,8 +492,21 @@ pub struct ExecError {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExecErrorKind {
-    #[error("{selector} matches nothing in {files}")]
-    NoMatch { selector: String, files: String },
+    /// `hint` is empty, or `; did you mean SEL (LINES)?`.
+    #[error("{selector} matches nothing in {files}{hint}")]
+    NoMatch {
+        selector: String,
+        files: String,
+        hint: String,
+    },
+    #[error("{selector} needs a language, but {files} has none; use --lang")]
+    NoLanguage { selector: String, files: String },
+    #[error("{lang} has no `{kind}` items; use one of: {kinds}")]
+    UnknownKind {
+        kind: String,
+        lang: String,
+        kinds: String,
+    },
     #[error(
         "{selector} matches {} items; add `all` or use one of:{}",
         .candidates.total,

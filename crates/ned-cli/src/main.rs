@@ -102,7 +102,9 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::LineOutOfRange { .. }
         | ExecErrorKind::NotInFileSet { .. }
         | ExecErrorKind::Overlap { .. }
-        | ExecErrorKind::SyntaxError { .. } => 1,
+        | ExecErrorKind::SyntaxError { .. }
+        | ExecErrorKind::NoLanguage { .. }
+        | ExecErrorKind::UnknownKind { .. } => 1,
         ExecErrorKind::Unsupported(_) | ExecErrorKind::NoFiles => 2,
         ExecErrorKind::Io { .. } => 3,
     }

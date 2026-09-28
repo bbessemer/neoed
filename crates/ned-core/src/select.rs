@@ -10,6 +10,7 @@ use crate::buffer::{Buffer, LineEnding};
 use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
 use crate::lang::Language;
 use crate::script::ast::{LineNo, Part, Primary, Step, Target, TextKind};
+use crate::syntax::{self, Item};
 use crate::text::{full_lines, strip_indent};
 
 const MAX_CANDIDATES: usize = 10;
@@ -22,6 +23,7 @@ pub struct SourceFile {
     pub buffer: Buffer,
     pub lang: Option<Language>,
     tree: OnceCell<Tree>,
+    items: OnceCell<Vec<Item>>,
 }
 
 impl SourceFile {
@@ -33,7 +35,19 @@ impl SourceFile {
             buffer,
             lang,
             tree: OnceCell::new(),
+            items: OnceCell::new(),
         }
+    }
+
+    /// The syntax items of the text; `None` if the file's language has no
+    /// selector query (or it has no language).
+    pub fn items(&self) -> Option<&[Item]> {
+        let query = self.lang?.selectors()?;
+        let tree = self.tree()?;
+        Some(
+            self.items
+                .get_or_init(|| syntax::items(query, tree, &self.text)),
+        )
     }
 
     /// The syntax tree of the text, parsed on first use; `None` without a
@@ -76,6 +90,7 @@ pub fn resolve(target: &Target, files: &[&SourceFile], src: &str) -> Result<Vec<
                 .map(|f| f.path.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
+            hint: String::new(),
         })),
         1 => Ok(matches),
         _ if target.all => Ok(matches),
@@ -118,6 +133,7 @@ enum Matcher<'a> {
     Str(&'a str),
     Heredoc { lines: Vec<String>, raw: bool },
     File(&'a str),
+    Syntax { kind: &'a str, name: &'a str },
 }
 
 impl<'a> Matcher<'a> {
@@ -157,9 +173,7 @@ impl<'a> Matcher<'a> {
                 }
                 Matcher::File(path)
             }
-            Primary::Syntax { kind, name } => {
-                return Err(E::Unsupported(format!("syntax selector `{kind}:{name}`")));
-            }
+            Primary::Syntax { kind, name } => Matcher::Syntax { kind, name },
             Primary::Query(_) => return Err(E::Unsupported("`query{}` selector".into())),
         })
     }
@@ -228,6 +242,14 @@ impl<'a> Matcher<'a> {
                     Vec::new()
                 }
             }
+            Matcher::Syntax { kind, name } => f
+                .items()
+                .unwrap_or_default()
+                .iter()
+                .filter(|i| i.kind == *kind && syntax::name_matches(name, &i.name))
+                .map(|i| i.range.clone())
+                .filter(within)
+                .collect(),
         }
     }
 }
@@ -376,7 +398,9 @@ mod tests {
     fn files(texts: &[(&str, &str)]) -> Vec<SourceFile> {
         texts
             .iter()
-            .map(|(path, text)| SourceFile::new(*path, text.to_string(), None))
+            .map(|(path, text)| {
+                SourceFile::new(*path, text.to_string(), Language::detect(path, text))
+            })
             .collect()
     }
 
