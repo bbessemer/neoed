@@ -40,7 +40,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 ## 4. Line-based editing, end to end
 
 - [x] Line/range/regex/literal selector resolution
-- [ ] Verbs: `show`, `replace`, `insert`, `delete`, `sub`
+- [x] Verbs: `show`, `replace`, `insert`, `delete`, `sub`
 - [x] Indentation re-basing for inserted/replaced blocks
 - [ ] CLI wiring: args, stdin script, multiple files, exit codes
 - [ ] E2E snapshot tests in `crates/ned-cli/tests/`

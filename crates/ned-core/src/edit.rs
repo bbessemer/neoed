@@ -28,15 +28,15 @@ pub enum EditError {
 }
 
 #[derive(Debug)]
-pub struct EditSet<'a> {
-    buffer: &'a Buffer,
+pub struct EditSet {
+    buffer: Buffer,
     edits: Vec<Edit>,
 }
 
-impl<'a> EditSet<'a> {
-    pub fn new(buffer: &'a Buffer) -> Self {
+impl EditSet {
+    pub fn new(buffer: &Buffer) -> Self {
         EditSet {
-            buffer,
+            buffer: buffer.clone(),
             edits: Vec::new(),
         }
     }

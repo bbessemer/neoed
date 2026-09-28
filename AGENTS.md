@@ -115,8 +115,9 @@ CLI; a human REPL and an MCP server come later.
 Spec signed off. `ned-core` has the buffer (`buffer`), edit set (`edit`),
 atomic multi-file write (`fs`), diff rendering (`diff`), the script lexer,
 parser, and error rendering (`script::parse`), and line/regex/literal selector
-resolution (`select`), and whole-line/re-basing text helpers (`text`); the
-CLI is still a stub. Next: the rest of TODO.md §4 (executor, CLI).
+resolution (`select`), whole-line/re-basing text helpers (`text`), and the
+executor that runs a script over the file set (`exec::run`); the CLI is still
+a stub. Next: CLI wiring and end-to-end tests (TODO.md §4).
 
 ## Key Documentation
 

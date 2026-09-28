@@ -346,9 +346,9 @@ all commands, once per modified file, in the order the files first appear.
 
 ### 6.1 `show`
 
-Each selected region is headed `PATH:START-END`. Its lines follow as `N:text`,
-with no padding. If spans are within one line of each other, their regions
-merge.
+Each selected region is headed `PATH:START-END`, or `PATH:N` for a single line.
+Its lines follow as `N:text`, with no padding. If spans are within one line of
+each other, their regions merge.
 
 ```
 src/parser.rs:14-17
