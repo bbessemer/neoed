@@ -113,8 +113,9 @@ CLI; a human REPL and an MCP server come later.
 ## Status
 
 Spec signed off. `ned-core` has the buffer (`buffer`), edit set (`edit`),
-atomic multi-file write (`fs`), and diff rendering (`diff`); the CLI is still a
-stub. Next: script parser (TODO.md §3).
+atomic multi-file write (`fs`), diff rendering (`diff`), and the script lexer
+and error rendering (`script`); the CLI is still a stub. Next: parser and AST
+(TODO.md §3, sub-task 3b).
 
 ## Key Documentation
 
