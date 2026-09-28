@@ -48,8 +48,10 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 ## 5. Tree-sitter integration _(split)_
 
 - [x] Language detection (extension, shebang, `--lang`) and grammar registry
-- [ ] `queries/rust/selectors.scm` (other languages: §12)
-- [ ] Syntax selectors, nesting, and parts; ambiguity errors with candidates
+- [x] `queries/rust/selectors.scm` (other languages: §12)
+- [x] Syntax selectors and nesting; ambiguity errors with candidates
+- [ ] Parts (`.body`, `.sig`, `.params`, `.name`, `.doc`); `insert start|end`
+      on an item implies `.body`
 - [ ] `outline` verb (compact symbol tree with line numbers)
 - [x] Parse-error guard (reject new ERROR/MISSING nodes unless `--force`)
 - [x] Go tab default for re-basing
