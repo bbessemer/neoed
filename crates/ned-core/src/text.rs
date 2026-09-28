@@ -103,3 +103,171 @@ fn leading_whitespace(line: &str) -> &str {
 fn line_start(text: &str, offset: usize) -> usize {
     text[..offset].rfind('\n').map_or(0, |i| i + 1)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEXT: &str = "fn a() {\n    let x = 1;\n    let y = 2;\n}\n";
+
+    fn span(text: &str, needle: &str) -> Range<usize> {
+        let start = text.find(needle).unwrap();
+        start..start + needle.len()
+    }
+
+    /// The text left after deleting `tidy_delete(text, span(text, needle))`.
+    fn delete(text: &str, needle: &str) -> String {
+        let range = tidy_delete(text, span(text, needle));
+        format!("{}{}", &text[..range.start], &text[range.end..])
+    }
+
+    #[test]
+    fn whole_line_spans() {
+        for needle in [
+            "    let x = 1;\n",
+            "let x = 1;",
+            "let x = 1;\n    let y = 2;",
+            "fn a() {\n    let x = 1;\n    let y = 2;\n}\n",
+        ] {
+            assert!(is_whole_line(TEXT, &span(TEXT, needle)), "{needle:?}");
+        }
+        assert!(is_whole_line("a\nb", &(2..3)));
+        assert!(is_whole_line("foo  \r\n", &(0..3)));
+    }
+
+    #[test]
+    fn partial_line_spans() {
+        for needle in ["let x", "x = 1;", "1;\n    let y", "{\n"] {
+            assert!(!is_whole_line(TEXT, &span(TEXT, needle)), "{needle:?}");
+        }
+    }
+
+    #[test]
+    fn full_lines_widens_to_line_boundaries() {
+        assert_eq!(
+            full_lines(TEXT, span(TEXT, "x")),
+            span(TEXT, "    let x = 1;\n")
+        );
+        assert_eq!(
+            full_lines(TEXT, span(TEXT, "    let x = 1;\n")),
+            span(TEXT, "    let x = 1;\n")
+        );
+        assert_eq!(full_lines("a\r\nbc", 4..5), 3..5);
+    }
+
+    #[test]
+    fn indentation_lookups() {
+        assert_eq!(indent_at(TEXT, TEXT.find('x').unwrap()), "    ");
+        assert_eq!(indent_at("\t\tx\n", 2), "\t\t");
+        assert_eq!(indent_at(TEXT, 0), "");
+        assert_eq!(
+            first_indent(TEXT, span(TEXT, "    let x = 1;\n    let y")),
+            Some("    ")
+        );
+        assert_eq!(first_indent("a\n\n  b\n", 2..7), Some("  "));
+        assert_eq!(first_indent("a\n\n  \nb\n", 2..6), None);
+    }
+
+    #[test]
+    fn indent_unit_is_the_smallest_increase() {
+        assert_eq!(indent_unit(TEXT), "    ");
+        assert_eq!(indent_unit("a:\n  b\n\n  c:\n    d\n"), "  ");
+        assert_eq!(indent_unit("a {\n\tb {\n\t\tc\n\t}\n}\n"), "\t");
+        assert_eq!(indent_unit("a\n    b\n      c\n"), "  ");
+        assert_eq!(indent_unit("a\nb\n"), "    ");
+        assert_eq!(indent_unit(""), "    ");
+    }
+
+    #[test]
+    fn rebase_prefixes_target_indentation() {
+        assert_eq!(
+            rebase("if req.slow:\n    warn(req)", "        ", "    "),
+            "        if req.slow:\n            warn(req)"
+        );
+        assert_eq!(rebase("use std::io;", "", "    "), "use std::io;");
+    }
+
+    #[test]
+    fn rebase_strips_common_indentation() {
+        assert_eq!(rebase("    a\n      b", "", "    "), "a\n  b");
+        assert_eq!(rebase("\t\ta\n\t\t\tb", "\t", "\t"), "\ta\n\t\tb");
+    }
+
+    #[test]
+    fn rebase_keeps_blank_lines_empty() {
+        assert_eq!(
+            rebase(
+                "\nfn peek(&self) -> Option<char> {\n    self.src[self.pos..].chars().next()\n}",
+                "    ",
+                "    "
+            ),
+            "\n    fn peek(&self) -> Option<char> {\n        self.src[self.pos..].chars().next()\n    }"
+        );
+        assert_eq!(rebase("a\n   \nb\n", "  ", "  "), "  a\n\n  b\n");
+    }
+
+    #[test]
+    fn rebase_converts_tabs_to_spaces() {
+        assert_eq!(
+            rebase("a\n\tb\n\t\tc", "  ", "    "),
+            "  a\n      b\n          c"
+        );
+    }
+
+    #[test]
+    fn rebase_converts_spaces_to_tabs() {
+        assert_eq!(
+            rebase("a\n  b\n    c\n     d", "\t", "\t"),
+            "\ta\n\t\tb\n\t\t\tc\n\t\t\t d"
+        );
+    }
+
+    #[test]
+    fn rebase_tail_keeps_the_first_line() {
+        assert_eq!(
+            rebase_tail("foo(\n    a,\n)", "    ", "    "),
+            "foo(\n        a,\n    )"
+        );
+        assert_eq!(rebase_tail("  x", "    ", "    "), "  x");
+    }
+
+    #[test]
+    fn tidy_removes_one_of_two_blank_lines() {
+        assert_eq!(delete("a\n\nb\n\nc\n", "b\n"), "a\n\nc\n");
+        assert_eq!(delete("a\n  \nb\n\t\nc\n", "b\n"), "a\n  \nc\n");
+        assert_eq!(delete("a\r\n\r\nb\r\n\r\nc\r\n", "b\r\n"), "a\r\n\r\nc\r\n");
+    }
+
+    #[test]
+    fn tidy_removes_blank_after_opening_delimiter() {
+        assert_eq!(
+            delete("fn f() {\n    x;\n\n    y;\n}\n", "    x;\n"),
+            "fn f() {\n    y;\n}\n"
+        );
+    }
+
+    #[test]
+    fn tidy_removes_blank_before_closing_delimiter() {
+        let text =
+            "    }\n\n    fn debug_dump(&self) {\n        eprintln!(\"{}\", self.src);\n    }\n}\n";
+        assert_eq!(
+            delete(
+                text,
+                "    fn debug_dump(&self) {\n        eprintln!(\"{}\", self.src);\n    }\n"
+            ),
+            "    }\n}\n"
+        );
+    }
+
+    #[test]
+    fn tidy_removes_at_most_one_line() {
+        assert_eq!(delete("{\n\nx\n\n}\n", "x\n"), "{\n\n}\n");
+    }
+
+    #[test]
+    fn tidy_leaves_single_blank_lines() {
+        assert_eq!(delete("a\nb\nc\n", "b\n"), "a\nc\n");
+        assert_eq!(delete("a\n\nb\nc\n", "b\n"), "a\n\nc\n");
+        assert_eq!(delete("b\n\nc\n", "b\n"), "\nc\n");
+    }
+}
