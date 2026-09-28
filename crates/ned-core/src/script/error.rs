@@ -64,6 +64,10 @@ pub enum ParseErrorKind {
 }
 
 impl ParseError {
+    pub fn new(kind: ParseErrorKind, span: Range<usize>) -> Self {
+        ParseError { kind, span }
+    }
+
     /// Renders the error as `error: script:LINE:COL: message`, followed by the
     /// offending script line and a caret under the error's start. `COL` is
     /// 1-based and counts characters.
@@ -104,13 +108,15 @@ mod tests {
 
     #[test]
     fn renders_spec_example() {
-        let src = "show\nreplace fn:parse.body <<END\nfoo\n";
-        let e = err(ParseErrorKind::UnterminatedHeredoc("END".into()), 27..32);
+        let src = "show\nreplace fn:parse.body with <<END\nfoo\n";
+        let e = err(ParseErrorKind::UnterminatedHeredoc("END".into()), 32..37);
         assert_eq!(
             e.render(src),
-            "error: script:2:23: unterminated heredoc <<END (started here)\n\
-             2:replace fn:parse.body <<END\n\
-             \x20                       ^"
+            format!(
+                "error: script:2:28: unterminated heredoc <<END (started here)\n\
+                 2:replace fn:parse.body with <<END\n{}^",
+                " ".repeat(29)
+            )
         );
     }
 

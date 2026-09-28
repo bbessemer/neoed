@@ -104,7 +104,12 @@ impl<'a> Lexer<'a> {
             '$' | '0'..='9' => self.lines()?,
             '.' => TokenKind::Part(self.part()?),
             c if c.is_ascii_alphabetic() || c == '_' => self.word()?,
-            c => return Err(error(E::UnexpectedChar(c), start..start + c.len_utf8())),
+            c => {
+                return Err(ParseError::new(
+                    E::UnexpectedChar(c),
+                    start..start + c.len_utf8(),
+                ));
+            }
         };
         Ok(Token {
             kind,
@@ -173,7 +178,7 @@ impl<'a> Lexer<'a> {
         let mut out = String::new();
         loop {
             let Some(c) = self.peek().filter(|&c| c != '\n') else {
-                return Err(error(E::UnterminatedString, start..self.pos));
+                return Err(ParseError::new(E::UnterminatedString, start..self.pos));
             };
             self.pos += c.len_utf8();
             match c {
@@ -181,7 +186,7 @@ impl<'a> Lexer<'a> {
                 '\\' => {
                     let escape = self.peek().filter(|&c| c != '\n');
                     let Some(e) = escape else {
-                        return Err(error(E::UnterminatedString, start..self.pos));
+                        return Err(ParseError::new(E::UnterminatedString, start..self.pos));
                     };
                     out.push(match e {
                         'n' => '\n',
@@ -190,7 +195,7 @@ impl<'a> Lexer<'a> {
                         '\\' => '\\',
                         _ => {
                             let span = self.pos - 1..self.pos + e.len_utf8();
-                            return Err(error(E::InvalidEscape(e), span));
+                            return Err(ParseError::new(E::InvalidEscape(e), span));
                         }
                     });
                     self.pos += e.len_utf8();
@@ -206,13 +211,13 @@ impl<'a> Lexer<'a> {
         let mut pattern = String::new();
         loop {
             let Some(c) = self.peek().filter(|&c| c != '\n') else {
-                return Err(error(E::UnterminatedRegex, start..self.pos));
+                return Err(ParseError::new(E::UnterminatedRegex, start..self.pos));
             };
             self.pos += c.len_utf8();
             match c {
                 '/' => break,
                 '\\' => match self.peek().filter(|&c| c != '\n') {
-                    None => return Err(error(E::UnterminatedRegex, start..self.pos)),
+                    None => return Err(ParseError::new(E::UnterminatedRegex, start..self.pos)),
                     Some('/') => {
                         pattern.push('/');
                         self.pos += 1;
@@ -231,7 +236,12 @@ impl<'a> Lexer<'a> {
             match c {
                 'i' => flags.case_insensitive = true,
                 's' => flags.dot_all = true,
-                _ => return Err(error(E::UnknownRegexFlag(c), self.pos..self.pos + 1)),
+                _ => {
+                    return Err(ParseError::new(
+                        E::UnknownRegexFlag(c),
+                        self.pos..self.pos + 1,
+                    ));
+                }
             }
             self.pos += 1;
         }
@@ -245,7 +255,7 @@ impl<'a> Lexer<'a> {
         }
         self.pos += 1;
         if !matches!(self.peek(), Some('$' | '0'..='9')) {
-            return Err(error(E::MissingRangeEnd, self.pos - 1..self.pos));
+            return Err(ParseError::new(E::MissingRangeEnd, self.pos - 1..self.pos));
         }
         let end_start = self.pos;
         let end = self.line_no()?;
@@ -253,7 +263,7 @@ impl<'a> Lexer<'a> {
             && a > b
         {
             let span = end_start..self.pos;
-            return Err(error(E::ReversedLines { start: a, end: b }, span));
+            return Err(ParseError::new(E::ReversedLines { start: a, end: b }, span));
         }
         Ok(TokenKind::Lines {
             start,
@@ -269,9 +279,9 @@ impl<'a> Lexer<'a> {
         }
         let digits = self.take_while(|c| c.is_ascii_digit());
         match digits.parse::<usize>() {
-            Ok(0) => Err(error(E::ZeroLine, start..self.pos)),
+            Ok(0) => Err(ParseError::new(E::ZeroLine, start..self.pos)),
             Ok(n) => Ok(LineNo::Number(n)),
-            Err(_) => Err(error(E::LineOverflow, start..self.pos)),
+            Err(_) => Err(ParseError::new(E::LineOverflow, start..self.pos)),
         }
     }
 
@@ -280,14 +290,19 @@ impl<'a> Lexer<'a> {
         self.pos += 1;
         let name = self.take_while(is_ident_char);
         Ok(match name {
-            "" => return Err(error(E::UnexpectedChar('.'), start..start + 1)),
+            "" => return Err(ParseError::new(E::UnexpectedChar('.'), start..start + 1)),
             "body" => Part::Body,
             "sig" => Part::Sig,
             "params" => Part::Params,
             "name" => Part::Name,
             "doc" => Part::Doc,
             "lines" => Part::Lines,
-            _ => return Err(error(E::UnknownPart(name.into()), start..self.pos)),
+            _ => {
+                return Err(ParseError::new(
+                    E::UnknownPart(name.into()),
+                    start..self.pos,
+                ));
+            }
         })
     }
 
@@ -307,7 +322,10 @@ impl<'a> Lexer<'a> {
                         .to_string(),
                 };
                 if name.is_empty() {
-                    return Err(error(E::MissingName(word.into()), start..self.pos));
+                    return Err(ParseError::new(
+                        E::MissingName(word.into()),
+                        start..self.pos,
+                    ));
                 }
                 Ok(TokenKind::Syntax {
                     kind: word.into(),
@@ -324,7 +342,7 @@ impl<'a> Lexer<'a> {
         let mut query = String::new();
         loop {
             let Some(c) = self.peek().filter(|&c| c != '\n') else {
-                return Err(error(E::UnterminatedQuery, start..self.pos));
+                return Err(ParseError::new(E::UnterminatedQuery, start..self.pos));
             };
             self.pos += c.len_utf8();
             match c {
@@ -343,7 +361,7 @@ impl<'a> Lexer<'a> {
     fn heredoc(&mut self) -> Result<TokenKind, ParseError> {
         let start = self.pos;
         if self.peek_second() != Some('<') {
-            return Err(error(E::UnexpectedChar('<'), start..start + 1));
+            return Err(ParseError::new(E::UnexpectedChar('<'), start..start + 1));
         }
         self.pos += 2;
         let raw = self.peek() == Some('\'');
@@ -352,7 +370,7 @@ impl<'a> Lexer<'a> {
         }
         let tag = self.take_while(is_ident_char);
         if tag.is_empty() || (raw && self.peek() != Some('\'')) {
-            return Err(error(E::MissingHeredocTag, start..self.pos));
+            return Err(ParseError::new(E::MissingHeredocTag, start..self.pos));
         }
         if raw {
             self.pos += 1;
@@ -384,16 +402,15 @@ impl<'a> Lexer<'a> {
             body.push(line);
             line_start = next;
         }
-        Err(error(E::UnterminatedHeredoc(tag.into()), start..self.pos))
+        Err(ParseError::new(
+            E::UnterminatedHeredoc(tag.into()),
+            start..self.pos,
+        ))
     }
 }
 
 fn is_ident_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
-}
-
-fn error(kind: E, span: Range<usize>) -> ParseError {
-    ParseError { kind, span }
 }
 
 #[cfg(test)]

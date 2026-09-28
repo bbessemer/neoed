@@ -1,17 +1,339 @@
 //! Parser from script text to [`Script`] (command-language spec, §2.2).
 
-use super::ast::Script;
-use super::error::ParseError;
+use std::ops::Range;
+
+use regex::RegexBuilder;
+
+use super::ast::*;
+use super::error::{ParseError, ParseErrorKind as E};
+use super::lexer::{Lexer, Token, TokenKind};
 
 pub fn parse(src: &str) -> Result<Script, ParseError> {
-    todo!()
+    let mut parser = Parser {
+        lexer: Lexer::new(src),
+        peeked: None,
+        last_end: 0,
+    };
+    let mut commands = Vec::new();
+    loop {
+        match parser.peek()?.kind {
+            TokenKind::Newline | TokenKind::Semicolon => {
+                parser.bump()?;
+            }
+            TokenKind::Eof => return Ok(Script { commands }),
+            _ => {
+                commands.push(parser.command()?);
+                let next = parser.peek()?;
+                if !matches!(
+                    next.kind,
+                    TokenKind::Newline | TokenKind::Semicolon | TokenKind::Eof
+                ) {
+                    return Err(expected("end of command", next));
+                }
+            }
+        }
+    }
+}
+
+struct Parser<'a> {
+    lexer: Lexer<'a>,
+    peeked: Option<Token>,
+    /// End of the last consumed token.
+    last_end: usize,
+}
+
+impl Parser<'_> {
+    fn peek(&mut self) -> Result<&Token, ParseError> {
+        match &mut self.peeked {
+            Some(token) => Ok(token),
+            slot @ None => Ok(slot.insert(self.lexer.next_token()?)),
+        }
+    }
+
+    fn bump(&mut self) -> Result<Token, ParseError> {
+        let token = match self.peeked.take() {
+            Some(token) => token,
+            None => self.lexer.next_token()?,
+        };
+        self.last_end = token.span.end;
+        Ok(token)
+    }
+
+    fn peek_is_word(&mut self, word: &str) -> Result<bool, ParseError> {
+        Ok(matches!(&self.peek()?.kind, TokenKind::Word(w) if w == word))
+    }
+
+    fn command(&mut self) -> Result<Command, ParseError> {
+        let verb = self.bump()?;
+        let TokenKind::Word(word) = &verb.kind else {
+            return Err(expected("a command", &verb));
+        };
+        let kind = match word.as_str() {
+            "show" => CommandKind::Show(self.optional_target()?),
+            "outline" => CommandKind::Outline(self.optional_target()?),
+            "replace" => {
+                let target = self.target()?;
+                self.expect_with()?;
+                CommandKind::Replace {
+                    target,
+                    text: self.text()?,
+                }
+            }
+            "insert" => CommandKind::Insert {
+                position: self.position()?,
+                target: self.target()?,
+                text: self.text()?,
+            },
+            "delete" => CommandKind::Delete(self.target()?),
+            "sub" => self.sub()?,
+            "move" => CommandKind::Move {
+                target: self.target()?,
+                position: self.position()?,
+                dest: self.dest()?,
+            },
+            "file" => CommandKind::File(self.paths()?),
+            "rename" | "check" => {
+                return Err(ParseError::new(E::Reserved(word.clone()), verb.span));
+            }
+            _ => return Err(ParseError::new(E::UnknownCommand(word.clone()), verb.span)),
+        };
+        Ok(Command {
+            kind,
+            span: verb.span.start..self.last_end,
+        })
+    }
+
+    fn optional_target(&mut self) -> Result<Option<Target>, ParseError> {
+        match self.peek()?.kind {
+            TokenKind::Newline | TokenKind::Semicolon | TokenKind::Eof => Ok(None),
+            _ => self.target().map(Some),
+        }
+    }
+
+    fn target(&mut self) -> Result<Target, ParseError> {
+        let all = self.peek_is_word("all")?;
+        if all {
+            self.bump()?;
+        }
+        Ok(Target {
+            all,
+            selector: self.selector()?,
+        })
+    }
+
+    fn dest(&mut self) -> Result<Selector, ParseError> {
+        if self.peek_is_word("all")? {
+            let token = self.bump()?;
+            return Err(ParseError::new(E::AllNotAllowed, token.span));
+        }
+        self.selector()
+    }
+
+    fn selector(&mut self) -> Result<Selector, ParseError> {
+        let first = self.bump()?;
+        let start = first.span.start;
+        let mut steps = vec![Step {
+            primary: primary(first)?,
+            parts: Vec::new(),
+        }];
+        loop {
+            let next = self.peek()?;
+            match next.kind {
+                TokenKind::Gt | TokenKind::Part(_) if next.space_before => {
+                    return Err(ParseError::new(E::SpaceInSelector, next.span.clone()));
+                }
+                TokenKind::Part(part) => {
+                    self.bump()?;
+                    if let Some(step) = steps.last_mut() {
+                        step.parts.push(part);
+                    }
+                }
+                TokenKind::Gt => {
+                    self.bump()?;
+                    let token = self.bump()?;
+                    if token.space_before {
+                        return Err(ParseError::new(E::SpaceInSelector, token.span));
+                    }
+                    steps.push(Step {
+                        primary: primary(token)?,
+                        parts: Vec::new(),
+                    });
+                }
+                _ => break,
+            }
+        }
+        Ok(Selector {
+            steps,
+            span: start..self.last_end,
+        })
+    }
+
+    fn position(&mut self) -> Result<Position, ParseError> {
+        let token = self.bump()?;
+        match &token.kind {
+            TokenKind::Word(w) if w == "before" => Ok(Position::Before),
+            TokenKind::Word(w) if w == "after" => Ok(Position::After),
+            TokenKind::Word(w) if w == "start" => Ok(Position::Start),
+            TokenKind::Word(w) if w == "end" => Ok(Position::End),
+            _ => Err(expected("before, after, start, or end", &token)),
+        }
+    }
+
+    fn expect_with(&mut self) -> Result<(), ParseError> {
+        let token = self.bump()?;
+        match &token.kind {
+            TokenKind::Word(w) if w == "with" => Ok(()),
+            _ => Err(expected("`with`", &token)),
+        }
+    }
+
+    fn text(&mut self) -> Result<Text, ParseError> {
+        let token = self.bump()?;
+        text_from(token.kind)
+            .map_err(|kind| expected("text (a string or heredoc)", &Token { kind, ..token }))
+    }
+
+    /// `sub [target] /re/ with TEXT`: a lone regex before `with` is the
+    /// pattern; otherwise the selector is the scope and a regex must follow.
+    fn sub(&mut self) -> Result<CommandKind, ParseError> {
+        let first = self.target()?;
+        let (scope, pattern) = if self.peek_is_word("with")? {
+            let span = first.selector.span.clone();
+            let mut steps = first.selector.steps;
+            match (first.all, steps.pop(), steps.is_empty()) {
+                (
+                    false,
+                    Some(Step {
+                        primary: Primary::Regex(pattern),
+                        parts,
+                    }),
+                    true,
+                ) if parts.is_empty() => (None, pattern),
+                _ => return Err(ParseError::new(E::MissingSubPattern, span)),
+            }
+        } else {
+            let token = self.bump()?;
+            let TokenKind::Regex { pattern, flags } = token.kind else {
+                return Err(ParseError::new(E::MissingSubPattern, token.span));
+            };
+            (Some(first), validate_regex(pattern, flags, token.span)?)
+        };
+        self.expect_with()?;
+        Ok(CommandKind::Sub {
+            scope,
+            pattern,
+            text: self.text()?,
+        })
+    }
+
+    fn paths(&mut self) -> Result<Vec<String>, ParseError> {
+        let mut paths = Vec::new();
+        while let Some(token) = self.lexer.path()? {
+            self.last_end = token.span.end;
+            if let TokenKind::Path(path) = token.kind {
+                paths.push(path);
+            }
+        }
+        if paths.is_empty() {
+            return Err(expected("a path", self.peek()?));
+        }
+        Ok(paths)
+    }
+}
+
+fn primary(token: Token) -> Result<Primary, ParseError> {
+    Ok(match token.kind {
+        TokenKind::Lines { start, end } => Primary::Lines { start, end },
+        TokenKind::Regex { pattern, flags } => {
+            Primary::Regex(validate_regex(pattern, flags, token.span)?)
+        }
+        TokenKind::Syntax { kind, name } => match kind.as_str() {
+            "file" => Primary::File(name),
+            "refs" | "def" => {
+                return Err(ParseError::new(E::Reserved(format!("{kind}:")), token.span));
+            }
+            _ => Primary::Syntax { kind, name },
+        },
+        TokenKind::Query(query) => Primary::Query(query),
+        kind => match text_from(kind) {
+            Ok(text) => Primary::Literal(text),
+            Err(kind) => return Err(expected("a selector", &Token { kind, ..token })),
+        },
+    })
+}
+
+/// The text of a string or heredoc token, or the token kind back if it is
+/// neither.
+fn text_from(kind: TokenKind) -> Result<Text, TokenKind> {
+    match kind {
+        TokenKind::Str(value) => Ok(Text {
+            value,
+            kind: TextKind::Str,
+        }),
+        TokenKind::Heredoc { body, raw, .. } => Ok(Text {
+            value: body,
+            kind: if raw {
+                TextKind::RawHeredoc
+            } else {
+                TextKind::Heredoc
+            },
+        }),
+        kind => Err(kind),
+    }
+}
+
+fn validate_regex(
+    source: String,
+    flags: RegexFlags,
+    span: Range<usize>,
+) -> Result<Pattern, ParseError> {
+    if let Err(err) = RegexBuilder::new(&source)
+        .multi_line(true)
+        .case_insensitive(flags.case_insensitive)
+        .dot_matches_new_line(flags.dot_all)
+        .build()
+    {
+        // The regex crate's message is a multi-line excerpt ending in
+        // `error: <reason>`; keep only the reason.
+        let message = err.to_string();
+        let reason = message
+            .lines()
+            .find_map(|l| l.strip_prefix("error: "))
+            .unwrap_or(&message);
+        return Err(ParseError::new(E::InvalidRegex(reason.into()), span));
+    }
+    Ok(Pattern { source, flags })
+}
+
+fn expected(what: &'static str, token: &Token) -> ParseError {
+    let found = match &token.kind {
+        TokenKind::Word(w) => format!("`{w}`"),
+        TokenKind::Syntax { kind, name } => format!("`{kind}:{name}`"),
+        TokenKind::Lines { .. } => "a line selector".into(),
+        TokenKind::Regex { .. } => "a regex".into(),
+        TokenKind::Str(_) => "a string".into(),
+        TokenKind::Heredoc { .. } => "a heredoc".into(),
+        TokenKind::Query(_) => "a query".into(),
+        TokenKind::Part(_) => "a part".into(),
+        TokenKind::Path(_) => "a path".into(),
+        TokenKind::Gt => "`>`".into(),
+        TokenKind::Semicolon => "`;`".into(),
+        TokenKind::Newline => "end of line".into(),
+        TokenKind::Eof => "end of script".into(),
+    };
+    ParseError::new(
+        E::Expected {
+            expected: what,
+            found,
+        },
+        token.span.clone(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::script::ParseErrorKind as E;
-    use crate::script::ast::*;
     use LineNo::{Last, Number as N};
 
     fn commands(src: &str) -> Vec<CommandKind> {
@@ -190,7 +512,7 @@ mod tests {
     #[test]
     fn replace_with_heredoc() {
         assert_eq!(
-            one("replace fn:parse.body <<END\n  let a;\nEND"),
+            one("replace fn:parse.body with <<END\n  let a;\nEND"),
             CommandKind::Replace {
                 target: target(vec![parts(syntax("fn", "parse"), &[Part::Body])]),
                 text: text("  let a;", TextKind::Heredoc),
@@ -374,8 +696,8 @@ mod tests {
             panic!()
         };
         assert_eq!(t.selector.span, 20..29);
-        let heredoc = parse("replace 1 <<E\nx\nE").unwrap();
-        assert_eq!(heredoc.commands[0].span, 0..13);
+        let heredoc = parse("replace 1 with <<E\nx\nE").unwrap();
+        assert_eq!(heredoc.commands[0].span, 0..18);
     }
 
     #[test]
@@ -385,7 +707,7 @@ mod tests {
             "insert end impl:Parser <<END\n\nfn peek(&self) -> Option<char> {\n    self.src[self.pos..].chars().next()\n}\nEND\n",
             "delete fn:debug_dump",
             r#"replace fn:new.params with "src: impl Into<String>""#,
-            "replace fn:parse.body <<END\nlet tok = self.next().ok_or(Error::Eof)?;\nself.parse_expr(tok)\nEND\n",
+            "replace fn:parse.body with <<END\nlet tok = self.next().ok_or(Error::Eof)?;\nself.parse_expr(tok)\nEND\n",
             r#"insert after import:std::fmt "use std::io;""#,
             "insert after \"log(req)\".lines <<END\nif req.slow:\n    warn(req)\nEND\n",
             r#"sub /\bold_name\b/ with "new_name""#,
