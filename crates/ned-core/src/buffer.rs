@@ -27,7 +27,10 @@ pub enum LineEnding {
 
 impl LineEnding {
     pub fn as_str(self) -> &'static str {
-        todo!()
+        match self {
+            LineEnding::Lf => "\n",
+            LineEnding::Crlf => "\r\n",
+        }
     }
 }
 
@@ -53,44 +56,108 @@ pub struct Buffer {
 
 impl Buffer {
     pub fn new(text: &str) -> Self {
-        todo!()
+        let line_ending = match text.find('\n') {
+            Some(i) if text[..i].ends_with('\r') => LineEnding::Crlf,
+            _ => LineEnding::Lf,
+        };
+        Buffer {
+            rope: Rope::from_str(text),
+            line_ending,
+        }
     }
 
     pub fn line_ending(&self) -> LineEnding {
-        todo!()
+        self.line_ending
     }
 
     pub fn len_bytes(&self) -> usize {
-        todo!()
+        self.rope.len_bytes()
     }
 
     pub fn line_count(&self) -> usize {
-        todo!()
+        if self.len_bytes() == 0 {
+            0
+        } else if self.ends_with_newline() {
+            self.rope.len_lines() - 1
+        } else {
+            self.rope.len_lines()
+        }
     }
 
     /// The byte range of `line`, including its line ending.
     pub fn line_range(&self, line: usize) -> Result<Range<usize>, BufferError> {
-        todo!()
+        let count = self.line_count();
+        if line >= count {
+            return Err(BufferError::LineOutOfBounds { line, count });
+        }
+        Ok(self.rope.line_to_byte(line)..self.rope.line_to_byte(line + 1))
     }
 
     pub fn byte_to_line(&self, offset: usize) -> Result<usize, BufferError> {
-        todo!()
+        self.check_offset(offset)?;
+        Ok(self.rope.byte_to_line(offset))
     }
 
     pub fn byte_to_point(&self, offset: usize) -> Result<Point, BufferError> {
-        todo!()
+        let line = self.byte_to_line(offset)?;
+        Ok(Point {
+            line,
+            column: offset - self.rope.line_to_byte(line),
+        })
     }
 
     pub fn point_to_byte(&self, point: Point) -> Result<usize, BufferError> {
-        todo!()
+        let Point { line, column } = point;
+        let count = self.line_count();
+        // The last valid column is the line's `\n` itself (or its end, for an
+        // unterminated last line).
+        let (start, last) = if line < count {
+            let range = self.line_range(line)?;
+            let has_newline = self.rope.byte(range.end - 1) == b'\n';
+            (range.start, range.end - usize::from(has_newline))
+        } else if line == count && (count == 0 || self.ends_with_newline()) {
+            (self.len_bytes(), self.len_bytes())
+        } else {
+            return Err(BufferError::LineOutOfBounds { line, count });
+        };
+        if column > last - start {
+            return Err(BufferError::ColumnOutOfBounds { line, column });
+        }
+        self.check_offset(start + column)?;
+        Ok(start + column)
     }
 
     pub fn slice(&self, range: Range<usize>) -> Result<String, BufferError> {
-        todo!()
+        self.check_range(&range)?;
+        Ok(self.rope.byte_slice(range).to_string())
     }
 
     pub fn text(&self) -> String {
-        todo!()
+        self.rope.to_string()
+    }
+
+    /// Checks that `range` is ordered, in bounds, and on character boundaries.
+    pub fn check_range(&self, range: &Range<usize>) -> Result<(), BufferError> {
+        if range.start > range.end {
+            return Err(BufferError::Reversed(range.clone()));
+        }
+        self.check_offset(range.start)?;
+        self.check_offset(range.end)
+    }
+
+    fn check_offset(&self, offset: usize) -> Result<(), BufferError> {
+        let len = self.len_bytes();
+        if offset > len {
+            return Err(BufferError::ByteOutOfBounds { offset, len });
+        }
+        if self.rope.char_to_byte(self.rope.byte_to_char(offset)) != offset {
+            return Err(BufferError::NotCharBoundary(offset));
+        }
+        Ok(())
+    }
+
+    fn ends_with_newline(&self) -> bool {
+        self.len_bytes() > 0 && self.rope.byte(self.len_bytes() - 1) == b'\n'
     }
 }
 
