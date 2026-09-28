@@ -421,7 +421,7 @@ src/parser.rs: 1 edit, +1 -1
 ### 6.4 Formatting
 
 After the guard passes, each modified file with a configured formatter is
-formatted (configuration: TODO §6).
+formatted.
 
 - Changes the formatter makes are reported after the file's edit hunks, under
   their own header: `fmt rustfmt: +0 -1`, followed by hunks against the
@@ -431,6 +431,41 @@ formatted (configuration: TODO §6).
   `... failed: <first stderr line>`). The file is written unformatted and the
   exit code stays 0.
 - `--dry-run` still runs formatters, on in-memory copies.
+
+A formatter gets the file's text on stdin and prints the formatted text on
+stdout. It runs in the file's directory, so its own configuration
+(`rustfmt.toml`, `.prettierrc`, ...) is found. Its name in the output is the
+basename of its program.
+
+Formatters are configured per language under `[format]`, keyed by the `--lang`
+names. A value is a command as an argv array, or `false` for none:
+
+```toml
+[format]
+rust = ["rustfmt", "--edition", "{edition}", "--config", "max_width=80"]
+python = false
+```
+
+- Settings are merged per language, with later sources winning: the defaults,
+  then the user config (`$XDG_CONFIG_HOME/ned/config.toml`, or
+  `~/.config/ned/config.toml`), then every `.ned.toml` from the filesystem root
+  down to the file's directory.
+- In a command, `{path}` is the file's absolute path, and `{edition}` is the Rust
+  edition from the nearest `Cargo.toml` (following `edition.workspace = true`),
+  or `2015` if there is none.
+- A bare program name is looked up in `node_modules/.bin` in the file's
+  directory and each one above it, then on `PATH`. A program path containing `/`
+  is relative to the config file that sets it.
+- An unknown key or a value of the wrong type is an error at its location:
+  `error: .ned.toml:2:1: invalid config: ...`. Configs are read only when
+  formatting runs, so `--no-fmt` skips them.
+
+| Language                    | Default formatter                                                                                         |
+| --------------------------- | --------------------------------------------------------------------------------------------------------- |
+| rust                        | `rustfmt --edition {edition}`                                                                             |
+| go                          | `gofmt`                                                                                                   |
+| python                      | `ruff format --stdin-filename {path} -`, or if ruff isn't installed, `black -q --stdin-filename {path} -` |
+| typescript, tsx, javascript | `prettier --stdin-filepath {path}`                                                                        |
 
 ## 7. Errors and exit codes
 
@@ -460,12 +495,12 @@ error: script:2:28: unterminated heredoc <<END (started here)
                              ^
 ```
 
-| Code | Meaning                                                                                              |
-| ---- | ---------------------------------------------------------------------------------------------------- |
-| 0    | Success, including dry runs and skipped formatters                                                   |
-| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unsupported kind, parse-error guard |
-| 2    | Usage error (bad flags or arguments), script syntax error, invalid query, or reserved feature        |
-| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, or write failure                      |
+| Code | Meaning                                                                                                 |
+| ---- | ------------------------------------------------------------------------------------------------------- |
+| 0    | Success, including dry runs and skipped formatters                                                      |
+| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unsupported kind, parse-error guard    |
+| 2    | Usage error (bad flags or arguments), script syntax error, invalid query or config, or reserved feature |
+| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, or write failure                         |
 
 On any non-zero exit, no file is modified. Reads that ran before the failure
 still print their output.
