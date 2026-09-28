@@ -168,6 +168,9 @@ the file, is an error.
 
 Matches are non-overlapping and found left to right.
 
+In a CRLF file, a line break in a string or heredoc selector matches `\r\n`.
+Regexes see the file's raw text.
+
 ### 3.3 Syntax
 
 `kind:name` selects items of a syntax kind by name. Names are matched exactly.
@@ -273,6 +276,8 @@ reserved for the LSP milestone.
 Notes:
 
 - `replace` never expands `$`. Only `sub` does.
+- `sub` inserts its replacement verbatim after `$` expansion; the whole-line
+  rules of §5.1 don't apply.
 - The `all` prefix belongs to the target: `delete all fn:test_*`. In `sub`, the
   pattern already matches everywhere; `all` applies only to the scope selector.
 - **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
