@@ -39,7 +39,7 @@ pub struct Match {
 
 /// Resolves `target` against every file in `files`, enforcing the ambiguity
 /// rules of §3.5. `src` is the script, for error messages.
-pub fn resolve(target: &Target, files: &[SourceFile], src: &str) -> Result<Vec<Match>, ExecError> {
+pub fn resolve(target: &Target, files: &[&SourceFile], src: &str) -> Result<Vec<Match>, ExecError> {
     let span = &target.selector.span;
     let error = |kind| ExecError::new(kind, Some(span.clone()));
     let mut matches: Vec<Match> = files
@@ -72,7 +72,7 @@ pub fn resolve(target: &Target, files: &[SourceFile], src: &str) -> Result<Vec<M
     }
 }
 
-fn resolve_step(step: &Step, files: &[SourceFile], parents: &[Match]) -> Result<Vec<Match>, E> {
+fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result<Vec<Match>, E> {
     for part in &step.parts {
         if *part != Part::Lines {
             return Err(E::Unsupported(format!("part `.{}`", part_name(*part))));
@@ -107,7 +107,7 @@ enum Matcher<'a> {
 }
 
 impl<'a> Matcher<'a> {
-    fn new(primary: &'a Primary, files: &[SourceFile], parents: &[Match]) -> Result<Self, E> {
+    fn new(primary: &'a Primary, files: &[&SourceFile], parents: &[Match]) -> Result<Self, E> {
         Ok(match primary {
             Primary::Lines { start, end } => {
                 let end = end.unwrap_or(*start);
@@ -223,7 +223,7 @@ impl<'a> Matcher<'a> {
 fn check_lines(
     start: LineNo,
     end: LineNo,
-    files: &[SourceFile],
+    files: &[&SourceFile],
     parents: &[Match],
 ) -> Result<(), E> {
     let mut searched: Vec<usize> = parents.iter().map(|m| m.file).collect();
@@ -309,7 +309,7 @@ fn part_name(part: Part) -> &'static str {
     }
 }
 
-fn candidates(matches: &[Match], files: &[SourceFile], selector: &str) -> Candidates {
+fn candidates(matches: &[Match], files: &[&SourceFile], selector: &str) -> Candidates {
     let listed = matches
         .iter()
         .take(MAX_CANDIDATES)
@@ -334,7 +334,7 @@ fn candidates(matches: &[Match], files: &[SourceFile], selector: &str) -> Candid
 }
 
 /// The 1-based line or line range `range` touches, as a line selector.
-fn line_numbers(buffer: &Buffer, range: &Range<usize>) -> String {
+pub(crate) fn line_numbers(buffer: &Buffer, range: &Range<usize>) -> String {
     let line = |offset| buffer.byte_to_line(offset).expect("match within the file") + 1;
     let first = line(range.start);
     let last = if range.is_empty() {
@@ -372,7 +372,7 @@ mod tests {
         let CommandKind::Delete(target) = &parsed.commands[0].kind else {
             panic!("expected delete: {script}");
         };
-        resolve(target, files, script)
+        resolve(target, &files.iter().collect::<Vec<_>>(), script)
     }
 
     /// The text of each span `script` selects in a single file `a.rs`.

@@ -3,7 +3,33 @@
 use std::fmt;
 use std::ops::Range;
 
+use crate::script::Script;
 use crate::script::error::location;
+
+/// The result of running a script: the output of the reads that ran, in
+/// command order, and either every modified file or the error that rejected
+/// the script.
+#[derive(Debug)]
+pub struct Run {
+    pub output: String,
+    pub result: Result<Vec<Change>, ExecError>,
+}
+
+/// A modified file, with the number of spans edited.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Change {
+    pub path: String,
+    pub old: String,
+    pub new: String,
+    pub edits: usize,
+}
+
+/// Runs `script` (parsed from `src`) with `files` as the initial file set.
+/// Nothing is written.
+pub fn run(script: &Script, src: &str, files: &[String]) -> Run {
+    let _ = (script, src, files);
+    todo!()
+}
 
 /// An error that rejects a script, at `span` of the script when it has one.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -32,6 +58,12 @@ pub enum ExecErrorKind {
     NotInFileSet { path: String, files: String },
     #[error("{0} is not yet supported")]
     Unsupported(String),
+    #[error("edit overlaps command {command} at {location}")]
+    Overlap { command: usize, location: String },
+    #[error("no files to edit; pass FILE arguments or use `file PATH`")]
+    NoFiles,
+    #[error("cannot read {path}: {message}")]
+    Io { path: String, message: String },
 }
 
 /// Selectors that each pick one of an ambiguous selector's matches, with the
