@@ -2,6 +2,8 @@
 
 use std::ops::Range;
 
+use regex::{Regex, RegexBuilder};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Script {
     pub commands: Vec<Command>,
@@ -107,6 +109,17 @@ pub enum TextKind {
 pub struct Pattern {
     pub source: String,
     pub flags: RegexFlags,
+}
+
+impl Pattern {
+    /// Compiles the pattern with multi-line mode on and its flags applied.
+    pub fn regex(&self) -> Result<Regex, regex::Error> {
+        RegexBuilder::new(&self.source)
+            .multi_line(true)
+            .case_insensitive(self.flags.case_insensitive)
+            .dot_matches_new_line(self.flags.dot_all)
+            .build()
+    }
 }
 
 /// A 1-based line number, or `$` for the last line.
