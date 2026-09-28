@@ -41,7 +41,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 
 - [x] Line/range/regex/literal selector resolution
 - [ ] Verbs: `show`, `replace`, `insert`, `delete`, `sub`
-- [ ] Indentation re-basing for inserted/replaced blocks
+- [x] Indentation re-basing for inserted/replaced blocks
 - [ ] CLI wiring: args, stdin script, multiple files, exit codes
 - [ ] E2E snapshot tests in `crates/ned-cli/tests/`
 
