@@ -2,6 +2,8 @@
 
 use std::ops::Range;
 
+use crate::buffer::Buffer;
+
 /// An error at `span`, a byte range of the script.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{kind}")]
@@ -49,7 +51,29 @@ impl ParseError {
     /// offending script line and a caret under the error's start. `COL` is
     /// 1-based and counts characters.
     pub fn render(&self, src: &str) -> String {
-        todo!()
+        let buf = Buffer::new(src);
+        let Ok(point) = buf.byte_to_point(self.span.start) else {
+            return format!("error: script: {}", self.kind);
+        };
+        let line_no = point.line + 1;
+        let Ok(range) = buf.line_range(point.line) else {
+            return format!("error: script:{line_no}:1: {}", self.kind);
+        };
+        let line = &src[range];
+        let line = line.strip_suffix('\n').unwrap_or(line);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let before = &line[..point.column];
+        let column = before.chars().count() + 1;
+        let label = format!("{line_no}:");
+        let pad: String = " ".repeat(label.len())
+            + &before
+                .chars()
+                .map(|c| if c == '\t' { '\t' } else { ' ' })
+                .collect::<String>();
+        format!(
+            "error: script:{line_no}:{column}: {}\n{label}{line}\n{pad}^",
+            self.kind
+        )
     }
 }
 
@@ -99,7 +123,7 @@ mod tests {
         let e = err(ParseErrorKind::ZeroLine, 7..8);
         assert_eq!(
             e.render("show\r\nx 0\r\n"),
-            "error: script:2:2: line numbers start at 1\n2:x 0\n  ^"
+            "error: script:2:2: line numbers start at 1\n2:x 0\n   ^"
         );
     }
 
