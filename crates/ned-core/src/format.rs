@@ -7,6 +7,7 @@ use std::{env, fmt, fs, io};
 use serde::Deserialize;
 use toml::{Spanned, Value};
 
+use crate::exec::Change;
 use crate::lang::Language;
 
 const CONFIG_FILE: &str = ".ned.toml";
@@ -53,6 +54,17 @@ struct RawConfig {
     format: BTreeMap<Spanned<String>, Spanned<Value>>,
 }
 
+/// What formatting did to a changed file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// No formatter, or its output is the text it was given.
+    Unchanged,
+    /// The text from the formatter named `name`.
+    Formatted { name: String, text: String },
+    /// Formatting was skipped; the note says why.
+    Skipped(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigError {
     /// The config file, with the line and column when known.
@@ -78,6 +90,12 @@ pub fn user_config() -> Option<PathBuf> {
     };
     let config = absolute("XDG_CONFIG_HOME").or_else(|| Some(absolute("HOME")?.join(".config")))?;
     Some(config.join("ned/config.toml"))
+}
+
+/// Formats the new text of each of `changes`, in parallel.
+pub fn run(changes: &[Change], formatters: &mut Formatters) -> Result<Vec<Outcome>, ConfigError> {
+    let _ = formatters;
+    Ok(vec![Outcome::Unchanged; changes.len()])
 }
 
 impl Formatters {

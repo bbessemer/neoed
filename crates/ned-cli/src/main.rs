@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use ned_core::diff::{self, DiffStat};
 use ned_core::exec::{self, ExecErrorKind, Options};
+use ned_core::format::{self, Formatters, Outcome};
 use ned_core::lang::Language;
 use ned_core::{fs, script};
 
@@ -29,6 +30,9 @@ struct Cli {
     /// errors.
     #[arg(long)]
     force: bool,
+    /// Don't run formatters.
+    #[arg(long)]
+    no_fmt: bool,
     /// Use this language for every file instead of detecting it.
     #[arg(long, value_name = "LANG")]
     lang: Option<Language>,
@@ -71,17 +75,38 @@ fn main() -> ExitCode {
         }
     };
 
+    let outcomes = if cli.no_fmt {
+        vec![Outcome::Unchanged; changes.len()]
+    } else {
+        let formatted = Formatters::new(format::user_config().as_deref())
+            .and_then(|mut formatters| format::run(&changes, &mut formatters));
+        match formatted {
+            Ok(outcomes) => outcomes,
+            Err(err) => {
+                eprintln!("error: {err}");
+                return ExitCode::from(2);
+            }
+        }
+    };
+
     if !cli.dry_run {
         let writes: Vec<(PathBuf, String)> = changes
             .iter()
-            .map(|c| (PathBuf::from(&c.path), c.new.clone()))
+            .zip(&outcomes)
+            .map(|(change, outcome)| {
+                let text = match outcome {
+                    Outcome::Formatted { text, .. } => text,
+                    _ => &change.new,
+                };
+                (PathBuf::from(&change.path), text.clone())
+            })
             .collect();
         if let Err(err) = fs::write_atomic(&writes) {
             eprintln!("error: cannot write files: {err}");
             return ExitCode::from(3);
         }
     }
-    for change in &changes {
+    for (change, outcome) in changes.iter().zip(&outcomes) {
         let stat = DiffStat::between(&change.old, &change.new);
         println!(
             "{}",
@@ -89,6 +114,16 @@ fn main() -> ExitCode {
         );
         if !cli.quiet {
             print!("{}", diff::hunks(&change.old, &change.new, cli.context));
+        }
+        match outcome {
+            Outcome::Formatted { name, text } => {
+                println!("fmt {name}: {}", DiffStat::between(&change.new, text));
+                if !cli.quiet {
+                    print!("{}", diff::hunks(&change.new, text, cli.context));
+                }
+            }
+            Outcome::Skipped(note) => eprintln!("note: {note}"),
+            Outcome::Unchanged => {}
         }
     }
     ExitCode::SUCCESS
