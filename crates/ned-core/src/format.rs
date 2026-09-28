@@ -1,10 +1,16 @@
 //! External formatters and their configuration (command-language spec, §6.4).
 
-use std::collections::HashMap;
-use std::fmt;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::{env, fmt, fs, io};
+
+use serde::Deserialize;
+use toml::{Spanned, Value};
 
 use crate::lang::Language;
+
+const CONFIG_FILE: &str = ".ned.toml";
+const DEFAULT_EDITION: &str = "2015";
 
 /// A file's formatter, ready to run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +46,13 @@ enum Entry {
     Off,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawConfig {
+    #[serde(default)]
+    format: BTreeMap<Spanned<String>, Spanned<Value>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigError {
     /// The config file, with the line and column when known.
@@ -58,24 +71,210 @@ impl std::error::Error for ConfigError {}
 /// The user config file: `$XDG_CONFIG_HOME/ned/config.toml`, else
 /// `~/.config/ned/config.toml`.
 pub fn user_config() -> Option<PathBuf> {
-    None
+    let absolute = |var| {
+        env::var_os(var)
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    };
+    let config = absolute("XDG_CONFIG_HOME").or_else(|| Some(absolute("HOME")?.join(".config")))?;
+    Some(config.join("ned/config.toml"))
 }
 
 impl Formatters {
     /// Reads the user config at `user`, if it exists.
     pub fn new(user: Option<&Path>) -> Result<Self, ConfigError> {
-        let _ = user;
         Ok(Formatters {
-            user: None,
+            user: user.map(load).transpose()?.flatten(),
             layers: HashMap::new(),
         })
     }
 
     /// The formatter for `path` in `lang`, or `None` if it has none.
     pub fn get(&mut self, path: &Path, lang: Language) -> Result<Option<Formatter>, ConfigError> {
-        let _ = (path, lang, &self.user, &mut self.layers);
-        Ok(None)
+        let path = std::path::absolute(path).map_err(|err| io_error(path, &err))?;
+        let dir = path.parent().unwrap_or(&path).to_path_buf();
+        for ancestor in dir.ancestors() {
+            if !self.layers.contains_key(ancestor) {
+                let layer = load(&ancestor.join(CONFIG_FILE))?;
+                self.layers.insert(ancestor.to_path_buf(), layer);
+            }
+        }
+        let configured = dir
+            .ancestors()
+            .filter_map(|a| self.layers[a].as_ref())
+            .chain(&self.user)
+            .find_map(|layer| Some((layer.format.get(&lang)?, layer.dir.as_path())));
+        let (commands, base) = match configured {
+            Some((Entry::Off, _)) => return Ok(None),
+            Some((Entry::Command(command), base)) => (vec![command.clone()], Some(base)),
+            None => (defaults(lang), None),
+        };
+        let name = name(&commands[0][0]);
+        let mut edition = None;
+        let mut fill = |arg: &str| {
+            let arg = arg.replace("{path}", &path.to_string_lossy());
+            if arg.contains("{edition}") {
+                arg.replace(
+                    "{edition}",
+                    edition.get_or_insert_with(|| rust_edition(&dir)),
+                )
+            } else {
+                arg
+            }
+        };
+        let commands = commands
+            .iter()
+            .map(|command| {
+                let mut command: Vec<String> = command.iter().map(|arg| fill(arg)).collect();
+                command[0] = program(&command[0], base, &dir);
+                command
+            })
+            .collect();
+        Ok(Some(Formatter {
+            name,
+            commands,
+            dir,
+        }))
     }
+}
+
+fn defaults(lang: Language) -> Vec<Vec<String>> {
+    let commands: &[&[&str]] = match lang {
+        Language::Rust => &[&["rustfmt", "--edition", "{edition}"]],
+        Language::Go => &[&["gofmt"]],
+        Language::Python => &[
+            &["ruff", "format", "--stdin-filename", "{path}", "-"],
+            &["black", "-q", "--stdin-filename", "{path}", "-"],
+        ],
+        Language::TypeScript | Language::Tsx | Language::JavaScript => {
+            &[&["prettier", "--stdin-filepath", "{path}"]]
+        }
+    };
+    commands
+        .iter()
+        .map(|c| c.iter().map(|w| w.to_string()).collect())
+        .collect()
+}
+
+fn name(program: &str) -> String {
+    Path::new(program)
+        .file_name()
+        .map_or(program.into(), |n| n.to_string_lossy().into_owned())
+}
+
+/// Where to run `program`: relative to `base`, the directory of the config
+/// that named it, if it's a path; else from the nearest `node_modules/.bin`
+/// above `dir`, or as is, for a `PATH` lookup.
+fn program(program: &str, base: Option<&Path>, dir: &Path) -> String {
+    let found = if program.contains('/') {
+        base.map(|b| b.join(program))
+    } else {
+        dir.ancestors()
+            .map(|a| a.join("node_modules/.bin").join(program))
+            .find(|p| p.is_file())
+    };
+    found.map_or(program.into(), |p| p.to_string_lossy().into_owned())
+}
+
+/// The Rust edition of the package holding `dir`, from its `Cargo.toml` or,
+/// for `edition.workspace = true`, its workspace's.
+fn rust_edition(dir: &Path) -> String {
+    let edition = |table: &toml::Table| table.get("edition").cloned();
+    let manifests = dir.ancestors().filter_map(|a| {
+        let text = fs::read_to_string(a.join("Cargo.toml")).ok()?;
+        text.parse::<toml::Table>().ok()
+    });
+    let mut inherit = false;
+    for manifest in manifests {
+        if !inherit {
+            let Some(Value::Table(package)) = manifest.get("package") else {
+                continue;
+            };
+            match edition(package) {
+                Some(Value::String(e)) => return e,
+                Some(Value::Table(t)) if t.get("workspace") == Some(&Value::Boolean(true)) => {
+                    inherit = true
+                }
+                _ => break,
+            }
+        }
+        if let Some(Value::Table(workspace)) = manifest.get("workspace") {
+            if let Some(Value::Table(package)) = workspace.get("package")
+                && let Some(Value::String(e)) = edition(package)
+            {
+                return e;
+            }
+            break;
+        }
+    }
+    DEFAULT_EDITION.into()
+}
+
+/// The config file at `path`, or `None` if there is none.
+fn load(path: &Path) -> Result<Option<Layer>, ConfigError> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(io_error(path, &err)),
+    };
+    let error = |span: Option<std::ops::Range<usize>>, message: String| {
+        let mut location = display(path);
+        if let Some(span) = span {
+            let (line, col) = crate::script::error::location(&text, span.start);
+            location = format!("{location}:{line}:{col}");
+        }
+        ConfigError { location, message }
+    };
+    let raw: RawConfig =
+        toml::from_str(&text).map_err(|err| error(err.span(), err.message().trim().into()))?;
+    let mut format = HashMap::new();
+    for (key, value) in raw.format {
+        let lang: Language = key
+            .get_ref()
+            .parse()
+            .map_err(|message| error(Some(key.span()), message))?;
+        let entry = match value.get_ref() {
+            Value::Boolean(false) => Entry::Off,
+            Value::Array(words) if words.is_empty() => {
+                return Err(error(
+                    Some(value.span()),
+                    format!("`{lang}` has an empty command"),
+                ));
+            }
+            Value::Array(words) => {
+                match words.iter().map(|w| w.as_str().map(String::from)).collect() {
+                    Some(command) => Entry::Command(command),
+                    None => return Err(error(Some(value.span()), not_a_command(lang))),
+                }
+            }
+            _ => return Err(error(Some(value.span()), not_a_command(lang))),
+        };
+        format.insert(lang, entry);
+    }
+    Ok(Some(Layer {
+        dir: path.parent().unwrap_or(path).to_path_buf(),
+        format,
+    }))
+}
+
+fn not_a_command(lang: Language) -> String {
+    format!("`{lang}` must be a command (an array of strings) or false")
+}
+
+fn io_error(path: &Path, err: &io::Error) -> ConfigError {
+    ConfigError {
+        location: display(path),
+        message: err.to_string(),
+    }
+}
+
+/// `path`, relative to the working directory if it's inside it.
+fn display(path: &Path) -> String {
+    let cwd = env::current_dir().unwrap_or_default();
+    path.strip_prefix(&cwd)
+        .unwrap_or(path)
+        .display()
+        .to_string()
 }
 
 #[cfg(test)]
