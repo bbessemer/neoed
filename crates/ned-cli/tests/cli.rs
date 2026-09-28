@@ -423,3 +423,64 @@ fn write_failure_exits_3_and_leaves_files_untouched() {
     ");
     assert_eq!(read(&dir, "a.txt"), "a\n");
 }
+
+#[test]
+fn edit_introducing_syntax_error_exits_1() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let script = r#"replace "self.next().expect(\"unexpected end\")" with "(self.next()""#;
+    let out = ned(dir.path(), &["parser.rs", "-e", script], "");
+    assert_snapshot!(out, @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: parser.rs:15:31: edit introduces a syntax error (use --force to apply anyway)
+    15:        let tok = (self.next();
+                                     ^
+    ");
+    assert_eq!(read(&dir, "parser.rs"), PARSER);
+}
+
+#[test]
+fn force_applies_edits_with_syntax_errors() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let script = r#"replace "self.next().expect(\"unexpected end\")" with "(self.next()""#;
+    let out = ned(
+        dir.path(),
+        &["parser.rs", "--force", "-q", "-e", script],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    parser.rs: 1 edit, +1 -1
+    --- stderr
+    ");
+    assert!(read(&dir, "parser.rs").contains("let tok = (self.next();"));
+}
+
+#[test]
+fn lang_sets_the_language_of_every_file() {
+    let dir = dir_with(&[("parser.txt", PARSER)]);
+    let script = r#"replace "self.next().expect(\"unexpected end\")" with "(self.next()""#;
+    let out = ned(dir.path(), &["parser.txt", "-n", "-q", "-e", script], "");
+    assert!(out.starts_with("exit: 0\n"), "{out}");
+    let out = ned(
+        dir.path(),
+        &["parser.txt", "--lang", "rust", "-e", script],
+        "",
+    );
+    assert!(out.starts_with("exit: 1\n"), "{out}");
+}
+
+#[test]
+fn unknown_lang_exits_2() {
+    let dir = dir_with(&[("a.txt", "a\n")]);
+    let out = ned(dir.path(), &["a.txt", "--lang", "ruby", "-e", "show"], "");
+    assert!(out.starts_with("exit: 2\n"), "{out}");
+    assert!(
+        out.contains(
+            "unknown language `ruby`; expected one of rust, python, typescript, tsx, javascript, go"
+        ),
+        "{out}"
+    );
+}

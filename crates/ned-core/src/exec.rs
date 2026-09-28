@@ -4,10 +4,13 @@ use std::fmt;
 use std::fs;
 use std::ops::Range;
 
+use tree_sitter::Node;
+
 use crate::edit::{Edit, EditError, EditSet};
+use crate::lang::Language;
 use crate::script::Script;
 use crate::script::ast::{Command, CommandKind, Pattern, Position, Target, Text, TextKind};
-use crate::script::error::location;
+use crate::script::error::{excerpt, location};
 use crate::select::{self, Match, SourceFile, line_numbers, same_path};
 use crate::text;
 
@@ -29,11 +32,21 @@ pub struct Change {
     pub edits: usize,
 }
 
+/// Settings from the command line that affect a run.
+#[derive(Debug, Clone, Default)]
+pub struct Options {
+    /// The language of every file, instead of detecting it.
+    pub lang: Option<Language>,
+    /// Skip the parse-error guard (§4.3).
+    pub force: bool,
+}
+
 /// Runs `script` (parsed from `src`) with `files` as the initial file set.
 /// Nothing is written.
-pub fn run(script: &Script, src: &str, files: &[String]) -> Run {
+pub fn run(script: &Script, src: &str, files: &[String], options: &Options) -> Run {
     let mut executor = Executor {
         src,
+        options,
         files: Vec::new(),
         set: Vec::new(),
         output: String::new(),
@@ -52,6 +65,7 @@ struct Loaded {
 
 struct Executor<'s> {
     src: &'s str,
+    options: &'s Options,
     /// Every file loaded so far, in order of first appearance.
     files: Vec<Loaded>,
     /// The current file set, as indices into `files`.
@@ -68,7 +82,7 @@ impl Executor<'_> {
         for (index, command) in script.commands.iter().enumerate() {
             self.command(index, command)?;
         }
-        Ok(self
+        let changes: Vec<Change> = self
             .files
             .iter()
             .filter(|l| !l.edits.is_empty())
@@ -78,7 +92,18 @@ impl Executor<'_> {
                 new: l.edits.apply(),
                 edits: l.edits.len(),
             })
-            .collect())
+            .collect();
+        if !self.options.force {
+            for (l, change) in self
+                .files
+                .iter()
+                .filter(|l| !l.edits.is_empty())
+                .zip(&changes)
+            {
+                guard(&l.file, &change.new)?;
+            }
+        }
+        Ok(changes)
     }
 
     fn load(&mut self, path: &str, span: Option<Range<usize>>) -> Result<usize, ExecError> {
@@ -100,7 +125,8 @@ impl Executor<'_> {
         };
         let bytes = fs::read(path).map_err(|e| io(e.to_string()))?;
         let text = String::from_utf8(bytes).map_err(|_| io("not valid UTF-8".into()))?;
-        let file = SourceFile::new(path, text);
+        let lang = self.options.lang.or_else(|| Language::detect(path, &text));
+        let file = SourceFile::new(path, text, lang);
         let edits = EditSet::new(&file.buffer);
         self.files.push(Loaded { file, edits });
         Ok(self.files.len() - 1)
@@ -323,10 +349,68 @@ impl Executor<'_> {
     }
 }
 
+/// Rejects `new`, the edited text of `f`, if it has more tree-sitter error
+/// nodes than the original (§4.3).
+fn guard(f: &SourceFile, new: &str) -> Result<(), ExecError> {
+    let (Some(lang), Some(old)) = (f.lang, f.tree()) else {
+        return Ok(());
+    };
+    let before = error_nodes(old.root_node()).len();
+    let tree = lang.parse(new);
+    let errors = error_nodes(tree.root_node());
+    if errors.len() <= before {
+        return Ok(());
+    }
+    // The edits all lie between the texts' common prefix and suffix.
+    let prefix = common_len(f.text.bytes(), new.bytes());
+    let suffix = common_len(f.text.bytes().rev(), new.bytes().rev())
+        .min(f.text.len().min(new.len()) - prefix);
+    let changed = prefix..new.len() - suffix;
+    let node = errors
+        .iter()
+        .find(|n| n.start_byte() <= changed.end && changed.start <= n.end_byte())
+        .unwrap_or(&errors[0]);
+    let (line, column) = location(new, node.start_byte());
+    Err(ExecError::new(
+        ExecErrorKind::SyntaxError {
+            location: format!("{}:{line}:{column}", f.path),
+            excerpt: excerpt(new, node.start_byte())
+                .map(|e| format!("\n{e}"))
+                .unwrap_or_default(),
+        },
+        None,
+    ))
+}
+
+/// The `ERROR` and `MISSING` nodes under `root`, in source order.
+fn error_nodes(root: Node<'_>) -> Vec<Node<'_>> {
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.is_error() || node.is_missing() {
+            out.push(node);
+        }
+        if node.has_error() {
+            stack.extend(node.children(&mut node.walk()));
+        }
+    }
+    out.sort_by_key(|n| (n.start_byte(), n.end_byte()));
+    out
+}
+
+fn common_len(a: impl Iterator<Item = u8>, b: impl Iterator<Item = u8>) -> usize {
+    a.zip(b).take_while(|(x, y)| x == y).count()
+}
+
+/// The indent unit of `f`, falling back to its language's default (§5.2).
+fn indent_unit(f: &SourceFile) -> String {
+    text::indent_unit(&f.text, f.lang.map_or("    ", Language::default_indent))
+}
+
 /// The span and text that replace `range` (§5.1).
 fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, String) {
     let t = &f.text;
-    let unit = text::indent_unit(t);
+    let unit = indent_unit(f);
     if text::is_whole_line(t, &range) {
         let full = text::full_lines(t, range);
         let mut new = line_oriented(new, text::indent_at(t, full.start), &unit);
@@ -343,7 +427,7 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, St
 /// The offset and text of an insertion at `position` of `range` (§4.2, §5).
 fn insert(f: &SourceFile, range: Range<usize>, position: Position, new: &Text) -> (usize, String) {
     let t = &f.text;
-    let unit = text::indent_unit(t);
+    let unit = indent_unit(f);
     if !text::is_whole_line(t, &range) {
         let at = match position {
             Position::Before | Position::Start => range.start,
@@ -430,6 +514,10 @@ pub enum ExecErrorKind {
     NoFiles,
     #[error("cannot read {path}: {message}")]
     Io { path: String, message: String },
+    /// `location` is `PATH:LINE:COL`; `excerpt` is empty, or a newline and
+    /// the offending line with a caret.
+    #[error("{location}: edit introduces a syntax error (use --force to apply anyway){excerpt}")]
+    SyntaxError { location: String, excerpt: String },
 }
 
 /// Selectors that each pick one of an ambiguous selector's matches, with the
@@ -502,10 +590,29 @@ mod tests {
         }
     }
 
+    /// Runs `script` with the parse-error guard off: most tests edit
+    /// Rust-like text without keeping it valid.
+    fn exec_with(files: &[(&str, &str)], initial: usize, script: &str) -> Outcome {
+        let force = Options {
+            force: true,
+            ..Options::default()
+        };
+        exec_with_options(files, initial, script, &force)
+    }
+
+    fn guarded(path: &str, text: &str, script: &str) -> Outcome {
+        exec_with_options(&[(path, text)], 1, script, &Options::default())
+    }
+
     /// Writes `files` to a temporary directory and runs `script` with the
     /// first `initial` of them as the file set. `{dir}` in the script is
     /// replaced by the directory.
-    fn exec_with(files: &[(&str, &str)], initial: usize, script: &str) -> Outcome {
+    fn exec_with_options(
+        files: &[(&str, &str)],
+        initial: usize,
+        script: &str,
+        options: &Options,
+    ) -> Outcome {
         let dir = tempfile::tempdir().unwrap();
         let root = format!("{}/", dir.path().display());
         for (name, text) in files {
@@ -517,7 +624,7 @@ mod tests {
             .collect();
         let src = script.replace("{dir}/", &root);
         let parsed = parse(&src).unwrap();
-        let run = run(&parsed, &src, &paths);
+        let run = run(&parsed, &src, &paths, options);
         let strip = |s: &str| s.replace(&root, "");
         Outcome {
             output: strip(&run.output),
@@ -872,9 +979,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("gone.rs").display().to_string();
         let parsed = parse("show").unwrap();
-        let err = run(&parsed, "show", std::slice::from_ref(&missing))
-            .result
-            .unwrap_err();
+        let err = run(
+            &parsed,
+            "show",
+            std::slice::from_ref(&missing),
+            &Options::default(),
+        )
+        .result
+        .unwrap_err();
         assert!(
             err.render("show")
                 .starts_with(&format!("error: cannot read {missing}: "))
@@ -888,9 +1000,14 @@ mod tests {
         fs::write(&path, [0xff, 0xfe, b'\n']).unwrap();
         let path = path.display().to_string();
         let parsed = parse("show").unwrap();
-        let err = run(&parsed, "show", std::slice::from_ref(&path))
-            .result
-            .unwrap_err();
+        let err = run(
+            &parsed,
+            "show",
+            std::slice::from_ref(&path),
+            &Options::default(),
+        )
+        .result
+        .unwrap_err();
         assert_eq!(
             err.render("show"),
             format!("error: cannot read {path}: not valid UTF-8")
@@ -900,7 +1017,9 @@ mod tests {
     #[test]
     fn commands_need_files() {
         let parsed = parse("show 1").unwrap();
-        let err = run(&parsed, "show 1", &[]).result.unwrap_err();
+        let err = run(&parsed, "show 1", &[], &Options::default())
+            .result
+            .unwrap_err();
         assert_eq!(
             err.render("show 1"),
             "error: script:1:1: no files to edit; pass FILE arguments or use `file PATH`"
@@ -916,6 +1035,100 @@ mod tests {
         assert_eq!(
             exec(TEXT, "move 2 after 3").error(),
             "error: script:1:1: `move` is not yet supported"
+        );
+    }
+
+    const GUARD_ERROR: &str = "edit introduces a syntax error (use --force to apply anyway)";
+
+    #[test]
+    fn guard_rejects_new_syntax_errors() {
+        let out = guarded("a.rs", TEXT, "replace \"let y = 2;\" with \"let y = (2;\"");
+        let err = out.error();
+        assert!(err.starts_with("error: a.rs:3:"), "{err}");
+        assert!(err.contains(GUARD_ERROR), "{err}");
+        let excerpt: Vec<&str> = err.lines().skip(1).collect();
+        assert_eq!(excerpt.len(), 2, "{err}");
+        assert_eq!(excerpt[0], "3:    let y = (2;");
+        assert!(excerpt[1].trim_start() == "^", "{err}");
+    }
+
+    #[test]
+    fn guard_points_at_the_edited_text() {
+        let text = "fn a() {\n    let x = (1;\n}\n\nfn b() {\n    let y = 2;\n}\n";
+        let out = guarded("a.rs", text, "replace \"let y = 2;\" with \"let y = [2;\"");
+        assert!(out.error().starts_with("error: a.rs:6:"), "{}", out.error());
+    }
+
+    #[test]
+    fn guard_allows_errors_that_were_already_there() {
+        let text = "fn a() {\n    let x = (1;\n}\n\nfn b() {\n    let y = 2;\n}\n";
+        let out = guarded("a.rs", text, "replace \"let y = 2;\" with \"let y = 3;\"");
+        assert_eq!(
+            out.new_text(),
+            "fn a() {\n    let x = (1;\n}\n\nfn b() {\n    let y = 3;\n}\n"
+        );
+    }
+
+    #[test]
+    fn guard_skips_files_without_a_language() {
+        let out = guarded("a.txt", TEXT, "replace \"let y = 2;\" with \"(\"");
+        assert!(out.result.is_ok(), "{}", out.error());
+    }
+
+    #[test]
+    fn force_skips_the_guard() {
+        let out = exec(TEXT, "replace \"let y = 2;\" with \"(\"");
+        assert!(out.new_text().contains("    (\n"), "{:?}", out.result);
+    }
+
+    #[test]
+    fn lang_option_overrides_detection() {
+        let script = "replace \"let y = 2;\" with \"let y = (2;\"";
+        let out = guarded("a.txt", TEXT, script);
+        assert!(out.result.is_ok());
+        let rust = Options {
+            lang: Some(Language::Rust),
+            ..Options::default()
+        };
+        let out = exec_with_options(&[("a.txt", TEXT)], 1, script, &rust);
+        assert!(
+            out.error().starts_with("error: a.txt:3:"),
+            "{}",
+            out.error()
+        );
+        let python = Options {
+            lang: Some(Language::Python),
+            ..Options::default()
+        };
+        let out = exec_with_options(
+            &[("a.rs", "x = 1\n")],
+            1,
+            "replace 1 with \"y = 2\"",
+            &python,
+        );
+        assert_eq!(out.new_text(), "y = 2\n");
+    }
+
+    #[test]
+    fn go_files_default_to_tab_indents() {
+        let text = "package a\n\nfunc f() {\n}\n";
+        let out = exec_with(
+            &[("a.go", text)],
+            1,
+            "insert after 3 \"if x {\\n    y()\\n}\"",
+        );
+        assert_eq!(
+            out.new_text(),
+            "package a\n\nfunc f() {\nif x {\n\ty()\n}\n}\n"
+        );
+        let out = exec_with(
+            &[("a.txt", text)],
+            1,
+            "insert after 3 \"if x {\\n\\ty()\\n}\"",
+        );
+        assert_eq!(
+            out.new_text(),
+            "package a\n\nfunc f() {\nif x {\n    y()\n}\n}\n"
         );
     }
 }

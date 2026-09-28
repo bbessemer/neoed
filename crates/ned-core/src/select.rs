@@ -1,11 +1,14 @@
 //! Resolving selectors to spans of files (command-language spec, §3).
 
+use std::cell::OnceCell;
 use std::ops::Range;
 
 use regex::Regex;
+use tree_sitter::Tree;
 
 use crate::buffer::{Buffer, LineEnding};
 use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
+use crate::lang::Language;
 use crate::script::ast::{LineNo, Part, Primary, Step, Target, TextKind};
 use crate::text::{full_lines, strip_indent};
 
@@ -17,16 +20,27 @@ pub struct SourceFile {
     pub path: String,
     pub text: String,
     pub buffer: Buffer,
+    pub lang: Option<Language>,
+    tree: OnceCell<Tree>,
 }
 
 impl SourceFile {
-    pub fn new(path: impl Into<String>, text: String) -> Self {
+    pub fn new(path: impl Into<String>, text: String, lang: Option<Language>) -> Self {
         let buffer = Buffer::new(&text);
         SourceFile {
             path: path.into(),
             text,
             buffer,
+            lang,
+            tree: OnceCell::new(),
         }
+    }
+
+    /// The syntax tree of the text, parsed on first use; `None` without a
+    /// language.
+    pub fn tree(&self) -> Option<&Tree> {
+        let lang = self.lang?;
+        Some(self.tree.get_or_init(|| lang.parse(&self.text)))
     }
 }
 
@@ -362,7 +376,7 @@ mod tests {
     fn files(texts: &[(&str, &str)]) -> Vec<SourceFile> {
         texts
             .iter()
-            .map(|(path, text)| SourceFile::new(*path, text.to_string()))
+            .map(|(path, text)| SourceFile::new(*path, text.to_string(), None))
             .collect()
     }
 

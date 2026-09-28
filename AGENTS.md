@@ -116,9 +116,10 @@ Spec signed off. `ned-core` has the buffer (`buffer`), edit set (`edit`),
 atomic multi-file write (`fs`), diff rendering (`diff`), the script lexer,
 parser, and error rendering (`script::parse`), and line/regex/literal selector
 resolution (`select`), whole-line/re-basing text helpers (`text`), and the
-executor that runs a script over the file set (`exec::run`). The CLI edits
-files end to end with line, regex, and literal selectors. Next: tree-sitter
-integration (TODO.md §5).
+executor that runs a script over the file set (`exec::run`), language
+detection and parsing (`lang`), and the parse-error guard. The CLI edits files
+end to end with line, regex, and literal selectors. Next: Rust syntax
+selectors (TODO.md §5).
 
 ## Key Documentation
 

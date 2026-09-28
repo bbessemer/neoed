@@ -47,13 +47,13 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 
 ## 5. Tree-sitter integration _(split)_
 
-- [ ] Language detection (extension, shebang, `--lang`) and grammar registry
-- [ ] `queries/<lang>/selectors.scm` for Rust, Python, TypeScript, JavaScript, Go
+- [x] Language detection (extension, shebang, `--lang`) and grammar registry
+- [ ] `queries/rust/selectors.scm` (other languages: §12)
 - [ ] Syntax selectors, nesting, and parts; ambiguity errors with candidates
 - [ ] `outline` verb (compact symbol tree with line numbers)
-- [ ] Parse-error guard (reject new ERROR/MISSING nodes unless `--force`)
-- [ ] Re-basing cases that need syntax: empty spans (enclosing item's indent)
-      and the Go tab default
+- [x] Parse-error guard (reject new ERROR/MISSING nodes unless `--force`)
+- [x] Go tab default for re-basing
+- [ ] Re-basing empty spans (enclosing item's indent)
 - [ ] Raw tree-sitter query selector
 
 ## 6. Formatting
@@ -97,6 +97,11 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 
 ## 12. Release
 
+- [ ] Syntax selectors and `outline` for Python, TypeScript, TSX, JavaScript,
+      Go: query files, a test per kind and part, spec notes. Decided: Python
+      `.doc` is the docstring; in JS/TS, `const f = () => {}` (or
+      `= function () {}`) is both `fn:f` and `const:f` (outline lists it once,
+      as `fn`), `const` declarations are `const`, and `let`/`var` are `var`
 - [ ] CI (build, test, clippy, fmt) on Linux and macOS
 - [ ] Release binaries and install instructions
 - [ ] Choose a license

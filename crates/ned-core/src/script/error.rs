@@ -69,23 +69,32 @@ impl ParseError {
     /// Renders the error as `error: script:LINE:COL: message`, followed by the
     /// offending script line and a caret under the error's start.
     pub fn render(&self, src: &str) -> String {
-        let (line_no, column) = location(src, self.span.start);
-        let header = format!("error: script:{line_no}:{column}: {}", self.kind);
-        let offset = self.span.start.min(src.len());
-        let start = src[..offset].rfind('\n').map_or(0, |i| i + 1);
-        if start == src.len() {
-            return header;
+        let (line, column) = location(src, self.span.start);
+        let header = format!("error: script:{line}:{column}: {}", self.kind);
+        match excerpt(src, self.span.start) {
+            Some(excerpt) => format!("{header}\n{excerpt}"),
+            None => header,
         }
-        let line = src[start..].split('\n').next().unwrap_or_default();
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        let label = format!("{line_no}:");
-        let pad: String = " ".repeat(label.len())
-            + &src[start..offset]
-                .chars()
-                .map(|c| if c == '\t' { '\t' } else { ' ' })
-                .collect::<String>();
-        format!("{header}\n{label}{line}\n{pad}^")
     }
+}
+
+/// The line of `src` holding byte `offset`, labelled `LINE:`, and a caret
+/// under `offset`; `None` if `offset` is past the last line.
+pub fn excerpt(src: &str, offset: usize) -> Option<String> {
+    let offset = offset.min(src.len());
+    let start = src[..offset].rfind('\n').map_or(0, |i| i + 1);
+    if start == src.len() {
+        return None;
+    }
+    let line = src[start..].split('\n').next().unwrap_or_default();
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let label = format!("{}:", location(src, offset).0);
+    let pad: String = " ".repeat(label.len())
+        + &src[start..offset]
+            .chars()
+            .map(|c| if c == '\t' { '\t' } else { ' ' })
+            .collect::<String>();
+    Some(format!("{label}{line}\n{pad}^"))
 }
 
 /// The 1-based line and column of byte `offset` in `src`, where the column
