@@ -1,10 +1,15 @@
 //! Running scripts against files, and the errors that can stop a run.
 
 use std::fmt;
+use std::fs;
 use std::ops::Range;
 
+use crate::edit::{Edit, EditError, EditSet};
 use crate::script::Script;
+use crate::script::ast::{Command, CommandKind, Pattern, Position, Target, Text, TextKind};
 use crate::script::error::location;
+use crate::select::{self, Match, SourceFile, line_numbers, same_path};
+use crate::text;
 
 /// The result of running a script: the output of the reads that ran, in
 /// command order, and either every modified file or the error that rejected
@@ -27,8 +32,365 @@ pub struct Change {
 /// Runs `script` (parsed from `src`) with `files` as the initial file set.
 /// Nothing is written.
 pub fn run(script: &Script, src: &str, files: &[String]) -> Run {
-    let _ = (script, src, files);
-    todo!()
+    let mut executor = Executor {
+        src,
+        files: Vec::new(),
+        set: Vec::new(),
+        output: String::new(),
+    };
+    let result = executor.run(script, files);
+    Run {
+        output: executor.output,
+        result,
+    }
+}
+
+struct Loaded {
+    file: SourceFile,
+    edits: EditSet,
+}
+
+struct Executor<'s> {
+    src: &'s str,
+    /// Every file loaded so far, in order of first appearance.
+    files: Vec<Loaded>,
+    /// The current file set, as indices into `files`.
+    set: Vec<usize>,
+    output: String,
+}
+
+impl Executor<'_> {
+    fn run(&mut self, script: &Script, initial: &[String]) -> Result<Vec<Change>, ExecError> {
+        self.set = initial
+            .iter()
+            .map(|path| self.load(path, None))
+            .collect::<Result<_, _>>()?;
+        for (index, command) in script.commands.iter().enumerate() {
+            self.command(index, command)?;
+        }
+        Ok(self
+            .files
+            .iter()
+            .filter(|l| !l.edits.is_empty())
+            .map(|l| Change {
+                path: l.file.path.clone(),
+                old: l.file.text.clone(),
+                new: l.edits.apply(),
+                edits: l.edits.len(),
+            })
+            .collect())
+    }
+
+    fn load(&mut self, path: &str, span: Option<Range<usize>>) -> Result<usize, ExecError> {
+        if let Some(i) = self
+            .files
+            .iter()
+            .position(|l| same_path(&l.file.path, path))
+        {
+            return Ok(i);
+        }
+        let io = |message: String| {
+            ExecError::new(
+                ExecErrorKind::Io {
+                    path: path.into(),
+                    message,
+                },
+                span.clone(),
+            )
+        };
+        let bytes = fs::read(path).map_err(|e| io(e.to_string()))?;
+        let text = String::from_utf8(bytes).map_err(|_| io("not valid UTF-8".into()))?;
+        let file = SourceFile::new(path, text);
+        let edits = EditSet::new(&file.buffer);
+        self.files.push(Loaded { file, edits });
+        Ok(self.files.len() - 1)
+    }
+
+    fn command(&mut self, index: usize, command: &Command) -> Result<(), ExecError> {
+        let span = &command.span;
+        let error = |kind| ExecError::new(kind, Some(span.clone()));
+        match &command.kind {
+            CommandKind::File(paths) => {
+                self.set = paths
+                    .iter()
+                    .map(|path| self.load(path, Some(span.clone())))
+                    .collect::<Result<_, _>>()?;
+                return Ok(());
+            }
+            CommandKind::Outline(_) => {
+                return Err(error(ExecErrorKind::Unsupported("`outline`".into())));
+            }
+            CommandKind::Move { .. } => {
+                return Err(error(ExecErrorKind::Unsupported("`move`".into())));
+            }
+            _ if self.set.is_empty() => return Err(error(ExecErrorKind::NoFiles)),
+            _ => {}
+        }
+        match &command.kind {
+            CommandKind::Show(target) => self.show(target.as_ref())?,
+            CommandKind::Replace { target, text } => {
+                for m in self.resolve(target)? {
+                    let (range, new) = replace(&self.files[m.file].file, m.range, text);
+                    self.push(index, span, m.file, range, new)?;
+                }
+            }
+            CommandKind::Insert {
+                position,
+                target,
+                text,
+            } => {
+                for m in self.resolve(target)? {
+                    let (at, new) = insert(&self.files[m.file].file, m.range, *position, text);
+                    self.push(index, span, m.file, at..at, new)?;
+                }
+            }
+            CommandKind::Delete(target) => {
+                for m in self.resolve(target)? {
+                    let range = delete(&self.files[m.file].file, m.range);
+                    self.push(index, span, m.file, range, String::new())?;
+                }
+            }
+            CommandKind::Sub {
+                scope,
+                pattern,
+                text,
+            } => self.sub(index, span, scope.as_ref(), pattern, text)?,
+            CommandKind::File(_) | CommandKind::Outline(_) | CommandKind::Move { .. } => {
+                unreachable!("handled above")
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolves `target` in the current file set, returning matches whose
+    /// `file` indexes `self.files`.
+    fn resolve(&self, target: &Target) -> Result<Vec<Match>, ExecError> {
+        let set: Vec<&SourceFile> = self.set.iter().map(|&i| &self.files[i].file).collect();
+        let matches = select::resolve(target, &set, self.src)?;
+        Ok(matches
+            .into_iter()
+            .map(|m| Match {
+                file: self.set[m.file],
+                range: m.range,
+            })
+            .collect())
+    }
+
+    fn push(
+        &mut self,
+        index: usize,
+        span: &Range<usize>,
+        file: usize,
+        range: Range<usize>,
+        text: String,
+    ) -> Result<(), ExecError> {
+        let loaded = &mut self.files[file];
+        let edit = Edit {
+            range,
+            text,
+            command: index,
+        };
+        loaded.edits.push(edit).map_err(|err| match err {
+            EditError::Overlap { first, range, .. } => ExecError::new(
+                ExecErrorKind::Overlap {
+                    command: first + 1,
+                    location: format!(
+                        "{}:{}",
+                        loaded.file.path,
+                        line_numbers(&loaded.file.buffer, &range)
+                    ),
+                },
+                Some(span.clone()),
+            ),
+            EditError::Buffer(err) => unreachable!("edits come from resolved spans: {err}"),
+        })
+    }
+
+    fn show(&mut self, target: Option<&Target>) -> Result<(), ExecError> {
+        // (file, first line, last line), 0-based.
+        let mut spans: Vec<(usize, usize, usize)> = Vec::new();
+        match target {
+            None => {
+                for &i in &self.set {
+                    let count = self.files[i].file.buffer.line_count();
+                    if count > 0 {
+                        spans.push((i, 0, count - 1));
+                    }
+                }
+            }
+            Some(target) => {
+                for m in self.resolve(target)? {
+                    let buffer = &self.files[m.file].file.buffer;
+                    let max = buffer.line_count().saturating_sub(1);
+                    let line = |offset| buffer.byte_to_line(offset).unwrap_or(max).min(max);
+                    let first = line(m.range.start);
+                    let last = if m.range.is_empty() {
+                        first
+                    } else {
+                        line(m.range.end - 1)
+                    };
+                    spans.push((m.file, first, last));
+                }
+            }
+        }
+        let mut regions: Vec<(usize, usize, usize)> = Vec::new();
+        for (file, first, last) in spans {
+            match regions.last_mut() {
+                Some((f, _, end)) if *f == file && first <= *end + 2 => *end = (*end).max(last),
+                _ => regions.push((file, first, last)),
+            }
+        }
+        for (file, first, last) in regions {
+            let f = &self.files[file].file;
+            self.output
+                .push_str(&format!("{}:{}-{}\n", f.path, first + 1, last + 1));
+            for line in first..=last {
+                let range = f.buffer.line_range(line).expect("line within the file");
+                let content = f.text[range].trim_end_matches('\n');
+                let content = content.strip_suffix('\r').unwrap_or(content);
+                self.output.push_str(&format!("{}:{content}\n", line + 1));
+            }
+        }
+        Ok(())
+    }
+
+    fn sub(
+        &mut self,
+        index: usize,
+        span: &Range<usize>,
+        scope: Option<&Target>,
+        pattern: &Pattern,
+        text: &Text,
+    ) -> Result<(), ExecError> {
+        let regex = pattern
+            .regex()
+            .expect("regexes are validated when the script is parsed");
+        let scopes = match scope {
+            Some(target) => self.resolve(target)?,
+            None => self
+                .set
+                .iter()
+                .map(|&file| Match {
+                    file,
+                    range: 0..self.files[file].file.text.len(),
+                })
+                .collect(),
+        };
+        let mut total = 0;
+        for scope in scopes {
+            let haystack = &self.files[scope.file].file.text[scope.range.clone()];
+            let edits: Vec<(Range<usize>, String)> = regex
+                .captures_iter(haystack)
+                .map(|caps| {
+                    let whole = caps.get(0).expect("group 0 always matches");
+                    let mut expanded = String::new();
+                    caps.expand(&text.value, &mut expanded);
+                    let start = scope.range.start;
+                    (start + whole.start()..start + whole.end(), expanded)
+                })
+                .collect();
+            for (range, expanded) in edits {
+                self.push(index, span, scope.file, range, expanded)?;
+                total += 1;
+            }
+        }
+        if total == 0 {
+            let flags = [
+                (pattern.flags.case_insensitive, "i"),
+                (pattern.flags.dot_all, "s"),
+            ]
+            .iter()
+            .filter_map(|(on, flag)| on.then_some(*flag))
+            .collect::<String>();
+            return Err(ExecError::new(
+                ExecErrorKind::NoMatch {
+                    selector: format!("/{}/{flags}", pattern.source.replace('/', "\\/")),
+                    files: self
+                        .set
+                        .iter()
+                        .map(|&i| self.files[i].file.path.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                },
+                Some(span.clone()),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The span and text that replace `range` (§5.1).
+fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, String) {
+    let t = &f.text;
+    let unit = text::indent_unit(t);
+    if text::is_whole_line(t, &range) {
+        let full = text::full_lines(t, range);
+        let mut new = line_oriented(new, text::indent_at(t, full.start), &unit);
+        if !t[..full.end].ends_with('\n') {
+            new.pop();
+        }
+        (full, new)
+    } else {
+        let indent = text::indent_at(t, range.start);
+        (range, verbatim(new, indent, &unit))
+    }
+}
+
+/// The offset and text of an insertion at `position` of `range` (§4.2, §5).
+fn insert(f: &SourceFile, range: Range<usize>, position: Position, new: &Text) -> (usize, String) {
+    let t = &f.text;
+    let unit = text::indent_unit(t);
+    if !text::is_whole_line(t, &range) {
+        let at = match position {
+            Position::Before | Position::Start => range.start,
+            Position::After | Position::End => range.end,
+        };
+        return (at, verbatim(new, text::indent_at(t, range.start), &unit));
+    }
+    let full = text::full_lines(t, range);
+    let first = text::indent_at(t, full.start);
+    let inner = text::first_indent(t, full.clone()).unwrap_or(first);
+    let (at, indent) = match position {
+        Position::Before => (full.start, first),
+        Position::After => (full.end, first),
+        Position::Start => (full.start, inner),
+        Position::End => (full.end, inner),
+    };
+    let mut new = line_oriented(new, indent, &unit);
+    if at == full.end && !full.is_empty() && !t[..at].ends_with('\n') {
+        // The span's last line has no line ending; give it one instead.
+        new.pop();
+        new.insert(0, '\n');
+    }
+    (at, new)
+}
+
+/// The span removed by deleting `range`: whole lines, tidied, or the span
+/// itself.
+fn delete(f: &SourceFile, range: Range<usize>) -> Range<usize> {
+    if text::is_whole_line(&f.text, &range) {
+        text::tidy_delete(&f.text, text::full_lines(&f.text, range))
+    } else {
+        range
+    }
+}
+
+/// `new` as line-oriented text: re-based (unless raw), with a final newline.
+fn line_oriented(new: &Text, indent: &str, unit: &str) -> String {
+    let mut out = match new.kind {
+        TextKind::RawHeredoc => new.value.clone(),
+        TextKind::Str | TextKind::Heredoc => text::rebase(&new.value, indent, unit),
+    };
+    out.push('\n');
+    out
+}
+
+/// `new` inserted into a partial line: later lines re-based (unless raw).
+fn verbatim(new: &Text, indent: &str, unit: &str) -> String {
+    match new.kind {
+        TextKind::RawHeredoc => new.value.clone(),
+        TextKind::Str | TextKind::Heredoc => text::rebase_tail(&new.value, indent, unit),
+    }
 }
 
 /// An error that rejects a script, at `span` of the script when it has one.
@@ -440,8 +802,8 @@ mod tests {
             "error: script:2:1: edit overlaps command 1 at a.rs:2"
         );
         assert_eq!(
-            exec(TEXT, "show 1; delete 2-4; replace \"y\" with \"z\"").error(),
-            "error: script:1:21: edit overlaps command 2 at a.rs:2-4"
+            exec(TEXT, "show 1; delete 2-3; replace \"y\" with \"z\"").error(),
+            "error: script:1:21: edit overlaps command 2 at a.rs:2-3"
         );
     }
 

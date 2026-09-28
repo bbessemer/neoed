@@ -294,7 +294,7 @@ fn heredoc_matches<'w>(body: &[String], raw: bool, window: impl Iterator<Item = 
     true
 }
 
-fn same_path(a: &str, b: &str) -> bool {
+pub(crate) fn same_path(a: &str, b: &str) -> bool {
     a.strip_prefix("./").unwrap_or(a) == b.strip_prefix("./").unwrap_or(b)
 }
 
