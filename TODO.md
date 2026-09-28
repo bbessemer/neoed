@@ -41,7 +41,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 
 - [x] Line/range/regex/literal selector resolution
 - [ ] Verbs: `show`, `replace`, `insert`, `delete`, `sub`
-- [ ] Indentation re-basing for inserted/replaced blocks
+- [x] Indentation re-basing for inserted/replaced blocks
 - [ ] CLI wiring: args, stdin script, multiple files, exit codes
 - [ ] E2E snapshot tests in `crates/ned-cli/tests/`
 
@@ -100,3 +100,9 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] CI (build, test, clippy, fmt) on Linux and macOS
 - [ ] Release binaries and install instructions
 - [ ] Choose a license
+
+## Future improvements
+
+- [ ] Smarter indent conversion in re-basing: normalize space widths (e.g.
+      2-space text into a 4-space file), detect alignment (continuation lines
+      aligned to a delimiter rather than indented by levels) and preserve it
