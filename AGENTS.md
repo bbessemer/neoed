@@ -119,8 +119,8 @@ resolution (`select`), whole-line/re-basing text helpers (`text`), and the
 executor that runs a script over the file set (`exec::run`), language
 detection and parsing (`lang`), the parse-error guard, and syntax items from
 `queries/<lang>/selectors.scm` (`syntax`; Rust only). The CLI edits files end
-to end with line, regex, literal, and Rust `kind:name` selectors. Next: parts
-(TODO.md §5).
+to end with line, regex, literal, and Rust `kind:name` selectors, including
+parts. Next: `outline` and `query{}` (TODO.md §5).
 
 ## Key Documentation
 
