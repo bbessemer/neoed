@@ -295,8 +295,8 @@ fn ambiguous_selector_exits_1() {
     --- stdout
     --- stderr
     error: script:1:8: /pub fn/ matches 2 items; add `all` or use one of:
-      10>/pub fn/   parser.rs:10
-      14>/pub fn/   parser.rs:14
+      fn:new>/pub fn/     parser.rs:10
+      fn:parse>/pub fn/   parser.rs:14
     ");
     assert_eq!(read(&dir, "parser.rs"), PARSER);
 }
@@ -483,4 +483,62 @@ fn unknown_lang_exits_2() {
         ),
         "{out}"
     );
+}
+
+#[test]
+fn syntax_selector_scopes_a_literal() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let script = r#"replace fn:parse>"unexpected end" with "unexpected end of input""#;
+    let out = ned(dir.path(), &["parser.rs", "-e", script], "");
+    assert_snapshot!(out, @r#"
+    exit: 0
+    --- stdout
+    parser.rs: 1 edit, +1 -1
+    @@ -14,3 +14,3 @@
+         pub fn parse(&mut self) -> Result<Ast, Error> {
+    -        let tok = self.next().expect("unexpected end");
+    +        let tok = self.next().expect("unexpected end of input");
+             self.parse_expr(tok)
+    --- stderr
+    "#);
+}
+
+#[test]
+fn delete_function_tidies_blank_line() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let out = ned(dir.path(), &["parser.rs", "-e", "delete fn:debug_dump"], "");
+    assert_snapshot!(out, @r#"
+    exit: 0
+    --- stdout
+    parser.rs: 1 edit, +0 -4
+    @@ -17,6 +17,2 @@
+         }
+    -
+    -    fn debug_dump(&self) {
+    -        eprintln!("{}", self.src);
+    -    }
+     }
+    --- stderr
+    "#);
+}
+
+#[test]
+fn ambiguous_syntax_selector_lists_candidates() {
+    let dir = dir_with(&[
+        ("parser.rs", PARSER),
+        ("lexer.rs", "impl Lexer {\n    fn new() {}\n}\n"),
+    ]);
+    let out = ned(
+        dir.path(),
+        &["parser.rs", "lexer.rs", "-e", "delete fn:new"],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: script:1:8: fn:new matches 2 items; add `all` or use one of:
+      impl:Parser>fn:new   parser.rs:10-12
+      impl:Lexer>fn:new    lexer.rs:2
+    ");
 }

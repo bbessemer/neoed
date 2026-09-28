@@ -4,7 +4,9 @@ use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
 
-use tree_sitter::{Parser, Tree};
+use std::sync::OnceLock;
+
+use tree_sitter::{Parser, Query, Tree};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
@@ -70,6 +72,19 @@ impl Language {
             Language::Go => "\t",
             _ => "    ",
         }
+    }
+
+    /// The compiled selector query, `queries/<lang>/selectors.scm`; `None`
+    /// until the language has one.
+    pub fn selectors(self) -> Option<&'static Query> {
+        static QUERIES: [OnceLock<Query>; 6] = [const { OnceLock::new() }; 6];
+        let source = match self {
+            Language::Rust => include_str!("../../../queries/rust/selectors.scm"),
+            _ => return None,
+        };
+        Some(QUERIES[self as usize].get_or_init(|| {
+            Query::new(&self.grammar(), source).expect("selector queries are valid")
+        }))
     }
 
     pub fn parse(self, text: &str) -> Tree {

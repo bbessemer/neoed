@@ -341,6 +341,7 @@ impl Executor<'_> {
                         .map(|&i| self.files[i].file.path.as_str())
                         .collect::<Vec<_>>()
                         .join(", "),
+                    hint: String::new(),
                 },
                 Some(span.clone()),
             ));
@@ -410,6 +411,23 @@ fn indent_unit(f: &SourceFile) -> String {
 /// The span and text that replace `range` (§5.1).
 fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, String) {
     let t = &f.text;
+    let trailing_comma = f
+        .items()
+        .unwrap_or_default()
+        .iter()
+        .any(|i| i.range == range && i.trailing_comma);
+    let with_comma;
+    let new = if trailing_comma && !new.value.trim_end().ends_with(',') {
+        let mut value = new.value.clone();
+        value.insert(value.trim_end().len(), ',');
+        with_comma = Text {
+            value,
+            kind: new.kind,
+        };
+        &with_comma
+    } else {
+        new
+    };
     let unit = indent_unit(f);
     if text::is_whole_line(t, &range) {
         let full = text::full_lines(t, range);
@@ -491,8 +509,21 @@ pub struct ExecError {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExecErrorKind {
-    #[error("{selector} matches nothing in {files}")]
-    NoMatch { selector: String, files: String },
+    /// `hint` is empty, or `; did you mean SEL (LINES)?`.
+    #[error("{selector} matches nothing in {files}{hint}")]
+    NoMatch {
+        selector: String,
+        files: String,
+        hint: String,
+    },
+    #[error("{selector} needs a language, but {files} has none; use --lang")]
+    NoLanguage { selector: String, files: String },
+    #[error("{lang} has no `{kind}` items; use one of: {kinds}")]
+    UnknownKind {
+        kind: String,
+        lang: String,
+        kinds: String,
+    },
     #[error(
         "{selector} matches {} items; add `all` or use one of:{}",
         .candidates.total,
@@ -1129,6 +1160,24 @@ mod tests {
         assert_eq!(
             out.new_text(),
             "package a\n\nfunc f() {\nif x {\n    y()\n}\n}\n"
+        );
+    }
+
+    #[test]
+    fn replacing_an_item_keeps_its_trailing_comma() {
+        let text = "enum A {\n    B(u8),\n    C,\n}\n";
+        assert_eq!(
+            edited(text, "replace variant:B with \"D\""),
+            "enum A {\n    D,\n    C,\n}\n"
+        );
+        assert_eq!(
+            edited(text, "replace variant:B with \"D,\""),
+            "enum A {\n    D,\n    C,\n}\n"
+        );
+        assert_eq!(edited(text, "delete variant:B"), "enum A {\n    C,\n}\n");
+        assert_eq!(
+            edited(text, "replace 2 with \"D\""),
+            "enum A {\n    D\n    C,\n}\n"
         );
     }
 }
