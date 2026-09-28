@@ -295,8 +295,8 @@ fn ambiguous_selector_exits_1() {
     --- stdout
     --- stderr
     error: script:1:8: /pub fn/ matches 2 items; add `all` or use one of:
-      10>/pub fn/   parser.rs:10
-      14>/pub fn/   parser.rs:14
+      fn:new>/pub fn/     parser.rs:10
+      fn:parse>/pub fn/   parser.rs:14
     ");
     assert_eq!(read(&dir, "parser.rs"), PARSER);
 }

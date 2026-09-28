@@ -411,6 +411,23 @@ fn indent_unit(f: &SourceFile) -> String {
 /// The span and text that replace `range` (§5.1).
 fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, String) {
     let t = &f.text;
+    let trailing_comma = f
+        .items()
+        .unwrap_or_default()
+        .iter()
+        .any(|i| i.range == range && i.trailing_comma);
+    let with_comma;
+    let new = if trailing_comma && !new.value.trim_end().ends_with(',') {
+        let mut value = new.value.clone();
+        value.insert(value.trim_end().len(), ',');
+        with_comma = Text {
+            value,
+            kind: new.kind,
+        };
+        &with_comma
+    } else {
+        new
+    };
     let unit = indent_unit(f);
     if text::is_whole_line(t, &range) {
         let full = text::full_lines(t, range);

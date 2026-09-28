@@ -7,9 +7,10 @@
 //! and attributes that extend an item's default span when they directly
 //! precede it.
 
+use std::cmp::Reverse;
 use std::ops::Range;
 
-use tree_sitter::{Query, Tree};
+use tree_sitter::{Node, Query, QueryCursor, StreamingIterator, Tree};
 
 /// The core kinds a query may capture.
 pub const KINDS: [&str; 14] = [
@@ -42,31 +43,143 @@ pub struct Item {
 
 /// Every item `query` finds in `tree`, ordered by start, outer items first.
 pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
-    let _ = (query, tree, text);
-    Vec::new()
+    let names = query.capture_names();
+    // (kind, item node, name node) for each match, and every @doc/@attr node.
+    let mut found: Vec<(&'static str, Node, Node)> = Vec::new();
+    let mut leading: Vec<Range<usize>> = Vec::new();
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
+    while let Some(m) = matches.next() {
+        let (mut item, mut name) = (None, None);
+        for capture in m.captures() {
+            match names[capture.index as usize] {
+                "name" => name = Some(capture.node),
+                "doc" | "attr" => leading.push(capture.node.byte_range()),
+                other => {
+                    if let Some(kind) = KINDS.iter().find(|&&k| k == other) {
+                        item = Some((*kind, capture.node));
+                    }
+                }
+            }
+        }
+        if let (Some((kind, node)), Some(name)) = (item, name) {
+            found.push((kind, node, name));
+        }
+    }
+    leading.sort_by_key(|r| r.start);
+
+    // A wrapper and the node it wraps can both match; keep the widest.
+    found.sort_by_key(|(kind, node, name)| {
+        (
+            *kind,
+            name.start_byte(),
+            node.start_byte(),
+            Reverse(node.end_byte()),
+        )
+    });
+    found.dedup_by(|b, a| a.0 == b.0 && a.2 == b.2);
+
+    let mut items: Vec<Item> = found
+        .into_iter()
+        .map(|(kind, node, name)| {
+            let mut range = node.byte_range();
+            let comma = node
+                .next_sibling()
+                .filter(|n| n.kind() == "," && !n.is_named())
+                .filter(|n| {
+                    text[range.end..n.start_byte()]
+                        .trim_matches([' ', '\t'])
+                        .is_empty()
+                });
+            if let Some(comma) = comma {
+                range.end = comma.end_byte();
+            }
+            while let Some(doc) = leading
+                .iter()
+                .rev()
+                .find(|l| l.end <= range.start && directly_before(text, l, range.start))
+            {
+                range.start = doc.start;
+            }
+            Item {
+                kind,
+                name: text[name.byte_range()].to_string(),
+                range,
+                trailing_comma: comma.is_some(),
+            }
+        })
+        .collect();
+    items.sort_by_key(|i| (i.range.start, Reverse(i.range.end)));
+    items
+}
+
+/// Whether only whitespace, and no blank line, separates `leading` from
+/// `start`.
+fn directly_before(text: &str, leading: &Range<usize>, start: usize) -> bool {
+    let gap = &text[leading.end..start];
+    let newlines = gap.matches('\n').count() + usize::from(text[..leading.end].ends_with('\n'));
+    gap.trim().is_empty() && newlines <= 1
 }
 
 /// The kinds `query` captures, in `KINDS` order.
 pub fn kinds(query: &Query) -> Vec<&'static str> {
-    let _ = query;
-    Vec::new()
+    let names = query.capture_names();
+    KINDS.into_iter().filter(|k| names.contains(k)).collect()
 }
 
 /// Whether `name` matches `pattern`, where `*` matches any run of characters.
 pub fn name_matches(pattern: &str, name: &str) -> bool {
-    pattern == name
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or_default();
+    let Some(mut rest) = name.strip_prefix(first) else {
+        return false;
+    };
+    let parts: Vec<&str> = parts.collect();
+    let Some((last, middle)) = parts.split_last() else {
+        return rest.is_empty();
+    };
+    for part in middle {
+        match rest.find(part) {
+            Some(i) => rest = &rest[i + part.len()..],
+            None => return false,
+        }
+    }
+    rest.len() >= last.len() && rest.ends_with(last)
 }
 
 /// `kind:name`, with the name quoted when it has characters a bare name can't.
 pub fn selector(kind: &str, name: &str) -> String {
-    format!("{kind}:{name}")
+    let bare = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '*');
+    if !name.is_empty() && name.chars().all(bare) {
+        format!("{kind}:{name}")
+    } else {
+        let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("{kind}:\"{escaped}\"")
+    }
 }
 
 /// The optimal string alignment distance between `a` and `b`: edits are
 /// insertions, deletions, substitutions and adjacent transpositions.
 pub fn distance(a: &str, b: &str) -> usize {
-    let _ = (a, b);
-    0
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    // d[i][j]: the distance between a[..i] and b[..j].
+    let mut d = vec![vec![0; b.len() + 1]; a.len() + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    d[0] = (0..=b.len()).collect();
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            d[i][j] = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+            }
+        }
+    }
+    d[a.len()][b.len()]
 }
 
 #[cfg(test)]

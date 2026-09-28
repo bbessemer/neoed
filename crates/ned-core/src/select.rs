@@ -78,8 +78,10 @@ pub fn resolve(target: &Target, files: &[&SourceFile], src: &str) -> Result<Vec<
             range: 0..f.text.len(),
         })
         .collect();
+    let mut parents = Vec::new();
     for step in &target.selector.steps {
-        matches = resolve_step(step, files, &matches).map_err(error)?;
+        let next = resolve_step(step, files, &matches).map_err(error)?;
+        parents = std::mem::replace(&mut matches, next);
     }
     let selector = &src[span.clone()];
     match matches.len() {
@@ -90,7 +92,12 @@ pub fn resolve(target: &Target, files: &[&SourceFile], src: &str) -> Result<Vec<
                 .map(|f| f.path.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
-            hint: String::new(),
+            hint: target
+                .selector
+                .steps
+                .last()
+                .map(|step| hint(step, files, &parents, selector))
+                .unwrap_or_default(),
         })),
         1 => Ok(matches),
         _ if target.all => Ok(matches),
@@ -173,7 +180,10 @@ impl<'a> Matcher<'a> {
                 }
                 Matcher::File(path)
             }
-            Primary::Syntax { kind, name } => Matcher::Syntax { kind, name },
+            Primary::Syntax { kind, name } => {
+                check_syntax(kind, name, files, parents)?;
+                Matcher::Syntax { kind, name }
+            }
             Primary::Query(_) => return Err(E::Unsupported("`query{}` selector".into())),
         })
     }
@@ -291,6 +301,87 @@ fn check_lines(
     Err(E::LineOutOfRange { line, files })
 }
 
+/// Fails unless some searched file has a language, and every searched
+/// language has selector items of `kind`.
+fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]) -> Result<(), E> {
+    let mut searched: Vec<usize> = parents.iter().map(|m| m.file).collect();
+    searched.dedup();
+    let mut any = false;
+    for &i in &searched {
+        let Some(lang) = files[i].lang else { continue };
+        let Some(query) = lang.selectors() else {
+            let selector = syntax::selector(kind, name);
+            return Err(E::Unsupported(format!("`{selector}` in {lang} files")));
+        };
+        let kinds = syntax::kinds(query);
+        if !kinds.contains(&kind) {
+            return Err(E::UnknownKind {
+                kind: kind.into(),
+                lang: lang.to_string(),
+                kinds: kinds.join(", "),
+            });
+        }
+        any = true;
+    }
+    if any || searched.is_empty() {
+        return Ok(());
+    }
+    Err(E::NoLanguage {
+        selector: syntax::selector(kind, name),
+        files: searched
+            .iter()
+            .map(|&i| files[i].path.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+    })
+}
+
+/// `; did you mean SEL (LINES)?`, naming the item closest in name to a syntax
+/// `step` that matched nothing within `parents`; empty if none is close.
+fn hint(step: &Step, files: &[&SourceFile], parents: &[Match], selector: &str) -> String {
+    let Primary::Syntax { kind, name } = &step.primary else {
+        return String::new();
+    };
+    if name.contains('*') {
+        return String::new();
+    }
+    let limit = (name.chars().count() / 3).max(2);
+    let best = parents
+        .iter()
+        .flat_map(|p| {
+            files[p.file]
+                .items()
+                .unwrap_or_default()
+                .iter()
+                .filter(|i| i.kind == kind && p.range.start <= i.range.start)
+                .filter(|i| i.range.end <= p.range.end)
+                .map(|i| (syntax::distance(name, &i.name), p.file, i))
+        })
+        .filter(|(d, ..)| *d <= limit)
+        .min_by_key(|(d, ..)| *d);
+    let Some((_, file, item)) = best else {
+        return String::new();
+    };
+    let written = syntax::selector(kind, name);
+    let fixed = syntax::selector(kind, &item.name);
+    let suggestion = match selector.rfind(&written) {
+        Some(i) => format!(
+            "{}{fixed}{}",
+            &selector[..i],
+            &selector[i + written.len()..]
+        ),
+        None => fixed,
+    };
+    let f = files[file];
+    let lines = line_numbers(&f.buffer, &item.range);
+    let location = if files.len() > 1 {
+        format!("{}:{lines}", f.path)
+    } else {
+        lines
+    };
+    format!("; did you mean {suggestion} ({location})?")
+}
+
 fn line_index(n: LineNo, count: usize) -> Option<usize> {
     match n {
         LineNo::Number(n) if (1..=count).contains(&n) => Some(n - 1),
@@ -345,28 +436,52 @@ fn part_name(part: Part) -> &'static str {
     }
 }
 
+/// A selector for each match (§3.5): nested in the match's nearest
+/// enclosing item if no other match shares it, otherwise scoped to its file
+/// if no other match shares that, otherwise to its lines.
 fn candidates(matches: &[Match], files: &[&SourceFile], selector: &str) -> Candidates {
+    let enclosing: Vec<Option<String>> = matches
+        .iter()
+        .map(|m| enclosing(files[m.file], &m.range))
+        .collect();
     let listed = matches
         .iter()
+        .zip(&enclosing)
         .take(MAX_CANDIDATES)
-        .map(|m| {
+        .map(|(m, item)| {
             let f = &files[m.file];
             let lines = line_numbers(&f.buffer, &m.range);
-            let scope = if files.len() > 1 {
-                format!("file:{}>", f.path)
-            } else {
-                String::new()
+            let unique_item = item.as_ref().filter(|&item| {
+                enclosing
+                    .iter()
+                    .filter(|e| e.as_ref() == Some(item))
+                    .count()
+                    == 1
+            });
+            let scope = match unique_item {
+                Some(item) => format!("{item}>"),
+                None if files.len() == 1 => format!("{lines}>"),
+                None if matches.iter().filter(|o| o.file == m.file).count() == 1 => {
+                    format!("file:{}>", f.path)
+                }
+                None => format!("file:{}>{lines}>", f.path),
             };
-            (
-                format!("{scope}{lines}>{selector}"),
-                format!("{}:{lines}", f.path),
-            )
+            (format!("{scope}{selector}"), format!("{}:{lines}", f.path))
         })
         .collect();
     Candidates {
         listed,
         total: matches.len(),
     }
+}
+
+/// The selector of the innermost item that strictly contains `range`.
+fn enclosing(f: &SourceFile, range: &Range<usize>) -> Option<String> {
+    f.items()?
+        .iter()
+        .rev()
+        .find(|i| i.range.start <= range.start && range.end <= i.range.end && i.range != *range)
+        .map(|i| syntax::selector(i.kind, &i.name))
 }
 
 /// The 1-based line or line range `range` touches, as a line selector.
@@ -693,8 +808,8 @@ mod tests {
         assert_eq!(
             error("delete /x/", &[("a.rs", "x\n"), ("b.rs", "y\nx\n")]),
             "error: script:1:8: /x/ matches 2 items; add `all` or use one of:\n  \
-             file:a.rs>1>/x/   a.rs:1\n  \
-             file:b.rs>2>/x/   b.rs:2"
+             file:a.rs>/x/   a.rs:1\n  \
+             file:b.rs>/x/   b.rs:2"
         );
     }
 
@@ -749,13 +864,13 @@ fn main() {
     fn syntax_selects_items_by_kind_and_name() {
         assert_eq!(
             select("delete fn:main", RUST),
-            ["fn main() {\n    let x = 1;\n}\n"]
+            ["fn main() {\n    let x = 1;\n}"]
         );
-        assert_eq!(select("delete import:std::fmt", RUST), ["use std::fmt;\n"]);
+        assert_eq!(select("delete import:std::fmt", RUST), ["use std::fmt;"]);
         assert_eq!(
             select("delete impl:Parser>fn:new", RUST),
             [
-                "    /// Makes a parser.\n    pub fn new(src: &str) -> Self {\n        Parser { src }\n    }\n"
+                "/// Makes a parser.\n    pub fn new(src: &str) -> Self {\n        Parser { src }\n    }"
             ]
         );
     }
@@ -769,10 +884,10 @@ fn main() {
 
     #[test]
     fn syntax_steps_nest_with_other_primaries() {
-        assert_eq!(select("delete fn:parse>/x/", RUST), ["x"]);
+        assert_eq!(select("delete fn:parse>/\\bx\\b/", RUST), ["x"]);
         assert_eq!(
             select("delete 14-18>fn:new", RUST),
-            ["    fn new() -> Self {\n        Lexer\n    }\n"]
+            ["fn new() -> Self {\n        Lexer\n    }"]
         );
         assert_eq!(select("delete all fn:*>var:x", RUST).len(), 2);
         assert_eq!(select("delete fn:main.lines", RUST).len(), 1);
