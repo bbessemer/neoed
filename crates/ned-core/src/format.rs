@@ -16,8 +16,6 @@ const DEFAULT_EDITION: &str = "2015";
 /// A file's formatter, ready to run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Formatter {
-    /// The basename of its program, as shown in the output.
-    pub name: String,
     /// Commands with placeholders and programs resolved, tried in order while
     /// the program isn't found.
     pub commands: Vec<Vec<String>>,
@@ -127,7 +125,6 @@ impl Formatters {
             Some((Entry::Command(command), base)) => (vec![command.clone()], Some(base)),
             None => (defaults(lang), None),
         };
-        let name = name(&commands[0][0]);
         let mut edition = None;
         let mut fill = |arg: &str| {
             let arg = arg.replace("{path}", &path.to_string_lossy());
@@ -148,11 +145,15 @@ impl Formatters {
                 command
             })
             .collect();
-        Ok(Some(Formatter {
-            name,
-            commands,
-            dir,
-        }))
+        Ok(Some(Formatter { commands, dir }))
+    }
+}
+
+impl Formatter {
+    /// Formats `text`, the new contents of the file at `path`.
+    fn format(&self, path: &str, text: &str) -> Outcome {
+        let _ = (path, text);
+        Outcome::Unchanged
     }
 }
 
@@ -360,7 +361,6 @@ mod tests {
         assert_eq!(
             rust,
             Formatter {
-                name: "rustfmt".into(),
                 commands: vec![argv(&["rustfmt", "--edition", "2015"])],
                 dir: root.path().join("src"),
             }
@@ -583,7 +583,6 @@ mod tests {
         let found = lookup(&root, None, "web/src/a.ts", Language::TypeScript)
             .unwrap()
             .unwrap();
-        assert_eq!(found.name, "prettier");
         assert_eq!(
             found.commands[0][0],
             at(&root, "node_modules/.bin/prettier")
@@ -603,11 +602,153 @@ mod tests {
         let found = lookup(&root, None, "sub/a.go", Language::Go)
             .unwrap()
             .unwrap();
-        assert_eq!(found.name, "fmt.sh");
         assert_eq!(found.commands, [argv(&[&at(&root, "tools/fmt.sh"), "-x"])]);
         assert_eq!(
             commands(&root, None, "sub/a.rs", Language::Rust),
             [argv(&["/bin/fmt"])]
         );
+    }
+
+    fn change(path: &Path, lang: Option<Language>, new: &str) -> Change {
+        Change {
+            path: path.to_str().unwrap().to_string(),
+            old: String::new(),
+            new: new.into(),
+            edits: 1,
+            lang,
+        }
+    }
+
+    fn formatted(name: &str, text: &str) -> Outcome {
+        Outcome::Formatted {
+            name: name.into(),
+            text: text.into(),
+        }
+    }
+
+    fn format_with(commands: &[&[&str]], text: &str) -> Outcome {
+        let formatter = Formatter {
+            commands: commands.iter().map(|c| argv(c)).collect(),
+            dir: env::temp_dir(),
+        };
+        formatter.format("src/a.rs", text)
+    }
+
+    #[test]
+    fn run_formats_each_change_in_order() {
+        let root = tree(&[(
+            ".ned.toml",
+            "[format]\nrust = [\"sh\", \"-c\", \"tr a-z A-Z\"]\ngo = [\"sh\", \"-c\", \"cat\"]\npython = false\n",
+        )]);
+        let changes = [
+            change(
+                &root.path().join("a.rs"),
+                Some(Language::Rust),
+                "fn f() {}\n",
+            ),
+            change(&root.path().join("a.go"), Some(Language::Go), "package a\n"),
+            change(&root.path().join("a.py"), Some(Language::Python), "x=1\n"),
+            change(&root.path().join("a.txt"), None, "text\n"),
+            change(
+                &root.path().join("b.rs"),
+                Some(Language::Rust),
+                "struct S;\n",
+            ),
+        ];
+        let outcomes = run(&changes, &mut Formatters::new(None).unwrap()).unwrap();
+        assert_eq!(
+            outcomes,
+            [
+                formatted("sh", "FN F() {}\n"),
+                Outcome::Unchanged,
+                Outcome::Unchanged,
+                Outcome::Unchanged,
+                formatted("sh", "STRUCT S;\n"),
+            ]
+        );
+    }
+
+    #[test]
+    fn run_reports_config_errors() {
+        let root = tree(&[(".ned.toml", "[format]\nrust = 1\n")]);
+        let changes = [change(&root.path().join("a.rs"), Some(Language::Rust), "")];
+        let err = run(&changes, &mut Formatters::new(None).unwrap()).unwrap_err();
+        assert_eq!(
+            err.message,
+            "`rust` must be a command (an array of strings) or false"
+        );
+    }
+
+    #[test]
+    fn a_missing_program_is_skipped() {
+        assert_eq!(
+            format_with(&[&["ned-no-such-formatter", "-q"]], "x\n"),
+            Outcome::Skipped("ned-no-such-formatter not found; skipped formatting src/a.rs".into())
+        );
+    }
+
+    #[test]
+    fn missing_programs_fall_back_to_the_next_command() {
+        assert_eq!(
+            format_with(&[&["ned-no-such-a"], &["sh", "-c", "tr a-z A-Z"]], "x\n"),
+            formatted("sh", "X\n")
+        );
+        assert_eq!(
+            format_with(&[&["ned-no-such-a"], &["/nowhere/ned-no-such-b"]], "x\n"),
+            Outcome::Skipped("ned-no-such-b not found; skipped formatting src/a.rs".into())
+        );
+    }
+
+    #[test]
+    fn a_failing_program_is_skipped_with_its_first_stderr_line() {
+        assert_eq!(
+            format_with(
+                &[&[
+                    "sh",
+                    "-c",
+                    "cat >/dev/null; echo 'bad input' >&2; echo more >&2; exit 3"
+                ]],
+                "x\n"
+            ),
+            Outcome::Skipped("sh failed: bad input; skipped formatting src/a.rs".into())
+        );
+        assert_eq!(
+            format_with(&[&["sh", "-c", "exit 1"]], "x\n"),
+            Outcome::Skipped("sh failed: exit status: 1; skipped formatting src/a.rs".into())
+        );
+    }
+
+    #[test]
+    fn non_utf8_output_is_a_failure() {
+        assert_eq!(
+            format_with(&[&["sh", "-c", "printf '\\377'"]], "x\n"),
+            Outcome::Skipped("sh failed: output is not UTF-8; skipped formatting src/a.rs".into())
+        );
+    }
+
+    #[test]
+    fn large_texts_pass_through_the_pipes() {
+        let text = "abc\n".repeat(1 << 18);
+        assert_eq!(
+            format_with(&[&["sh", "-c", "tr a-z A-Z"]], &text),
+            formatted("sh", &text.to_uppercase())
+        );
+        assert_eq!(format_with(&[&["cat"]], &text), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn formatters_run_in_the_file_directory() {
+        let root = tree(&[
+            (".ned.toml", "[format]\ngo = [\"sh\", \"-c\", \"pwd -P\"]\n"),
+            ("sub/keep", ""),
+        ]);
+        let changes = [change(
+            &root.path().join("sub/a.go"),
+            Some(Language::Go),
+            "",
+        )];
+        let outcomes = run(&changes, &mut Formatters::new(None).unwrap()).unwrap();
+        let dir = fs::canonicalize(root.path().join("sub")).unwrap();
+        assert_eq!(outcomes, [formatted("sh", &format!("{}\n", dir.display()))]);
     }
 }

@@ -1,6 +1,7 @@
 //! End-to-end tests of the `ned` binary against docs/command-language.md.
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Output;
 
@@ -44,11 +45,26 @@ fn dir_with(files: &[(&str, &str)]) -> TempDir {
     dir
 }
 
+/// A user config turning every formatter off, so only tests that configure
+/// one in a `.ned.toml` format anything.
+const NO_FORMATTERS: &str = "[format]
+rust = false
+python = false
+typescript = false
+tsx = false
+javascript = false
+go = false
+";
+
 /// Runs `ned ARGS` in `dir`, with `stdin` as its input, and reports the exit
 /// code, stdout, and stderr.
 fn ned(dir: &Path, args: &[&str], stdin: &str) -> String {
+    let config = tempfile::tempdir().unwrap();
+    fs::create_dir(config.path().join("ned")).unwrap();
+    fs::write(config.path().join("ned/config.toml"), NO_FORMATTERS).unwrap();
     let output = cargo_bin_cmd!("ned")
         .current_dir(dir)
+        .env("XDG_CONFIG_HOME", config.path())
         .args(args)
         .write_stdin(stdin)
         .output()
@@ -715,4 +731,145 @@ fn invalid_query_exits_2() {
     --- stderr
     error: script:1:6: invalid rust query: unknown node type `no_such_node` at column 2
     ");
+}
+
+const FN_A: &str = "fn f() {\n    a();\n}\n";
+
+/// A directory with `a.rs` (`FN_A`) and a fake Rust formatter, `fmt.sh`, that
+/// collapses `;;` to `;`.
+fn dir_with_formatter() -> TempDir {
+    let dir = dir_with(&[
+        ("a.rs", FN_A),
+        (".ned.toml", "[format]\nrust = [\"./fmt.sh\"]\n"),
+        ("fmt.sh", "#!/bin/sh\nsed 's/;;/;/'\n"),
+    ]);
+    let script = dir.path().join("fmt.sh");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    dir
+}
+
+const DOUBLE_SEMI: &str = r#"replace "a();" with "b();;""#;
+
+#[test]
+fn formatter_changes_follow_the_edit_hunks() {
+    let dir = dir_with_formatter();
+    let out = ned(dir.path(), &["a.rs", "-e", DOUBLE_SEMI], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs: 1 edit, +1 -1
+    @@ -1,3 +1,3 @@
+     fn f() {
+    -    a();
+    +    b();;
+     }
+    fmt fmt.sh: +1 -1
+    @@ -1,3 +1,3 @@
+     fn f() {
+    -    b();;
+    +    b();
+     }
+    --- stderr
+    ");
+    assert_eq!(read(&dir, "a.rs"), "fn f() {\n    b();\n}\n");
+}
+
+#[test]
+fn no_fmt_skips_formatting() {
+    let dir = dir_with_formatter();
+    let out = ned(
+        dir.path(),
+        &["--no-fmt", "-q", "a.rs", "-e", DOUBLE_SEMI],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs: 1 edit, +1 -1
+    --- stderr
+    ");
+    assert_eq!(read(&dir, "a.rs"), "fn f() {\n    b();;\n}\n");
+}
+
+#[test]
+fn quiet_keeps_the_fmt_header() {
+    let dir = dir_with_formatter();
+    let out = ned(dir.path(), &["-q", "a.rs", "-e", DOUBLE_SEMI], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs: 1 edit, +1 -1
+    fmt fmt.sh: +1 -1
+    --- stderr
+    ");
+}
+
+#[test]
+fn dry_run_formats_without_writing() {
+    let dir = dir_with_formatter();
+    let out = ned(dir.path(), &["-n", "-q", "a.rs", "-e", DOUBLE_SEMI], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    (dry run) a.rs: 1 edit, +1 -1
+    fmt fmt.sh: +1 -1
+    --- stderr
+    ");
+    assert_eq!(read(&dir, "a.rs"), FN_A);
+}
+
+#[test]
+fn missing_formatter_is_a_note() {
+    let dir = dir_with(&[
+        ("a.rs", FN_A),
+        (
+            ".ned.toml",
+            "[format]\nrust = [\"ned-no-such-formatter\"]\n",
+        ),
+    ]);
+    let out = ned(dir.path(), &["-q", "a.rs", "-e", DOUBLE_SEMI], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs: 1 edit, +1 -1
+    --- stderr
+    note: ned-no-such-formatter not found; skipped formatting a.rs
+    ");
+    assert_eq!(read(&dir, "a.rs"), "fn f() {\n    b();;\n}\n");
+}
+
+#[test]
+fn invalid_config_exits_2_and_writes_nothing() {
+    let dir = dir_with(&[
+        ("a.rs", FN_A),
+        (".ned.toml", "[format]\nruby = [\"rubocop\"]\n"),
+    ]);
+    let out = ned(dir.path(), &["a.rs", "-e", DOUBLE_SEMI], "");
+    assert_snapshot!(out, @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: .ned.toml:2:1: invalid config: unknown language `ruby`; expected one of rust, python, typescript, tsx, javascript, go
+    ");
+    assert_eq!(read(&dir, "a.rs"), FN_A);
+    let out = ned(
+        dir.path(),
+        &["--no-fmt", "-q", "a.rs", "-e", DOUBLE_SEMI],
+        "",
+    );
+    assert!(out.starts_with("exit: 0\n"), "{out}");
+}
+
+#[test]
+fn rustfmt_formats_rust_by_default() {
+    let dir = dir_with(&[
+        ("parser.rs", PARSER),
+        (
+            ".ned.toml",
+            "[format]\nrust = [\"rustfmt\", \"--edition\", \"{edition}\"]\n",
+        ),
+    ]);
+    let script = "insert after /pos: usize,/ \"extra:   u8,\"";
+    let out = ned(dir.path(), &["parser.rs", "-e", script], "");
+    assert_snapshot!(out, @"");
 }
