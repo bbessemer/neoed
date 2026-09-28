@@ -713,14 +713,170 @@ mod tests {
     }
 
     #[test]
-    fn syntax_query_and_parts_are_not_yet_supported() {
-        assert_eq!(
-            error("delete fn:parse", &[("a.rs", TEXT)]),
-            "error: script:1:8: syntax selector `fn:parse` is not yet supported"
-        );
+    fn query_and_parts_are_not_yet_supported() {
         for script in ["delete query{(identifier) @sel}", "delete /x/.body"] {
             let err = resolve_in(script, &files(&[("a.rs", TEXT)])).unwrap_err();
             assert!(matches!(err.kind, ExecErrorKind::Unsupported(_)), "{err:?}");
         }
+    }
+
+    const RUST: &str = "\
+use std::fmt;
+
+impl Parser {
+    /// Makes a parser.
+    pub fn new(src: &str) -> Self {
+        Parser { src }
+    }
+
+    fn parse(&mut self) {
+        let x = self.next();
+    }
+}
+
+impl Lexer {
+    fn new() -> Self {
+        Lexer
+    }
+}
+
+fn main() {
+    let x = 1;
+}
+";
+
+    #[test]
+    fn syntax_selects_items_by_kind_and_name() {
+        assert_eq!(
+            select("delete fn:main", RUST),
+            ["fn main() {\n    let x = 1;\n}\n"]
+        );
+        assert_eq!(select("delete import:std::fmt", RUST), ["use std::fmt;\n"]);
+        assert_eq!(
+            select("delete impl:Parser>fn:new", RUST),
+            [
+                "    /// Makes a parser.\n    pub fn new(src: &str) -> Self {\n        Parser { src }\n    }\n"
+            ]
+        );
+    }
+
+    #[test]
+    fn syntax_names_take_wildcards() {
+        assert_eq!(select("delete all fn:*a*", RUST).len(), 2);
+        assert_eq!(select("delete all impl:*er", RUST).len(), 2);
+        assert_eq!(select("delete all fn:*", RUST).len(), 4);
+    }
+
+    #[test]
+    fn syntax_steps_nest_with_other_primaries() {
+        assert_eq!(select("delete fn:parse>/x/", RUST), ["x"]);
+        assert_eq!(
+            select("delete 14-18>fn:new", RUST),
+            ["    fn new() -> Self {\n        Lexer\n    }\n"]
+        );
+        assert_eq!(select("delete all fn:*>var:x", RUST).len(), 2);
+        assert_eq!(select("delete fn:main.lines", RUST).len(), 1);
+    }
+
+    #[test]
+    fn ambiguous_syntax_selectors_suggest_enclosing_items() {
+        assert_eq!(
+            error("delete fn:new", &[("a.rs", RUST)]),
+            "error: script:1:8: fn:new matches 2 items; add `all` or use one of:\n  \
+             impl:Parser>fn:new   a.rs:4-7\n  \
+             impl:Lexer>fn:new    a.rs:15-17"
+        );
+        assert_eq!(
+            error("delete var:x", &[("a.rs", RUST)]),
+            "error: script:1:8: var:x matches 2 items; add `all` or use one of:\n  \
+             fn:parse>var:x   a.rs:10\n  \
+             fn:main>var:x    a.rs:21"
+        );
+    }
+
+    #[test]
+    fn candidates_fall_back_to_files_then_lines() {
+        let a = "fn new() {}\n";
+        assert_eq!(
+            error("delete fn:new", &[("a.rs", a), ("b.rs", a)]),
+            "error: script:1:8: fn:new matches 2 items; add `all` or use one of:\n  \
+             file:a.rs>fn:new   a.rs:1\n  \
+             file:b.rs>fn:new   b.rs:1"
+        );
+        let twice = "impl A {\n    fn f() {}\n}\nimpl A {\n    fn f() {}\n}\n";
+        assert_eq!(
+            error("delete fn:f", &[("a.rs", twice)]),
+            "error: script:1:8: fn:f matches 2 items; add `all` or use one of:\n  \
+             2>fn:f   a.rs:2\n  \
+             5>fn:f   a.rs:5"
+        );
+    }
+
+    #[test]
+    fn candidates_across_files_use_enclosing_items() {
+        let parser = "impl Parser {\n    fn new() {}\n}\n";
+        let lexer = "impl Lexer {\n    fn new() {}\n}\n";
+        assert_eq!(
+            error(
+                "delete fn:new",
+                &[("src/parser.rs", parser), ("src/lexer.rs", lexer)]
+            ),
+            "error: script:1:8: fn:new matches 2 items; add `all` or use one of:\n  \
+             impl:Parser>fn:new   src/parser.rs:2\n  \
+             impl:Lexer>fn:new    src/lexer.rs:2"
+        );
+    }
+
+    #[test]
+    fn no_match_suggests_a_close_name() {
+        assert_eq!(
+            error("delete fn:prase", &[("a.rs", RUST)]),
+            "error: script:1:8: fn:prase matches nothing in a.rs; did you mean fn:parse (9-11)?"
+        );
+        assert_eq!(
+            error("delete impl:Lexer>fn:nwe", &[("a.rs", RUST)]),
+            "error: script:1:8: impl:Lexer>fn:nwe matches nothing in a.rs; \
+             did you mean impl:Lexer>fn:new (15-17)?"
+        );
+        assert_eq!(
+            error(
+                "delete fn:new",
+                &[("a.rs", "fn old() {}\n"), ("b.rs", "fn neww() {}\n")]
+            ),
+            "error: script:1:8: fn:new matches nothing in a.rs, b.rs; did you mean fn:neww (b.rs:1)?"
+        );
+        assert_eq!(
+            error("delete fn:zzzzzz", &[("a.rs", RUST)]),
+            "error: script:1:8: fn:zzzzzz matches nothing in a.rs"
+        );
+    }
+
+    #[test]
+    fn unknown_kinds_list_the_languages_kinds() {
+        assert_eq!(
+            error("delete class:Parser", &[("a.rs", RUST)]),
+            "error: script:1:8: rust has no `class` items; use one of: \
+             fn, struct, enum, variant, trait, impl, type, const, var, field, mod, import"
+        );
+    }
+
+    #[test]
+    fn syntax_steps_need_a_language() {
+        assert_eq!(
+            error("delete fn:main", &[("a.txt", RUST), ("b.txt", RUST)]),
+            "error: script:1:8: fn:main needs a language, but a.txt, b.txt has none; use --lang"
+        );
+        let found =
+            resolve_in("delete fn:main", &files(&[("a.txt", RUST), ("b.rs", RUST)])).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].file, 1);
+    }
+
+    #[test]
+    fn syntax_steps_are_not_yet_supported_for_other_languages() {
+        assert_eq!(
+            error("delete fn:main", &[("a.py", "def main():\n    pass\n")]),
+            "error: script:1:8: `fn:main` in python files is not yet supported"
+        );
     }
 }

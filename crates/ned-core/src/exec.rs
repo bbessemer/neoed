@@ -1145,4 +1145,22 @@ mod tests {
             "package a\n\nfunc f() {\nif x {\n    y()\n}\n}\n"
         );
     }
+
+    #[test]
+    fn replacing_an_item_keeps_its_trailing_comma() {
+        let text = "enum A {\n    B(u8),\n    C,\n}\n";
+        assert_eq!(
+            edited(text, "replace variant:B with \"D\""),
+            "enum A {\n    D,\n    C,\n}\n"
+        );
+        assert_eq!(
+            edited(text, "replace variant:B with \"D,\""),
+            "enum A {\n    D,\n    C,\n}\n"
+        );
+        assert_eq!(edited(text, "delete variant:B"), "enum A {\n    C,\n}\n");
+        assert_eq!(
+            edited(text, "replace 2 with \"D\""),
+            "enum A {\n    D\n    C,\n}\n"
+        );
+    }
 }

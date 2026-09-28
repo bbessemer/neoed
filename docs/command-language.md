@@ -199,7 +199,12 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 - Using a kind the file's language doesn't support is an error that lists the
   kinds it does support.
 - A syntax item's default span is the **whole item as a reader sees it**,
-  including its leading doc comments and attributes or decorators.
+  including its leading doc comments and attributes or decorators, up to the
+  first blank line above it. A `,` directly after the item, on the same line,
+  is part of the span too (fields, variants). When `replace` targets such an
+  item and `TEXT` doesn't end with `,`, one is appended.
+- Syntax steps skip files without a language. If no searched file has one, the
+  selector is an error that suggests `--lang`.
 - `file:PATH` is a special step that selects the whole of one file in the
   current set. It exists to scope the steps after it:
   `file:src/lexer.rs>fn:new`. `PATH` may contain `/` and `.`, and ends at `>` or
@@ -236,7 +241,9 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 - `all SEL` applies the verb to every match. Zero matches is still an error.
 - There is no nth-match syntax. To disambiguate, nest (`impl:Lexer>fn:new`),
   scope by lines (`40-80>fn:new`), or scope by file (`file:src/a.rs>fn:new`).
-  Error messages list the candidates in exactly these forms (§7).
+  Error messages list the candidates in exactly these forms (§7): nested in the
+  match's nearest enclosing item if that's unique among the matches, otherwise
+  scoped by file if that's unique, otherwise by lines.
 
 ### 3.6 Raw query
 

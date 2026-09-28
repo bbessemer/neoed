@@ -1,0 +1,13 @@
+{"run_id":"1790625796-530230000","line":536,"new":{"module_name":"cli","snapshot_name":"ambiguous_syntax_selector_lists_candidates","metadata":{"source":"crates/ned-cli/tests/cli.rs","assertion_line":536,"expression":"out"},"snapshot":"exit: 1\n--- stdout\n--- stderr\nerror: script:1:8: fn:new matches nothing in parser.rs, lexer.rs"},"old":{"module_name":"cli","metadata":{},"snapshot":"exit: 1\n--- stdout\n--- stderr\nerror: script:1:8: fn:new matches 2 items; add `all` or use one of:\n  impl:Parser>fn:new   parser.rs:10-12\n  impl:Lexer>fn:new    lexer.rs:2"}}
+{"run_id":"1790625796-530230000","line":510,"new":{"module_name":"cli","snapshot_name":"delete_function_tidies_blank_line","metadata":{"source":"crates/ned-cli/tests/cli.rs","assertion_line":510,"expression":"out"},"snapshot":"exit: 1\n--- stdout\n--- stderr\nerror: script:1:8: fn:debug_dump matches nothing in parser.rs"},"old":{"module_name":"cli","metadata":{},"snapshot":"exit: 0\n--- stdout\nparser.rs: 1 edit, +0 -4\n@@ -17,6 +17,2 @@\n     }\n-\n-    fn debug_dump(&self) {\n-        eprintln!(\"{}\", self.src);\n-    }\n }\n--- stderr"}}
+{"run_id":"1790625796-530230000","line":261,"new":null,"old":null}
+{"run_id":"1790625796-530230000","line":276,"new":null,"old":null}
+{"run_id":"1790625796-530230000","line":358,"new":null,"old":null}
+{"run_id":"1790625796-530230000","line":188,"new":null,"old":null}
+{"run_id":"1790625796-530230000","line":167,"new":null,"old":null}
+{"run_id":"1790625796-530230000","line":372,"new":null,"old":null}
+{"run_id":"1790625796-530230000","line":418,"new":null,"old":null}
+{"run_id":"1790625796-530230000","line":238,"new":null,"old":null}
+{"run_id":"1790625796-530230000","line":106,"new":null,"old":null}
+{"run_id":"1790625796-530230000","line":144,"new":null,"old":null}
+{"run_id":"1790625796-530230000","line":493,"new":{"module_name":"cli","snapshot_name":"syntax_selector_scopes_a_literal","metadata":{"source":"crates/ned-cli/tests/cli.rs","assertion_line":493,"expression":"out"},"snapshot":"exit: 1\n--- stdout\n--- stderr\nerror: script:1:9: fn:parse>\"unexpected end\" matches nothing in parser.rs"},"old":{"module_name":"cli","metadata":{},"snapshot":"exit: 0\n--- stdout\nparser.rs: 1 edit, +1 -1\n@@ -14,3 +14,3 @@\n     pub fn parse(&mut self) -> Result<Ast, Error> {\n-        let tok = self.next().expect(\"unexpected end\");\n+        let tok = self.next().expect(\"unexpected end of input\");\n         self.parse_expr(tok)\n--- stderr"}}
