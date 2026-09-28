@@ -3,14 +3,16 @@
 //!
 //! A query in `queries/<lang>/selectors.scm` captures each item node as its
 //! kind (`@fn`, `@struct`, ...) and the item's name node as `@name`, in one
-//! pattern. Standalone `@doc` and `@attr` patterns capture the doc comments
-//! and attributes that extend an item's default span when they directly
-//! precede it.
+//! pattern, with optional `@body` and `@params` nodes for those parts.
+//! Standalone `@doc` and `@attr` patterns capture the doc comments and
+//! attributes that extend an item's default span when they directly precede
+//! it.
 
 use std::cmp::Reverse;
 use std::ops::Range;
 
 use crate::script::ast::Part;
+use crate::text::full_lines;
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator, Tree};
 
 /// The core kinds a query may capture.
@@ -53,17 +55,20 @@ pub struct Item {
 /// Every item `query` finds in `tree`, ordered by start, outer items first.
 pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
     let names = query.capture_names();
-    // (kind, item node, name node) for each match, and every @doc/@attr node.
-    let mut found: Vec<(&'static str, Node, Node)> = Vec::new();
-    let mut leading: Vec<Range<usize>> = Vec::new();
+    let mut found: Vec<Found> = Vec::new();
+    // Every @doc and @attr node, and whether it's a doc.
+    let mut leading: Vec<(Range<usize>, bool)> = Vec::new();
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
     while let Some(m) = matches.next() {
-        let (mut item, mut name) = (None, None);
+        let (mut item, mut name, mut body, mut params) = (None, None, None, None);
         for capture in m.captures() {
             match names[capture.index as usize] {
                 "name" => name = Some(capture.node),
-                "doc" | "attr" => leading.push(capture.node.byte_range()),
+                "body" => body = Some(capture.node.byte_range()),
+                "params" => params = Some(capture.node.byte_range()),
+                "doc" => leading.push((capture.node.byte_range(), true)),
+                "attr" => leading.push((capture.node.byte_range(), false)),
                 other => {
                     if let Some(kind) = KINDS.iter().find(|&&k| k == other) {
                         item = Some((*kind, capture.node));
@@ -72,59 +77,85 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
             }
         }
         if let (Some((kind, node)), Some(name)) = (item, name) {
-            found.push((kind, node, name));
+            found.push(Found {
+                kind,
+                node,
+                name,
+                body,
+                params,
+            });
         }
     }
-    leading.sort_by_key(|r| r.start);
+    leading.sort_by_key(|(r, _)| r.start);
 
     // A wrapper and the node it wraps can both match; keep the widest.
-    found.sort_by_key(|(kind, node, name)| {
+    found.sort_by_key(|f| {
         (
-            *kind,
-            name.start_byte(),
-            node.start_byte(),
-            Reverse(node.end_byte()),
+            f.kind,
+            f.name.start_byte(),
+            f.node.start_byte(),
+            Reverse(f.node.end_byte()),
         )
     });
-    found.dedup_by(|b, a| a.0 == b.0 && a.2 == b.2);
+    found.dedup_by(|b, a| a.kind == b.kind && a.name == b.name);
 
-    let mut items: Vec<Item> = found
-        .into_iter()
-        .map(|(kind, node, name)| {
-            let mut range = node.byte_range();
-            let comma = node
-                .next_sibling()
-                .filter(|n| n.kind() == "," && !n.is_named())
-                .filter(|n| {
-                    text[range.end..n.start_byte()]
-                        .trim_matches([' ', '\t'])
-                        .is_empty()
-                });
-            if let Some(comma) = comma {
-                range.end = comma.end_byte();
-            }
-            while let Some(doc) = leading
-                .iter()
-                .rev()
-                .find(|l| l.end <= range.start && directly_before(text, l, range.start))
-            {
-                range.start = doc.start;
-            }
-            Item {
-                kind,
-                name: text[name.byte_range()].to_string(),
-                range,
-                trailing_comma: comma.is_some(),
-                node: node.byte_range(),
-                name_range: name.byte_range(),
-                body: None,
-                params: None,
-                doc: None,
-            }
-        })
-        .collect();
+    let mut items: Vec<Item> =
+        found
+            .into_iter()
+            .map(
+                |Found {
+                     kind,
+                     node,
+                     name,
+                     body,
+                     params,
+                 }| {
+                    let mut range = node.byte_range();
+                    let comma = node
+                        .next_sibling()
+                        .filter(|n| n.kind() == "," && !n.is_named())
+                        .filter(|n| {
+                            text[range.end..n.start_byte()]
+                                .trim_matches([' ', '\t'])
+                                .is_empty()
+                        });
+                    if let Some(comma) = comma {
+                        range.end = comma.end_byte();
+                    }
+                    let mut doc: Option<Range<usize>> = None;
+                    while let Some((l, is_doc)) = leading.iter().rev().find(|(l, _)| {
+                        l.end <= range.start && directly_before(text, l, range.start)
+                    }) {
+                        range.start = l.start;
+                        if *is_doc {
+                            doc = Some(l.start..doc.map_or(l.end, |d| d.end));
+                        }
+                    }
+                    Item {
+                        kind,
+                        name: text[name.byte_range()].to_string(),
+                        range,
+                        trailing_comma: comma.is_some(),
+                        node: node.byte_range(),
+                        name_range: name.byte_range(),
+                        body,
+                        params,
+                        doc,
+                    }
+                },
+            )
+            .collect();
     items.sort_by_key(|i| (i.range.start, Reverse(i.range.end)));
     items
+}
+
+/// An item pattern's captures.
+struct Found<'t> {
+    kind: &'static str,
+    node: Node<'t>,
+    name: Node<'t>,
+    body: Option<Range<usize>>,
+    params: Option<Range<usize>>,
 }
 
 /// Whether only whitespace, and no blank line, separates `leading` from
@@ -138,8 +169,43 @@ fn directly_before(text: &str, leading: &Range<usize>, start: usize) -> bool {
 /// The span of `part` of `item` (§3.4); `None` if the item doesn't have it.
 /// `.lines` isn't an item part.
 pub fn part(item: &Item, part: Part, text: &str) -> Option<Range<usize>> {
-    let _ = (item, part, text);
-    None
+    match part {
+        Part::Body => item.body.clone().map(|r| inside(text, r)),
+        Part::Params => item.params.clone().map(|r| inside(text, r)),
+        Part::Name => Some(item.name_range.clone()),
+        Part::Sig => Some(match &item.body {
+            Some(body) => {
+                let start = item.node.start;
+                start..start + text[start..body.start].trim_end().len()
+            }
+            None => item.node.clone(),
+        }),
+        Part::Doc => item.doc.clone().map(|r| full_lines(text, r)),
+        Part::Lines => None,
+    }
+}
+
+/// The inside of a node with one-byte delimiters (§3.4): the whole lines
+/// between them if the opener ends its line and the closer starts its line,
+/// otherwise the text between them with surrounding whitespace trimmed.
+fn inside(text: &str, delimited: Range<usize>) -> Range<usize> {
+    let (open, close) = (delimited.start + 1, delimited.end - 1);
+    let inner = &text[open..close];
+    if let Some(newline) = inner.find('\n')
+        && inner[..newline].trim().is_empty()
+    {
+        let first = open + newline + 1;
+        let last = text[..close].rfind('\n').map_or(0, |i| i + 1);
+        if last >= first && text[last..close].trim().is_empty() {
+            return first..last;
+        }
+    }
+    let trimmed = inner.trim();
+    if trimmed.is_empty() {
+        return open..open;
+    }
+    let start = open + (inner.len() - inner.trim_start().len());
+    start..start + trimmed.len()
 }
 
 /// The kinds `query` captures, in `KINDS` order.

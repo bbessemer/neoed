@@ -109,18 +109,41 @@ pub fn resolve(target: &Target, files: &[&SourceFile], src: &str) -> Result<Vec<
 }
 
 fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result<Vec<Match>, E> {
+    // Only a syntax item has parts other than `.lines`, and a part's span is
+    // no longer an item.
+    let mut item = matches!(step.primary, Primary::Syntax { .. });
     for part in &step.parts {
-        if *part != Part::Lines {
-            return Err(E::Unsupported(format!("part `.{}`", part_name(*part))));
+        if *part != Part::Lines && !item {
+            return Err(E::PartNeedsItem {
+                part: part_name(*part).into(),
+            });
         }
+        item = false;
     }
     let matcher = Matcher::new(&step.primary, files, parents)?;
     let mut out: Vec<Match> = Vec::new();
     for parent in parents {
         let f = &files[parent.file];
         for mut range in matcher.find(f, parent.range.clone()) {
-            if !step.parts.is_empty() {
-                range = full_lines(&f.text, range);
+            let mut item = match &step.primary {
+                Primary::Syntax { kind, .. } => f
+                    .items()
+                    .unwrap_or_default()
+                    .iter()
+                    .find(|i| i.kind == kind && i.range == range),
+                _ => None,
+            };
+            for part in &step.parts {
+                range = match (part, item.take()) {
+                    (Part::Lines, _) => full_lines(&f.text, range),
+                    (part, Some(item)) => {
+                        syntax::part(item, *part, &f.text).ok_or_else(|| E::MissingPart {
+                            item: syntax::selector(item.kind, &item.name),
+                            part: part_name(*part).into(),
+                        })?
+                    }
+                    (_, None) => unreachable!("checked above"),
+                };
             }
             let m = Match {
                 file: parent.file,
