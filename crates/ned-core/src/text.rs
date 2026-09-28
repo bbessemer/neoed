@@ -7,8 +7,9 @@ use std::ops::Range;
 /// Whether only whitespace precedes `range` on its first line and only
 /// whitespace follows it on its last line (§5.1).
 pub fn is_whole_line(text: &str, range: &Range<usize>) -> bool {
-    let _ = (text, range);
-    todo!()
+    let before = &text[line_start(text, range.start)..range.start];
+    let after = &text[range.end..line_end(text, range.end, range.start)];
+    before.trim().is_empty() && after.trim().is_empty()
 }
 
 /// Widens `range` to the whole lines it touches, including the last line's
@@ -18,53 +19,101 @@ pub fn full_lines(text: &str, range: Range<usize>) -> Range<usize> {
     let end = if range.end > range.start && text[..range.end].ends_with('\n') {
         range.end
     } else {
-        text[range.end..]
-            .find('\n')
-            .map_or(text.len(), |i| range.end + i + 1)
+        next_line(text, range.end)
     };
     start..end
 }
 
 /// The indentation of the line containing `offset`.
 pub fn indent_at(text: &str, offset: usize) -> &str {
-    let _ = (text, offset);
-    todo!()
+    leading_whitespace(&text[line_start(text, offset)..])
 }
 
 /// The indentation of the first non-blank line that starts inside `range`.
 pub fn first_indent(text: &str, range: Range<usize>) -> Option<&str> {
-    let _ = (text, range);
-    todo!()
+    let mut pos = range.start;
+    if pos != line_start(text, pos) {
+        pos = next_line(text, pos);
+    }
+    while pos < range.end {
+        let end = next_line(text, pos);
+        let line = &text[pos..end];
+        if !line.trim().is_empty() {
+            return Some(leading_whitespace(line));
+        }
+        pos = end;
+    }
+    None
 }
 
 /// The file's indent unit: the smallest non-zero increase in indentation
 /// between consecutive non-blank lines, or four spaces if there is none.
 pub fn indent_unit(text: &str) -> String {
-    let _ = text;
-    todo!()
+    let mut prev: Option<&str> = None;
+    let mut unit: Option<&str> = None;
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let indent = leading_whitespace(line);
+        if let Some(increase) = prev.and_then(|p| indent.strip_prefix(p))
+            && !increase.is_empty()
+            && unit.is_none_or(|u| increase.len() < u.len())
+        {
+            unit = Some(increase);
+        }
+        prev = Some(indent);
+    }
+    unit.unwrap_or("    ").to_string()
 }
 
 /// Re-bases line-oriented `text` (§5.2): strips its common indentation,
 /// converts its indent style to `unit`'s, and prefixes each non-blank line
 /// with `indent`. Blank lines become empty. No final newline is added.
 pub fn rebase(text: &str, indent: &str, unit: &str) -> String {
-    let _ = (text, indent, unit);
-    todo!()
+    let lines = strip_indent(text);
+    let level = lines
+        .iter()
+        .map(|l| leading_whitespace(l))
+        .filter(|w| !w.is_empty())
+        .min_by_key(|w| w.len());
+    let convert = level.filter(|level| !unit.starts_with(&level[..1]));
+    lines
+        .iter()
+        .map(|line| match (line.is_empty(), convert) {
+            (true, _) => String::new(),
+            (false, Some(level)) => format!("{indent}{}", convert_indent(line, level, unit)),
+            (false, None) => format!("{indent}{line}"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Verbatim text for a partial-line span (§5.1): the first line as written,
 /// the rest re-based to `indent`, the indentation of the span's line.
 pub fn rebase_tail(text: &str, indent: &str, unit: &str) -> String {
-    let _ = (text, indent, unit);
-    todo!()
+    match text.split_once('\n') {
+        Some((first, rest)) => format!("{first}\n{}", rebase(rest, indent, unit)),
+        None => text.to_string(),
+    }
 }
 
 /// Widens a whole-line deletion by one adjacent blank line when deleting
 /// `range` would leave two blank lines in a row, or a blank line right after
 /// an opening delimiter or right before a closing one (§4.2).
 pub fn tidy_delete(text: &str, range: Range<usize>) -> Range<usize> {
-    let _ = (text, range);
-    todo!()
+    let blank = |line: &str| line.trim().is_empty();
+    if range.start == 0 || range.end == text.len() {
+        return range;
+    }
+    let prev_start = line_start(text, range.start - 1);
+    let prev = &text[prev_start..range.start];
+    let next_end = next_line(text, range.end);
+    let next = &text[range.end..next_end];
+    if blank(next) && (blank(prev) || prev.trim_end().ends_with(['{', '(', '['])) {
+        range.start..next_end
+    } else if blank(prev) && next.trim_start().starts_with(['}', ')', ']']) {
+        prev_start..range.end
+    } else {
+        range
+    }
 }
 
 /// Splits `text` into lines, strips their common indentation, and empties
@@ -98,6 +147,36 @@ fn common_indent<'a>(lines: &[&'a str]) -> &'a str {
 
 fn leading_whitespace(line: &str) -> &str {
     &line[..line.len() - line.trim_start_matches([' ', '\t']).len()]
+}
+
+/// Replaces each whole `level` of `line`'s indentation with `unit`.
+fn convert_indent(line: &str, level: &str, unit: &str) -> String {
+    let mut rest = line;
+    let mut levels = 0;
+    while let Some(r) = rest.strip_prefix(level) {
+        rest = r;
+        levels += 1;
+    }
+    unit.repeat(levels) + rest
+}
+
+/// The start of the line after the one containing `offset`, or the end of
+/// the text.
+fn next_line(text: &str, offset: usize) -> usize {
+    text[offset..]
+        .find('\n')
+        .map_or(text.len(), |i| offset + i + 1)
+}
+
+/// Where the line a span ending at `end` finishes: `end` itself if the span
+/// (starting at `start`) already ends with a line ending, else the position
+/// of the next line ending (or the end of the text).
+fn line_end(text: &str, end: usize, start: usize) -> usize {
+    if end > start && text[..end].ends_with('\n') {
+        end
+    } else {
+        text[end..].find('\n').map_or(text.len(), |i| end + i)
+    }
 }
 
 fn line_start(text: &str, offset: usize) -> usize {
