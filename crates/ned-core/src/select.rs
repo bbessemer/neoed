@@ -2,9 +2,13 @@
 
 use std::ops::Range;
 
-use crate::buffer::Buffer;
-use crate::exec::ExecError;
-use crate::script::ast::Target;
+use regex::Regex;
+
+use crate::buffer::{Buffer, LineEnding};
+use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
+use crate::script::ast::{LineNo, Part, Primary, Step, Target, TextKind};
+
+const MAX_CANDIDATES: usize = 10;
 
 /// A file in the file set, with its path as the user wrote it.
 #[derive(Debug, Clone)]
@@ -35,8 +39,358 @@ pub struct Match {
 /// Resolves `target` against every file in `files`, enforcing the ambiguity
 /// rules of §3.5. `src` is the script, for error messages.
 pub fn resolve(target: &Target, files: &[SourceFile], src: &str) -> Result<Vec<Match>, ExecError> {
-    let _ = (target, files, src);
-    todo!()
+    let span = &target.selector.span;
+    let error = |kind| ExecError::new(kind, Some(span.clone()));
+    let mut matches: Vec<Match> = files
+        .iter()
+        .enumerate()
+        .map(|(file, f)| Match {
+            file,
+            range: 0..f.text.len(),
+        })
+        .collect();
+    for step in &target.selector.steps {
+        matches = resolve_step(step, files, &matches).map_err(error)?;
+    }
+    let selector = &src[span.clone()];
+    match matches.len() {
+        0 => Err(error(E::NoMatch {
+            selector: selector.into(),
+            files: files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        })),
+        1 => Ok(matches),
+        _ if target.all => Ok(matches),
+        _ => Err(error(E::Ambiguous {
+            selector: selector.into(),
+            candidates: candidates(&matches, files, selector),
+        })),
+    }
+}
+
+fn resolve_step(step: &Step, files: &[SourceFile], parents: &[Match]) -> Result<Vec<Match>, E> {
+    for part in &step.parts {
+        if *part != Part::Lines {
+            return Err(E::Unsupported(format!("part `.{}`", part_name(*part))));
+        }
+    }
+    let matcher = Matcher::new(&step.primary, files, parents)?;
+    let mut out: Vec<Match> = Vec::new();
+    for parent in parents {
+        let f = &files[parent.file];
+        for mut range in matcher.find(f, parent.range.clone()) {
+            if !step.parts.is_empty() {
+                range = full_lines(&f.buffer, range);
+            }
+            let m = Match {
+                file: parent.file,
+                range,
+            };
+            if out.last() != Some(&m) {
+                out.push(m);
+            }
+        }
+    }
+    Ok(out)
+}
+
+enum Matcher<'a> {
+    Lines { start: LineNo, end: LineNo },
+    Regex(Regex),
+    Str(&'a str),
+    Heredoc { lines: Vec<String>, raw: bool },
+    File(&'a str),
+}
+
+impl<'a> Matcher<'a> {
+    fn new(primary: &'a Primary, files: &[SourceFile], parents: &[Match]) -> Result<Self, E> {
+        Ok(match primary {
+            Primary::Lines { start, end } => {
+                let end = end.unwrap_or(*start);
+                check_lines(*start, end, files, parents)?;
+                Matcher::Lines { start: *start, end }
+            }
+            Primary::Regex(pattern) => Matcher::Regex(
+                pattern
+                    .regex()
+                    .expect("regexes are validated when the script is parsed"),
+            ),
+            Primary::Literal(text) => match text.kind {
+                TextKind::Str => Matcher::Str(&text.value),
+                TextKind::Heredoc => Matcher::Heredoc {
+                    lines: strip_indent(&text.value),
+                    raw: false,
+                },
+                TextKind::RawHeredoc => Matcher::Heredoc {
+                    lines: text.value.split('\n').map(String::from).collect(),
+                    raw: true,
+                },
+            },
+            Primary::File(path) => {
+                if !files.iter().any(|f| same_path(&f.path, path)) {
+                    return Err(E::NotInFileSet {
+                        path: path.clone(),
+                        files: files
+                            .iter()
+                            .map(|f| f.path.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    });
+                }
+                Matcher::File(path)
+            }
+            Primary::Syntax { kind, name } => {
+                return Err(E::Unsupported(format!("syntax selector `{kind}:{name}`")));
+            }
+            Primary::Query(_) => return Err(E::Unsupported("`query{}` selector".into())),
+        })
+    }
+
+    fn find(&self, f: &SourceFile, parent: Range<usize>) -> Vec<Range<usize>> {
+        let within = |r: &Range<usize>| parent.start <= r.start && r.end <= parent.end;
+        match self {
+            Matcher::Lines { start, end } => {
+                let count = f.buffer.line_count();
+                let (Some(first), Some(last)) =
+                    (line_index(*start, count), line_index(*end, count))
+                else {
+                    return Vec::new();
+                };
+                let range = line_range(&f.buffer, first).start..line_range(&f.buffer, last).end;
+                if within(&range) {
+                    vec![range]
+                } else {
+                    Vec::new()
+                }
+            }
+            Matcher::Regex(re) => re
+                .find_iter(&f.text[parent.clone()])
+                .map(|m| parent.start + m.start()..parent.start + m.end())
+                .collect(),
+            Matcher::Str(needle) => {
+                let needle = match f.buffer.line_ending() {
+                    LineEnding::Lf => needle.to_string(),
+                    LineEnding::Crlf => needle.replace('\n', "\r\n"),
+                };
+                if needle.is_empty() {
+                    return Vec::new();
+                }
+                f.text[parent.clone()]
+                    .match_indices(&needle)
+                    .map(|(i, _)| parent.start + i..parent.start + i + needle.len())
+                    .collect()
+            }
+            Matcher::Heredoc { lines, raw } => {
+                let whole: Vec<(Range<usize>, &str)> = (0..f.buffer.line_count())
+                    .map(|i| line_range(&f.buffer, i))
+                    .filter(|r| within(r))
+                    .map(|r| {
+                        let content = f.text[r.clone()].trim_end_matches('\n');
+                        let content = content.strip_suffix('\r').unwrap_or(content);
+                        (r, content)
+                    })
+                    .collect();
+                let mut out = Vec::new();
+                let mut i = 0;
+                while i + lines.len() <= whole.len() {
+                    let window = &whole[i..i + lines.len()];
+                    if heredoc_matches(lines, *raw, window.iter().map(|(_, l)| *l)) {
+                        out.push(window[0].0.start..window[window.len() - 1].0.end);
+                        i += lines.len();
+                    } else {
+                        i += 1;
+                    }
+                }
+                out
+            }
+            Matcher::File(path) => {
+                if same_path(&f.path, path) {
+                    vec![parent]
+                } else {
+                    Vec::new()
+                }
+            }
+        }
+    }
+}
+
+/// Fails if the line range is past the end of every file that still has a
+/// span to search.
+fn check_lines(
+    start: LineNo,
+    end: LineNo,
+    files: &[SourceFile],
+    parents: &[Match],
+) -> Result<(), E> {
+    let mut searched: Vec<usize> = parents.iter().map(|m| m.file).collect();
+    searched.dedup();
+    let past_end = |count| {
+        [start, end].into_iter().find_map(|n| match n {
+            LineNo::Number(n) if n > count => Some(n.to_string()),
+            LineNo::Last if count == 0 => Some("$".to_string()),
+            _ => None,
+        })
+    };
+    let mut line = None;
+    for &file in &searched {
+        match past_end(files[file].buffer.line_count()) {
+            Some(n) => line = line.or(Some(n)),
+            None => return Ok(()),
+        }
+    }
+    let Some(line) = line else { return Ok(()) };
+    let files = searched
+        .iter()
+        .map(|&i| {
+            let count = files[i].buffer.line_count();
+            let unit = if count == 1 { "line" } else { "lines" };
+            format!("{} ({count} {unit})", files[i].path)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(E::LineOutOfRange { line, files })
+}
+
+fn line_index(n: LineNo, count: usize) -> Option<usize> {
+    match n {
+        LineNo::Number(n) if (1..=count).contains(&n) => Some(n - 1),
+        LineNo::Last if count > 0 => Some(count - 1),
+        _ => None,
+    }
+}
+
+fn line_range(buffer: &Buffer, line: usize) -> Range<usize> {
+    buffer
+        .line_range(line)
+        .expect("line index within the buffer")
+}
+
+/// Widens `range` to the whole lines it touches, including the last line's
+/// ending.
+fn full_lines(buffer: &Buffer, range: Range<usize>) -> Range<usize> {
+    let Ok(first) = buffer.byte_to_line(range.start) else {
+        return range;
+    };
+    let last = match range.end.checked_sub(1) {
+        Some(end) if !range.is_empty() => buffer.byte_to_line(end).unwrap_or(first),
+        _ => first,
+    };
+    match (buffer.line_range(first), buffer.line_range(last)) {
+        (Ok(a), Ok(b)) => a.start..b.end,
+        _ => range,
+    }
+}
+
+/// Whether `window` equals the body lines, each non-blank line behind one
+/// shared whitespace prefix (or exactly, if `raw`).
+fn heredoc_matches<'w>(body: &[String], raw: bool, window: impl Iterator<Item = &'w str>) -> bool {
+    let mut prefix = None;
+    for (b, line) in body.iter().zip(window) {
+        if raw {
+            if b != line {
+                return false;
+            }
+        } else if b.is_empty() {
+            if !line.trim().is_empty() {
+                return false;
+            }
+        } else {
+            let Some(p) = line.strip_suffix(b.as_str()) else {
+                return false;
+            };
+            if !p.chars().all(|c| c == ' ' || c == '\t') || *prefix.get_or_insert(p) != p {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Splits `text` into lines, strips their common indentation, and empties
+/// blank lines.
+fn strip_indent(text: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let indent = common_indent(&lines);
+    lines
+        .iter()
+        .map(|l| {
+            if l.trim().is_empty() {
+                String::new()
+            } else {
+                l[indent.len()..].to_string()
+            }
+        })
+        .collect()
+}
+
+fn common_indent<'a>(lines: &[&'a str]) -> &'a str {
+    lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| &l[..l.len() - l.trim_start_matches([' ', '\t']).len()])
+        .reduce(|a, b| {
+            let n = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
+            &a[..n]
+        })
+        .unwrap_or("")
+}
+
+fn same_path(a: &str, b: &str) -> bool {
+    a.strip_prefix("./").unwrap_or(a) == b.strip_prefix("./").unwrap_or(b)
+}
+
+fn part_name(part: Part) -> &'static str {
+    match part {
+        Part::Body => "body",
+        Part::Sig => "sig",
+        Part::Params => "params",
+        Part::Name => "name",
+        Part::Doc => "doc",
+        Part::Lines => "lines",
+    }
+}
+
+fn candidates(matches: &[Match], files: &[SourceFile], selector: &str) -> Candidates {
+    let listed = matches
+        .iter()
+        .take(MAX_CANDIDATES)
+        .map(|m| {
+            let f = &files[m.file];
+            let lines = line_numbers(&f.buffer, &m.range);
+            let scope = if files.len() > 1 {
+                format!("file:{}>", f.path)
+            } else {
+                String::new()
+            };
+            (
+                format!("{scope}{lines}>{selector}"),
+                format!("{}:{lines}", f.path),
+            )
+        })
+        .collect();
+    Candidates {
+        listed,
+        total: matches.len(),
+    }
+}
+
+/// The 1-based line or line range `range` touches, as a line selector.
+fn line_numbers(buffer: &Buffer, range: &Range<usize>) -> String {
+    let line = |offset| buffer.byte_to_line(offset).expect("match within the file") + 1;
+    let first = line(range.start);
+    let last = if range.is_empty() {
+        first
+    } else {
+        line(range.end - 1)
+    };
+    if first == last {
+        first.to_string()
+    } else {
+        format!("{first}-{last}")
+    }
 }
 
 #[cfg(test)]
