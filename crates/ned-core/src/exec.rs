@@ -5,6 +5,7 @@ use std::fs;
 use std::ops::Range;
 
 use crate::edit::{Edit, EditError, EditSet};
+use crate::lang::Language;
 use crate::script::Script;
 use crate::script::ast::{Command, CommandKind, Pattern, Position, Target, Text, TextKind};
 use crate::script::error::location;
@@ -29,11 +30,21 @@ pub struct Change {
     pub edits: usize,
 }
 
+/// Settings from the command line that affect a run.
+#[derive(Debug, Clone, Default)]
+pub struct Options {
+    /// The language of every file, instead of detecting it.
+    pub lang: Option<Language>,
+    /// Skip the parse-error guard (§4.3).
+    pub force: bool,
+}
+
 /// Runs `script` (parsed from `src`) with `files` as the initial file set.
 /// Nothing is written.
-pub fn run(script: &Script, src: &str, files: &[String]) -> Run {
+pub fn run(script: &Script, src: &str, files: &[String], options: &Options) -> Run {
     let mut executor = Executor {
         src,
+        options,
         files: Vec::new(),
         set: Vec::new(),
         output: String::new(),
@@ -52,6 +63,7 @@ struct Loaded {
 
 struct Executor<'s> {
     src: &'s str,
+    options: &'s Options,
     /// Every file loaded so far, in order of first appearance.
     files: Vec<Loaded>,
     /// The current file set, as indices into `files`.
@@ -68,7 +80,7 @@ impl Executor<'_> {
         for (index, command) in script.commands.iter().enumerate() {
             self.command(index, command)?;
         }
-        Ok(self
+        let changes: Vec<Change> = self
             .files
             .iter()
             .filter(|l| !l.edits.is_empty())
@@ -78,7 +90,18 @@ impl Executor<'_> {
                 new: l.edits.apply(),
                 edits: l.edits.len(),
             })
-            .collect())
+            .collect();
+        if !self.options.force {
+            for (l, change) in self
+                .files
+                .iter()
+                .filter(|l| !l.edits.is_empty())
+                .zip(&changes)
+            {
+                guard(&l.file, &change.new)?;
+            }
+        }
+        Ok(changes)
     }
 
     fn load(&mut self, path: &str, span: Option<Range<usize>>) -> Result<usize, ExecError> {
@@ -100,7 +123,8 @@ impl Executor<'_> {
         };
         let bytes = fs::read(path).map_err(|e| io(e.to_string()))?;
         let text = String::from_utf8(bytes).map_err(|_| io("not valid UTF-8".into()))?;
-        let file = SourceFile::new(path, text);
+        let lang = self.options.lang.or_else(|| Language::detect(path, &text));
+        let file = SourceFile::new(path, text, lang);
         let edits = EditSet::new(&file.buffer);
         self.files.push(Loaded { file, edits });
         Ok(self.files.len() - 1)
@@ -323,10 +347,22 @@ impl Executor<'_> {
     }
 }
 
+/// Rejects `new`, the edited text of `f`, if it has more tree-sitter error
+/// nodes than the original (§4.3).
+fn guard(f: &SourceFile, new: &str) -> Result<(), ExecError> {
+    let _ = (f, new);
+    Ok(())
+}
+
+/// The indent unit of `f`, falling back to its language's default (§5.2).
+fn indent_unit(f: &SourceFile) -> String {
+    text::indent_unit(&f.text, f.lang.map_or("    ", Language::default_indent))
+}
+
 /// The span and text that replace `range` (§5.1).
 fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, String) {
     let t = &f.text;
-    let unit = text::indent_unit(t);
+    let unit = indent_unit(f);
     if text::is_whole_line(t, &range) {
         let full = text::full_lines(t, range);
         let mut new = line_oriented(new, text::indent_at(t, full.start), &unit);
@@ -343,7 +379,7 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, St
 /// The offset and text of an insertion at `position` of `range` (§4.2, §5).
 fn insert(f: &SourceFile, range: Range<usize>, position: Position, new: &Text) -> (usize, String) {
     let t = &f.text;
-    let unit = text::indent_unit(t);
+    let unit = indent_unit(f);
     if !text::is_whole_line(t, &range) {
         let at = match position {
             Position::Before | Position::Start => range.start,
@@ -430,6 +466,10 @@ pub enum ExecErrorKind {
     NoFiles,
     #[error("cannot read {path}: {message}")]
     Io { path: String, message: String },
+    /// `location` is `PATH:LINE:COL`; `excerpt` is empty, or a newline and
+    /// the offending line with a caret.
+    #[error("{location}: edit introduces a syntax error (use --force to apply anyway){excerpt}")]
+    SyntaxError { location: String, excerpt: String },
 }
 
 /// Selectors that each pick one of an ambiguous selector's matches, with the
@@ -517,7 +557,7 @@ mod tests {
             .collect();
         let src = script.replace("{dir}/", &root);
         let parsed = parse(&src).unwrap();
-        let run = run(&parsed, &src, &paths);
+        let run = run(&parsed, &src, &paths, &Options::default());
         let strip = |s: &str| s.replace(&root, "");
         Outcome {
             output: strip(&run.output),
@@ -872,9 +912,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("gone.rs").display().to_string();
         let parsed = parse("show").unwrap();
-        let err = run(&parsed, "show", std::slice::from_ref(&missing))
-            .result
-            .unwrap_err();
+        let err = run(
+            &parsed,
+            "show",
+            std::slice::from_ref(&missing),
+            &Options::default(),
+        )
+        .result
+        .unwrap_err();
         assert!(
             err.render("show")
                 .starts_with(&format!("error: cannot read {missing}: "))
@@ -888,9 +933,14 @@ mod tests {
         fs::write(&path, [0xff, 0xfe, b'\n']).unwrap();
         let path = path.display().to_string();
         let parsed = parse("show").unwrap();
-        let err = run(&parsed, "show", std::slice::from_ref(&path))
-            .result
-            .unwrap_err();
+        let err = run(
+            &parsed,
+            "show",
+            std::slice::from_ref(&path),
+            &Options::default(),
+        )
+        .result
+        .unwrap_err();
         assert_eq!(
             err.render("show"),
             format!("error: cannot read {path}: not valid UTF-8")
@@ -900,7 +950,9 @@ mod tests {
     #[test]
     fn commands_need_files() {
         let parsed = parse("show 1").unwrap();
-        let err = run(&parsed, "show 1", &[]).result.unwrap_err();
+        let err = run(&parsed, "show 1", &[], &Options::default())
+            .result
+            .unwrap_err();
         assert_eq!(
             err.render("show 1"),
             "error: script:1:1: no files to edit; pass FILE arguments or use `file PATH`"

@@ -47,8 +47,8 @@ pub fn first_indent(text: &str, range: Range<usize>) -> Option<&str> {
 }
 
 /// The file's indent unit: the smallest non-zero increase in indentation
-/// between consecutive non-blank lines, or four spaces if there is none.
-pub fn indent_unit(text: &str) -> String {
+/// between consecutive non-blank lines, or `default` if there is none.
+pub fn indent_unit(text: &str, default: &str) -> String {
     let mut prev: Option<&str> = None;
     let mut unit: Option<&str> = None;
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -61,7 +61,7 @@ pub fn indent_unit(text: &str) -> String {
         }
         prev = Some(indent);
     }
-    unit.unwrap_or("    ").to_string()
+    unit.unwrap_or(default).to_string()
 }
 
 /// Re-bases line-oriented `text` (§5.2): strips its common indentation,
@@ -249,12 +249,12 @@ mod tests {
 
     #[test]
     fn indent_unit_is_the_smallest_increase() {
-        assert_eq!(indent_unit(TEXT), "    ");
-        assert_eq!(indent_unit("a:\n  b\n\n  c:\n    d\n"), "  ");
-        assert_eq!(indent_unit("a {\n\tb {\n\t\tc\n\t}\n}\n"), "\t");
-        assert_eq!(indent_unit("a\n    b\n      c\n"), "  ");
-        assert_eq!(indent_unit("a\nb\n"), "    ");
-        assert_eq!(indent_unit(""), "    ");
+        assert_eq!(indent_unit(TEXT, "    "), "    ");
+        assert_eq!(indent_unit("a:\n  b\n\n  c:\n    d\n", "    "), "  ");
+        assert_eq!(indent_unit("a {\n\tb {\n\t\tc\n\t}\n}\n", "    "), "\t");
+        assert_eq!(indent_unit("a\n    b\n      c\n", "    "), "  ");
+        assert_eq!(indent_unit("a\nb\n", "    "), "    ");
+        assert_eq!(indent_unit("", "    "), "    ");
     }
 
     #[test]

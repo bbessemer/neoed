@@ -4,7 +4,8 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use ned_core::diff::{self, DiffStat};
-use ned_core::exec::{self, ExecErrorKind};
+use ned_core::exec::{self, ExecErrorKind, Options};
+use ned_core::lang::Language;
 use ned_core::{fs, script};
 
 /// Token-economical, syntax-aware line editor for AI agents.
@@ -24,6 +25,13 @@ struct Cli {
     /// Print only the per-file summary lines on success.
     #[arg(short, long)]
     quiet: bool,
+    /// Skip the parse-error guard: apply edits even if they introduce syntax
+    /// errors.
+    #[arg(long)]
+    force: bool,
+    /// Use this language for every file instead of detecting it.
+    #[arg(long, value_name = "LANG")]
+    lang: Option<Language>,
     /// Context lines around diff hunks.
     #[arg(long, value_name = "N", default_value_t = 1)]
     context: usize,
@@ -49,7 +57,11 @@ fn main() -> ExitCode {
         }
     };
 
-    let run = exec::run(&parsed, &src, &cli.files);
+    let options = Options {
+        lang: cli.lang,
+        force: cli.force,
+    };
+    let run = exec::run(&parsed, &src, &cli.files, &options);
     print!("{}", run.output);
     let changes = match run.result {
         Ok(changes) => changes,
@@ -89,7 +101,8 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::Ambiguous { .. }
         | ExecErrorKind::LineOutOfRange { .. }
         | ExecErrorKind::NotInFileSet { .. }
-        | ExecErrorKind::Overlap { .. } => 1,
+        | ExecErrorKind::Overlap { .. }
+        | ExecErrorKind::SyntaxError { .. } => 1,
         ExecErrorKind::Unsupported(_) | ExecErrorKind::NoFiles => 2,
         ExecErrorKind::Io { .. } => 3,
     }

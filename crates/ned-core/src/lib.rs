@@ -5,6 +5,7 @@ pub mod diff;
 pub mod edit;
 pub mod exec;
 pub mod fs;
+pub mod lang;
 pub mod script;
 pub mod select;
 pub mod text;
