@@ -104,8 +104,8 @@ impl Daemon<'_> {
                     Ok(()) => Response::Opened,
                     Err(err) => Response::Error(err.to_string()),
                 },
-                Ok(Request::Diagnose { documents }) => {
-                    match self.servers.diagnose(&documents).await {
+                Ok(Request::Diagnose { documents, saved }) => {
+                    match self.servers.diagnose(&documents, saved).await {
                         Ok(diagnosis) => Response::Diagnosis(diagnosis),
                         Err(err) => Response::Error(err.to_string()),
                     }

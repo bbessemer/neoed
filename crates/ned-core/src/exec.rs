@@ -40,6 +40,8 @@ pub struct Run {
     pub result: Result<Vec<Change>, ExecError>,
     /// The script's most permissive `allow` (§4.4).
     pub allow: Option<Severity>,
+    /// Notes for stderr, e.g. from `check`.
+    pub notes: Vec<String>,
 }
 
 /// A modified file, with the number of spans edited.
@@ -82,12 +84,14 @@ pub fn run<'s, 'l: 's>(
         files: Vec::new(),
         set: Vec::new(),
         output: String::new(),
+        notes: Vec::new(),
     };
     let result = executor.run(script, initial);
     Run {
         output: executor.output,
         result,
         allow: executor.allow,
+        notes: executor.notes,
     }
 }
 
@@ -115,6 +119,7 @@ struct Executor<'s> {
     /// The current file set, read as commands need it.
     set: Vec<Member>,
     output: String,
+    notes: Vec<String>,
     /// The workspace's language servers, for `check`.
     lsp: Option<&'s mut dyn Lsp>,
     /// The most permissive `allow` so far.
@@ -900,9 +905,11 @@ impl Executor<'_> {
             let message = "`check` needs the language-server daemon, which is Unix-only for now; run the project's build or linter";
             return Err(error(ExecErrorKind::Lsp(message.into())));
         };
-        let diagnosis = lsp
-            .diagnose(&documents)
+        let mut diagnosis = lsp
+            .diagnose(&documents, true)
             .map_err(|LspFailure(message)| error(ExecErrorKind::Lsp(message)))?;
+
+        self.notes.append(&mut diagnosis.notes);
         if diagnosis.files.iter().all(Option::is_none) {
             let mut langs: Vec<&str> = documents.iter().map(|d| d.lang.name()).collect();
             langs.dedup();
@@ -1641,6 +1648,7 @@ mod tests {
     struct Outcome {
         output: String,
         result: Result<Vec<Change>, String>,
+        notes: Vec<String>,
     }
 
     impl Outcome {
@@ -1717,6 +1725,7 @@ mod tests {
                     .collect()),
                 Err(err) => Err(strip(&err.render(&src))),
             },
+            notes: run.notes,
         }
     }
 
@@ -2646,11 +2655,19 @@ fn main() {}
         files: HashMap<&'static str, Option<Vec<Diagnostic>>>,
         failure: Option<&'static str>,
         asked: Vec<Document>,
+        /// `saved`, for each `diagnose`.
+        saved: Vec<bool>,
+        notes: Vec<&'static str>,
     }
 
     impl Lsp for FakeLsp {
-        fn diagnose(&mut self, documents: &[Document]) -> Result<Diagnosis, LspFailure> {
+        fn diagnose(
+            &mut self,
+            documents: &[Document],
+            saved: bool,
+        ) -> Result<Diagnosis, LspFailure> {
             self.asked.extend_from_slice(documents);
+            self.saved.push(saved);
             if let Some(failure) = self.failure {
                 return Err(LspFailure(failure.into()));
             }
@@ -2665,6 +2682,7 @@ fn main() {}
                 show: self.show.unwrap_or(Severity::Warning),
                 block: Some(Severity::Error),
                 files,
+                notes: self.notes.iter().map(|n| n.to_string()).collect(),
             })
         }
 
@@ -2863,6 +2881,23 @@ fn main() {}
     }
 
     #[test]
+    fn check_asks_for_save_time_checks_and_passes_on_notes() {
+        let mut lsp = FakeLsp {
+            notes: vec![
+                "rust-analyzer's check on save didn't finish within 30s; raise [lsp] timeout",
+            ],
+            ..FakeLsp::default()
+        };
+        let out = checked(&[("a.rs", CHECKED)], "check", &mut lsp);
+        assert_eq!(out.result, Ok(vec![]));
+        assert_eq!(lsp.saved, [true]);
+        assert_eq!(
+            out.notes,
+            ["rust-analyzer's check on save didn't finish within 30s; raise [lsp] timeout"]
+        );
+    }
+
+    #[test]
     fn check_without_language_servers_is_an_error() {
         let out = exec(CHECKED, "check");
         assert!(out.error().contains("Unix-only"), "{}", out.error());
@@ -2916,6 +2951,7 @@ fn main() {}
                     .collect()),
                 Err(err) => Err(strip(&err.render(&src))),
             },
+            notes: run.notes,
         }
     }
 
@@ -3086,7 +3122,7 @@ fn main() {}
     }
 
     impl Lsp for ServerLsp {
-        fn diagnose(&mut self, _: &[Document]) -> Result<Diagnosis, LspFailure> {
+        fn diagnose(&mut self, _: &[Document], _: bool) -> Result<Diagnosis, LspFailure> {
             unreachable!("renames aren't checked here")
         }
 
@@ -3193,6 +3229,7 @@ fn main() {}
                     .collect()),
                 Err(err) => Err(strip(&err.render(&src))),
             },
+            notes: run.notes,
         }
     }
 

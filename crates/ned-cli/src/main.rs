@@ -131,6 +131,9 @@ fn main() -> ExitCode {
     let lsp = None;
     let run = exec::run(&parsed, &src, initial, &options, lsp);
     print!("{}", run.output);
+    for note in &run.notes {
+        eprintln!("note: {note}");
+    }
     let changes = match run.result {
         Ok(changes) => changes,
         Err(err) => {

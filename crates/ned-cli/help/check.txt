@@ -4,12 +4,14 @@ Prints the language server's diagnostics for each file in the set, or those
 overlapping SEL, at LEVEL or above: error, warning, info or hint (default
 `[check] show`, which is warning unless configured). Diagnostics are for the
 file as it was before the script. Starts the per-workspace daemon and the
-server if needed, and waits for indexing (`[lsp] timeout`, default 30s).
+server if needed, and waits for indexing and for checks run on save, such as
+rust-analyzer's `cargo check` (`[lsp] timeout`, default 30s).
 Files without a server are skipped.
 
 While a daemon runs, every edit is also checked: diagnostics it introduces
 are printed after its diff, and introduced errors reject it (`[check] block`).
 Add `allow errors` to the script to apply it anyway, e.g. for unfinished work.
+Edits don't get save-time checks (`cargo check`); run `check` after them.
 --no-check skips checking.
 
   src/parser.rs:15:9: error: mismatched types [rust-analyzer E0308]

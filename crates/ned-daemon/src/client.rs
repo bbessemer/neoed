@@ -159,9 +159,9 @@ impl Workspace {
 }
 
 impl Lsp for Workspace {
-    fn diagnose(&mut self, documents: &[Document]) -> Result<Diagnosis, LspFailure> {
+    fn diagnose(&mut self, documents: &[Document], saved: bool) -> Result<Diagnosis, LspFailure> {
         let documents = documents.to_vec();
-        match self.request(&Request::Diagnose { documents })? {
+        match self.request(&Request::Diagnose { documents, saved })? {
             Response::Diagnosis(diagnosis) => Ok(diagnosis),
             other => Err(LspFailure(
                 ClientError::Protocol(format!("{other:?}")).to_string(),

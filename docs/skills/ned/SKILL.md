@@ -1,9 +1,9 @@
 ---
 name: ned
-description: Edit existing source files with ned, a syntax-aware line editor. Replace, insert, delete or move code by item name (fn:parse, impl:Parser>fn:new), line range, regex or literal, across several files, in one all-or-nothing call that prints a diff. Use it instead of sed, inline Python or str_replace for edits to existing files.
+description: Read, search, create and edit source files with ned, a syntax-aware line editor. Outline a file, show an item (fn:parse, impl:Parser>fn:new), a line range or every match of a regex or literal across a glob or the whole workspace (-w); create files; replace, insert, delete or move code in one all-or-nothing call that prints a diff. Use it instead of grep, sed, cat, inline Python or str_replace.
 ---
 
-# Editing files with ned
+# Reading, searching and editing files with ned
 
 `ned` applies a short script of edit commands to files. Every command in a
 script applies, or none do. It prints a summary and diff hunks for each file,
@@ -26,13 +26,27 @@ EOF
 Short scripts can use `-e`: `ned src/parser.rs -e 'delete fn:debug_dump'`.
 Add `-n` to preview without writing.
 
+Search with `show all` instead of grep. It prints each match's line with its
+number, under the file's name, across a glob or the whole workspace (`-w`,
+which skips ignored files); add `+N` for context:
+
+```sh
+ned 'crates/**/*.rs' -e 'show all /fn with_published/'
+ned -w -e 'show all "SAVE_GRACE" +2'
+```
+
+Read with `outline` and `show SEL` instead of cat, and make new files with
+`create` (see `ned help create`).
+
 ## Workflow
 
 1. `outline` to find the item. Each line is a selector you can paste back.
 2. `show SEL` to read only what you need, with line numbers.
 3. Edit in one script, then read the diff that ned prints.
 4. `check` (or `check SEL`, `check SEL hint`) to see the language server's
-   errors and warnings, instead of running the build.
+   errors and warnings, instead of running the build. Edits are checked as
+   they apply while a daemon runs, but only `check` includes `cargo check`'s
+   errors (unresolved names, borrow errors), so run it after a Rust edit.
 
 ```ned
 outline
@@ -173,5 +187,10 @@ END
   indent. For code, use `<<END` (a quoted `<<'END'` inside the script, a shell
   habit, leaves code at column 0); for Markdown or prose, use `<<'END'`, target
   the `item:`, or start a replaced range at the item's first line.
+- **Whole-line string TEXT gets its own newline.** A literal that runs from a
+  line's indentation to its end (`"    x,\n"`, or `"    s\n}"`) is a whole-line
+  target: string TEXT for it is re-based like a heredoc, and a final newline
+  is added, so a trailing `\n` in the string adds a blank line. Leave the
+  `\n` off, or use a line number or a heredoc.
 - **Always give a script.** Without `-e` or a heredoc, `ned` reads the script
   from stdin, and hangs in a shell that has none to give.

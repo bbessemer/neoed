@@ -416,8 +416,13 @@ delete all query{(call_expression function: (identifier) @f (#eq? @f "dbg")) @se
   (`error`, `warning`, `info` or `hint`; default `[check] show`, §1.1). Like
   every read, it sees the original text (§2.3). It starts the daemon and the
   servers if needed and waits for them to finish indexing, up to
-  `[lsp] timeout`. Files without a server are skipped; if no file in the set
-  has one, it's an error naming the `[lsp]` setting.
+  `[lsp] timeout`. It also waits for the checks a server runs when a file is
+  saved, such as rust-analyzer's `cargo check`, which find errors the server
+  alone doesn't (unresolved names, borrow errors). If those don't finish in
+  time, it prints what the server has reported, with a note on stderr:
+  `note: rust-analyzer's check on save didn't finish within 30s; raise [lsp] timeout`.
+  Files without a server are skipped; if no file in the set has one, it's an
+  error naming the `[lsp]` setting.
 
   ```
   src/parser.rs:15:9: error: mismatched types [rust-analyzer E0308]
@@ -696,6 +701,8 @@ Positions don't count, since edits move them.
   checking with a note, and the edit applies:
   `note: rust-analyzer didn't answer diagnostics within 30s; skipped checking src/parser.rs`.
 - If the edit isn't written, the servers are sent the original text again.
+- Checks a server runs on save (rust-analyzer's `cargo check`) don't run,
+  since the edit isn't written yet; run `check` after the edit for those.
 
 ## 7. Errors and exit codes
 

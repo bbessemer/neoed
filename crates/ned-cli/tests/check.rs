@@ -36,6 +36,22 @@ impl Workspace {
         }
     }
 
+    /// With the fake given `flags`, and `lsp` added to the `[lsp]` table.
+    fn with_flags(flags: &[&str], lsp: &str) -> Workspace {
+        let ws = Workspace::new("");
+        let log = ws.dir.path().join("lsp.log");
+        let config = format!(
+            "[format]\nrust = false\n\n[lsp]\nrust = [{FAKE:?}, {log:?}, {}]\n{lsp}",
+            flags
+                .iter()
+                .map(|f| format!("{f:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        ws.write(".ned.toml", &config);
+        ws
+    }
+
     fn write(&self, name: &str, text: &str) {
         fs::write(self.dir.path().join(name), text).unwrap();
     }
@@ -131,6 +147,41 @@ fn check_takes_a_selector_and_a_level() {
     let out = ws.ned(&["a.rs", "-e", "check fn:a hint"]);
     assert!(out.status.success(), "{out:?}");
     assert_eq!(text(&out.stdout), "a.rs:3:8: hint: hint here [fake]\n");
+}
+
+#[test]
+fn check_includes_save_time_checks() {
+    let ws = Workspace::with_flags(&["flycheck"], "");
+    ws.write("a.rs", "// done\nfn a() {} // CARGO\n");
+    let out = ws.ned(&["a.rs", "-e", "check"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(text(&out.stdout), "a.rs:2:1: error: cargo here [cargo]\n");
+    assert_eq!(text(&out.stderr), "");
+}
+
+#[test]
+fn an_unfinished_save_time_check_is_a_note() {
+    let ws = Workspace::with_flags(&["flycheck", "flycheck-slow"], "timeout = 1\n");
+    ws.write("a.rs", "// done\nfn a() {} // CARGO\n");
+    let out = ws.ned(&["a.rs", "-e", "check"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(text(&out.stdout), "a.rs:2:1: error: cargo here [cargo]\n");
+    assert_eq!(
+        text(&out.stderr),
+        "note: fake_lsp.py's check on save didn't finish within 1s; raise [lsp] timeout\n"
+    );
+}
+
+#[test]
+fn edits_are_checked_without_saving() {
+    let ws = Workspace::with_flags(&["flycheck"], "");
+    ws.write("a.rs", CLEAN);
+    ws.start();
+    let out = ws.ned(&["a.rs", "-q", "-e", "insert after 2 \"// CARGO\""]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(text(&out.stdout), "a.rs: 1 edit, +1 -0\n");
+    let log = fs::read_to_string(ws.dir.path().join("lsp.log")).unwrap();
+    assert!(!log.contains("textDocument/didSave"), "{log}");
 }
 
 #[test]

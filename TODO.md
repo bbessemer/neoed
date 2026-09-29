@@ -117,6 +117,9 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] A FILE argument that doesn't exist but names a verb, as in
       `ned outline src/a.rs`, is an error suggesting
       `ned src/a.rs -e outline`, instead of waiting for a script on stdin
+- [ ] Searching with `show all /re/` over a glob or `-w`: no match is a normal
+      answer, so say `no matches` (exit 1, as grep does) instead of an error
+      listing the files searched with a hint to `show` them
 
 ## 9. LSP daemon _(split)_
 
@@ -125,8 +128,8 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [x] Server configuration per language (rust-analyzer, gopls, pyright, tsserver)
 - [x] `check` verb: diagnostics for edited files (and automatic checking of
       edits while a daemon runs)
-- [ ] Diagnostics that only `cargo check` reports (rust-analyzer flycheck on
-      save), e.g. unresolved names, for automatic checking and `check`
+- [x] Diagnostics that only `cargo check` reports (rust-analyzer flycheck on
+      save), e.g. borrow errors, in `check` (edits are checked unsaved)
 - [x] `rename` verb (within the file set, or the workspace with `-w`)
 - [x] `.refs` / `.def` parts (replacing the reserved `refs:` / `def:`)
 - [x] LSP formatting fallback when no external formatter is installed
@@ -178,11 +181,12 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       3,500-line `crates/ned-core/src/exec.rs` takes 1.2 s (a 400-line file:
       0.01 s), even when it matches nothing, so the cost grows faster than the
       file; profile items/query resolution
-- [ ] A string TEXT ending in a newline, for a whole-line target, gains a
-      second one: in a file `a\nb\nc\n`, `replace "b\n" with "x\ny\n"` gives
-      `a\nx\ny\n\nc\n`, and `insert after S>"    x,\n" "    y,\n"` leaves a
-      blank line after `y`; a final newline in TEXT should count as the
-      line's own
+- [ ] `ned` panics when stdout closes early (`ned F -e '...' | head -1`):
+      "failed printing to stdout: Broken pipe"; exit quietly instead (the
+      edit is already written)
+- [ ] `a_stale_socket_is_replaced` (ned-daemon `tests/daemon.rs`) is flaky:
+      about 1 run in 5 fails `Client::connect(..).is_none()` just after
+      binding and dropping a listener
 
 ## Future improvements
 

@@ -147,7 +147,8 @@ requests and diagnostics, through the `Lsp` trait in `ned-core`: `check [SEL]
 unless `allow errors`), `rename`, and the `.refs`/`.def` parts (within the file
 set or `-w` workspace); the version names the build commit, and a daemon serves
 only its own build. With a daemon running, language servers format files whose
-formatters aren't installed. Next (§9): flycheck diagnostics in `check`.
+formatters aren't installed, and `check` also waits for save-time checks
+(`cargo check`). §9 is done.
 
 ## Key Documentation
 

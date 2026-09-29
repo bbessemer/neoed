@@ -58,6 +58,10 @@ pub struct Diagnosis {
     pub block: Option<Severity>,
     /// One per document, in order; `None` where its language has no server.
     pub files: Vec<Option<Vec<Diagnostic>>>,
+    /// Why some diagnostics may be missing, e.g. a save-time check that
+    /// didn't finish.
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 /// What an edit's changed files introduced (spec §6.5).
@@ -143,8 +147,10 @@ pub enum Formatting {
 
 /// What `ned` asks of the workspace's language servers.
 pub trait Lsp {
-    /// Diagnostics for each of `documents`, as their text stands.
-    fn diagnose(&mut self, documents: &[Document]) -> Result<Diagnosis, LspFailure>;
+    /// Diagnostics for each of `documents`, as their text stands. `saved`
+    /// says the documents' files hold their texts, so servers may also run,
+    /// and are waited for, the checks they run when a file is saved.
+    fn diagnose(&mut self, documents: &[Document], saved: bool) -> Result<Diagnosis, LspFailure>;
 
     /// Brings the servers' copies of `documents` up to date.
     fn sync(&mut self, documents: &[Document]) -> Result<(), LspFailure>;
@@ -210,8 +216,14 @@ pub fn check_changes(
     if typed.is_empty() {
         return Ok(checked);
     }
-    let before = lsp.diagnose(&documents(changes, &typed, |i| changes[i].old.clone())?)?;
-    let after = lsp.diagnose(&documents(changes, &typed, |i| finals[i].to_string())?)?;
+    let before = lsp.diagnose(
+        &documents(changes, &typed, |i| changes[i].old.clone())?,
+        false,
+    )?;
+    let after = lsp.diagnose(
+        &documents(changes, &typed, |i| finals[i].to_string())?,
+        false,
+    )?;
     let blocks = |severity: Severity| {
         !force
             && after.block.is_some_and(|block| severity <= block)
@@ -543,7 +555,12 @@ mod tests {
     }
 
     impl Lsp for TextLsp {
-        fn diagnose(&mut self, documents: &[Document]) -> Result<Diagnosis, LspFailure> {
+        fn diagnose(
+            &mut self,
+            documents: &[Document],
+            saved: bool,
+        ) -> Result<Diagnosis, LspFailure> {
+            assert!(!saved, "edits aren't written when they're checked");
             self.asked
                 .push(documents.iter().map(|d| d.text.clone()).collect());
             if let Some(failure) = self.failure {
@@ -573,6 +590,7 @@ mod tests {
                 show: self.show.unwrap_or(Severity::Warning),
                 block: self.block.unwrap_or(Some(Severity::Error)),
                 files,
+                notes: Vec::new(),
             })
         }
 

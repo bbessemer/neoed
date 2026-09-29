@@ -737,7 +737,7 @@ mod tests {
     }
 
     impl Lsp for FormatLsp {
-        fn diagnose(&mut self, _: &[Document]) -> Result<Diagnosis, LspFailure> {
+        fn diagnose(&mut self, _: &[Document], _: bool) -> Result<Diagnosis, LspFailure> {
             unreachable!("formatting doesn't diagnose")
         }
 

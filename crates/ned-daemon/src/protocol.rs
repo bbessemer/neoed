@@ -16,9 +16,12 @@ pub enum Request {
     Open {
         documents: Vec<Document>,
     },
-    /// `Open`, then the documents' diagnostics.
+    /// `Open`, then the documents' diagnostics; with `saved`, also those of
+    /// the checks servers run when a file is saved.
     Diagnose {
         documents: Vec<Document>,
+        #[serde(default)]
+        saved: bool,
     },
     /// `Open` the document, then rename the symbol at `position` in it.
     Rename {
