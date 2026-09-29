@@ -1,9 +1,9 @@
 ---
 name: ned
-description: Edit existing source files with ned, a syntax-aware line editor. Replace, insert, delete or move code by item name (fn:parse, impl:Parser>fn:new), line range, regex or literal, across several files, in one all-or-nothing call that prints a diff. Use it instead of sed, inline Python or str_replace for edits to existing files.
+description: Read, search, create and edit source files with ned, a syntax-aware line editor. Outline a file, show an item (fn:parse, impl:Parser>fn:new), a line range or every match of a regex or literal across a glob or the whole workspace (-w); create files; replace, insert, delete or move code in one all-or-nothing call that prints a diff. Use it instead of grep, sed, cat, inline Python or str_replace.
 ---
 
-# Editing files with ned
+# Reading, searching and editing files with ned
 
 `ned` applies a short script of edit commands to files. Every command in a
 script applies, or none do. It prints a summary and diff hunks for each file,
@@ -25,6 +25,18 @@ EOF
 
 Short scripts can use `-e`: `ned src/parser.rs -e 'delete fn:debug_dump'`.
 Add `-n` to preview without writing.
+
+Search with `show all` instead of grep. It prints each match's line with its
+number, under the file's name, across a glob or the whole workspace (`-w`,
+which skips ignored files); add `+N` for context:
+
+```sh
+ned 'crates/**/*.rs' -e 'show all /fn with_published/'
+ned -w -e 'show all "SAVE_GRACE" +2'
+```
+
+Read with `outline` and `show SEL` instead of cat, and make new files with
+`create` (see `ned help create`).
 
 ## Workflow
 

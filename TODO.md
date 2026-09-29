@@ -117,6 +117,9 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] A FILE argument that doesn't exist but names a verb, as in
       `ned outline src/a.rs`, is an error suggesting
       `ned src/a.rs -e outline`, instead of waiting for a script on stdin
+- [ ] Searching with `show all /re/` over a glob or `-w`: no match is a normal
+      answer, so say `no matches` (exit 1, as grep does) instead of an error
+      listing the files searched with a hint to `show` them
 
 ## 9. LSP daemon _(split)_
 
