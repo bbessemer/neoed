@@ -2627,4 +2627,34 @@ fn main() {}
         out.error()
     );
     }
+
+    #[test]
+    fn syntax_steps_skip_files_whose_language_lacks_the_kind() {
+        let files = [
+            ("a.rs", "fn a() {}\n"),
+            ("b.md", "# B\n\ntext\n"),
+            ("c.py", "def c():\n    pass\n"),
+        ];
+        let out = exec_with(&files, 3, "show fn:a\nshow section:B");
+        assert_eq!(
+            out.output,
+            "a.rs:1\n1:fn a() {}\nb.md:1-3\n1:# B\n2:\n3:text\n"
+        );
+        let out = exec_with(&files, 3, "outline");
+        assert!(out.output.starts_with("a.rs\n"), "{}", out.output);
+        assert!(out.output.contains("b.md\n"), "{}", out.output);
+        assert!(!out.output.contains("c.py"), "{}", out.output);
+        let out = exec_with(&files[1..], 2, "show fn:a");
+        assert!(
+            out.error().contains("markdown has no `fn` items"),
+            "{}",
+            out.error()
+        );
+        let out = exec_with(&files[2..], 1, "outline");
+        assert!(
+            out.error().contains("`outline` in python files"),
+            "{}",
+            out.error()
+        );
+    }
 }
