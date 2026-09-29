@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::fs;
 use std::ops::Range;
+use std::path::PathBuf;
 
 use tree_sitter::Node;
 
@@ -19,6 +20,16 @@ use crate::script::error::{excerpt, location};
 use crate::select::{self, Match, SourceFile, line_numbers, same_path};
 use crate::syntax::{self, Item};
 use crate::text;
+use crate::workspace;
+
+/// Where the initial file set comes from (spec §2.4).
+#[derive(Debug, Clone)]
+pub enum Initial<'a> {
+    /// `FILE` arguments; globs are expanded.
+    Files(&'a [String]),
+    /// Every file in the workspace at this root (`-w`).
+    Workspace(PathBuf),
+}
 
 /// The result of running a script: the output of the reads that ran, in
 /// command order, and either every modified file or the error that rejected
@@ -52,12 +63,12 @@ pub struct Options {
     pub force: bool,
 }
 
-/// Runs `script` (parsed from `src`) with `files` as the initial file set.
-/// Nothing is written.
+/// Runs `script` (parsed from `src`) on the `initial` file set. Nothing is
+/// written.
 pub fn run<'s, 'l: 's>(
     script: &Script,
     src: &'s str,
-    files: &[String],
+    initial: Initial,
     options: &'s Options,
     lsp: Option<&'s mut (dyn Lsp + 'l)>,
 ) -> Run {
@@ -66,11 +77,12 @@ pub fn run<'s, 'l: 's>(
         options,
         lsp: lsp.map(|lsp| -> &'s mut dyn Lsp { lsp }),
         allow: None,
+        named: Vec::new(),
         files: Vec::new(),
         set: Vec::new(),
         output: String::new(),
     };
-    let result = executor.run(script, files);
+    let result = executor.run(script, initial);
     Run {
         output: executor.output,
         result,
@@ -85,30 +97,62 @@ struct Loaded {
     created: bool,
 }
 
+/// A file in the set: loaded into `files`, or only named so far (§2.4).
+#[derive(Debug, Clone)]
+struct Member {
+    path: String,
+    file: Option<usize>,
+    /// From `-w`: skipped, rather than an error, if it can't be read.
+    workspace: bool,
+}
+
 struct Executor<'s> {
     src: &'s str,
     options: &'s Options,
     /// Every file loaded so far, in order of first appearance.
     files: Vec<Loaded>,
-    /// The current file set, as indices into `files`.
-    set: Vec<usize>,
+    /// The current file set, read as commands need it.
+    set: Vec<Member>,
     output: String,
     /// The workspace's language servers, for `check`.
     lsp: Option<&'s mut dyn Lsp>,
     /// The most permissive `allow` so far.
     allow: Option<Severity>,
+    /// Every path the file set has held, in the order the script named them.
+    named: Vec<String>,
 }
 
 impl Executor<'_> {
-    fn run(&mut self, script: &Script, initial: &[String]) -> Result<Vec<Change>, ExecError> {
-        self.set = self.open(initial, None)?;
+    fn run(&mut self, script: &Script, initial: Initial) -> Result<Vec<Change>, ExecError> {
+        self.set = match initial {
+            Initial::Files(paths) => self.open(paths, None)?,
+            Initial::Workspace(root) => {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                workspace::files(&root, &cwd)
+                    .into_iter()
+                    .map(|path| Member {
+                        path,
+                        file: None,
+                        workspace: true,
+                    })
+                    .collect()
+            }
+        };
+        self.named = self.set.iter().map(|m| m.path.clone()).collect();
         for (index, command) in script.commands.iter().enumerate() {
             self.command(index, command)?;
         }
-        let changes: Vec<Change> = self
+        // Files are read as commands need them, so they're reported in the
+        // order the script named them instead.
+        let rank = |path: &str| self.named.iter().position(|n| same_path(n, path));
+        let mut changed: Vec<&Loaded> = self
             .files
             .iter()
             .filter(|l| l.created || !l.edits.is_empty())
+            .collect();
+        changed.sort_by_key(|l| rank(&l.file.path));
+        let changes: Vec<Change> = changed
+            .iter()
             .map(|l| Change {
                 path: l.file.path.clone(),
                 old: if l.created {
@@ -123,12 +167,7 @@ impl Executor<'_> {
             })
             .collect();
         if !self.options.force {
-            for (l, change) in self
-                .files
-                .iter()
-                .filter(|l| l.created || !l.edits.is_empty())
-                .zip(&changes)
-            {
+            for (l, change) in changed.iter().zip(&changes) {
                 if l.created {
                     let empty = SourceFile::new(&l.file.path, String::new(), l.file.lang);
                     guard(&empty, &change.new)?;
@@ -142,7 +181,8 @@ impl Executor<'_> {
 
     /// Adds a file made by `create` to the file set, holding `new` (§4.2).
     fn create(&mut self, path: &str, new: &Text) -> Result<(), ExecErrorKind> {
-        let loaded = self.files.iter().any(|l| same_path(&l.file.path, path));
+        let loaded = self.files.iter().any(|l| same_path(&l.file.path, path))
+            || self.set.iter().any(|m| same_path(&m.path, path));
         if loaded || std::path::Path::new(path).exists() {
             return Err(ExecErrorKind::FileExists { path: path.into() });
         }
@@ -162,27 +202,88 @@ impl Executor<'_> {
             edits,
             created: true,
         });
-        self.set.push(self.files.len() - 1);
+        self.named.push(path.into());
+        self.set.push(Member {
+            path: path.into(),
+            file: Some(self.files.len() - 1),
+            workspace: false,
+        });
         Ok(())
     }
 
-    /// Loads the files `paths` name, expanding globs (§2.4), as indices into
-    /// `self.files` without duplicates.
+    /// The files `paths` name, expanding globs (§2.4), without duplicates.
+    /// They're read later, but a missing one is an error now.
     fn open(
         &mut self,
         paths: &[String],
         span: Option<&Range<usize>>,
-    ) -> Result<Vec<usize>, ExecError> {
-        let mut set = Vec::new();
+    ) -> Result<Vec<Member>, ExecError> {
+        let mut set: Vec<Member> = Vec::new();
         for path in paths {
             for path in expand(path, span)? {
-                let i = self.load(&path, span.cloned())?;
-                if !set.contains(&i) {
-                    set.push(i);
+                if set.iter().any(|m| same_path(&m.path, &path)) {
+                    continue;
                 }
+                let file = self
+                    .files
+                    .iter()
+                    .position(|l| same_path(&l.file.path, &path));
+                if file.is_none()
+                    && let Err(err) = fs::metadata(&path)
+                {
+                    let message = match err.kind() {
+                        std::io::ErrorKind::NotFound => {
+                            format!("no such file{}", relative_note(&path))
+                        }
+                        _ => err.to_string(),
+                    };
+                    return Err(ExecError::new(
+                        ExecErrorKind::Io { path, message },
+                        span.cloned(),
+                    ));
+                }
+                set.push(Member {
+                    path,
+                    file,
+                    workspace: false,
+                });
             }
         }
         Ok(set)
+    }
+
+    /// Reads the set's files whose paths satisfy `wanted`, returning their
+    /// indices into `files`. Workspace files that can't be read leave the set.
+    fn read(&mut self, wanted: impl Fn(&str) -> bool) -> Result<Vec<usize>, ExecError> {
+        let mut indices = Vec::new();
+        let mut i = 0;
+        while i < self.set.len() {
+            let member = &self.set[i];
+            if !wanted(&member.path) {
+                i += 1;
+                continue;
+            }
+            let index = match member.file {
+                Some(index) => index,
+                None => {
+                    let (path, workspace) = (member.path.clone(), member.workspace);
+                    match self.load(&path, None) {
+                        Ok(index) => {
+                            self.set[i].file = Some(index);
+                            index
+                        }
+                        Err(_) if workspace => {
+                            self.set.remove(i);
+                            continue;
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
+            };
+            indices.push(index);
+            i += 1;
+        }
+        Ok(indices)
     }
 
     fn load(&mut self, path: &str, span: Option<Range<usize>>) -> Result<usize, ExecError> {
@@ -229,6 +330,11 @@ impl Executor<'_> {
             }
             CommandKind::File(paths) => {
                 self.set = self.open(paths, Some(span))?;
+                for member in &self.set {
+                    if !self.named.iter().any(|n| same_path(n, &member.path)) {
+                        self.named.push(member.path.clone());
+                    }
+                }
                 return Ok(());
             }
             _ if self.set.is_empty() => return Err(error(ExecErrorKind::NoFiles)),
@@ -280,14 +386,33 @@ impl Executor<'_> {
     }
 
     /// Resolves `target` in the current file set, returning matches whose
-    /// `file` indexes `self.files`.
-    fn resolve(&self, target: &Target) -> Result<Vec<Match>, ExecError> {
-        let set: Vec<&SourceFile> = self.set.iter().map(|&i| &self.files[i].file).collect();
+    /// `file` indexes `self.files`. A leading `file:` step reads only its
+    /// file.
+    fn resolve(&mut self, target: &Target) -> Result<Vec<Match>, ExecError> {
+        let only = match target.selector.steps.first().map(|s| &s.primary) {
+            Some(Primary::File(path)) => {
+                if !self.set.iter().any(|m| same_path(&m.path, path)) {
+                    let paths: Vec<&str> = self.set.iter().map(|m| m.path.as_str()).collect();
+                    return Err(ExecError::new(
+                        ExecErrorKind::NotInFileSet {
+                            path: path.clone(),
+                            files: select::file_list(&paths),
+                            add: select::add_to_set(&paths, path),
+                        },
+                        Some(target.selector.span.clone()),
+                    ));
+                }
+                Some(path.clone())
+            }
+            _ => None,
+        };
+        let indices = self.read(|p| only.as_ref().is_none_or(|only| same_path(p, only)))?;
+        let set: Vec<&SourceFile> = indices.iter().map(|&i| &self.files[i].file).collect();
         let matches = select::resolve(target, &set, self.src)?;
         Ok(matches
             .into_iter()
             .map(|m| Match {
-                file: self.set[m.file],
+                file: indices[m.file],
                 range: m.range,
             })
             .collect())
@@ -373,7 +498,7 @@ impl Executor<'_> {
         let mut spans: Vec<(usize, usize, usize)> = Vec::new();
         match target {
             None => {
-                for &i in &self.set {
+                for i in self.read(|_| true)? {
                     let count = self.files[i].file.buffer.line_count();
                     if count > 0 {
                         spans.push((i, 0, count - 1));
@@ -427,7 +552,11 @@ impl Executor<'_> {
     fn outline(&mut self, span: &Range<usize>, target: Option<&Target>) -> Result<(), ExecError> {
         let error = |kind| ExecError::new(kind, Some(span.clone()));
         let spans: Vec<(usize, Option<Range<usize>>)> = match target {
-            None => self.set.iter().map(|&i| (i, None)).collect(),
+            None => self
+                .read(|_| true)?
+                .into_iter()
+                .map(|i| (i, None))
+                .collect(),
             Some(target) => self
                 .resolve(target)?
                 .into_iter()
@@ -437,31 +566,37 @@ impl Executor<'_> {
         let mut files: Vec<usize> = spans.iter().map(|(i, _)| *i).collect();
         files.dedup();
         let mut any = false;
+        let mut unsupported = None;
         for &i in &files {
             let Some(lang) = self.files[i].file.lang else {
                 continue;
             };
             if lang.selectors().is_none() {
-                let what = format!("`outline` in {lang} files");
-                let instead = "use `show`";
-                return Err(error(ExecErrorKind::Unsupported { what, instead }));
+                unsupported.get_or_insert(lang);
+                continue;
             }
             any = true;
+        }
+        if let (false, Some(lang)) = (any, unsupported) {
+            let what = format!("`outline` in {lang} files");
+            let instead = "use `show`";
+            return Err(error(ExecErrorKind::Unsupported { what, instead }));
         }
         if !any {
             return Err(error(ExecErrorKind::NoLanguage {
                 selector: "outline".into(),
-                files: files
-                    .iter()
-                    .map(|&i| self.files[i].file.path.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                files: select::file_list(
+                    &files
+                        .iter()
+                        .map(|&i| self.files[i].file.path.as_str())
+                        .collect::<Vec<_>>(),
+                ),
             }));
         }
         let mut last = None;
         for (i, range) in spans {
             let f = &self.files[i].file;
-            if f.lang.is_none() {
+            if f.lang.and_then(|l| l.selectors()).is_none() {
                 continue;
             }
             if last != Some(i) {
@@ -481,7 +616,11 @@ impl Executor<'_> {
     ) -> Result<(), ExecError> {
         let error = |kind| ExecError::new(kind, Some(span.clone()));
         let spans: Vec<(usize, Option<Range<usize>>)> = match target {
-            None => self.set.iter().map(|&i| (i, None)).collect(),
+            None => self
+                .read(|_| true)?
+                .into_iter()
+                .map(|i| (i, None))
+                .collect(),
             Some(target) => self
                 .resolve(target)?
                 .into_iter()
@@ -502,7 +641,7 @@ impl Executor<'_> {
                 .collect();
             return Err(error(ExecErrorKind::NoLanguage {
                 selector: "check".into(),
-                files: names.join(", "),
+                files: select::file_list(&names),
             }));
         }
         let documents = typed
@@ -582,9 +721,9 @@ impl Executor<'_> {
         let scopes = match scope {
             Some(target) => self.resolve(target)?,
             None => self
-                .set
-                .iter()
-                .map(|&file| Match {
+                .read(|_| true)?
+                .into_iter()
+                .map(|file| Match {
                     file,
                     range: 0..self.files[file].file.text.len(),
                 })
@@ -617,15 +756,16 @@ impl Executor<'_> {
             .filter_map(|(on, flag)| on.then_some(*flag))
             .collect::<String>();
             let selector = format!("/{}/{flags}", pattern.source.replace('/', "\\/"));
-            let set: Vec<&SourceFile> = self.set.iter().map(|&i| &self.files[i].file).collect();
+            let mut searched: Vec<usize> = scopes.iter().map(|m| m.file).collect();
+            searched.dedup();
+            let set: Vec<&SourceFile> = searched.iter().map(|&i| &self.files[i].file).collect();
             let parents: Vec<Match> = scopes
                 .iter()
                 .map(|m| Match {
-                    file: self
-                        .set
+                    file: searched
                         .iter()
                         .position(|&i| i == m.file)
-                        .expect("scopes are in the set"),
+                        .expect("scopes are searched"),
                     range: m.range.clone(),
                 })
                 .collect();
@@ -637,12 +777,9 @@ impl Executor<'_> {
             return Err(ExecError::new(
                 ExecErrorKind::NoMatch {
                     selector,
-                    files: self
-                        .set
-                        .iter()
-                        .map(|&i| self.files[i].file.path.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", "),
+                    files: select::file_list(
+                        &set.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+                    ),
                     hint,
                 },
                 Some(span.clone()),
@@ -1021,11 +1158,13 @@ pub enum ExecErrorKind {
     },
     #[error("line {line} is past the end of {files}{hint}", hint = last_line_hint(line))]
     LineOutOfRange { line: String, files: String },
-    #[error(
-        "file:{path} is not in the file set: {files}; add it with `file {set} {path}`",
-        set = files.replace(", ", " ")
-    )]
-    NotInFileSet { path: String, files: String },
+    /// `add` is the fix: the `file` command that adds it, when short.
+    #[error("file:{path} is not in the file set: {files}; {add}")]
+    NotInFileSet {
+        path: String,
+        files: String,
+        add: String,
+    },
     #[error("{what} is not yet supported; {instead}")]
     Unsupported { what: String, instead: &'static str },
     #[error(
@@ -1190,7 +1329,7 @@ mod tests {
             .collect();
         let src = script.replace("{dir}/", &root);
         let parsed = parse(&src).unwrap();
-        let run = run(&parsed, &src, &paths, options, lsp);
+        let run = run(&parsed, &src, Initial::Files(&paths), options, lsp);
         let strip = |s: &str| s.replace(&root, "");
         Outcome {
             output: strip(&run.output),
@@ -1624,7 +1763,7 @@ mod tests {
         let err = run(
             &parsed,
             "show",
-            std::slice::from_ref(&missing),
+            Initial::Files(std::slice::from_ref(&missing)),
             &Options::default(),
             None,
         )
@@ -1646,7 +1785,7 @@ mod tests {
         let err = run(
             &parsed,
             "show",
-            std::slice::from_ref(&path),
+            Initial::Files(std::slice::from_ref(&path)),
             &Options::default(),
             None,
         )
@@ -1661,9 +1800,15 @@ mod tests {
     #[test]
     fn commands_need_files() {
         let parsed = parse("show 1").unwrap();
-        let err = run(&parsed, "show 1", &[], &Options::default(), None)
-            .result
-            .unwrap_err();
+        let err = run(
+            &parsed,
+            "show 1",
+            Initial::Files(&[]),
+            &Options::default(),
+            None,
+        )
+        .result
+        .unwrap_err();
         assert_eq!(
             err.render("show 1"),
             "error: script:1:1: no files to edit; pass FILE arguments or use `file PATH`"
@@ -2340,16 +2485,181 @@ fn main() {}
     #[test]
     fn allow_records_the_most_permissive_level() {
         let src = "allow warnings\nallow errors\nallow warnings";
-        let out = run(&parse(src).unwrap(), src, &[], &Options::default(), None);
+        let out = run(
+            &parse(src).unwrap(),
+            src,
+            Initial::Files(&[]),
+            &Options::default(),
+            None,
+        );
         assert_eq!(out.result.unwrap(), vec![]);
         assert_eq!(out.allow, Some(Severity::Error));
         let out = run(
             &parse("show 1").unwrap(),
             "show 1",
-            &[],
+            Initial::Files(&[]),
             &Options::default(),
             None,
         );
         assert_eq!(out.allow, None);
+    }
+
+    /// Runs `script` on the workspace at `root`, with `root/` removed from
+    /// every path.
+    fn in_workspace(root: &std::path::Path, script: &str) -> Outcome {
+        let prefix = format!("{}/", root.display());
+        let src = script.replace("{dir}/", &prefix);
+        let parsed = parse(&src).unwrap();
+        let run = run(
+            &parsed,
+            &src,
+            Initial::Workspace(root.to_path_buf()),
+            &Options::default(),
+            None,
+        );
+        let strip = |s: &str| s.replace(&prefix, "");
+        Outcome {
+            output: strip(&run.output),
+            result: match run.result {
+                Ok(changes) => Ok(changes
+                    .into_iter()
+                    .map(|c| Change {
+                        path: strip(&c.path),
+                        ..c
+                    })
+                    .collect()),
+                Err(err) => Err(strip(&err.render(&src))),
+            },
+        }
+    }
+
+    fn workspace_tree() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::write(root.join("sub/b.rs"), "fn b() {}\n").unwrap();
+        fs::write(root.join("bin.dat"), [0xff, 0xfe, b'\n']).unwrap();
+        fs::write(root.join(".gitignore"), "ignored.rs\n").unwrap();
+        fs::write(root.join("ignored.rs"), "fn a() {}\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_workspace_set_holds_every_workspace_file() {
+        let dir = workspace_tree();
+        let root = dir.path().canonicalize().unwrap();
+        let out = in_workspace(&root, "show fn:a\nshow all /fn /");
+        assert_eq!(
+            out.output,
+            "a.rs:1\n1:fn a() {}\na.rs:1\n1:fn a() {}\nsub/b.rs:1\n1:fn b() {}\n"
+        );
+        assert_eq!(out.result, Ok(vec![]));
+    }
+
+    #[test]
+    fn file_narrows_a_workspace_set() {
+        let dir = workspace_tree();
+        let root = dir.path().canonicalize().unwrap();
+        let out = in_workspace(&root, "file {dir}/sub/b.rs\nshow all /fn /");
+        assert_eq!(out.output, "sub/b.rs:1\n1:fn b() {}\n");
+    }
+
+    #[test]
+    fn edits_in_a_workspace_change_only_their_files() {
+        let dir = workspace_tree();
+        let root = dir.path().canonicalize().unwrap();
+        let out = in_workspace(&root, "replace fn:b.name with \"c\"");
+        let changes = out.result.unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(
+            (changes[0].path.as_str(), changes[0].new.as_str()),
+            ("sub/b.rs", "fn c() {}\n")
+        );
+    }
+
+    #[test]
+    fn an_empty_workspace_has_no_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = in_workspace(&dir.path().canonicalize().unwrap(), "show 1");
+        assert!(out.error().contains("no files to edit"), "{}", out.error());
+    }
+
+    #[test]
+    fn files_are_read_only_when_a_command_needs_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("good.rs");
+        let bad = dir.path().join("bad.rs");
+        fs::write(&good, "fn a() {}\n").unwrap();
+        fs::write(&bad, [0xff, 0xfe, b'\n']).unwrap();
+        let paths = [good.display().to_string(), bad.display().to_string()];
+        let src = format!("show file:{}>1", paths[0]);
+        let out = run(
+            &parse(&src).unwrap(),
+            &src,
+            Initial::Files(&paths),
+            &Options::default(),
+            None,
+        );
+        assert!(out.result.is_ok(), "{:?}", out.result);
+        assert!(out.output.ends_with("1:fn a() {}\n"), "{}", out.output);
+        let out = run(
+            &parse("show 1").unwrap(),
+            "show 1",
+            Initial::Files(&paths),
+            &Options::default(),
+            None,
+        );
+        let err = out.result.unwrap_err().render("show 1");
+        assert!(err.contains("not valid UTF-8"), "{err}");
+    }
+
+    #[test]
+    fn errors_list_at_most_five_files() {
+        let names = ["a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs"];
+        let files: Vec<(&str, &str)> = names.iter().map(|n| (*n, "x\n")).collect();
+        let out = exec_with(&files, files.len(), "show fn:missing");
+        assert!(
+            out.error()
+                .contains("matches nothing in a.rs, b.rs, c.rs, d.rs, e.rs and 2 more"),
+            "{}",
+            out.error()
+        );
+        let out = exec_with(&files, files.len(), "show file:z.rs>1");
+        assert!(
+        out.error().contains("is not in the file set: a.rs, b.rs, c.rs, d.rs, e.rs and 2 more; add it with `file`"),
+        "{}",
+        out.error()
+    );
+    }
+
+    #[test]
+    fn syntax_steps_skip_files_whose_language_lacks_the_kind() {
+        let files = [
+            ("a.rs", "fn a() {}\n"),
+            ("b.md", "# B\n\ntext\n"),
+            ("c.py", "def c():\n    pass\n"),
+        ];
+        let out = exec_with(&files, 3, "show fn:a\nshow section:B");
+        assert_eq!(
+            out.output,
+            "a.rs:1\n1:fn a() {}\nb.md:1-3\n1:# B\n2:\n3:text\n"
+        );
+        let out = exec_with(&files, 3, "outline");
+        assert!(out.output.starts_with("a.rs\n"), "{}", out.output);
+        assert!(out.output.contains("b.md\n"), "{}", out.output);
+        assert!(!out.output.contains("c.py"), "{}", out.output);
+        let out = exec_with(&files[1..], 2, "show fn:a");
+        assert!(
+            out.error().contains("markdown has no `fn` items"),
+            "{}",
+            out.error()
+        );
+        let out = exec_with(&files[2..], 1, "outline");
+        assert!(
+            out.error().contains("`outline` in python files"),
+            "{}",
+            out.error()
+        );
     }
 }

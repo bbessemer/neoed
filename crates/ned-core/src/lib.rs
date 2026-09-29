@@ -14,3 +14,4 @@ pub mod script;
 pub mod select;
 pub mod syntax;
 pub mod text;
+pub mod workspace;

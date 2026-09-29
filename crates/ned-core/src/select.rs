@@ -18,6 +18,28 @@ use crate::text::{full_lines, strip_indent};
 
 const MAX_CANDIDATES: usize = 10;
 
+/// The most files an error lists by name.
+pub(crate) const MAX_LISTED_FILES: usize = 5;
+
+/// `paths` for an error message: at most `MAX_LISTED_FILES`, then a count.
+pub(crate) fn file_list(paths: &[&str]) -> String {
+    match paths.len().checked_sub(MAX_LISTED_FILES) {
+        Some(more) if more > 0 => {
+            format!("{} and {more} more", paths[..MAX_LISTED_FILES].join(", "))
+        }
+        _ => paths.join(", "),
+    }
+}
+
+/// The fix for `path` not being in the set `paths`.
+pub(crate) fn add_to_set(paths: &[&str], path: &str) -> String {
+    if paths.len() <= MAX_LISTED_FILES {
+        format!("add it with `file {} {path}`", paths.join(" "))
+    } else {
+        "add it with `file`, which replaces the set".into()
+    }
+}
+
 /// A file in the file set, with its path as the user wrote it.
 #[derive(Debug, Clone)]
 pub struct SourceFile {
@@ -90,11 +112,7 @@ pub fn resolve(target: &Target, files: &[&SourceFile], src: &str) -> Result<Vec<
     match matches.len() {
         0 => Err(error(E::NoMatch {
             selector: selector.into(),
-            files: files
-                .iter()
-                .map(|f| f.path.as_str())
-                .collect::<Vec<_>>()
-                .join(", "),
+            files: file_list(&files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>()),
             hint: target
                 .selector
                 .steps
@@ -208,13 +226,11 @@ impl<'a> Matcher<'a> {
             },
             Primary::File(path) => {
                 if !files.iter().any(|f| same_path(&f.path, path)) {
+                    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
                     return Err(E::NotInFileSet {
                         path: path.clone(),
-                        files: files
-                            .iter()
-                            .map(|f| f.path.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", "),
+                        files: file_list(&paths),
+                        add: add_to_set(&paths, path),
                     });
                 }
                 Matcher::File(path)
@@ -390,42 +406,47 @@ fn check_lines(
     Err(E::LineOutOfRange { line, files })
 }
 
-/// Fails unless some searched file has a language, and every searched
-/// language has selector items of `kind`.
+/// Fails unless some searched file's language has selector items of `kind`;
+/// files whose language lacks them are skipped. The error is the first such
+/// file's, or `NoLanguage` if no searched file has a language.
 fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]) -> Result<(), E> {
     let mut searched: Vec<usize> = parents.iter().map(|m| m.file).collect();
     searched.dedup();
-    let mut any = false;
+    let mut first_error = None;
     for &i in &searched {
         let Some(lang) = files[i].lang else { continue };
-        let Some(query) = lang.selectors() else {
-            let selector = syntax::selector(kind, name);
-            return Err(E::Unsupported {
-                what: format!("`{selector}` in {lang} files"),
+        let error = match lang.selectors() {
+            None => E::Unsupported {
+                what: format!("`{}` in {lang} files", syntax::selector(kind, name)),
                 instead: r#"use a line, /regex/, "literal" or query{} selector"#,
-            });
+            },
+            Some(query) => {
+                let kinds = syntax::kinds(query);
+                if kinds.contains(&kind) {
+                    return Ok(());
+                }
+                E::UnknownKind {
+                    kind: kind.into(),
+                    lang: lang.to_string(),
+                    kinds: kinds.join(", "),
+                }
+            }
         };
-        let kinds = syntax::kinds(query);
-        if !kinds.contains(&kind) {
-            return Err(E::UnknownKind {
-                kind: kind.into(),
-                lang: lang.to_string(),
-                kinds: kinds.join(", "),
-            });
-        }
-        any = true;
+        first_error.get_or_insert(error);
     }
-    if any || searched.is_empty() {
-        return Ok(());
+    match first_error {
+        Some(error) => Err(error),
+        None if searched.is_empty() => Ok(()),
+        None => Err(E::NoLanguage {
+            selector: syntax::selector(kind, name),
+            files: file_list(
+                &searched
+                    .iter()
+                    .map(|&i| files[i].path.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+        }),
     }
-    Err(E::NoLanguage {
-        selector: syntax::selector(kind, name),
-        files: searched
-            .iter()
-            .map(|&i| files[i].path.as_str())
-            .collect::<Vec<_>>()
-            .join(", "),
-    })
 }
 
 /// `source` compiled for each language among the searched files.
