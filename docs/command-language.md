@@ -295,7 +295,7 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 | `variant`   | enum variants                                                      |
 | `trait`     | traits                                                             |
 | `interface` | interfaces                                                         |
-| `impl`      | impl blocks (name = self type, e.g. `impl:Parser`)                 |
+| `impl`      | impl blocks (name = self type, or `TRAIT for TYPE`; see below)     |
 | `type`      | type aliases and declarations                                      |
 | `const`     | constants and statics                                              |
 | `var`       | module-level variables and `let`/`var` bindings                    |
@@ -307,6 +307,10 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 | `table`     | Markdown tables (name = the first header cell)                     |
 | `code`      | Markdown code blocks (name = the info string, or `""` if none)     |
 
+- An inherent impl is named by its self type (`impl:Parser`), a trait impl by
+  `TRAIT for TYPE` (`impl:"Display for Parser"`), each the last path segment
+  without generic arguments (`impl<T> fmt::Display for Foo<T>` is
+  `"Display for Foo"`). `impl:TYPE` also matches every trait impl of the type.
 - A syntax step skips files whose language doesn't support its kind (or has no
   syntax items yet), as it skips files without a language, so `fn:parse` works
   in a set that also holds Markdown. If no searched file supports the kind, the

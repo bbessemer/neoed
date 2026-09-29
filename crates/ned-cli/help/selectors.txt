@@ -8,8 +8,8 @@ Syntax: kind:name, with * as a wildcard; quote other names: import:"os.path".
   field mod import, and in Markdown section item table code (which depend on
   the language; outline shows them). section:"Intro" is a # heading and its
   content.
-  impl:Name is the impl's self type. A syntax item includes its doc comments
-  and attributes.
+  impl:Name is the impl's self type; a trait impl is also impl:"Trait for Name".
+  A syntax item includes its doc comments and attributes.
 Parts: .body .params (inside the delimiters) .name .sig .doc .lines.
   Via the language server, on any step: .refs (each use), .def (the defining
   item): all fn:parse.refs, "helper(".def. With -w they reach every file.

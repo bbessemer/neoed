@@ -1714,6 +1714,31 @@ fn main() {
         );
     }
 
+    const IMPLS: &str = "struct S;\nimpl S {\n    fn a() {}\n}\nimpl Display for S {\n    fn fmt() {}\n}\nimpl Debug for S {}\n";
+
+    #[test]
+    fn trait_impls_match_by_full_name_or_self_type() {
+        assert_eq!(
+            select("delete impl:\"Display for S\"", IMPLS),
+            ["impl Display for S {\n    fn fmt() {}\n}"]
+        );
+        assert_eq!(select("delete all impl:\"* for S\"", IMPLS).len(), 2);
+        assert_eq!(select("delete all impl:S", IMPLS).len(), 3);
+        assert_eq!(select("delete impl:S>fn:fmt", IMPLS), ["fn fmt() {}"]);
+    }
+
+    #[test]
+    fn trait_impl_candidates_use_their_full_names() {
+        assert_eq!(
+            listed("delete impl:S", &[("a.rs", IMPLS)]),
+            [
+                "2-4>impl:S",
+                "impl:\"Display for S\"",
+                "impl:\"Debug for S\""
+            ]
+        );
+    }
+
     #[test]
     fn no_match_suggests_a_near_literal_or_regex() {
         assert_eq!(

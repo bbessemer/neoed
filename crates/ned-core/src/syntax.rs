@@ -40,6 +40,9 @@ pub const KINDS: [&str; 18] = [
 pub struct Item {
     pub kind: &'static str,
     pub name: String,
+    /// For a trait impl, named `TRAIT for TYPE`: the self type, which the
+    /// item's selector also matches.
+    pub base_name: Option<String>,
     /// The default span: the item with its leading doc comments and
     /// attributes, and a `,` that directly follows it.
     pub range: Range<usize>,
@@ -158,6 +161,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                         let text = &text[n.byte_range()];
                         text.lines().next().unwrap_or_default().trim().to_string()
                     }),
+                    base_name: None,
                     range,
                     trailing_comma: comma.is_some(),
                     node: node.byte_range(),
@@ -257,6 +261,11 @@ pub fn name_matches(pattern: &str, name: &str) -> bool {
         }
     }
     rest.len() >= last.len() && rest.ends_with(last)
+}
+
+/// Whether `item`'s name, or its base name, matches `pattern`.
+pub fn item_matches(pattern: &str, item: &Item) -> bool {
+    name_matches(pattern, &item.name)
 }
 
 /// `kind:name`, with the name quoted when it has characters a bare name can't.
@@ -380,14 +389,14 @@ mod tests {}
             ("trait", "Parse"),
             ("type", "Output"),
             ("fn", "parse"),
-            ("impl", "Wrapper"),
+            ("impl", "Parse for Wrapper"),
             ("type", "Output"),
             ("fn", "parse"),
             ("impl", "Parser"),
             ("fn", "new"),
             ("var", "pos"),
             ("var", "len"),
-            ("impl", "Token"),
+            ("impl", "Display for Token"),
             ("type", "Result"),
             ("const", "MAX"),
             ("const", "NAME"),
@@ -396,6 +405,35 @@ mod tests {}
         let expected: Vec<(&str, String)> =
             expected.iter().map(|(k, n)| (*k, n.to_string())).collect();
         assert_eq!(names(RUST), expected);
+    }
+
+    #[test]
+    fn trait_impls_are_named_trait_for_type() {
+        let text = "impl<T> From<T> for a::B<T> {}\nimpl X for &Foo {}\n\
+                    impl std::ops::Add for Foo {}\nimpl<T> Y for a::C<T> {}\nimpl Foo {}\n";
+        let found: Vec<(String, Option<String>)> = items_in(text)
+            .into_iter()
+            .map(|i| (i.name, i.base_name))
+            .collect();
+        let base = |name: &str| Some(name.to_string());
+        assert_eq!(
+            found,
+            [
+                ("From for B".into(), base("B")),
+                ("X for Foo".into(), base("Foo")),
+                ("Add for Foo".into(), base("Foo")),
+                ("Y for C".into(), base("C")),
+                ("Foo".into(), None),
+            ]
+        );
+        let display = items_in(RUST)
+            .into_iter()
+            .find(|i| i.name == "Display for Token")
+            .unwrap();
+        assert!(item_matches("Token", &display));
+        assert!(item_matches("Display for *", &display));
+        assert!(item_matches("* for Token", &display));
+        assert!(!item_matches("Display", &display));
     }
 
     #[test]
