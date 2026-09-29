@@ -815,6 +815,24 @@ mod tests {
     }
 
     #[test]
+    fn show_context() {
+        let show = |context| CommandKind::Show {
+            target: Some(target(vec![syntax("fn", "x")])),
+            context,
+        };
+        assert_eq!(one("show fn:x +3"), show(3));
+        assert_eq!(one("show fn:x+3"), show(3));
+        assert_eq!(
+            message("show fn:x +"),
+            "expected a line count after `+`, e.g. show fn:parse +3"
+        );
+        assert_eq!(
+            message("show +3"),
+            "expected a selector, found a context count; usage: show [SEL [+N]]"
+        );
+    }
+
+    #[test]
     fn several_commands() {
         assert_eq!(commands("show 1; delete 2\n\n# c\nshow").len(), 3);
         assert_eq!(
@@ -1015,6 +1033,7 @@ mod tests {
             assert!(usage.starts_with(verb), "{usage}");
         }
         assert_eq!(usage("frobnicate"), None);
+        assert_eq!(usage("show"), Some("show [SEL [+N]]"));
     }
 
     #[test]

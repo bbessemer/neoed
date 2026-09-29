@@ -1007,6 +1007,32 @@ mod tests {
     }
 
     #[test]
+    fn show_adds_context_lines() {
+        assert_eq!(
+            exec(TEXT, "show 3 +1").output,
+            "a.rs:2-4\n2:    let x = 1;\n3:    let y = 2;\n4:}\n"
+        );
+        assert_eq!(
+            exec(TEXT, "show 1 +2").output,
+            "a.rs:1-3\n1:fn a() {\n2:    let x = 1;\n3:    let y = 2;\n"
+        );
+        assert_eq!(
+            exec(TEXT, "show $ +1").output,
+            "a.rs:7-8\n7:    let x = 3;\n8:}\n"
+        );
+    }
+
+    #[test]
+    fn show_context_regions_merge() {
+        let two = exec(TEXT, "show all /let x/ +1").output;
+        assert!(two.starts_with("a.rs:1-3\n"), "{two}");
+        assert!(two.contains("\na.rs:6-8\n"), "{two}");
+        let one = exec(TEXT, "show all /let x/ +2").output;
+        assert!(one.starts_with("a.rs:1-8\n"), "{one}");
+        assert_eq!(one.lines().count(), 9);
+    }
+
+    #[test]
     fn show_without_selector_prints_every_file() {
         let out = exec_with(&[("a.rs", "x\ny\n"), ("b.rs", "z")], 2, "show");
         assert_eq!(out.output, "a.rs:1-2\n1:x\n2:y\nb.rs:1\n1:z\n");

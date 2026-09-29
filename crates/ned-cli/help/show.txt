@@ -1,4 +1,4 @@
-show [SEL]
+show [SEL [+N]]
 
 Prints the lines holding each span of SEL, headed PATH:START-END, as N:text.
 Without SEL, prints every file in the set. Nearby spans merge. Output always

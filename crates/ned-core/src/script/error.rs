@@ -32,6 +32,8 @@ pub enum ParseErrorKind {
     ZeroLine,
     #[error("expected a line number or `$` after `-`, e.g. 12-20 or 12-$")]
     MissingRangeEnd,
+    #[error("expected a line count after `+`, e.g. show fn:parse +3")]
+    MissingContext,
     #[error("line range {start}-{end} is reversed; write {end}-{start}")]
     ReversedLines { start: usize, end: usize },
     #[error("line number is too large; use `$` for the last line")]
