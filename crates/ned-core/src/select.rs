@@ -127,11 +127,11 @@ pub fn resolve_within(
         0 => Err(error(E::NoMatch {
             selector: selector.into(),
             files: file_list(&files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>()),
-            hint: target
-                .selector
-                .steps
-                .last()
-                .map(|step| hint(step, files, &parents, selector))
+            hint: range_precedence(&target.selector, src)
+                .or_else(|| {
+                    let step = target.selector.steps.last()?;
+                    Some(hint(step, files, &parents, selector))
+                })
                 .unwrap_or_default(),
         })),
         1 => Ok(matches),
@@ -570,6 +570,40 @@ fn parts_of(item: &Item) -> String {
     .flatten()
     .collect::<Vec<_>>()
     .join(" ")
+}
+
+/// The hint for a range whose end repeats the steps before it, as in
+/// `P>"a"..P>"b"`: `..` binds tighter than `>`, so that's a range from `"a"`
+/// to `P` followed by the step `"b"`, and `P>"a".."b"` was meant.
+fn range_precedence(selector: &Selector, src: &str) -> Option<String> {
+    let steps = &selector.steps;
+    let text = |range: &Range<usize>| src.get(range.clone());
+    (0..steps.len()).find_map(|i| {
+        let Primary::Range { to, .. } = &steps[i].primary else {
+            return None;
+        };
+        let j = (0..i).find(|&j| steps[j].primary == **to && steps[j].parts.is_empty())?;
+        let k = i + (i - j);
+        let repeated = steps.get(i + 1..k)?;
+        let same = |a: &Step, b: &Step| a.primary == b.primary && a.parts == b.parts;
+        if k >= steps.len()
+            || !steps[j + 1..i]
+                .iter()
+                .zip(repeated)
+                .all(|(a, b)| same(a, b))
+        {
+            return None;
+        }
+        let from = text(&steps[i].span)?.strip_suffix(text(&steps[j].span)?)?;
+        let fixed = format!(
+            "{}{from}{}",
+            text(&(selector.span.start..steps[i].span.start))?,
+            text(&(steps[k].span.start..selector.span.end))?
+        );
+        Some(format!(
+            "; `..` binds tighter than `>`: did you mean {fixed}?"
+        ))
+    })
 }
 
 /// The fix for a `step` that matched nothing within `parents` (§7): its name
@@ -1877,6 +1911,23 @@ fn main() {
                 &[("a.rs", "mod m {\n    struct S;\n}\n")]
             )
             .ends_with("did you mean mod:m>struct:S (2)?")
+        );
+    }
+
+    #[test]
+    fn a_range_end_nested_like_its_start_suggests_the_plain_range() {
+        assert!(
+            error("delete fn:a>\"let x\"..fn:a>\"let y\"", &[("a.rs", TEXT)]).ends_with(
+                "; `..` binds tighter than `>`: did you mean fn:a>\"let x\"..\"let y\"?"
+            )
+        );
+        let text = "mod m {\n    fn a() {\n        x;\n        y;\n    }\n}\n";
+        assert!(
+            error(
+                "delete mod:m>fn:a>\"x\"..mod:m>fn:a>\"y\"",
+                &[("a.rs", text)]
+            )
+            .ends_with("did you mean mod:m>fn:a>\"x\"..\"y\"?")
         );
     }
 

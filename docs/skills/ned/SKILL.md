@@ -167,9 +167,6 @@ END
   same at the span's end; add `.lines` to insert after the whole line. A
   heredoc's final newline is dropped there, so a blank line ending it vanishes;
   target the item itself (`insert before fn:x`) instead.
-- **`..` binds tighter than `>`.** `fn:f>"a".."b"` is a range inside `fn:f`;
-  `fn:f>"a"..fn:f>"b"` nests the range's end into another step and matches
-  nothing.
 - **Literals match the file's characters.** In a ned string, `\n` is a
   newline, so matching Rust source that contains the two characters `\n` needs
   `\\n`. A shorter literal, or `sub` with a regex, is easier.
