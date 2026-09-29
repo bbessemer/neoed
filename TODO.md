@@ -78,6 +78,21 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [x] Agent usage guide (skill/system-prompt snippet) in `docs/`
 - [x] Token-cost benchmark suite vs `sed`/Python on representative edits
 - [x] Error-message review: every error suggests a corrected command
+- [ ] Range selectors `SEL..SEL` (`/^## 6/../^## 7/`, `fn:a..fn:c`): from the
+      start of the first match to the end of the second, searched after it;
+      whole lines if both ends are whole-line. The error for `/a/-/b/` suggests
+      `..`
+- [ ] `show SEL +N`: N lines of context around each span; regions merge as now
+- [ ] Markdown as a language: tree-sitter-md grammar; kinds `section` (a
+      heading and its content, named by the heading text), `item`, `table`,
+      `code`; `outline` as the heading tree; prettier as the default formatter
+      (realigns tables)
+- [ ] `create PATH TEXT`: creates a file (an error if it exists) as part of the
+      transaction, with its language detected from the path, and adds it to
+      the file set
+- [ ] `insert before|after` a syntax item that is blank-separated from its
+      neighbours adds one separating blank line, as `move` does, unless the
+      text already starts or ends with one
 
 ## 9. LSP daemon _(split)_
 

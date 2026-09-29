@@ -129,8 +129,8 @@ language detection and parsing (`lang`), syntax items and parts from
 `queries/<lang>/selectors.scm` (`syntax`; Rust only until TODO.md §12),
 `outline`, and external formatters with `.ned.toml` config (`format`). The CLI
 supports every selector and verb, globbed file sets, the parse-error guard,
-formatting, and `ned help`. Every error ends with a fix. Next: the LSP daemon
-(TODO.md §9).
+formatting, and `ned help`. Every error ends with a fix. Next: the language
+additions in TODO.md §8.
 
 ## Key Documentation
 
