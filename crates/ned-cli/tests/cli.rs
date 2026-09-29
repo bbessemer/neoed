@@ -948,3 +948,34 @@ fn rustfmt_formats_rust() {
         "struct S {\n    a: u8,\n    b: u8,\n}\n"
     );
 }
+
+#[test]
+fn move_across_files() {
+    let dir = dir_with(&[
+        ("parser.rs", PARSER),
+        ("debug.rs", "impl Parser {\n    fn trace(&self) {}\n}\n"),
+    ]);
+    let out = ned(
+        dir.path(),
+        &[
+            "parser.rs",
+            "debug.rs",
+            "-e",
+            "move fn:debug_dump end file:debug.rs>impl:Parser",
+        ],
+        "",
+    );
+    assert_snapshot!(out, @"");
+}
+
+#[test]
+fn move_into_its_own_source_exits_1() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let out = ned(
+        dir.path(),
+        &["parser.rs", "-e", "move impl:Parser after fn:new"],
+        "",
+    );
+    assert_snapshot!(out, @"");
+    assert_eq!(read(&dir, "parser.rs"), PARSER);
+}

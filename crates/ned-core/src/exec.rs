@@ -12,7 +12,7 @@ use crate::lang::Language;
 use crate::outline;
 use crate::script::Script;
 use crate::script::ast::{
-    Command, CommandKind, Part, Pattern, Position, Primary, Target, Text, TextKind,
+    Command, CommandKind, Part, Pattern, Position, Primary, Selector, Target, Text, TextKind,
 };
 use crate::script::error::{excerpt, location};
 use crate::select::{self, Match, SourceFile, line_numbers, same_path};
@@ -163,9 +163,6 @@ impl Executor<'_> {
                 self.set = self.open(paths, Some(span))?;
                 return Ok(());
             }
-            CommandKind::Move { .. } => {
-                return Err(error(ExecErrorKind::Unsupported("`move`".into())));
-            }
             _ if self.set.is_empty() => return Err(error(ExecErrorKind::NoFiles)),
             _ => {}
         }
@@ -199,9 +196,12 @@ impl Executor<'_> {
                 pattern,
                 text,
             } => self.sub(index, span, scope.as_ref(), pattern, text)?,
-            CommandKind::File(_) | CommandKind::Move { .. } => {
-                unreachable!("handled above")
-            }
+            CommandKind::Move {
+                target,
+                position,
+                dest,
+            } => self.move_to(index, span, target, *position, dest)?,
+            CommandKind::File(_) => unreachable!("handled above"),
         }
         Ok(())
     }
@@ -248,6 +248,22 @@ impl Executor<'_> {
             ),
             EditError::Buffer(err) => unreachable!("edits come from resolved spans: {err}"),
         })
+    }
+
+    /// Moves each span of `target` to `position` of `dest` (§4.2).
+    fn move_to(
+        &mut self,
+        index: usize,
+        span: &Range<usize>,
+        target: &Target,
+        position: Position,
+        dest: &Selector,
+    ) -> Result<(), ExecError> {
+        let _ = (index, target, position, dest);
+        Err(ExecError::new(
+            ExecErrorKind::Unsupported("`move`".into()),
+            Some(span.clone()),
+        ))
     }
 
     fn show(&mut self, target: Option<&Target>) -> Result<(), ExecError> {
@@ -706,6 +722,8 @@ pub enum ExecErrorKind {
     NoFiles,
     #[error("cannot read {path}: {message}")]
     Io { path: String, message: String },
+    #[error("move destination is inside the moved span at {location}")]
+    MoveIntoSource { location: String },
     #[error("glob `{0}` matched nothing")]
     NoGlobMatch(String),
     /// `location` is `PATH:LINE:COL`; `excerpt` is empty, or a newline and
@@ -1272,12 +1290,141 @@ mod tests {
         );
     }
 
+    const MOVE: &str = "\
+impl A {
+    fn a() {
+        one();
+    }
+
+    fn b() {}
+}
+
+fn helper_x() {
+    x();
+}
+
+fn helper_y() {}
+
+fn main() {}
+";
+
     #[test]
-    fn move_is_not_yet_supported() {
+    fn move_after_keeps_blank_separation() {
         assert_eq!(
-            exec(TEXT, "move 2 after 3").error(),
-            "error: script:1:1: `move` is not yet supported"
+            edited(MOVE, "move fn:helper_x after fn:main"),
+            MOVE.replace("fn helper_x() {\n    x();\n}\n\n", "")
+                + "\nfn helper_x() {\n    x();\n}\n"
         );
+    }
+
+    #[test]
+    fn move_before_keeps_blank_separation() {
+        assert_eq!(
+            edited(MOVE, "move fn:helper_y before fn:helper_x"),
+            MOVE.replace("fn helper_y() {}\n\n", "")
+                .replace("fn helper_x", "fn helper_y() {}\n\nfn helper_x")
+        );
+    }
+
+    #[test]
+    fn move_all_keeps_source_order() {
+        assert_eq!(edited(MOVE, "move all fn:helper_* before fn:main"), MOVE);
+    }
+
+    #[test]
+    fn move_to_the_end_of_a_body_is_rebased() {
+        assert_eq!(
+            edited(MOVE, "move fn:helper_y end impl:A"),
+            MOVE.replace("fn helper_y() {}\n\n", "")
+                .replace("    fn b() {}\n", "    fn b() {}\n    fn helper_y() {}\n")
+        );
+    }
+
+    #[test]
+    fn move_to_the_start_of_a_body() {
+        assert_eq!(
+            edited(MOVE, "move fn:b start fn:helper_x"),
+            MOVE.replace("\n    fn b() {}\n", "")
+                .replace("{\n    x();", "{\n    fn b() {}\n    x();")
+        );
+    }
+
+    #[test]
+    fn move_into_an_empty_body_opens_it() {
+        assert_eq!(
+            edited(MOVE, "move fn:helper_x end fn:main"),
+            MOVE.replace("fn helper_x() {\n    x();\n}\n\n", "")
+                .replace(
+                    "fn main() {}\n",
+                    "fn main() {\n    fn helper_x() {\n        x();\n    }\n}\n"
+                )
+        );
+    }
+
+    #[test]
+    fn move_across_files() {
+        let b = "impl B {\n    fn c() {}\n}\n";
+        let out = exec_with(
+            &[("a.rs", MOVE), ("b.rs", b)],
+            2,
+            "move fn:helper_y end file:b.rs>impl:B",
+        );
+        let changes = out.result.unwrap();
+        assert_eq!(changes[0].path, "a.rs");
+        assert_eq!(changes[0].new, MOVE.replace("fn helper_y() {}\n\n", ""));
+        assert_eq!(changes[1].path, "b.rs");
+        assert_eq!(
+            changes[1].new,
+            "impl B {\n    fn c() {}\n    fn helper_y() {}\n}\n"
+        );
+    }
+
+    #[test]
+    fn move_of_a_partial_span_is_verbatim() {
+        assert_eq!(edited("(a)(b)\n", r#"move "a" before "b""#), "()(ab)\n");
+    }
+
+    #[test]
+    fn move_before_a_field_adds_its_comma() {
+        assert_eq!(
+            edited(
+                "struct S {\n    a: u8,\n    b: u8\n}\n",
+                "move field:b before field:a"
+            ),
+            "struct S {\n    b: u8,\n    a: u8,\n}\n"
+        );
+    }
+
+    #[test]
+    fn move_into_its_own_source_is_an_error() {
+        assert_eq!(
+            exec(MOVE, "move impl:A before fn:b").error(),
+            "error: script:1:1: move destination is inside the moved span at a.rs:1-7"
+        );
+    }
+
+    #[test]
+    fn move_destination_must_be_one_span() {
+        let err = exec(MOVE, "move fn:main after fn:helper_*")
+            .error()
+            .to_string();
+        assert!(err.starts_with("error: script:1:"), "{err}");
+        assert!(err.contains("fn:helper_* matches 2 items"), "{err}");
+    }
+
+    #[test]
+    fn move_from_crlf_to_lf() {
+        let out = exec_with(
+            &[
+                ("a.rs", "fn a() {}\r\n\r\nfn b() {}\r\n"),
+                ("b.rs", "fn c() {}\n"),
+            ],
+            2,
+            "move fn:a after file:b.rs>fn:c",
+        );
+        let changes = out.result.unwrap();
+        assert_eq!(changes[0].new, "fn b() {}\r\n");
+        assert_eq!(changes[1].new, "fn c() {}\n\nfn a() {}\n");
     }
 
     const GUARD_ERROR: &str = "edit introduces a syntax error (use --force to apply anyway)";
