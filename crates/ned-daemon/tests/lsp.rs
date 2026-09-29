@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 
 use ned_core::lang::Language;
 use ned_core::lsp::{
-    Diagnostic, FileEdits, Locate, Located, Location, Position, Renamed, Severity, TextEdit,
+    Diagnostic, FileEdits, Formatting, Locate, Located, Location, Position, Renamed, Severity,
+    TextEdit,
 };
 use ned_daemon::protocol::{Document, ServerState, ServerStatus};
 use ned_daemon::servers::Servers;
@@ -125,6 +126,8 @@ async fn opening_starts_and_initializes_a_server() {
     assert_eq!(init["workspaceFolders"][0]["uri"], uri(&ws.root()));
     assert_eq!(init["capabilities"]["window"]["workDoneProgress"], true);
     assert_eq!(init["capabilities"]["workspace"]["configuration"], true);
+    let text = &init["capabilities"]["textDocument"];
+    assert_eq!(text["formatting"]["dynamicRegistration"], false);
 
     let open = &messages[3]["params"]["textDocument"];
     assert_eq!(open["uri"], uri(&ws.root().join("a.rs")));
@@ -719,6 +722,105 @@ async fn locate_without_a_server_says_so() {
     let located = servers.locate(Locate::References, &md, position).await;
     assert_eq!(located.unwrap(), Located::NoServer);
 }
+
+#[tokio::test]
+async fn format_returns_the_server_edits_for_the_text() {
+    let ws = Workspace::new();
+    let config = format!(
+        "[lsp]\nrust = [{FAKE:?}, {:?}, \"format\"]\ngo = [{FAKE:?}, {:?}, \"format\"]\n",
+        ws.log, ws.log
+    );
+    fs::write(ws.dir.path().join(".ned.toml"), config).unwrap();
+    let mut servers = ws.servers();
+    let a = ws.rust("a.rs", "// done\nfn a() {}  \nx \n");
+    let formatting = servers.format(&a).await.unwrap();
+    assert_eq!(
+        formatting,
+        Formatting::Edits {
+            server: "fake_lsp.py".into(),
+            edits: vec![edit(1, 9, 11, ""), edit(2, 1, 2, "")],
+        }
+    );
+    let go = ws.doc("a.go", Language::Go, "// done\nfunc a() {\n\tx()\n}\n");
+    servers.format(&go).await.unwrap();
+    servers.shutdown().await;
+
+    let messages = ws.messages();
+    let requests = with_method(&messages, "textDocument/formatting");
+    assert_eq!(requests.len(), 2);
+    let rust = &requests[0]["params"];
+    assert_eq!(rust["textDocument"]["uri"], uri(&ws.root().join("a.rs")));
+    assert_eq!(rust["options"], json!({"tabSize": 4, "insertSpaces": true}));
+    let go = &requests[1]["params"];
+    assert_eq!(go["options"], json!({"tabSize": 4, "insertSpaces": false}));
+}
+
+#[tokio::test]
+async fn format_without_a_formatting_server_says_so() {
+    let ws = Workspace::new();
+    let mut servers = ws.servers();
+    let a = ws.rust("a.rs", "// done\nfn a() {}  \n");
+    assert_eq!(servers.format(&a).await.unwrap(), Formatting::NoServer);
+    let md = ws.doc("a.md", Language::Markdown, "# A  \n");
+    assert_eq!(servers.format(&md).await.unwrap(), Formatting::NoServer);
+    servers.shutdown().await;
+    assert!(with_method(&ws.messages(), "textDocument/formatting").is_empty());
+}
+
+/// rust-analyzer and gopls format unsaved text: `cargo test -- --ignored`.
+#[tokio::test]
+#[ignore]
+async fn real_servers_format() {
+    let cases: [FormatCase; 2] = [
+        (
+            &[(
+                "Cargo.toml",
+                "[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            )],
+            "src/lib.rs",
+            "pub fn a( )->u8{1}\n",
+            "pub fn a() -> u8 {\n    1\n}\n",
+        ),
+        (
+            &[("go.mod", "module a\n\ngo 1.21\n")],
+            "a.go",
+            "package a\nfunc A( ) int {return 1}\n",
+            "package a\n\nfunc A() int { return 1 }\n",
+        ),
+    ];
+    for (files, name, text, formatted) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for (file, text) in files {
+            fs::write(root.join(file), text).unwrap();
+        }
+        let path = root.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, text).unwrap();
+        let document = Document {
+            path,
+            lang: Language::detect(name, text).unwrap(),
+            text: text.into(),
+        };
+        let mut servers = Servers::new(root.clone(), None);
+        let formatting = servers.format(&document).await.unwrap();
+        let Formatting::Edits { edits, .. } = formatting else {
+            panic!("{name}: {formatting:?}");
+        };
+        let buffer = ned_core::buffer::Buffer::new(text);
+        let mut result = text.to_string();
+        for edit in edits.iter().rev() {
+            let start = buffer.lsp_offset(edit.start.line, edit.start.character);
+            let end = buffer.lsp_offset(edit.end.line, edit.end.character);
+            result.replace_range(start..end, &edit.text);
+        }
+        assert_eq!(result, formatted, "{name}: {edits:?}");
+        servers.shutdown().await;
+    }
+}
+
+/// Project files, the file to format, its text, and its formatted text.
+type FormatCase<'a> = (&'a [(&'a str, &'a str)], &'a str, &'a str, &'a str);
 
 /// The default servers find references and definitions across files: `cargo
 /// test -- --ignored`.

@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 pub use ned_core::lsp::Document;
-use ned_core::lsp::{Diagnosis, Locate, Located, Position, Renamed};
+use ned_core::lsp::{Diagnosis, Formatting, Locate, Located, Position, Renamed};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +33,10 @@ pub enum Request {
         document: Document,
         position: Position,
     },
+    /// `Open` the document, then format it.
+    Format {
+        document: Document,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +48,7 @@ pub enum Response {
     Diagnosis(Diagnosis),
     Renamed(Renamed),
     Located(Located),
+    Formatted(Formatting),
     Error(String),
 }
 

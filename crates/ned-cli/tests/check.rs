@@ -240,6 +240,38 @@ fn without_a_daemon_edits_are_not_checked() {
 }
 
 #[test]
+fn a_running_daemon_formats_when_no_formatter_is_installed() {
+    let ws = Workspace::new("");
+    let log = ws.dir.path().join("lsp.log");
+    ws.write(
+        ".ned.toml",
+        &format!(
+            "[format]\nrust = [\"ned-no-such-fmt\"]\n\n[lsp]\nrust = [{FAKE:?}, {log:?}, \"format\"]\n"
+        ),
+    );
+    ws.write("a.rs", CLEAN);
+    let edit = ["a.rs", "-q", "-e", "insert after 2 \"fn b() {}  \""];
+    let out = ws.ned(&edit);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        text(&out.stderr),
+        "note: ned-no-such-fmt not found; skipped formatting a.rs\n"
+    );
+    assert_eq!(ws.read("a.rs"), format!("{CLEAN}fn b() {{}}  \n"));
+
+    ws.write("a.rs", CLEAN);
+    ws.start();
+    let out = ws.ned(&edit);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        text(&out.stdout),
+        "a.rs: 1 edit, +1 -0\nfmt fake_lsp.py: +1 -1\n"
+    );
+    assert_eq!(text(&out.stderr), "");
+    assert_eq!(ws.read("a.rs"), format!("{CLEAN}fn b() {{}}\n"));
+}
+
+#[test]
 fn no_check_and_force_skip_blocking() {
     let ws = Workspace::new("");
     ws.write("a.rs", CLEAN);

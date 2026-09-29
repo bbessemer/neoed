@@ -626,6 +626,13 @@ formatted.
   The file is written unformatted and the exit code stays 0.
 - `--dry-run` still runs formatters, on in-memory copies.
 
+When no formatter for the language is installed and a daemon is running
+(§6.5), the file's language server formats it instead
+(`textDocument/formatting`), if it supports that: the header names the server,
+`fmt rust-analyzer: +0 -1`. A server that fails keeps the note, with its reason
+added. The daemon isn't started for this, and `false` disables the fallback
+too.
+
 A formatter gets the file's text on stdin and prints the formatted text on
 stdout. It runs in the file's directory, so its own configuration
 (`rustfmt.toml`, `.prettierrc`, ...) is found. Its name in the output is the

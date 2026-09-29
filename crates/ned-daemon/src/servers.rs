@@ -4,9 +4,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use ned_core::config::Config;
+use ned_core::text::indent_unit;
 use std::time::Duration;
 
-use ned_core::lsp::{Diagnosis, Locate, Located, Position, Renamed, Severity};
+use ned_core::lsp::{Diagnosis, Formatting, Locate, Located, Position, Renamed, Severity};
 
 use crate::lsp::{LspError, Server};
 use crate::protocol::{Document, ServerStatus};
@@ -140,6 +141,22 @@ impl Servers {
             .locate(kind, &document.path, position, timeout)
             .await?;
         Ok(Located::Locations(locations))
+    }
+
+    /// The edits that format the document.
+    pub async fn format(&mut self, document: &Document) -> Result<Formatting, ServersError> {
+        let Some((server, timeout)) = self.prepare(document).await? else {
+            return Ok(Formatting::NoServer);
+        };
+        if !server.formats() {
+            return Ok(Formatting::NoServer);
+        }
+        let indent = indent_unit(&document.text, document.lang.default_indent());
+        let edits = server.format(&document.path, &indent, timeout).await?;
+        Ok(Formatting::Edits {
+            server: server.name().into(),
+            edits,
+        })
     }
 
     pub fn status(&self) -> Vec<ServerStatus> {

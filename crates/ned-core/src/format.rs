@@ -7,9 +7,12 @@ use std::{fs, io, thread};
 
 use toml::Value;
 
+use crate::buffer::Buffer;
 use crate::config::{Config, ConfigError, Entry, program};
+use crate::edit::{Edit, EditSet};
 use crate::exec::Change;
 use crate::lang::Language;
+use crate::lsp::{Document, Formatting, Lsp, LspFailure, TextEdit};
 
 const DEFAULT_EDITION: &str = "2015";
 
@@ -30,8 +33,10 @@ pub enum Outcome {
     Unchanged,
     /// The text from the formatter named `name`.
     Formatted { name: String, text: String },
-    /// Formatting was skipped; the note says why.
-    Skipped(String),
+    /// No formatter for the file is installed; the note says so.
+    NotFound(String),
+    /// The formatter failed; the note says why.
+    Failed(String),
 }
 
 /// Formats the new text of each of `changes`, in parallel.
@@ -59,6 +64,51 @@ pub fn run(changes: &[Change], config: &mut Config) -> Result<Vec<Outcome>, Conf
             .map(|h| h.join().expect("formatting doesn't panic"))
             .collect()
     }))
+}
+
+/// Formats with `lsp` each of `changes` whose outcome is `NotFound`, where the
+/// language server can.
+pub fn fallback(changes: &[Change], outcomes: &mut [Outcome], lsp: &mut dyn Lsp) {
+    for (change, outcome) in changes.iter().zip(outcomes) {
+        let (Outcome::NotFound(note), Some(lang)) = (&*outcome, change.lang) else {
+            continue;
+        };
+        let Ok(path) = std::path::absolute(&change.path) else {
+            continue;
+        };
+        let document = Document {
+            path,
+            lang,
+            text: change.new.clone(),
+        };
+        *outcome = match lsp.format(&document) {
+            Ok(Formatting::NoServer) => continue,
+            Ok(Formatting::Edits { server, edits }) => match apply(&change.new, &edits) {
+                Some(text) if text == change.new => Outcome::Unchanged,
+                Some(text) => Outcome::Formatted { name: server, text },
+                None => Outcome::NotFound(format!("{note}; {server} sent overlapping edits")),
+            },
+            Err(LspFailure(reason)) => Outcome::NotFound(format!("{note}; {reason}")),
+        };
+    }
+}
+
+/// `text` with a server's `edits` applied, or `None` if they overlap.
+fn apply(text: &str, edits: &[TextEdit]) -> Option<String> {
+    let buffer = Buffer::new(text);
+    let mut set = EditSet::new(&buffer);
+    for edit in edits {
+        let start = buffer.lsp_offset(edit.start.line, edit.start.character);
+        let end = buffer.lsp_offset(edit.end.line, edit.end.character);
+        let text = edit.text.clone();
+        set.push(Edit {
+            range: start..end,
+            text,
+            command: 0,
+        })
+        .ok()?;
+    }
+    Some(set.apply())
 }
 
 impl Config {
@@ -109,7 +159,7 @@ impl Formatter {
     /// Formats `text`, the new contents of the file at `path`.
     fn format(&self, path: &str, text: &str) -> Outcome {
         let skipped = |name: &str, why: &str| {
-            Outcome::Skipped(format!("{name} {why}; skipped formatting {path}"))
+            Outcome::Failed(format!("{name} {why}; skipped formatting {path}"))
         };
         let mut missing = String::new();
         for command in &self.commands {
@@ -157,7 +207,7 @@ impl Formatter {
                 Err(_) => skipped(&name, "failed: output is not UTF-8"),
             };
         }
-        skipped(&missing, "not found")
+        Outcome::NotFound(format!("{missing} not found; skipped formatting {path}"))
     }
 }
 
@@ -222,6 +272,7 @@ fn rust_edition(dir: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lsp::{Diagnosis, Locate, Located, Position, Renamed};
     use std::fs;
     use tempfile::TempDir;
 
@@ -608,7 +659,9 @@ mod tests {
     fn a_missing_program_is_skipped() {
         assert_eq!(
             format_with(&[&["ned-no-such-formatter", "-q"]], "x\n"),
-            Outcome::Skipped("ned-no-such-formatter not found; skipped formatting src/a.rs".into())
+            Outcome::NotFound(
+                "ned-no-such-formatter not found; skipped formatting src/a.rs".into()
+            )
         );
     }
 
@@ -620,7 +673,7 @@ mod tests {
         );
         assert_eq!(
             format_with(&[&["ned-no-such-a"], &["/nowhere/ned-no-such-b"]], "x\n"),
-            Outcome::Skipped("ned-no-such-b not found; skipped formatting src/a.rs".into())
+            Outcome::NotFound("ned-no-such-b not found; skipped formatting src/a.rs".into())
         );
     }
 
@@ -635,11 +688,11 @@ mod tests {
                 ]],
                 "x\n"
             ),
-            Outcome::Skipped("sh failed: bad input; skipped formatting src/a.rs".into())
+            Outcome::Failed("sh failed: bad input; skipped formatting src/a.rs".into())
         );
         assert_eq!(
             format_with(&[&["sh", "-c", "exit 1"]], "x\n"),
-            Outcome::Skipped("sh failed: exit status: 1; skipped formatting src/a.rs".into())
+            Outcome::Failed("sh failed: exit status: 1; skipped formatting src/a.rs".into())
         );
     }
 
@@ -647,7 +700,7 @@ mod tests {
     fn non_utf8_output_is_a_failure() {
         assert_eq!(
             format_with(&[&["sh", "-c", "printf '\\377'"]], "x\n"),
-            Outcome::Skipped("sh failed: output is not UTF-8; skipped formatting src/a.rs".into())
+            Outcome::Failed("sh failed: output is not UTF-8; skipped formatting src/a.rs".into())
         );
     }
 
@@ -675,5 +728,144 @@ mod tests {
         let outcomes = run(&changes, &mut Config::new(None).unwrap()).unwrap();
         let dir = fs::canonicalize(root.path().join("sub")).unwrap();
         assert_eq!(outcomes, [formatted("sh", &format!("{}\n", dir.display()))]);
+    }
+
+    /// A server that answers every formatting request with `answer`.
+    struct FormatLsp {
+        answer: Result<Formatting, LspFailure>,
+        asked: Vec<Document>,
+    }
+
+    impl Lsp for FormatLsp {
+        fn diagnose(&mut self, _: &[Document]) -> Result<Diagnosis, LspFailure> {
+            unreachable!("formatting doesn't diagnose")
+        }
+
+        fn sync(&mut self, _: &[Document]) -> Result<(), LspFailure> {
+            unreachable!("formatting doesn't sync")
+        }
+
+        fn rename(&mut self, _: &Document, _: Position, _: &str) -> Result<Renamed, LspFailure> {
+            unreachable!("formatting doesn't rename")
+        }
+
+        fn locate(&mut self, _: Locate, _: &Document, _: Position) -> Result<Located, LspFailure> {
+            unreachable!("formatting doesn't locate")
+        }
+
+        fn format(&mut self, document: &Document) -> Result<Formatting, LspFailure> {
+            self.asked.push(document.clone());
+            self.answer.clone()
+        }
+    }
+
+    fn serve(answer: Result<Formatting, LspFailure>) -> FormatLsp {
+        FormatLsp {
+            answer,
+            asked: Vec::new(),
+        }
+    }
+
+    fn edits(edits: &[(u32, u32, u32, u32, &str)]) -> Result<Formatting, LspFailure> {
+        Ok(Formatting::Edits {
+            server: "rust-analyzer".into(),
+            edits: edits
+                .iter()
+                .map(|&(line, start, end_line, end, text)| TextEdit {
+                    start: Position {
+                        line,
+                        character: start,
+                    },
+                    end: Position {
+                        line: end_line,
+                        character: end,
+                    },
+                    text: text.into(),
+                })
+                .collect(),
+        })
+    }
+
+    const NOT_FOUND: &str = "rustfmt not found; skipped formatting src/a.rs";
+
+    /// `fallback` on one change to src/a.rs whose formatter wasn't found.
+    fn fall_back(new: &str, lsp: &mut FormatLsp) -> Outcome {
+        let changes = [change(Path::new("src/a.rs"), Some(Language::Rust), new)];
+        let mut outcomes = [Outcome::NotFound(NOT_FOUND.into())];
+        fallback(&changes, &mut outcomes, lsp);
+        outcomes[0].clone()
+    }
+
+    #[test]
+    fn the_language_server_formats_changes_without_a_formatter() {
+        let changes = [
+            change(
+                Path::new("src/a.rs"),
+                Some(Language::Rust),
+                "fn a( ) {}\nx\n",
+            ),
+            change(Path::new("src/b.rs"), Some(Language::Rust), "b\n"),
+            change(Path::new("src/c.rs"), Some(Language::Rust), "c\n"),
+            change(Path::new("src/d.rs"), Some(Language::Rust), "d\n"),
+        ];
+        let mut outcomes = [
+            Outcome::NotFound(NOT_FOUND.into()),
+            Outcome::Unchanged,
+            Outcome::Failed("rustfmt failed: bad; skipped formatting src/c.rs".into()),
+            formatted("rustfmt", "D\n"),
+        ];
+        let expected_rest = outcomes[1..].to_vec();
+        let mut lsp = serve(edits(&[(0, 5, 0, 6, ""), (1, 0, 1, 0, "// y\n")]));
+        fallback(&changes, &mut outcomes, &mut lsp);
+        assert_eq!(
+            outcomes[0],
+            formatted("rust-analyzer", "fn a() {}\n// y\nx\n")
+        );
+        assert_eq!(outcomes[1..], expected_rest);
+        assert_eq!(lsp.asked.len(), 1);
+        assert_eq!(lsp.asked[0].path, std::path::absolute("src/a.rs").unwrap());
+        assert_eq!(lsp.asked[0].lang, Language::Rust);
+        assert_eq!(lsp.asked[0].text, "fn a( ) {}\nx\n");
+    }
+
+    #[test]
+    fn server_edits_count_utf16_units() {
+        let mut lsp = serve(edits(&[(0, 3, 0, 4, "b")]));
+        assert_eq!(
+            fall_back("é😀a\n", &mut lsp),
+            formatted("rust-analyzer", "é😀b\n")
+        );
+    }
+
+    #[test]
+    fn no_server_edits_leave_the_change_unformatted() {
+        assert_eq!(fall_back("a\n", &mut serve(edits(&[]))), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn without_a_server_the_note_stays() {
+        let mut lsp = serve(Ok(Formatting::NoServer));
+        assert_eq!(
+            fall_back("a\n", &mut lsp),
+            Outcome::NotFound(NOT_FOUND.into())
+        );
+    }
+
+    #[test]
+    fn a_server_failure_is_added_to_the_note() {
+        let mut lsp = serve(Err(LspFailure("rust-analyzer exited; retry".into())));
+        assert_eq!(
+            fall_back("a\n", &mut lsp),
+            Outcome::NotFound(format!("{NOT_FOUND}; rust-analyzer exited; retry"))
+        );
+    }
+
+    #[test]
+    fn overlapping_server_edits_are_a_failure() {
+        let mut lsp = serve(edits(&[(0, 0, 0, 2, "x"), (0, 1, 0, 2, "y")]));
+        assert_eq!(
+            fall_back("abc\n", &mut lsp),
+            Outcome::NotFound(format!("{NOT_FOUND}; rust-analyzer sent overlapping edits"))
+        );
     }
 }

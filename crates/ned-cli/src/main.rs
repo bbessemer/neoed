@@ -139,7 +139,8 @@ fn main() -> ExitCode {
         }
     };
 
-    let outcomes = if cli.no_fmt {
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut outcomes = if cli.no_fmt {
         vec![Outcome::Unchanged; changes.len()]
     } else {
         let formatted = Config::new(config::user_config().as_deref())
@@ -152,6 +153,11 @@ fn main() -> ExitCode {
             }
         }
     };
+
+    #[cfg(unix)]
+    if workspace.running() {
+        format::fallback(&changes, &mut outcomes, &mut workspace);
+    }
 
     let finals: Vec<&str> = changes
         .iter()
@@ -208,7 +214,7 @@ fn main() -> ExitCode {
                     print!("{}", diff::hunks(&change.new, text, cli.context));
                 }
             }
-            Outcome::Skipped(note) => eprintln!("note: {note}"),
+            Outcome::NotFound(note) | Outcome::Failed(note) => eprintln!("note: {note}"),
             Outcome::Unchanged => {}
         }
         if let Some(checked) = &checked {

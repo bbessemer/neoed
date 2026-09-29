@@ -128,6 +128,19 @@ pub enum Located {
     NoServer,
 }
 
+/// A server's answer to a formatting request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Formatting {
+    /// `server` names the server that made `edits`.
+    Edits {
+        server: String,
+        edits: Vec<TextEdit>,
+    },
+    /// The document's language has no server, or its server can't format.
+    NoServer,
+}
+
 /// What `ned` asks of the workspace's language servers.
 pub trait Lsp {
     /// Diagnostics for each of `documents`, as their text stands.
@@ -152,6 +165,9 @@ pub trait Lsp {
         document: &Document,
         position: Position,
     ) -> Result<Located, LspFailure>;
+
+    /// The edits that format `document`, as its text stands.
+    fn format(&mut self, document: &Document) -> Result<Formatting, LspFailure>;
 }
 
 /// `after`'s diagnostics that `before` has no identical one left to match:
@@ -570,6 +586,10 @@ mod tests {
 
         fn locate(&mut self, _: Locate, _: &Document, _: Position) -> Result<Located, LspFailure> {
             unreachable!("not located in these tests")
+        }
+
+        fn format(&mut self, _: &Document) -> Result<Formatting, LspFailure> {
+            unreachable!("not formatted in these tests")
         }
     }
 

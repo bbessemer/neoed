@@ -1,7 +1,8 @@
 config
 
 After a successful edit, each changed file is formatted, and the formatter's
-changes are shown under `fmt NAME`. Missing formatters are skipped with a note.
+changes are shown under `fmt NAME`. Missing formatters are skipped with a
+note, or the language server formats the file if a daemon is running.
 Defaults: rustfmt, gofmt, ruff (then black), prettier (JS, TS, Markdown).
 Override them per language in .ned.toml (any directory above the file; nearer
 wins) or ~/.config/ned/config.toml:

@@ -16,7 +16,8 @@ version. Further arguments are flags:
 - `document-changes`: answer renames with `documentChanges`;
 - `rename-file`: answer renames with a file rename;
 - `rename-error`: refuse renames with an error;
-- `links`: answer definitions with `LocationLink`s.
+- `links`: answer definitions with `LocationLink`s;
+- `format`: offer formatting, which strips trailing spaces.
 
 
 It renames the word at the position wherever it occurs as a whole word, in
@@ -154,6 +155,19 @@ def definition(params):
     return {"uri": file, "range": range_}
 
 
+def strip_trailing_spaces(text):
+    edits = []
+    for line, content in enumerate(text.split("\n")):
+        kept = len(content.rstrip(" "))
+        if kept < len(content):
+            span = {
+                "start": {"line": line, "character": kept},
+                "end": {"line": line, "character": len(content)},
+            }
+            edits.append({"range": span, "newText": ""})
+    return edits
+
+
 def read():
     length = None
     while line := stdin.readline():
@@ -175,6 +189,8 @@ while (message := read()) is not None:
     if method == "initialize":
         root = Path(unquote(urlparse(params["rootUri"]).path))
         capabilities = {"textDocumentSync": 1, "renameProvider": True}
+        if "format" in flags:
+            capabilities["documentFormattingProvider"] = True
         if "pull" in flags:
             capabilities["diagnosticProvider"] = {
                 "interFileDependencies": False,
@@ -234,6 +250,9 @@ while (message := read()) is not None:
         send({"id": message["id"], "result": references(params)})
     elif method == "textDocument/definition":
         send({"id": message["id"], "result": definition(params)})
+    elif method == "textDocument/formatting":
+        text = documents[params["textDocument"]["uri"]]
+        send({"id": message["id"], "result": strip_trailing_spaces(text)})
     elif method == "shutdown":
         send({"id": message["id"], "result": None})
     elif method == "exit":

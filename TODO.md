@@ -114,6 +114,9 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       and moves), while `;` and newlines keep snapshot semantics (§2.3). The
       script stays one transaction. It avoids a second ned call for, e.g.,
       `create`, `move` or `rename` followed by an edit that selects the result
+- [ ] A FILE argument that doesn't exist but names a verb, as in
+      `ned outline src/a.rs`, is an error suggesting
+      `ned src/a.rs -e outline`, instead of waiting for a script on stdin
 
 ## 9. LSP daemon _(split)_
 
@@ -126,7 +129,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       save), e.g. unresolved names, for automatic checking and `check`
 - [x] `rename` verb (within the file set, or the workspace with `-w`)
 - [x] `.refs` / `.def` parts (replacing the reserved `refs:` / `def:`)
-- [ ] LSP formatting fallback when no external formatter is configured
+- [x] LSP formatting fallback when no external formatter is installed
 
 ## 10. REPL
 
@@ -175,6 +178,11 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       3,500-line `crates/ned-core/src/exec.rs` takes 1.2 s (a 400-line file:
       0.01 s), even when it matches nothing, so the cost grows faster than the
       file; profile items/query resolution
+- [ ] A string TEXT ending in a newline, for a whole-line target, gains a
+      second one: in a file `a\nb\nc\n`, `replace "b\n" with "x\ny\n"` gives
+      `a\nx\ny\n\nc\n`, and `insert after S>"    x,\n" "    y,\n"` leaves a
+      blank line after `y`; a final newline in TEXT should count as the
+      line's own
 
 ## Future improvements
 
