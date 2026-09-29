@@ -214,7 +214,7 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 | `field`     | struct and class fields                                                |
 | `mod`       | modules and namespaces                                                 |
 | `import`    | imports (name = the path as written, e.g. `import:std::fmt`)           |
-| `section`   | Markdown sections: a heading and its content (name = the heading text) |
+| `section`   | Markdown sections: a `#` heading and its content (name = its text)     |
 | `item`      | Markdown list items (name = the first line of the item's text)         |
 | `table`     | Markdown tables (name = the first header cell)                         |
 | `code`      | Markdown code blocks (name = the info string, or `""` if none)         |
