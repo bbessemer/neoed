@@ -562,6 +562,9 @@ Token counts are for the full command text, measured with tiktoken's
 also prints a diff, which saves the read-back that `sed` and Python usually need
 for verification.
 
+`bench/` reproduces the table: `uv run bench.py --check`, run there, applies
+every variant to a copy of the files, checks the result, and counts its tokens.
+
 The examples use this file, `src/parser.rs`:
 
 ```rust
@@ -591,14 +594,14 @@ impl Parser {
 
 | #   | Task                            | ned | sed | Python |           str_replace |
 | --- | ------------------------------- | --: | --: | -----: | --------------------: |
-| 1   | Change a string in one function |  22 | 20† |     70 |                    33 |
-| 2   | Add a method to an impl         |  41 |   — |     93 |                    78 |
-| 3   | Delete a function               |  13 | 18† |     65 |                    45 |
-| 4   | Change a function's params      |  20 |  28 |     68 |                    37 |
-| 5   | Replace a function body         |  38 |   — |     90 |                    63 |
-| 6   | Add an import                   |  21 |  23 |     62 |                    39 |
-| 7   | Insert into a Python block      |  30 |   — |     70 |                    42 |
-| 8   | Rename an identifier in 5 files |  18 |  25 |     64 | 1 call per occurrence |
+| 1   | Change a string in one function |  22 | 20† |     61 |                    32 |
+| 2   | Add a method to an impl         |  41 |   — |     94 |                    74 |
+| 3   | Delete a function               |  13 | 18† |     70 |                    44 |
+| 4   | Change a function's params      |  20 |  27 |     63 |                    34 |
+| 5   | Replace a function body         |  38 |   — |     93 |                    62 |
+| 6   | Add an import                   |  21 |  23 |     63 |                    35 |
+| 7   | Insert into a Python block      |  30 |   — |     67 |                    38 |
+| 8   | Rename an identifier in 5 files |  18 |  25 |     48 | 1 call per occurrence |
 
 † = not scoped or not reliable. — = not practical.
 

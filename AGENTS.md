@@ -120,8 +120,9 @@ whole-line/re-basing text helpers (`text`), the executor (`exec::run`),
 language detection and parsing (`lang`), syntax items and parts from
 `queries/<lang>/selectors.scm` (`syntax`; Rust only until TODO.md §12),
 `outline`, and external formatters with `.ned.toml` config (`format`). The CLI
-supports every selector and verb, globbed file sets, the parse-error guard, and
-formatting. Next: agent ergonomics (TODO.md §8).
+supports every selector and verb, globbed file sets, the parse-error guard,
+formatting, and `ned help`. Every error ends with a fix. Next: the LSP daemon
+(TODO.md §9).
 
 ## Key Documentation
 
@@ -156,7 +157,8 @@ Cargo.toml         workspace; shared version, edition, lints
 crates/ned-core/   library: buffer, script parser, selectors, languages, exec, formatting
 crates/ned-cli/    `ned` binary: args, I/O, output rendering only
 queries/<lang>/    tree-sitter selector queries (.scm), one dir per language
-docs/              specs
+docs/              specs, agent guide, Claude Code skill
+bench/             token-cost benchmark (uv project; cases/ back spec §8's table)
 ```
 
 Planned crates: `ned-daemon` (LSP), `ned-repl`, `ned-mcp`. All logic lives in
@@ -196,13 +198,15 @@ Planned crates: `ned-daemon` (LSP), `ned-repl`, `ned-mcp`. All logic lives in
 
 ## Local Development
 
-| Target / Script                             | Description           |
-| ------------------------------------------- | --------------------- |
-| `cargo build`                               | Build workspace       |
-| `cargo test`                                | Run all tests         |
-| `cargo clippy --all-targets -- -D warnings` | Lint                  |
-| `cargo fmt --check`                         | Format check          |
-| `cargo run -q -p ned-cli -- ARGS`           | Run `ned` from source |
+| Target / Script                             | Description                |
+| ------------------------------------------- | -------------------------- |
+| `cargo build`                               | Build workspace            |
+| `cargo test`                                | Run all tests              |
+| `cargo clippy --all-targets -- -D warnings` | Lint                       |
+| `cargo fmt --check`                         | Format check               |
+| `cargo run -q -p ned-cli -- ARGS`           | Run `ned` from source      |
+| `cd bench && uv run bench.py --check`       | Token benchmark vs spec §8 |
+| `cd bench && uv run pytest`                 | Benchmark unit tests       |
 
 ## Deployment Notes
 
