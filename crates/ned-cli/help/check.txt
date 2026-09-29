@@ -4,7 +4,7 @@ Prints the language server's diagnostics for each file in the set, or those
 overlapping SEL, at LEVEL or above: error, warning, info or hint (default
 `[check] show`, which is warning unless configured). Diagnostics are for the
 file as it was before the script. Starts the per-workspace daemon and the
-server if needed, and waits for indexing (`[check] timeout`, default 30s).
+server if needed, and waits for indexing (`[lsp] timeout`, default 30s).
 Files without a server are skipped.
 
 While a daemon runs, every edit is also checked: diagnostics it introduces

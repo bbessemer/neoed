@@ -220,6 +220,10 @@ Planned crates: `ned-repl`, `ned-mcp`. All logic lives in
   `assert_cmd` + `insta` snapshots (review snapshots with `cargo insta review`).
 - Query files under `queries/` are code: every selector kind needs a test per
   language.
+- Keep `.ned.toml` organized by what a setting configures: a setting several
+  features use belongs in the section they share (`[lsp] timeout` covers every
+  server request), not the section of the feature that first needed it. Move
+  it when its use widens; no aliases before 1.0.
 
 ## Local Development
 

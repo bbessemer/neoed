@@ -4,9 +4,6 @@ This is the authoritative spec for `ned`'s invocation, script syntax, selectors,
 verbs, output, and exit codes. Tests are written against it; change it before
 changing behaviour.
 
-Sections marked _(reserved)_ define syntax that parses but is rejected with a
-"not yet supported" error until its milestone lands.
-
 ## 1. Invocation
 
 ```
@@ -76,11 +73,11 @@ next needed. Servers are shut down with the daemon.
 
 Servers are configured per language under `[lsp]`, like formatters (§6.4): the
 same files, merging and program lookup, read from the workspace root up. A value
-is a command as an argv array, or `false` for none. `[daemon]` sets
-`idle_timeout`, in seconds. `[check]` sets `show`, the lowest severity `check`
-prints by default (`error`, `warning`, `info` or `hint`; default `warning`),
-and `timeout`, how long `check` and `rename` wait for a server, in seconds
-(default 30). `block` is the lowest severity of an introduced diagnostic that
+is a command as an argv array, or `false` for none; `timeout` sets how long any
+request (`check`, `rename`, `.refs`, `.def`) waits for a server, in seconds
+(default 30). `[daemon]` sets `idle_timeout`, in seconds. `[check]` sets
+`show`, the lowest severity `check` prints by default (`error`, `warning`,
+`info` or `hint`; default `warning`). `block` is the lowest severity of an introduced diagnostic that
 rejects an edit (§6.5; default `error`), or `false` for none.
 
 ```toml
@@ -167,7 +164,8 @@ target     = [ "all" ] selector ;
 selector   = step { ">" step } ;
 step       = primary [ ".." primary ] { part } ;
 context    = "+" digit { digit } ;
-part       = ".body" | ".sig" | ".params" | ".name" | ".doc" | ".lines" ;
+part       = ".body" | ".sig" | ".params" | ".name" | ".doc" | ".lines"
+           | ".refs" | ".def" ;
 primary    = lines | regex | literal | syntax | query ;
 
 lines      = lineno [ "-" lineno ] ;
@@ -329,14 +327,16 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
   `impl:Parser>fn:new`, `fn:main>/unwrap\(\)/`, `100-200>fn:new`.
 - A **part** narrows each span of its step:
 
-| Part      | Span                                                                        |
-| --------- | --------------------------------------------------------------------------- |
-| `.body`   | the item's block, between its delimiters (`{}`, or a Python indented block) |
-| `.sig`    | from the start of the item (after its doc and attributes) up to its body    |
-| `.params` | the parameter list, between its parentheses                                 |
-| `.name`   | the item's name identifier                                                  |
-| `.doc`    | the item's leading doc comment lines                                        |
-| `.lines`  | the span widened to the whole lines it touches (any selector)               |
+| Part      | Span                                                                              |
+| --------- | --------------------------------------------------------------------------------- |
+| `.body`   | the item's block, between its delimiters (`{}`, or a Python indented block)       |
+| `.sig`    | from the start of the item (after its doc and attributes) up to its body          |
+| `.params` | the parameter list, between its parentheses                                       |
+| `.name`   | the item's name identifier                                                        |
+| `.doc`    | the item's leading doc comment lines                                              |
+| `.lines`  | the span widened to the whole lines it touches (any selector)                     |
+| `.refs`   | each reference to the symbol at the span (below), without its declaration         |
+| `.def`    | the symbol's definition: the item it names, or its identifier if it names no item |
 
 - For `.body` and `.params`: if the opening delimiter ends its line and the
   closing delimiter starts its line, the part is the whole lines between them.
@@ -344,6 +344,13 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
   trimmed.
 - `.doc` covers whole lines. On an item with no body (such as a trait method
   declaration), `.sig` is the whole item.
+- `.refs` and `.def` ask the language server (§1.1) about the symbol at the
+  start of the step's `.name` (for a syntax item) or of its span, so they work
+  on any step: `fn:parse.refs`, `fn:main>"helper(".def`. Their spans may be in
+  other files: in the file set, or with `-w` in any workspace file, which then
+  joins it; any other file is an error. Only `.lines` may follow them in the
+  same step, and later steps search inside their spans. They spawn the daemon
+  if need be.
 - A part the item doesn't have (e.g. `.body` on a Rust `const`) is an error.
   Parts other than `.lines` need a syntax item: `/x/.body` is an error, and so
   is a part after another part, as in `.body.name`.
@@ -355,6 +362,8 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 - Intermediate steps of a nested chain may match many spans; only the final
   result is counted.
 - `all SEL` applies the verb to every match. Zero matches is still an error.
+- An ambiguous `.refs` or `.def` result lists where its matches are instead of
+  candidate selectors, since no scope picks one out; add `all`.
 - There is no nth-match syntax. To disambiguate, nest (`impl:Lexer>fn:new`),
   scope by lines (`40-80>fn:new`), or scope by file (`file:src/a.rs>fn:new`).
   Error messages list the candidates in exactly these forms (§7): nested in the
@@ -380,12 +389,7 @@ compile is a script error (exit 2). Write
 delete all query{(call_expression function: (identifier) @f (#eq? @f "dbg")) @sel}
 ```
 
-### 3.7 Reserved
-
-`refs:NAME` (references to a symbol) and `def:NAME` (its definition) are
-reserved for the LSP milestone.
-
-### 3.8 Ranges
+### 3.7 Ranges
 
 `A..B` selects from the start of a match of `A` to the end of the first match of
 `B` that starts after it: `/^## 6/../^## 7/`, `fn:a..fn:c`, `"BEGIN"..$`.
@@ -412,7 +416,7 @@ reserved for the LSP milestone.
   (`error`, `warning`, `info` or `hint`; default `[check] show`, §1.1). Like
   every read, it sees the original text (§2.3). It starts the daemon and the
   servers if needed and waits for them to finish indexing, up to
-  `[check] timeout`. Files without a server are skipped; if no file in the set
+  `[lsp] timeout`. Files without a server are skipped; if no file in the set
   has one, it's an error naming the `[lsp]` setting.
 
   ```
@@ -473,7 +477,7 @@ with the script's other edits, then formatted and checked (§6.5). Each edit the
 server makes counts as one. The edits may reach only the file set, or with
 `-w` any workspace file, which then joins it; an edit to any other file, or a
 rename that would create, rename or delete files, rejects the script.
-`rename` spawns the daemon if need be, and waits up to `[check] timeout` for
+`rename` spawns the daemon if need be, and waits up to `[lsp] timeout` for
 the server to be ready.
 
 ```
@@ -681,7 +685,7 @@ Positions don't count, since edits move them.
   src/parser.rs:15:9: error: mismatched types [rust-analyzer E0308]
   ```
 
-- A server that fails or doesn't report in time (`[check] timeout`) skips
+- A server that fails or doesn't report in time (`[lsp] timeout`) skips
   checking with a note, and the edit applies:
   `note: rust-analyzer didn't answer diagnostics within 30s; skipped checking src/parser.rs`.
 - If the edit isn't written, the servers are sent the original text again.
@@ -696,22 +700,23 @@ Errors go to stderr, in the form `error: LOC: message`.
 - Every error ends with a concrete fix: candidate selectors, a nearby name, or
   the flag to use.
 
-| Error                                   | Fix it suggests                                                                                                                                          |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Script syntax                           | Quoting, for a bare word where text or a selector belongs; otherwise the command's usage, e.g. `usage: replace [all] SEL with TEXT`                      |
-| Selector matches nothing                | A close syntax name; a literal match that differs only in case or spacing; a regex that matches with `i`; the spans a nested step searched; or `outline` |
-| Ambiguous selector                      | Candidate selectors (§3.5), or longer text for matches that share a line                                                                                 |
-| Missing part, part on a non-syntax step | The parts the item has, or an example                                                                                                                    |
-| Invalid query                           | The closest node type or field name in the grammar                                                                                                       |
-| Line past the end                       | `$` for the last line                                                                                                                                    |
-| No language server for the files        | The `[lsp]` setting for their language                                                                                                                   |
-| Language server failure                 | Installing the server or fixing its `[lsp]` setting, or rerunning once it has indexed                                                                    |
-| Server can't rename there               | Selecting the name itself                                                                                                                                |
-| Rename edits a file outside the set     | `-w`, or `sub` for files outside the workspace                                                                                                           |
-| File not in the set                     | The `file` command that adds it                                                                                                                          |
-| Unsupported in a language               | Selectors that work there                                                                                                                                |
-| Overlapping edits                       | Merging them, or a second invocation                                                                                                                     |
-| Missing file or empty glob              | The working directory paths are relative to                                                                                                              |
+| Error                                                     | Fix it suggests                                                                                                                                          |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Script syntax                                             | Quoting, for a bare word where text or a selector belongs; otherwise the command's usage, e.g. `usage: replace [all] SEL with TEXT`                      |
+| Selector matches nothing                                  | A close syntax name; a literal match that differs only in case or spacing; a regex that matches with `i`; the spans a nested step searched; or `outline` |
+| Ambiguous selector                                        | Candidate selectors (§3.5), or longer text for matches that share a line                                                                                 |
+| Missing part, part on a non-syntax step                   | The parts the item has, or an example                                                                                                                    |
+| Invalid query                                             | The closest node type or field name in the grammar                                                                                                       |
+| Line past the end                                         | `$` for the last line                                                                                                                                    |
+| No language server for the files                          | The `[lsp]` setting for their language                                                                                                                   |
+| Language server failure                                   | Installing the server or fixing its `[lsp]` setting, or rerunning once it has indexed                                                                    |
+| Server can't rename there                                 | Selecting the name itself                                                                                                                                |
+| Rename, `.refs` or `.def` reaching a file outside the set | `-w`; outside the workspace, a regex (`sub`, for a rename)                                                                                               |
+| Ambiguous `.refs` or `.def` result                        | `all`, with the matches' locations                                                                                                                       |
+| File not in the set                                       | The `file` command that adds it                                                                                                                          |
+| Unsupported in a language                                 | Selectors that work there                                                                                                                                |
+| Overlapping edits                                         | Merging them, or a second invocation                                                                                                                     |
+| Missing file or empty glob                                | The working directory paths are relative to                                                                                                              |
 
 ```
 error: script:1:8: fn:new matches 2 items; add `all` or use one of:
@@ -731,12 +736,12 @@ error: script:2:28: unterminated heredoc <<END (started here); end it with a lin
                              ^
 ```
 
-| Code | Meaning                                                                                                                                                                                   |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | Success, including dry runs and skipped formatters                                                                                                                                        |
-| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unsupported kind, parse-error guard, introduced diagnostics, move into its own source, rename refused or outside the set |
-| 2    | Usage error (bad flags or arguments), script syntax error, invalid query or config, reserved feature, or no language server                                                               |
-| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, write failure, or language server failure                                                                                  |
+| Code | Meaning                                                                                                                                                                                               |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Success, including dry runs and skipped formatters                                                                                                                                                    |
+| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unsupported kind, parse-error guard, introduced diagnostics, move into its own source, rename refused, reaching outside the file set |
+| 2    | Usage error (bad flags or arguments), script syntax error, invalid query or config, or no language server                                                                                             |
+| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, write failure, or language server failure                                                                                              |
 
 On any non-zero exit, no file is modified. Reads that ran before the failure
 still print their output.

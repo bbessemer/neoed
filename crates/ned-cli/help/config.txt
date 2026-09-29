@@ -15,4 +15,5 @@ wins) or ~/.config/ned/config.toml:
 
 Language servers (for daemon features) are set the same way, under [lsp]:
 rust-analyzer, gopls, pyright-langserver, typescript-language-server by
-default. [daemon] idle_timeout = SECS (default 600).
+default. [lsp] timeout = SECS (default 30) bounds each wait for a server.
+[daemon] idle_timeout = SECS (default 600).

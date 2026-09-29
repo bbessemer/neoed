@@ -11,6 +11,8 @@ Syntax: kind:name, with * as a wildcard; quote other names: import:"os.path".
   impl:Name is the impl's self type. A syntax item includes its doc comments
   and attributes.
 Parts: .body .params (inside the delimiters) .name .sig .doc .lines.
+  Via the language server, on any step: .refs (each use), .def (the defining
+  item): all fn:parse.refs, "helper(".def. With -w they reach every file.
 Nest with > (no spaces): impl:Parser>fn:new>"x". Scope: 40-80>fn:new,
 file:src/a.rs>fn:new. Raw: query{(node) @sel}.
 Range: A..B runs from a match of A to the end of the next match of B:
