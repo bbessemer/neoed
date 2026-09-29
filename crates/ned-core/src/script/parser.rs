@@ -124,12 +124,9 @@ impl Parser<'_> {
                 path: self.path()?,
                 text: self.text()?,
             },
-            "rename" | "check" => {
-                let instead = if word == "rename" {
-                    r#"use sub /\bOLD\b/ with "NEW" over the files"#
-                } else {
-                    "run the project's build or linter"
-                };
+            "check" => self.check()?,
+            "rename" => {
+                let instead = r#"use sub /\bOLD\b/ with "NEW" over the files"#;
                 let reserved = E::Reserved {
                     what: word.into(),
                     instead,
@@ -150,6 +147,11 @@ impl Parser<'_> {
             TokenKind::Newline | TokenKind::Semicolon | TokenKind::Eof => Ok(None),
             _ => self.target().map(Some),
         }
+    }
+
+    /// After `check`: an optional target, then an optional level.
+    fn check(&mut self) -> Result<CommandKind, ParseError> {
+        todo!()
     }
 
     fn target(&mut self) -> Result<Target, ParseError> {
@@ -403,6 +405,7 @@ pub fn usage(verb: &str) -> Option<&'static str> {
         "move" => "move [all] SEL before|after|start|end DEST",
         "file" => "file PATH...",
         "create" => "create PATH TEXT",
+        "check" => "check [SEL] [LEVEL]",
         _ => return None,
     })
 }
@@ -530,6 +533,10 @@ mod tests {
             },
             File(paths) => File(paths),
             Create { path, text } => Create { path, text },
+            Check { target, level } => Check {
+                target: target.map(unspan_target),
+                level,
+            },
         }
     }
 

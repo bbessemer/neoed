@@ -9,6 +9,7 @@ use serde::Deserialize;
 use toml::{Spanned, Value};
 
 use crate::lang::Language;
+use crate::lsp::Severity;
 
 const CONFIG_FILE: &str = ".ned.toml";
 
@@ -28,6 +29,8 @@ pub(crate) struct Layer {
     pub(crate) format: HashMap<Language, Entry>,
     pub(crate) lsp: HashMap<Language, Entry>,
     pub(crate) idle_timeout: Option<u64>,
+    pub(crate) check_show: Option<Severity>,
+    pub(crate) check_timeout: Option<u64>,
 }
 
 /// A tool setting for one language.
@@ -46,12 +49,21 @@ struct RawConfig {
     lsp: BTreeMap<Spanned<String>, Spanned<Value>>,
     #[serde(default)]
     daemon: RawDaemon,
+    #[serde(default)]
+    check: RawCheck,
 }
 
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct RawDaemon {
     idle_timeout: Option<u64>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawCheck {
+    show: Option<Severity>,
+    timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +113,18 @@ impl Config {
             .layers(&dir)?
             .into_iter()
             .find_map(|layer| layer.idle_timeout))
+    }
+
+    /// `[check] show` for `dir`.
+    pub fn check_show(&mut self, dir: &Path) -> Result<Option<Severity>, ConfigError> {
+        let _ = dir;
+        todo!()
+    }
+
+    /// `[check] timeout` for `dir`, in seconds.
+    pub fn check_timeout(&mut self, dir: &Path) -> Result<Option<u64>, ConfigError> {
+        let _ = dir;
+        todo!()
     }
 }
 
@@ -165,6 +189,8 @@ fn load(path: &Path) -> Result<Option<Layer>, ConfigError> {
         format: entries(raw.format)?,
         lsp: entries(raw.lsp)?,
         idle_timeout: raw.daemon.idle_timeout,
+        check_show: raw.check.show,
+        check_timeout: raw.check.timeout,
     }))
 }
 

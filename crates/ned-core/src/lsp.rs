@@ -1,9 +1,97 @@
-//! Language servers: which one serves each language (spec §1.1).
+//! Language servers: which one serves each language, and what `ned` asks of
+//! them (spec §1.1, §4.1).
 
-use std::path::Path;
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
+use serde::{Deserialize, Serialize};
 
 use crate::config::{Config, ConfigError, Entry, program};
 use crate::lang::Language;
+
+/// A file's text, as `ned` sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Document {
+    /// Absolute.
+    pub path: PathBuf,
+    pub lang: Language,
+    pub text: String,
+}
+
+/// A position in LSP terms: a 0-based line, and UTF-16 code units into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Position {
+    pub line: u32,
+    pub character: u32,
+}
+
+/// Diagnostic severities, most severe first; the `check` LEVEL words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    Error,
+    Warning,
+    Info,
+    Hint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Diagnostic {
+    pub start: Position,
+    pub end: Position,
+    pub severity: Severity,
+    pub message: String,
+    /// The tool that reported it, e.g. `rustc`.
+    pub source: Option<String>,
+    pub code: Option<String>,
+}
+
+/// Diagnostics for some documents, with the workspace's `[check] show`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Diagnosis {
+    pub show: Severity,
+    /// One per document, in order; `None` where its language has no server.
+    pub files: Vec<Option<Vec<Diagnostic>>>,
+}
+
+/// Why language servers couldn't answer; the message ends with a fix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspFailure(pub String);
+
+/// What `ned` asks of the workspace's language servers.
+pub trait Lsp {
+    /// Diagnostics for each of `documents`, as their text stands.
+    fn diagnose(&mut self, documents: &[Document]) -> Result<Diagnosis, LspFailure>;
+}
+
+impl Severity {
+    pub const ALL: [Severity; 4] = [
+        Severity::Error,
+        Severity::Warning,
+        Severity::Info,
+        Severity::Hint,
+    ];
+
+    pub fn name(self) -> &'static str {
+        todo!()
+    }
+}
+
+impl fmt::Display for Severity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl FromStr for Severity {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, ()> {
+        let _ = s;
+        todo!()
+    }
+}
 
 impl Config {
     /// The server command for `lang` in the workspace at `root`, with its

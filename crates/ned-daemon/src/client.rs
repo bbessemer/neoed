@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use ned_core::lsp::{Diagnosis, Document, Lsp, LspFailure};
 use thiserror::Error;
 
 use crate::paths::Paths;
@@ -89,5 +90,39 @@ impl Client {
         let mut reply = String::new();
         BufReader::new(stream).read_line(&mut reply)?;
         serde_json::from_str(&reply).map_err(|err| ClientError::Protocol(err.to_string()))
+    }
+}
+
+/// The daemon for the workspace containing a directory, reached (and
+/// spawned if need be) on first use.
+pub struct Workspace {
+    exe: PathBuf,
+    dir: PathBuf,
+    version: String,
+    client: Option<Client>,
+}
+
+impl Workspace {
+    /// Spawns the daemon as `exe daemon run`, for `ned` build `version`.
+    pub fn new(exe: PathBuf, dir: PathBuf, version: &str) -> Workspace {
+        Workspace {
+            exe,
+            dir,
+            version: version.into(),
+            client: None,
+        }
+    }
+}
+
+impl Lsp for Workspace {
+    fn diagnose(&mut self, documents: &[Document]) -> Result<Diagnosis, LspFailure> {
+        let _ = (
+            &self.exe,
+            &self.dir,
+            &self.version,
+            &mut self.client,
+            documents,
+        );
+        todo!()
     }
 }

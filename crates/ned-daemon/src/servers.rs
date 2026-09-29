@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use ned_core::config::Config;
+use ned_core::lsp::Diagnosis;
 
 use crate::lsp::{LspError, Server};
 use crate::protocol::{Document, ServerStatus};
@@ -52,6 +53,13 @@ impl Servers {
             server.sync(&document.path, document.lang, &document.text)?;
         }
         Ok(())
+    }
+
+    /// `open`, then each document's diagnostics, with the workspace's
+    /// `[check] show`.
+    pub async fn diagnose(&mut self, documents: &[Document]) -> Result<Diagnosis, ServersError> {
+        let _ = documents;
+        todo!()
     }
 
     pub fn status(&self) -> Vec<ServerStatus> {

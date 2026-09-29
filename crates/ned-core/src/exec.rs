@@ -9,6 +9,7 @@ use tree_sitter::Node;
 
 use crate::edit::{Edit, EditError, EditSet};
 use crate::lang::Language;
+use crate::lsp::{Lsp, Severity};
 use crate::outline;
 use crate::script::Script;
 use crate::script::ast::{
@@ -51,10 +52,17 @@ pub struct Options {
 
 /// Runs `script` (parsed from `src`) with `files` as the initial file set.
 /// Nothing is written.
-pub fn run(script: &Script, src: &str, files: &[String], options: &Options) -> Run {
+pub fn run<'s>(
+    script: &Script,
+    src: &'s str,
+    files: &[String],
+    options: &'s Options,
+    lsp: Option<&'s mut dyn Lsp>,
+) -> Run {
     let mut executor = Executor {
         src,
         options,
+        lsp,
         files: Vec::new(),
         set: Vec::new(),
         output: String::new(),
@@ -81,6 +89,8 @@ struct Executor<'s> {
     /// The current file set, as indices into `files`.
     set: Vec<usize>,
     output: String,
+    /// The workspace's language servers, for `check`.
+    lsp: Option<&'s mut dyn Lsp>,
 }
 
 impl Executor<'_> {
@@ -251,6 +261,7 @@ impl Executor<'_> {
                 position,
                 dest,
             } => self.move_to(index, span, target, *position, dest)?,
+            CommandKind::Check { target, level } => self.check(target.as_ref(), *level)?,
             CommandKind::File(_) | CommandKind::Create { .. } => unreachable!("handled above"),
         }
         Ok(())
@@ -448,6 +459,11 @@ impl Executor<'_> {
             self.output.push_str(&outline::render(f, range.as_ref()));
         }
         Ok(())
+    }
+
+    fn check(&mut self, target: Option<&Target>, level: Option<Severity>) -> Result<(), ExecError> {
+        let _ = (target, level);
+        todo!()
     }
 
     fn sub(
@@ -931,6 +947,11 @@ pub enum ExecErrorKind {
     /// the offending line with a caret.
     #[error("{location}: edit introduces a syntax error (use --force to apply anyway){excerpt}")]
     SyntaxError { location: String, excerpt: String },
+    /// The message ends with its fix.
+    #[error("{0}")]
+    Lsp(String),
+    #[error("no language server for {langs}; set one with `[lsp] {first} = [\"PROGRAM\", ...]` in .ned.toml", first = langs.split(", ").next().unwrap_or_default())]
+    NoServer { langs: String },
 }
 
 /// Selectors that each pick one of an ambiguous selector's matches, with the
@@ -1054,7 +1075,7 @@ mod tests {
             .collect();
         let src = script.replace("{dir}/", &root);
         let parsed = parse(&src).unwrap();
-        let run = run(&parsed, &src, &paths, options);
+        let run = run(&parsed, &src, &paths, options, None);
         let strip = |s: &str| s.replace(&root, "");
         Outcome {
             output: strip(&run.output),
@@ -1490,6 +1511,7 @@ mod tests {
             "show",
             std::slice::from_ref(&missing),
             &Options::default(),
+            None,
         )
         .result
         .unwrap_err();
@@ -1511,6 +1533,7 @@ mod tests {
             "show",
             std::slice::from_ref(&path),
             &Options::default(),
+            None,
         )
         .result
         .unwrap_err();
@@ -1523,7 +1546,7 @@ mod tests {
     #[test]
     fn commands_need_files() {
         let parsed = parse("show 1").unwrap();
-        let err = run(&parsed, "show 1", &[], &Options::default())
+        let err = run(&parsed, "show 1", &[], &Options::default(), None)
             .result
             .unwrap_err();
         assert_eq!(

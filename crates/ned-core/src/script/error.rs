@@ -65,10 +65,13 @@ pub enum ParseErrorKind {
         "invalid regex: {0}; escape literal characters such as ( [ . * with \\, or select a \"string\""
     )]
     InvalidRegex(String),
+    /// `fix` names the levels, or the one meant.
+    #[error("unknown level `{word}`; {fix}")]
+    UnknownLevel { word: String, fix: String },
 }
 
 /// Every command, as error messages list them.
-pub const COMMANDS: &str = "show outline replace insert delete sub move file create";
+pub const COMMANDS: &str = "show outline check replace insert delete sub move file create";
 
 fn quote_hint(c: char) -> &'static str {
     match c {

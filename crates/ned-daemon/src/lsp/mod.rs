@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ned_core::lang::Language;
-use ned_core::lsp::language_id;
+use ned_core::lsp::{Diagnostic, language_id};
 use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::io::AsyncBufReadExt;
@@ -208,6 +208,17 @@ impl Server {
             }
         }
         Ok(())
+    }
+
+    /// The server's diagnostics for `path`, once synced, waiting up to
+    /// `timeout` for it to finish indexing and report them.
+    pub async fn diagnostics(
+        &mut self,
+        path: &Path,
+        timeout: Duration,
+    ) -> Result<Vec<Diagnostic>, LspError> {
+        let _ = (path, timeout);
+        todo!()
     }
 
     pub async fn request(&mut self, method: &str, params: Value) -> Result<Value, LspError> {

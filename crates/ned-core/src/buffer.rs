@@ -127,6 +127,13 @@ impl Buffer {
         Ok(start + column)
     }
 
+    /// The byte offset of an LSP position: `character` counts UTF-16 code
+    /// units. Positions past the end of a line or the file are clamped to it.
+    pub fn lsp_offset(&self, line: u32, character: u32) -> usize {
+        let _ = (line, character);
+        todo!()
+    }
+
     pub fn slice(&self, range: Range<usize>) -> Result<String, BufferError> {
         self.check_range(&range)?;
         Ok(self.rope.byte_slice(range).to_string())
