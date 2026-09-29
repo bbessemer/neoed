@@ -32,7 +32,9 @@ Add `-n` to preview without writing.
 2. `show SEL` to read only what you need, with line numbers.
 3. Edit in one script, then read the diff that ned prints.
 4. `check` (or `check SEL`, `check SEL hint`) to see the language server's
-   errors and warnings, instead of running the build.
+   errors and warnings, instead of running the build. Edits are checked as
+   they apply while a daemon runs, but only `check` includes `cargo check`'s
+   errors (unresolved names, borrow errors), so run it after a Rust edit.
 
 ```ned
 outline
