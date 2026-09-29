@@ -310,6 +310,9 @@ Notes:
   arrive in source order. When the destination item ends with `,` (a field or
   variant) and the moved text doesn't, one is appended, as for `replace`. A
   destination inside a moved span is an error.
+- If a moved whole-line span had a blank line directly above or below it, and
+  it moves `before` or `after` a whole-line destination, one blank line
+  separates it from the destination.
 - **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
   lines in a row, or leaves a blank line right after an opening delimiter or
   right before a closing one, one blank line is removed.
