@@ -1283,7 +1283,9 @@ mod tests {
     use std::fs;
 
     use super::*;
-    use crate::lsp::{Diagnosis, Diagnostic, Document, LspFailure, Position, Renamed};
+    use crate::lsp::{
+        Diagnosis, Diagnostic, Document, FileEdits, LspFailure, Position, Renamed, TextEdit,
+    };
     use crate::script::parse;
 
     const TEXT: &str =
@@ -2691,6 +2693,339 @@ fn main() {}
             out.error().contains("`outline` in python files"),
             "{}",
             out.error()
+        );
+    }
+
+    /// A language server that answers renames with `answer`, whose relative
+    /// paths are under `root`, and records what it was asked.
+    struct RenameLsp {
+        answer: Renamed,
+        root: PathBuf,
+        failure: Option<&'static str>,
+        asked: Vec<(Document, Position, String)>,
+    }
+
+    impl RenameLsp {
+        fn new(edits: Vec<(&str, Vec<TextEdit>)>) -> RenameLsp {
+            let edits = edits
+                .into_iter()
+                .map(|(path, edits)| FileEdits {
+                    path: path.into(),
+                    edits,
+                })
+                .collect();
+            RenameLsp {
+                answer: Renamed::Edits(edits),
+                root: PathBuf::new(),
+                failure: None,
+                asked: Vec::new(),
+            }
+        }
+    }
+
+    impl Lsp for RenameLsp {
+        fn diagnose(&mut self, _: &[Document]) -> Result<Diagnosis, LspFailure> {
+            unreachable!("renames aren't checked here")
+        }
+
+        fn sync(&mut self, _: &[Document]) -> Result<(), LspFailure> {
+            unreachable!("renames aren't checked here")
+        }
+
+        fn rename(
+            &mut self,
+            document: &Document,
+            position: Position,
+            name: &str,
+        ) -> Result<Renamed, LspFailure> {
+            self.asked.push((document.clone(), position, name.into()));
+            if let Some(failure) = self.failure {
+                return Err(LspFailure(failure.into()));
+            }
+            Ok(match &self.answer {
+                Renamed::Edits(files) => Renamed::Edits(
+                    files
+                        .iter()
+                        .map(|f| FileEdits {
+                            path: self.root.join(&f.path),
+                            edits: f.edits.clone(),
+                        })
+                        .collect(),
+                ),
+                other => other.clone(),
+            })
+        }
+    }
+
+    /// Runs `script` on `files` with `lsp`: the first `set` of them as FILE
+    /// arguments, or the whole directory as a workspace (`-w`) for `None`. ned
+    /// sees the directory's canonical path and the server its given one, as a
+    /// symlinked temporary directory can make them differ.
+    fn renamed(
+        files: &[(&str, &str)],
+        set: Option<usize>,
+        script: &str,
+        lsp: &mut RenameLsp,
+    ) -> Outcome {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, text) in files {
+            fs::write(dir.path().join(name), text).unwrap();
+        }
+        let root = dir.path().canonicalize().unwrap();
+        lsp.root = dir.path().to_path_buf();
+        let prefix = format!("{}/", root.display());
+        let paths: Vec<String> = files[..set.unwrap_or(0)]
+            .iter()
+            .map(|(name, _)| format!("{prefix}{name}"))
+            .collect();
+        let initial = match set {
+            Some(_) => Initial::Files(&paths),
+            None => Initial::Workspace(root.clone()),
+        };
+        let src = script.replace("{dir}/", &prefix);
+        let parsed = parse(&src).unwrap();
+        let run = run(&parsed, &src, initial, &Options::default(), Some(lsp));
+        let given = format!("{}/", dir.path().display());
+        let strip = |s: &str| s.replace(&prefix, "").replace(&given, "");
+        Outcome {
+            output: strip(&run.output),
+            result: match run.result {
+                Ok(changes) => Ok(changes
+                    .into_iter()
+                    .map(|c| Change {
+                        path: strip(&c.path),
+                        ..c
+                    })
+                    .collect()),
+                Err(err) => Err(strip(&err.render(&src))),
+            },
+        }
+    }
+
+    fn edit(line: u32, start: u32, end: u32, text: &str) -> TextEdit {
+        TextEdit {
+            start: Position {
+                line,
+                character: start,
+            },
+            end: Position {
+                line,
+                character: end,
+            },
+            text: text.into(),
+        }
+    }
+
+    const FOO_A: &str = "fn foo() {}\nfn main() {\n    foo();\n}\n";
+    const FOO_B: &str = "fn g() {\n    crate::foo();\n}\n";
+
+    fn foo_edits() -> Vec<(&'static str, Vec<TextEdit>)> {
+        vec![
+            ("a.rs", vec![edit(0, 3, 6, "bar"), edit(2, 4, 7, "bar")]),
+            ("b.rs", vec![edit(1, 11, 14, "bar")]),
+        ]
+    }
+
+    fn paths(out: &Outcome) -> Vec<String> {
+        let changes = out.result.as_ref().unwrap();
+        changes.iter().map(|c| c.path.clone()).collect()
+    }
+
+    #[test]
+    fn rename_applies_the_servers_edits_across_files() {
+        let mut lsp = RenameLsp::new(foo_edits());
+        let files = [("a.rs", FOO_A), ("b.rs", FOO_B)];
+        let out = renamed(&files, Some(2), "rename fn:foo to bar", &mut lsp);
+        let changes = out.result.unwrap();
+        let summary: Vec<(&str, &str, usize)> = changes
+            .iter()
+            .map(|c| (c.path.as_str(), c.new.as_str(), c.edits))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("a.rs", "fn bar() {}\nfn main() {\n    bar();\n}\n", 2),
+                ("b.rs", "fn g() {\n    crate::bar();\n}\n", 1),
+            ]
+        );
+        let (document, position, name) = &lsp.asked[0];
+        assert_eq!(document.text, FOO_A);
+        assert!(document.path.is_absolute() && document.path.ends_with("a.rs"));
+        assert_eq!(
+            *position,
+            Position {
+                line: 0,
+                character: 3
+            }
+        );
+        assert_eq!(name, "bar");
+    }
+
+    #[test]
+    fn other_selectors_rename_at_their_start_in_utf16_units() {
+        let mut lsp = RenameLsp::new(vec![("c.rs", vec![edit(0, 8, 11, "bar")])]);
+        let files = [("c.rs", "/* é */ foo();\n")];
+        let out = renamed(&files, Some(1), r#"rename "foo" to bar"#, &mut lsp);
+        assert_eq!(out.new_text(), "/* é */ bar();\n");
+        assert_eq!(
+            lsp.asked[0].1,
+            Position {
+                line: 0,
+                character: 8
+            }
+        );
+    }
+
+    #[test]
+    fn rename_combines_with_the_scripts_other_edits() {
+        let files = [("a.rs", FOO_A), ("b.rs", FOO_B)];
+        let mut lsp = RenameLsp::new(foo_edits());
+        let script = "rename fn:foo to bar\ninsert before fn:main \"// entry\"";
+        let out = renamed(&files, Some(2), script, &mut lsp);
+        let changes = out.result.unwrap();
+        assert!(
+            changes[0].new.contains("// entry\nfn main() {\n    bar();"),
+            "{changes:?}"
+        );
+        let mut lsp = RenameLsp::new(foo_edits());
+        let script = "replace fn:main with \"fn main() {}\"\nrename fn:foo to bar";
+        let out = renamed(&files, Some(2), script, &mut lsp);
+        assert!(
+            out.error().contains("edit overlaps command 1 at a.rs:"),
+            "{}",
+            out.error()
+        );
+    }
+
+    #[test]
+    fn rename_needs_one_span() {
+        let mut lsp = RenameLsp::new(foo_edits());
+        let out = renamed(&[("a.rs", FOO_A)], Some(1), "rename /foo/ to bar", &mut lsp);
+        assert!(out.error().contains("/foo/ matches 2"), "{}", out.error());
+        assert!(lsp.asked.is_empty());
+    }
+
+    #[test]
+    fn rename_outside_the_file_set_is_an_error() {
+        let files = [("a.rs", FOO_A), ("b.rs", FOO_B)];
+        let mut lsp = RenameLsp::new(foo_edits());
+        let out = renamed(&files, Some(1), "rename fn:foo to bar", &mut lsp);
+        assert_eq!(
+            out.error(),
+            "error: script:1:1: rename edits files outside the file set: b.rs; add them to the file set, or use -w"
+        );
+        let mut edits = vec![("a.rs", vec![edit(0, 3, 6, "bar")])];
+        edits.extend(
+            ["b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs"].map(|p| (p, vec![edit(0, 0, 1, "x")])),
+        );
+        let out = renamed(
+            &files,
+            Some(1),
+            "rename fn:foo to bar",
+            &mut RenameLsp::new(edits),
+        );
+        assert!(
+            out.error()
+                .contains("file set: b.rs, c.rs, d.rs, e.rs, f.rs and 1 more; "),
+            "{}",
+            out.error()
+        );
+    }
+
+    #[test]
+    fn with_w_rename_reaches_every_workspace_file() {
+        let files = [("a.rs", FOO_A), ("b.rs", FOO_B)];
+        let mut lsp = RenameLsp::new(foo_edits());
+        let out = renamed(
+            &files,
+            None,
+            "file {dir}/a.rs\nrename fn:foo to bar",
+            &mut lsp,
+        );
+        assert_eq!(paths(&out), ["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn with_w_rename_stops_at_ignored_files_and_the_root() {
+        let files = [
+            ("a.rs", FOO_A),
+            (".gitignore", "gen.rs\n"),
+            ("gen.rs", "fn foo() {}\n"),
+        ];
+        let mut lsp = RenameLsp::new(vec![
+            ("a.rs", vec![edit(0, 3, 6, "bar")]),
+            ("gen.rs", vec![edit(0, 3, 6, "bar")]),
+            ("/elsewhere/x.rs", vec![edit(0, 0, 1, "y")]),
+        ]);
+        let out = renamed(&files, None, "rename fn:foo to bar", &mut lsp);
+        assert_eq!(
+            out.error(),
+            "error: script:1:1: rename edits files outside the workspace: gen.rs, /elsewhere/x.rs; these are ignored or outside the root; rename with `sub` instead"
+        );
+    }
+
+    #[test]
+    fn a_refused_rename_says_where_and_why() {
+        let mut lsp = RenameLsp::new(vec![]);
+        lsp.answer = Renamed::Refused("fake can't rename a keyword; select the name itself".into());
+        let out = renamed(
+            &[("a.rs", FOO_A)],
+            Some(1),
+            r#"rename 3>"foo" to bar"#,
+            &mut lsp,
+        );
+        assert_eq!(
+            out.error(),
+            "error: script:1:1: cannot rename at a.rs:3:5: fake can't rename a keyword; select the name itself"
+        );
+    }
+
+    #[test]
+    fn rename_needs_a_daemon_a_server_and_a_language() {
+        let mut lsp = RenameLsp::new(vec![]);
+        lsp.failure = Some("fake exited; check that it runs, then rerun");
+        let out = renamed(
+            &[("a.rs", FOO_A)],
+            Some(1),
+            "rename fn:foo to bar",
+            &mut lsp,
+        );
+        assert_eq!(
+            out.error(),
+            "error: script:1:1: fake exited; check that it runs, then rerun"
+        );
+
+        let mut lsp = RenameLsp::new(vec![]);
+        lsp.answer = Renamed::NoServer;
+        let out = renamed(
+            &[("a.md", "# A\n")],
+            Some(1),
+            "rename section:A to B",
+            &mut lsp,
+        );
+        assert_eq!(
+            out.error(),
+            "error: script:1:1: no language server for markdown; set one with `[lsp] markdown = [\"PROGRAM\", ...]` in .ned.toml"
+        );
+
+        let mut lsp = RenameLsp::new(vec![]);
+        let out = renamed(
+            &[("a.txt", "foo\n")],
+            Some(1),
+            r#"rename "foo" to bar"#,
+            &mut lsp,
+        );
+        assert!(
+            out.error().contains("rename needs a language"),
+            "{}",
+            out.error()
+        );
+        assert!(lsp.asked.is_empty());
+
+        let out = exec_with(&[("a.rs", FOO_A)], 1, "rename fn:foo to bar");
+        assert_eq!(
+            out.error(),
+            r#"error: script:1:1: `rename` needs the language-server daemon, which is Unix-only for now; use sub /\bOLD\b/ with "NEW" over the files"#
         );
     }
 }

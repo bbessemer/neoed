@@ -799,6 +799,33 @@ mod tests {
     }
 
     #[test]
+    fn rename_command() {
+        assert_eq!(
+            one("rename impl:P>fn:new to create"),
+            CommandKind::Rename {
+                selector: selector(vec![syntax("impl", "P"), syntax("fn", "new")]),
+                name: "create".into(),
+            }
+        );
+        assert_eq!(
+            one(r#"rename "old" to "r#type""#),
+            CommandKind::Rename {
+                selector: selector(vec![literal("old")]),
+                name: "r#type".into(),
+            }
+        );
+        assert_eq!(
+            message("rename fn:x y"),
+            "expected `to`, found `y`; usage: rename SEL to NAME"
+        );
+        assert_eq!(
+            message("rename fn:x to"),
+            "expected a name, found end of script; usage: rename SEL to NAME"
+        );
+        assert_eq!(error("rename all fn:x to y").kind, E::AllNotAllowed);
+    }
+
+    #[test]
     fn file_command() {
         assert_eq!(
             commands(r#"file src/*.rs "my file.rs"; delete 1"#),
@@ -1002,10 +1029,6 @@ mod tests {
             (e.kind, e.span),
             (E::UnknownCommand("frobnicate".into()), 0..10)
         );
-        assert!(
-            matches!(error("rename fn:x to y").kind, E::Reserved { what, .. } if what == "rename")
-        );
-
         assert!(matches!(error("show refs:foo").kind, E::Reserved { what, .. } if what == "refs:"));
         assert!(matches!(error("show def:foo").kind, E::Reserved { what, .. } if what == "def:"));
         assert!(matches!(
@@ -1158,11 +1181,6 @@ mod tests {
 
     #[test]
     fn reserved_features_name_what_to_use_instead() {
-        assert_eq!(
-            message("rename fn:x to y"),
-            r#"`rename` is not yet supported; use sub /\bOLD\b/ with "NEW" over the files"#
-        );
-
         assert_eq!(
             message("show refs:foo"),
             "`refs:` is not yet supported; select uses with a /regex/"

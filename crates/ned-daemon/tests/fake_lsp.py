@@ -12,12 +12,22 @@ version. Further arguments are flags:
 - `pull`: offer pull diagnostics instead of publishing them;
 - `cancel-once`: with `pull`, cancel the first diagnostic request;
 - `ra`: act like rust-analyzer: report no progress, and only say it's
-  quiescent once given a document containing "done".
+  quiescent once given a document containing "done";
+- `document-changes`: answer renames with `documentChanges`;
+- `rename-file`: answer renames with a file rename;
+- `rename-error`: refuse renames with an error.
+
+It renames the word at the position wherever it occurs as a whole word, in
+open documents and in files under the root with the same extension, and
+answers null where there's no word.
 
 """
 
 import json
+import re
 import sys
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 log = open(sys.argv[1], "a", buffering=1)
 flags = set(sys.argv[2:])
@@ -25,6 +35,7 @@ stdin = sys.stdin.buffer
 stdout = sys.stdout.buffer
 requests = 0
 documents = {}
+root = None
 SEVERITIES = {"ERROR": 1, "WARN": 2, "HINT": 4}
 
 
@@ -67,6 +78,45 @@ def diagnostics(text):
     return found
 
 
+def rename(params):
+    uri = params["textDocument"]["uri"]
+    position = params["position"]
+    line = documents[uri].split("\n")[position["line"]]
+    words = [
+        m
+        for m in re.finditer(r"\w+", line)
+        if m.start() <= position["character"] < m.end()
+    ]
+    if not words:
+        return None
+    if "rename-file" in flags:
+        return {
+            "documentChanges": [{"kind": "rename", "oldUri": uri, "newUri": uri + "x"}]
+        }
+    suffix = Path(unquote(urlparse(uri).path)).suffix
+    texts = {p.as_uri(): p.read_text() for p in sorted(root.rglob("*" + suffix))}
+    texts.update(documents)
+    changes = {}
+    for file, text in texts.items():
+        for number, content in enumerate(text.split("\n")):
+            for m in re.finditer(rf"\b{re.escape(words[0].group())}\b", content):
+                edit = {
+                    "range": {
+                        "start": {"line": number, "character": m.start()},
+                        "end": {"line": number, "character": m.end()},
+                    },
+                    "newText": params["newName"],
+                }
+                changes.setdefault(file, []).append(edit)
+    if "document-changes" in flags:
+        edits = [
+            {"textDocument": {"uri": file, "version": None}, "edits": edits}
+            for file, edits in changes.items()
+        ]
+        return {"documentChanges": edits}
+    return {"changes": changes}
+
+
 def read():
     length = None
     while line := stdin.readline():
@@ -86,7 +136,8 @@ while (message := read()) is not None:
         print("fake: cannot start: broken on purpose", file=sys.stderr)
         sys.exit(2)
     if method == "initialize":
-        capabilities = {"textDocumentSync": 1}
+        root = Path(unquote(urlparse(params["rootUri"]).path))
+        capabilities = {"textDocumentSync": 1, "renameProvider": True}
         if "pull" in flags:
             capabilities["diagnosticProvider"] = {
                 "interFileDependencies": False,
@@ -137,6 +188,11 @@ while (message := read()) is not None:
             text = documents[params["textDocument"]["uri"]]
             report = {"kind": "full", "items": diagnostics(text)}
             send({"id": message["id"], "result": report})
+    elif method == "textDocument/rename" and "rename-error" in flags:
+        error = {"code": -32803, "message": "cannot rename a keyword"}
+        send({"id": message["id"], "error": error})
+    elif method == "textDocument/rename":
+        send({"id": message["id"], "result": rename(params)})
     elif method == "shutdown":
         send({"id": message["id"], "result": None})
     elif method == "exit":

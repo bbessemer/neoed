@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ned_core::lang::Language;
-use ned_core::lsp::{Diagnostic, Position, Severity};
+use ned_core::lsp::{Diagnostic, FileEdits, Position, Renamed, Severity, TextEdit};
 use ned_daemon::protocol::{Document, ServerState, ServerStatus};
 use ned_daemon::servers::Servers;
 use serde_json::{Value, json};
@@ -528,4 +528,210 @@ async fn real_servers_start_index_and_shut_down() {
         ]
     );
     servers.shutdown().await;
+}
+
+fn edit(line: u32, start: u32, end: u32, text: &str) -> TextEdit {
+    TextEdit {
+        start: Position {
+            line,
+            character: start,
+        },
+        end: Position {
+            line,
+            character: end,
+        },
+        text: text.into(),
+    }
+}
+
+/// The fake renaming `foo` in `a.rs`, open, and `b.rs`, on disk.
+async fn rename_foo(ws: &Workspace) -> Renamed {
+    fs::write(ws.root().join("b.rs"), "fn g() { foo(); }\n").unwrap();
+    fs::write(ws.root().join("c.py"), "foo\n").unwrap();
+    let mut servers = ws.servers();
+    let a = ws.rust("a.rs", "// done\nfn foo() {}\n");
+    let renamed = servers
+        .rename(
+            &a,
+            Position {
+                line: 1,
+                character: 4,
+            },
+            "bar",
+        )
+        .await
+        .unwrap();
+    servers.shutdown().await;
+    renamed
+}
+
+fn foo_renamed(ws: &Workspace) -> Renamed {
+    Renamed::Edits(vec![
+        FileEdits {
+            path: ws.root().join("a.rs"),
+            edits: vec![edit(1, 3, 6, "bar")],
+        },
+        FileEdits {
+            path: ws.root().join("b.rs"),
+            edits: vec![edit(0, 9, 12, "bar")],
+        },
+    ])
+}
+
+#[tokio::test]
+async fn rename_edits_open_documents_and_files_on_disk() {
+    let ws = Workspace::new();
+    assert_eq!(rename_foo(&ws).await, foo_renamed(&ws));
+    let ws = Workspace::new();
+    let config = format!(
+        "[lsp]\nrust = [{FAKE:?}, {:?}, \"document-changes\"]\n",
+        ws.log
+    );
+    fs::write(ws.dir.path().join(".ned.toml"), config).unwrap();
+    assert_eq!(rename_foo(&ws).await, foo_renamed(&ws));
+}
+
+#[tokio::test]
+async fn rename_refusals_say_why() {
+    for (flag, why) in [
+        ("rename-file", "would create, rename or delete files"),
+        ("rename-error", "cannot rename a keyword"),
+    ] {
+        let ws = Workspace::new();
+        let config = format!("[lsp]\nrust = [{FAKE:?}, {:?}, {flag:?}]\n", ws.log);
+        fs::write(ws.dir.path().join(".ned.toml"), config).unwrap();
+        match rename_foo(&ws).await {
+            Renamed::Refused(message) => assert!(message.contains(why), "{message}"),
+            other => panic!("{flag}: {other:?}"),
+        }
+    }
+    let ws = Workspace::new();
+    let mut servers = ws.servers();
+    let a = ws.rust("a.rs", "// done\n\n");
+    let renamed = servers
+        .rename(
+            &a,
+            Position {
+                line: 1,
+                character: 0,
+            },
+            "bar",
+        )
+        .await
+        .unwrap();
+    match renamed {
+        Renamed::Refused(message) => assert!(message.contains("nothing to rename"), "{message}"),
+        other => panic!("{other:?}"),
+    }
+    let md = ws.doc("a.md", Language::Markdown, "# A\n");
+    let renamed = servers
+        .rename(
+            &md,
+            Position {
+                line: 0,
+                character: 2,
+            },
+            "B",
+        )
+        .await;
+    assert_eq!(renamed.unwrap(), Renamed::NoServer);
+    servers.shutdown().await;
+}
+
+#[tokio::test]
+async fn rename_first_brings_open_documents_up_to_date_with_the_disk() {
+    let ws = Workspace::new();
+    let mut servers = ws.servers();
+    let b = ws.rust("b.rs", "fn g() { foo(); }\n");
+    servers.open(std::slice::from_ref(&b)).await.unwrap();
+    fs::write(&b.path, "fn g() {}\nfn h() { foo(); }\n").unwrap();
+    let a = ws.rust("a.rs", "// done\nfn foo() {}\n");
+    let renamed = servers
+        .rename(
+            &a,
+            Position {
+                line: 1,
+                character: 4,
+            },
+            "bar",
+        )
+        .await
+        .unwrap();
+    let Renamed::Edits(files) = renamed else {
+        panic!("{renamed:?}");
+    };
+    assert_eq!(files[1].path, b.path);
+    assert_eq!(files[1].edits, [edit(1, 9, 12, "bar")]);
+    servers.shutdown().await;
+}
+
+/// Files, the one to rename in, and the position of the name.
+type RenameCase<'a> = (&'a [(&'a str, &'a str)], &'a str, Position);
+
+/// The default servers rename across files: `cargo test -- --ignored`.
+#[tokio::test]
+#[ignore]
+async fn real_servers_rename_across_files() {
+    let cases: [RenameCase; 3] = [
+        (
+            &[
+                (
+                    "Cargo.toml",
+                    "[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+                ),
+                ("src/lib.rs", "pub mod b;\npub fn helper() {}\n"),
+                ("src/b.rs", "pub fn g() {\n    crate::helper();\n}\n"),
+            ],
+            "src/lib.rs",
+            Position {
+                line: 1,
+                character: 7,
+            },
+        ),
+        (
+            &[
+                ("go.mod", "module a\n\ngo 1.21\n"),
+                ("a.go", "package a\n\nfunc Helper() {}\n"),
+                ("b.go", "package a\n\nfunc G() { Helper() }\n"),
+            ],
+            "a.go",
+            Position {
+                line: 2,
+                character: 5,
+            },
+        ),
+        (
+            &[
+                ("a.py", "def helper():\n    pass\n"),
+                ("b.py", "from a import helper\n\nhelper()\n"),
+            ],
+            "a.py",
+            Position {
+                line: 0,
+                character: 4,
+            },
+        ),
+    ];
+    for (files, name, position) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for (file, text) in files {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, text).unwrap();
+        }
+        let text = fs::read_to_string(root.join(name)).unwrap();
+        let document = Document {
+            path: root.join(name),
+            lang: Language::detect(name, &text).unwrap(),
+            text,
+        };
+        let mut servers = Servers::new(root, None);
+        let renamed = servers.rename(&document, position, "assist").await.unwrap();
+        match renamed {
+            Renamed::Edits(files) => assert_eq!(files.len(), 2, "{name}: {files:?}"),
+            other => panic!("{name}: {other:?}"),
+        }
+        servers.shutdown().await;
+    }
 }

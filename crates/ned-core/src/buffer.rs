@@ -359,6 +359,21 @@ mod tests {
     }
 
     #[test]
+    fn lsp_positions_invert_lsp_offsets() {
+        let buffer = Buffer::new("ab\né😀x\r\nlast");
+        for (offset, position) in [
+            (0, (0, 0)),
+            (2, (0, 2)),
+            (5, (1, 1)),
+            (9, (1, 3)),
+            (16, (2, 4)),
+        ] {
+            assert_eq!(buffer.lsp_position(offset), position, "{offset}");
+        }
+        assert_eq!(buffer.lsp_position(buffer.len_bytes()), (2, 4));
+    }
+
+    #[test]
     fn lsp_offsets_clamp_to_the_line_and_the_file() {
         let buffer = Buffer::new("ab\r\ncd\n");
         assert_eq!(buffer.lsp_offset(0, 9), 2);

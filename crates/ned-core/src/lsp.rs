@@ -97,6 +97,8 @@ pub enum Renamed {
     Edits(Vec<FileEdits>),
     /// Why the server can't rename there; the message ends with a fix.
     Refused(String),
+    /// The document's language has no server.
+    NoServer,
 }
 
 /// What `ned` asks of the workspace's language servers.
