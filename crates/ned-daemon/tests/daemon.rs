@@ -37,7 +37,9 @@ impl Daemon {
 
     fn start(mut self, idle: Duration) -> Daemon {
         let (paths, root) = (self.paths.clone(), self.root.clone());
-        self.thread = Some(thread::spawn(move || server::serve(&paths, &root, idle)));
+        self.thread = Some(thread::spawn(move || {
+            server::serve(&paths, &root, None, idle)
+        }));
         let deadline = Instant::now() + Duration::from_secs(5);
         while Client::connect(&self.paths).is_none() {
             assert!(Instant::now() < deadline, "the daemon didn't start");
@@ -107,7 +109,7 @@ fn requests_keep_a_daemon_from_idling() {
 #[test]
 fn a_second_daemon_for_a_workspace_returns_at_once() {
     let daemon = Daemon::new().start(IDLE);
-    server::serve(&daemon.paths, &daemon.root, IDLE).unwrap();
+    server::serve(&daemon.paths, &daemon.root, None, IDLE).unwrap();
     assert!(matches!(
         daemon.client().request(&Request::Status),
         Ok(Response::Status(_))
