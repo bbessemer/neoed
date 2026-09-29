@@ -138,8 +138,8 @@ impl Config {
             .find_map(|layer| layer.check_show))
     }
 
-    /// `[check] timeout` for `dir`, in seconds.
-    pub fn check_timeout(&mut self, dir: &Path) -> Result<Option<u64>, ConfigError> {
+    /// `[lsp] timeout` for `dir`, in seconds.
+    pub fn lsp_timeout(&mut self, dir: &Path) -> Result<Option<u64>, ConfigError> {
         let dir = std::path::absolute(dir).map_err(|err| io_error(dir, &err))?;
         Ok(self
             .layers(&dir)?
@@ -337,11 +337,11 @@ pub(crate) mod tests {
         let mut config = Config::new(Some(&root.path().join("config.toml"))).unwrap();
         let ws = root.path().join("ws");
         assert_eq!(config.check_show(&ws), Ok(Some(Severity::Error)));
-        assert_eq!(config.check_timeout(&ws), Ok(Some(5)));
+        assert_eq!(config.lsp_timeout(&ws), Ok(Some(5)));
         assert_eq!(config.check_show(root.path()), Ok(Some(Severity::Hint)));
         let mut none = Config::new(None).unwrap();
         assert_eq!(none.check_show(&ws), Ok(Some(Severity::Error)));
-        assert_eq!(none.check_timeout(&ws), Ok(None));
+        assert_eq!(none.lsp_timeout(&ws), Ok(None));
     }
 
     #[test]

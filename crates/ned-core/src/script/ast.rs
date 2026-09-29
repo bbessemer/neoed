@@ -176,4 +176,6 @@ pub enum Part {
     Name,
     Doc,
     Lines,
+    Refs,
+    Def,
 }

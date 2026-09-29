@@ -6,12 +6,12 @@ use std::path::PathBuf;
 use ned_core::config::Config;
 use std::time::Duration;
 
-use ned_core::lsp::{Diagnosis, Position, Renamed, Severity};
+use ned_core::lsp::{Diagnosis, Locate, Located, Position, Renamed, Severity};
 
 use crate::lsp::{LspError, Server};
 use crate::protocol::{Document, ServerStatus};
 
-/// `[check] timeout`, in seconds, unless configured.
+/// `[lsp] timeout`, in seconds, unless configured.
 const DEFAULT_TIMEOUT: u64 = 30;
 
 pub struct Servers {
@@ -66,7 +66,7 @@ impl Servers {
         self.open(documents).await?;
         let mut config = Config::new(self.user_config.as_deref())?;
         let show = config.check_show(&self.root)?.unwrap_or(Severity::Warning);
-        let timeout = config.check_timeout(&self.root)?.unwrap_or(DEFAULT_TIMEOUT);
+        let timeout = config.lsp_timeout(&self.root)?.unwrap_or(DEFAULT_TIMEOUT);
         let mut files = Vec::new();
         for document in documents {
             let Some(command) = config.server(&self.root, document.lang)? else {
@@ -101,7 +101,7 @@ impl Servers {
         let Some(command) = config.server(&self.root, document.lang)? else {
             return Ok(Renamed::NoServer);
         };
-        let timeout = config.check_timeout(&self.root)?.unwrap_or(DEFAULT_TIMEOUT);
+        let timeout = config.lsp_timeout(&self.root)?.unwrap_or(DEFAULT_TIMEOUT);
         let server = self.servers.get_mut(&command).expect("opened above");
         server.refresh(&document.path);
         let timeout = Duration::from_secs(timeout);
@@ -111,6 +111,17 @@ impl Servers {
         Ok(server
             .rename(&document.path, position, name, timeout)
             .await?)
+    }
+
+    /// Like `rename`, but finds references to or the definition of the symbol
+    /// at `position`.
+    pub async fn locate(
+        &mut self,
+        kind: Locate,
+        document: &Document,
+        position: Position,
+    ) -> Result<Located, ServersError> {
+        todo!("{kind:?} {document:?} {position:?}")
     }
 
     pub fn status(&self) -> Vec<ServerStatus> {

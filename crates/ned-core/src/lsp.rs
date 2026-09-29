@@ -101,6 +101,33 @@ pub enum Renamed {
     NoServer,
 }
 
+/// What `.refs` and `.def` ask a server for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Locate {
+    References,
+    Definition,
+}
+
+/// A range in a file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Location {
+    /// Absolute.
+    pub path: PathBuf,
+    pub start: Position,
+    pub end: Position,
+}
+
+/// A server's answer to `Locate`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Located {
+    /// In path order.
+    Locations(Vec<Location>),
+    /// The document's language has no server.
+    NoServer,
+}
+
 /// What `ned` asks of the workspace's language servers.
 pub trait Lsp {
     /// Diagnostics for each of `documents`, as their text stands.
@@ -116,6 +143,15 @@ pub trait Lsp {
         position: Position,
         name: &str,
     ) -> Result<Renamed, LspFailure>;
+
+    /// The references to, or definition of, the symbol at `position` in
+    /// `document`.
+    fn locate(
+        &mut self,
+        kind: Locate,
+        document: &Document,
+        position: Position,
+    ) -> Result<Located, LspFailure>;
 }
 
 /// `after`'s diagnostics that `before` has no identical one left to match:
@@ -530,6 +566,10 @@ mod tests {
 
         fn rename(&mut self, _: &Document, _: Position, _: &str) -> Result<Renamed, LspFailure> {
             unreachable!("not renamed in these tests")
+        }
+
+        fn locate(&mut self, _: Locate, _: &Document, _: Position) -> Result<Located, LspFailure> {
+            unreachable!("not located in these tests")
         }
     }
 

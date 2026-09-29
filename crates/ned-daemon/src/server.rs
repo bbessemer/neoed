@@ -118,6 +118,14 @@ impl Daemon<'_> {
                     Ok(renamed) => Response::Renamed(renamed),
                     Err(err) => Response::Error(err.to_string()),
                 },
+                Ok(Request::Locate {
+                    kind,
+                    document,
+                    position,
+                }) => match self.servers.locate(kind, &document, position).await {
+                    Ok(located) => Response::Located(located),
+                    Err(err) => Response::Error(err.to_string()),
+                },
                 Err(err) => Response::Error(format!("invalid request: {err}")),
             };
             reply(&mut write, &response).await;

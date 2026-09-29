@@ -395,6 +395,10 @@ impl Executor<'_> {
     /// `file` indexes `self.files`. A leading `file:` step reads only its
     /// file.
     fn resolve(&mut self, target: &Target) -> Result<Vec<Match>, ExecError> {
+        let located = |s: &Step| s.parts.iter().any(|p| matches!(p, Part::Refs | Part::Def));
+        if target.selector.steps.iter().any(located) {
+            return self.resolve_located(target);
+        }
         let only = match target.selector.steps.first().map(|s| &s.primary) {
             Some(Primary::File(path)) => {
                 if !self.set.iter().any(|m| same_path(&m.path, path)) {
@@ -422,6 +426,12 @@ impl Executor<'_> {
                 range: m.range,
             })
             .collect())
+    }
+
+    /// `resolve` for a selector with `.refs` or `.def`, which the language
+    /// server resolves (§3.4).
+    fn resolve_located(&mut self, target: &Target) -> Result<Vec<Match>, ExecError> {
+        todo!("{target:?}")
     }
 
     fn push(
@@ -786,7 +796,8 @@ impl Executor<'_> {
         }
         if !outside.is_empty() {
             let shown: Vec<&str> = outside.iter().map(String::as_str).collect();
-            return Err(error(ExecErrorKind::RenameOutside {
+            return Err(error(ExecErrorKind::Outside {
+                what: "rename".into(),
                 files: select::file_list(&shown),
                 workspace: self.workspace.is_some(),
             }));
@@ -1329,13 +1340,25 @@ pub enum ExecErrorKind {
     /// `message` ends with a fix.
     #[error("cannot rename at {location}: {message}")]
     RenameRefused { location: String, message: String },
-    /// `workspace`: under `-w`, where the boundary is the workspace.
+    /// `what` is `rename` or a selector; `workspace`: under `-w`, where the
+    /// boundary is the workspace.
     #[error(
-        "rename edits files outside the {}: {files}; {}",
+        "{what} reaches files outside the {}: {files}; {}",
         if *workspace { "workspace" } else { "file set" },
-        if *workspace { "these are ignored or outside the root; rename with `sub` instead" } else { "add them to the file set, or use -w" }
+        if *workspace { "these are ignored or outside the root; use a regex there instead" } else { "add them to the file set, or use -w" }
     )]
-    RenameOutside { files: String, workspace: bool },
+    Outside {
+        what: String,
+        files: String,
+        workspace: bool,
+    },
+    /// `locations` lists where the matches are.
+    #[error("{selector} matches {total} spans, at {locations}; add `all` to take every one")]
+    AmbiguousLocated {
+        selector: String,
+        total: usize,
+        locations: String,
+    },
 }
 
 /// Selectors that each pick one of an ambiguous selector's matches, with the
@@ -1400,7 +1423,8 @@ mod tests {
 
     use super::*;
     use crate::lsp::{
-        Diagnosis, Diagnostic, Document, FileEdits, LspFailure, Position, Renamed, TextEdit,
+        Diagnosis, Diagnostic, Document, FileEdits, Locate, Located, LspFailure, Position, Renamed,
+        TextEdit,
     };
     use crate::script::parse;
 
@@ -2447,6 +2471,10 @@ fn main() {}
         fn rename(&mut self, _: &Document, _: Position, _: &str) -> Result<Renamed, LspFailure> {
             unreachable!("not renamed in these tests")
         }
+
+        fn locate(&mut self, _: Locate, _: &Document, _: Position) -> Result<Located, LspFailure> {
+            unreachable!("not located in these tests")
+        }
     }
 
     fn diag(line: u32, character: u32, severity: Severity, message: &str) -> Diagnostic {
@@ -2870,6 +2898,10 @@ fn main() {}
                 ),
                 other => other.clone(),
             })
+        }
+
+        fn locate(&mut self, _: Locate, _: &Document, _: Position) -> Result<Located, LspFailure> {
+            unreachable!("not located in these tests")
         }
     }
 

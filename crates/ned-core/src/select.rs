@@ -93,9 +93,7 @@ pub struct Match {
 /// Resolves `target` against every file in `files`, enforcing the ambiguity
 /// rules of §3.5. `src` is the script, for error messages.
 pub fn resolve(target: &Target, files: &[&SourceFile], src: &str) -> Result<Vec<Match>, ExecError> {
-    let span = &target.selector.span;
-    let error = |kind| ExecError::new(kind, Some(span.clone()));
-    let mut matches: Vec<Match> = files
+    let whole = files
         .iter()
         .enumerate()
         .map(|(file, f)| Match {
@@ -103,6 +101,20 @@ pub fn resolve(target: &Target, files: &[&SourceFile], src: &str) -> Result<Vec<
             range: 0..f.text.len(),
         })
         .collect();
+    resolve_within(target, files, whole, src)
+}
+
+/// `resolve`, with the first step searching `start` instead of whole files.
+/// `target` has no `.refs` or `.def`: the executor asks servers for those.
+pub fn resolve_within(
+    target: &Target,
+    files: &[&SourceFile],
+    start: Vec<Match>,
+    src: &str,
+) -> Result<Vec<Match>, ExecError> {
+    let span = &target.selector.span;
+    let error = |kind| ExecError::new(kind, Some(span.clone()));
+    let mut matches = start;
     let mut parents = Vec::new();
     for step in &target.selector.steps {
         let next = resolve_step(step, files, &matches).map_err(error)?;
@@ -164,6 +176,7 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
                             has: parts_of(item),
                         })?
                     }
+                    (Part::Refs | Part::Def, _) => unreachable!("resolved by the executor"),
                     (_, None) => unreachable!("checked above"),
                 };
             }
@@ -759,6 +772,8 @@ fn part_name(part: Part) -> &'static str {
         Part::Name => "name",
         Part::Doc => "doc",
         Part::Lines => "lines",
+        Part::Refs => "refs",
+        Part::Def => "def",
     }
 }
 
