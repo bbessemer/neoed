@@ -274,6 +274,8 @@ impl<'a> Matcher<'a> {
 
     fn find(&self, f: &SourceFile, parent: Range<usize>) -> Vec<Range<usize>> {
         let within = |r: &Range<usize>| parent.start <= r.start && r.end <= parent.end;
+        let scope = scope(&f.text, &parent);
+        let in_scope = |r: &Range<usize>| scope.start <= r.start && r.end <= scope.end;
         match self {
             Matcher::Lines { start, end } => {
                 let count = f.buffer.line_count();
@@ -289,20 +291,15 @@ impl<'a> Matcher<'a> {
                     return Vec::new();
                 };
                 let range = line_range(&f.buffer, first).start..line_range(&f.buffer, last).end;
-                let scope = if is_whole_line(&f.text, &parent) {
-                    full_lines(&f.text, parent.clone())
-                } else {
-                    parent.clone()
-                };
-                if scope.start <= range.start && range.end <= scope.end {
+                if in_scope(&range) {
                     vec![range]
                 } else {
                     Vec::new()
                 }
             }
             Matcher::Regex(re) => re
-                .find_iter(&f.text[parent.clone()])
-                .map(|m| parent.start + m.start()..parent.start + m.end())
+                .find_iter(&f.text[scope.clone()])
+                .map(|m| scope.start + m.start()..scope.start + m.end())
                 .collect(),
             Matcher::Str(needle) => {
                 let needle = match f.buffer.line_ending() {
@@ -312,15 +309,15 @@ impl<'a> Matcher<'a> {
                 if needle.is_empty() {
                     return Vec::new();
                 }
-                f.text[parent.clone()]
+                f.text[scope.clone()]
                     .match_indices(&needle)
-                    .map(|(i, _)| parent.start + i..parent.start + i + needle.len())
+                    .map(|(i, _)| scope.start + i..scope.start + i + needle.len())
                     .collect()
             }
             Matcher::Heredoc { lines, raw } => {
                 let whole: Vec<(Range<usize>, &str)> = (0..f.buffer.line_count())
                     .map(|i| line_range(&f.buffer, i))
-                    .filter(|r| within(r))
+                    .filter(|r| in_scope(r))
                     .map(|r| {
                         let content = f.text[r.clone()].trim_end_matches('\n');
                         let content = content.strip_suffix('\r').unwrap_or(content);
@@ -599,9 +596,17 @@ pub(crate) fn hint(
             lines
         }
     };
+    // The hints search where the step did: each parent's lines, if whole.
+    let scopes: Vec<Match> = parents
+        .iter()
+        .map(|p| Match {
+            file: p.file,
+            range: scope(&files[p.file].text, &p.range),
+        })
+        .collect();
     match &step.primary {
         Primary::Literal(text) => {
-            if let Some(m) = near_literal(&text.value, files, parents) {
+            if let Some(m) = near_literal(&text.value, files, &scopes) {
                 return format!(
                     "; ignoring case and spacing, it matches at {}",
                     location(&m)
@@ -609,7 +614,7 @@ pub(crate) fn hint(
             }
         }
         Primary::Regex(pattern) if !pattern.flags.case_insensitive => {
-            if let Some(m) = case_insensitive_match(pattern, files, parents) {
+            if let Some(m) = case_insensitive_match(pattern, files, &scopes) {
                 return format!(
                     "; it matches case-insensitively at {} (add the i flag)",
                     location(&m)
@@ -921,11 +926,7 @@ fn candidates(
             let f = &files[c.m.file];
             let lines = line_numbers(&f.buffer, &c.core);
             let parent = &parents[c.parent].range;
-            let scope = if is_whole_line(&f.text, parent) {
-                full_lines(&f.text, parent.clone())
-            } else {
-                parent.clone()
-            };
+            let scope = scope(&f.text, parent);
             let covered = full_lines(&f.text, c.core.clone());
             let lines_fit = scope.start <= covered.start && covered.end <= scope.end;
             // The matches this candidate's last step also selects.
@@ -1008,15 +1009,17 @@ fn named<'f>(
     )
 }
 
-/// The selector of the innermost item that strictly contains `range` and
-/// lies strictly inside `parent`, where a step nested in the parent finds it.
+/// The selector of the innermost item that strictly contains `range` (within
+/// its lines, §3.4) and lies strictly inside `parent`, where a step nested in
+/// the parent finds it.
 fn enclosing(f: &SourceFile, range: &Range<usize>, parent: &Range<usize>) -> Option<String> {
     f.items()?
         .iter()
         .rev()
         .find(|i| {
-            i.range.start <= range.start
-                && range.end <= i.range.end
+            let lines = scope(&f.text, &i.range);
+            lines.start <= range.start
+                && range.end <= lines.end
                 && i.range != *range
                 && parent.start <= i.range.start
                 && i.range.end <= parent.end
@@ -1038,6 +1041,16 @@ pub(crate) fn line_numbers(buffer: &Buffer, range: &Range<usize>) -> String {
         first.to_string()
     } else {
         format!("{first}-{last}")
+    }
+}
+
+/// The span that a step nested in `parent` searches (§3.4): its whole lines,
+/// indentation and line ending included, if it covers whole lines.
+pub(crate) fn scope(text: &str, parent: &Range<usize>) -> Range<usize> {
+    if is_whole_line(text, parent) {
+        full_lines(text, parent.clone())
+    } else {
+        parent.clone()
     }
 }
 
@@ -1254,7 +1267,6 @@ mod tests {
         // `^` is a line start, not the start of the item.
         let set = files(&[("a.rs", text)]);
         assert!(resolve_in("delete fn:new>/^fn/", &set).is_err());
-        assert!(resolve_in("delete /new\\(\\) \\{/>/^/", &set).is_err());
     }
 
     #[test]

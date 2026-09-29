@@ -1110,8 +1110,16 @@ impl Executor<'_> {
         let regex = pattern
             .regex()
             .expect("regexes are validated when the script is parsed");
-        let scopes = match scope {
-            Some(target) => self.resolve(target)?,
+        let scopes: Vec<Match> = match scope {
+            // A scope's whole lines, as a nested step searches them (§3.4).
+            Some(target) => self
+                .resolve(target)?
+                .into_iter()
+                .map(|m| Match {
+                    range: select::scope(&self.files[m.file].file.text, &m.range),
+                    ..m
+                })
+                .collect(),
             None => self
                 .read(|_| true)?
                 .into_iter()
