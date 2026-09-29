@@ -1133,6 +1133,31 @@ mod tests {
     }
 
     #[test]
+    fn matches_sharing_a_line_are_counted_not_listed() {
+        assert_eq!(
+            error("delete /x/", &[("a.rs", "x x\nx\n")]),
+            "error: script:1:8: /x/ matches 3 items; add `all` or use one of:\n  \
+             2>/x/   a.rs:2\n  \
+             2 more share a line with another match; select longer text to pick one"
+        );
+        assert_eq!(
+            error("delete /x/", &[("a.rs", "x x\n"), ("b.rs", "x\n")]),
+            "error: script:1:8: /x/ matches 3 items; add `all` or use one of:\n  \
+             file:b.rs>/x/   b.rs:1\n  \
+             2 more share a line with another match; select longer text to pick one"
+        );
+    }
+
+    #[test]
+    fn matches_that_all_share_lines_list_no_candidates() {
+        assert_eq!(
+            error("delete \"a\"", &[("a.rs", "a a\nb\n")]),
+            "error: script:1:8: \"a\" matches 2 items; add `all`, or select longer text; \
+             matches on the same line can't be picked by scope"
+        );
+    }
+
+    #[test]
     fn ambiguity_candidates_are_aligned() {
         let text = "\n".repeat(8) + "x\nx\n";
         assert_eq!(
