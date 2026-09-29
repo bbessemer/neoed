@@ -648,7 +648,8 @@ added. The daemon isn't started for this, and `false` disables the fallback
 too.
 
 A formatter gets the file's text on stdin and prints the formatted text on
-stdout. It runs in the file's directory, so its own configuration
+stdout. It runs in the file's directory (or, for a file `create` makes in a new
+directory, its nearest existing ancestor), so its own configuration
 (`rustfmt.toml`, `.prettierrc`, ...) is found. Its name in the output is the
 basename of its program.
 
