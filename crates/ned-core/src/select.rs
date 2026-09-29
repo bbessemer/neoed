@@ -397,7 +397,7 @@ impl<'a> Matcher<'a> {
                 .items()
                 .unwrap_or_default()
                 .iter()
-                .filter(|i| i.kind == *kind && syntax::name_matches(name, &i.name))
+                .filter(|i| i.kind == *kind && syntax::item_matches(name, i))
                 .map(|i| i.range.clone())
                 .filter(within)
                 .collect(),
@@ -719,13 +719,22 @@ fn close_name(
                 .iter()
                 .filter(|i| i.kind == kind && p.range.start <= i.range.start)
                 .filter(|i| i.range.end <= p.range.end)
-                .map(|i| (syntax::distance(name, &i.name), p.file, i))
+                .map(|i| {
+                    // A trait impl is also named by its self type.
+                    let (d, closest) = [Some(&i.name), i.base_name.as_ref()]
+                        .into_iter()
+                        .flatten()
+                        .map(|n| (syntax::distance(name, n), n))
+                        .min()
+                        .expect("an item has a name");
+                    (d, p.file, closest, i)
+                })
         })
         .filter(|(d, ..)| *d <= limit)
         .min_by_key(|(d, ..)| *d);
-    let (_, file, item) = best?;
+    let (_, file, closest, item) = best?;
     let written = syntax::selector(kind, name);
-    let fixed = syntax::selector(kind, &item.name);
+    let fixed = syntax::selector(kind, closest);
     let suggestion = match selector.rfind(&written) {
         Some(i) => format!(
             "{}{fixed}{}",
@@ -827,11 +836,24 @@ fn candidates(
             ..
         })
     );
-    let named: Vec<String> = found
+    // For a syntax step: the name each candidate selects its item by, the
+    // item, and whether the name replaces the step's.
+    let chosen: Vec<Option<(String, &Item, bool)>> = found
         .iter()
-        .map(|c| {
-            last.and_then(|step| named(step, files[c.m.file], &c.core))
-                .unwrap_or_else(|| src[split..selector.span.end].to_string())
+        .map(|c| last.and_then(|step| named(step, files[c.m.file], &c.core)))
+        .collect();
+    let named: Vec<String> = chosen
+        .iter()
+        .map(|chosen| match (chosen, last) {
+            (Some((name, item, true)), Some(step)) => {
+                let parts: String = step
+                    .parts
+                    .iter()
+                    .map(|&p| format!(".{}", part_name(p)))
+                    .collect();
+                format!("{}{parts}", syntax::selector(item.kind, name))
+            }
+            _ => src[split..selector.span.end].to_string(),
         })
         .collect();
     let enclosing: Vec<Option<String>> = found
@@ -851,7 +873,13 @@ fn candidates(
             };
             let covered = full_lines(&f.text, c.core.clone());
             let lines_fit = scope.start <= covered.start && covered.end <= scope.end;
-            let peers: Vec<usize> = (0..found.len()).filter(|&j| named[j] == *last).collect();
+            // The matches this candidate's last step also selects.
+            let peers: Vec<usize> = (0..found.len())
+                .filter(|&j| match (&chosen[i], &chosen[j]) {
+                    (Some((name, ..)), Some((_, item, _))) => syntax::item_matches(name, item),
+                    _ => named[j] == *last,
+                })
+                .collect();
             let unique_item = enclosing[i].as_ref().filter(|&item| {
                 peers
                     .iter()
@@ -901,26 +929,28 @@ fn candidates(
     }
 }
 
-/// The `last` step with its wildcard name replaced by the name of the
-/// innermost item of its kind holding `range`, if it has one.
-fn named(last: &Step, f: &SourceFile, range: &Range<usize>) -> Option<String> {
+/// The name that `last`, a syntax step, selects `range`'s item by in a
+/// candidate, the item, and whether the name replaces the step's: it does
+/// for a wildcard, and for a trait impl found by its self type.
+fn named<'f>(
+    last: &Step,
+    f: &'f SourceFile,
+    range: &Range<usize>,
+) -> Option<(String, &'f Item, bool)> {
     let Primary::Syntax { kind, name } = &last.primary else {
         return None;
     };
-    if !name.contains('*') {
-        return None;
-    }
     let item = f
         .items()?
         .iter()
-        .rev()
-        .find(|i| i.kind == kind && i.range.start <= range.start && range.end <= i.range.end)?;
-    let parts: String = last
-        .parts
-        .iter()
-        .map(|&p| format!(".{}", part_name(p)))
-        .collect();
-    Some(format!("{}{parts}", syntax::selector(kind, &item.name)))
+        .find(|i| i.kind == kind && i.range == *range)?;
+    Some(
+        if name.contains('*') || !syntax::name_matches(name, &item.name) {
+            (item.name.clone(), item, true)
+        } else {
+            (name.clone(), item, false)
+        },
+    )
 }
 
 /// The selector of the innermost item that strictly contains `range` and
@@ -1725,6 +1755,10 @@ fn main() {
         assert_eq!(select("delete all impl:\"* for S\"", IMPLS).len(), 2);
         assert_eq!(select("delete all impl:S", IMPLS).len(), 3);
         assert_eq!(select("delete impl:S>fn:fmt", IMPLS), ["fn fmt() {}"]);
+        assert!(
+            error("delete impl:SS", &[("a.rs", IMPLS)]).contains("did you mean impl:S ("),
+            "a close self type is suggested"
+        );
     }
 
     #[test]

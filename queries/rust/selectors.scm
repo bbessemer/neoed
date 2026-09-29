@@ -17,11 +17,26 @@
 
 (trait_item name: (type_identifier) @name body: (declaration_list) @body) @trait
 
+; A trait impl's @trait_name (the kind `trait` can't be a capture name) makes
+; its name `TRAIT for TYPE`.
 (impl_item
+  trait: [
+    (type_identifier) @trait_name
+    (scoped_type_identifier name: (type_identifier) @trait_name)
+    (generic_type type: [
+      (type_identifier) @trait_name
+      (scoped_type_identifier name: (type_identifier) @trait_name)
+    ])
+  ]?
   type: [
     (type_identifier) @name
     (generic_type type: (type_identifier) @name)
     (scoped_type_identifier name: (type_identifier) @name)
+    (generic_type type: (scoped_type_identifier name: (type_identifier) @name))
+    (reference_type type: [
+      (type_identifier) @name
+      (generic_type type: (type_identifier) @name)
+    ])
   ]
   body: (declaration_list)? @body) @impl
 

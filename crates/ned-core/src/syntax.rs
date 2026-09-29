@@ -67,12 +67,14 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
     while let Some(m) = matches.next() {
-        let (mut item, mut name, mut body, mut params) = (None, None, None, None);
+        let (mut item, mut name, mut body, mut params, mut trait_name) =
+            (None, None, None, None, None);
         for capture in m.captures() {
             match names[capture.index as usize] {
                 "name" => name = Some(capture.node),
                 "body" => body = Some(capture.node.byte_range()),
                 "params" => params = Some(capture.node.byte_range()),
+                "trait_name" => trait_name = Some(capture.node),
                 "doc" => leading.push((capture.node.byte_range(), true)),
                 "attr" => leading.push((capture.node.byte_range(), false)),
                 other => {
@@ -89,6 +91,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                 name,
                 body,
                 params,
+                trait_name,
             });
         }
     }
@@ -116,6 +119,12 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
     });
     found.dedup_by(|b, a| a.kind == b.kind && a.node == b.node);
 
+    let name_text = |name: Option<Node>| {
+        name.map_or(String::new(), |n| {
+            let text = &text[n.byte_range()];
+            text.lines().next().unwrap_or_default().trim().to_string()
+        })
+    };
     let mut items: Vec<Item> = found
         .into_iter()
         .map(
@@ -125,6 +134,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                  name,
                  body,
                  params,
+                 trait_name,
              }| {
                 let mut range = node.byte_range();
                 // Some nodes (Markdown blocks) take the blank lines after them.
@@ -157,11 +167,11 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                 }
                 Item {
                     kind,
-                    name: name.map_or(String::new(), |n| {
-                        let text = &text[n.byte_range()];
-                        text.lines().next().unwrap_or_default().trim().to_string()
-                    }),
-                    base_name: None,
+                    name: match trait_name {
+                        Some(t) => format!("{} for {}", &text[t.byte_range()], name_text(name)),
+                        None => name_text(name),
+                    },
+                    base_name: trait_name.map(|_| name_text(name)),
                     range,
                     trailing_comma: comma.is_some(),
                     node: node.byte_range(),
@@ -185,6 +195,7 @@ struct Found<'t> {
     name: Option<Node<'t>>,
     body: Option<Range<usize>>,
     params: Option<Range<usize>>,
+    trait_name: Option<Node<'t>>,
 }
 
 /// Whether only whitespace, and no blank line, separates `leading` from
@@ -266,6 +277,10 @@ pub fn name_matches(pattern: &str, name: &str) -> bool {
 /// Whether `item`'s name, or its base name, matches `pattern`.
 pub fn item_matches(pattern: &str, item: &Item) -> bool {
     name_matches(pattern, &item.name)
+        || item
+            .base_name
+            .as_ref()
+            .is_some_and(|base| name_matches(pattern, base))
 }
 
 /// `kind:name`, with the name quoted when it has characters a bare name can't.
