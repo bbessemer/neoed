@@ -143,6 +143,10 @@ END
 - **Literals match the file's characters.** In a ned string, `\n` is a
   newline, so matching Rust source that contains the two characters `\n` needs
   `\\n`. A shorter literal, or `sub` with a regex, is easier.
+- **Replacing an item replaces its attributes.** `replace fn:x with ...` covers
+  `#[test]` and `///` lines too, so repeat them in TEXT, or replace `.sig` or
+  `.body` instead. A `#[test]` dropped this way fails nothing: the test just
+  stops running.
 - **Re-basing follows the target line.** `<<END` text takes the indentation of
   the line it's inserted next to, so after a wrapped list item's continuation
   line it gets the hanging indent. For code, use `<<END` (a quoted `<<'END'`
