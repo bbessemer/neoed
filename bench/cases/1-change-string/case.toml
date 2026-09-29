@@ -1,0 +1,30 @@
+task = "Change a string in one function"
+fixture = "parser"
+
+[ned]
+command = '''
+ned src/parser.rs -e 'replace fn:parse>"unexpected end" with "unexpected end of input"'
+'''
+
+[sed]
+caveat = "unscoped: edits the string in every function"
+command = '''
+sed -i '' 's/"unexpected end"/"unexpected end of input"/' src/parser.rs
+'''
+
+[python]
+command = '''
+python3 - <<'EOF'
+from pathlib import Path
+p = Path("src/parser.rs")
+s = p.read_text()
+old = '.expect("unexpected end")'
+assert s.count(old) == 1
+p.write_text(s.replace(old, '.expect("unexpected end of input")'))
+EOF
+'''
+
+[str_replace]
+call = '''
+{"path": "src/parser.rs", "old_str": "expect(\"unexpected end\")", "new_str": "expect(\"unexpected end of input\")"}
+'''

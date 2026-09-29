@@ -1,0 +1,29 @@
+task = "Replace a function body"
+fixture = "parser"
+
+[ned]
+command = '''
+ned src/parser.rs <<'EOF'
+replace fn:parse.body with <<END
+let tok = self.next().ok_or(Error::Eof)?;
+self.parse_expr(tok)
+END
+EOF
+'''
+
+[python]
+command = '''
+python3 - <<'EOF'
+from pathlib import Path
+p = Path("src/parser.rs")
+s = p.read_text()
+old = '        let tok = self.next().expect("unexpected end");\n        self.parse_expr(tok)\n'
+assert s.count(old) == 1
+p.write_text(s.replace(old, '        let tok = self.next().ok_or(Error::Eof)?;\n        self.parse_expr(tok)\n'))
+EOF
+'''
+
+[str_replace]
+call = '''
+{"path": "src/parser.rs", "old_str": "        let tok = self.next().expect(\"unexpected end\");\n        self.parse_expr(tok)", "new_str": "        let tok = self.next().ok_or(Error::Eof)?;\n        self.parse_expr(tok)"}
+'''

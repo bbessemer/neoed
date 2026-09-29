@@ -1,0 +1,29 @@
+task = "Insert into a Python block"
+fixture = "app"
+
+[ned]
+command = '''
+ned app.py <<'EOF'
+insert after "log(req)".lines <<END
+if req.slow:
+    warn(req)
+END
+EOF
+'''
+
+[python]
+command = '''
+python3 - <<'EOF'
+from pathlib import Path
+p = Path("app.py")
+s = p.read_text()
+old = '        log(req)\n'
+assert s.count(old) == 1
+p.write_text(s.replace(old, old + '        if req.slow:\n            warn(req)\n'))
+EOF
+'''
+
+[str_replace]
+call = '''
+{"path": "app.py", "old_str": "        log(req)", "new_str": "        log(req)\n        if req.slow:\n            warn(req)"}
+'''
