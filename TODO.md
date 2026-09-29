@@ -109,6 +109,11 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] A syntax step that matches nothing suggests the same name under another
       kind first (`struct:LspError` → "did you mean enum:LspError?"), before
       the close-name hint
+- [ ] Explicit chaining with `|`: `CMD | CMD` runs the right command against
+      the text as the left one left it (selectors see its additions, renames
+      and moves), while `;` and newlines keep snapshot semantics (§2.3). The
+      script stays one transaction. It avoids a second ned call for, e.g.,
+      `create`, `move` or `rename` followed by an edit that selects the result
 
 ## 9. LSP daemon _(split)_
 
