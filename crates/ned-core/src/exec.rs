@@ -224,8 +224,8 @@ impl Executor<'_> {
         match &command.kind {
             CommandKind::Create { path, text } => return self.create(path, text).map_err(error),
             CommandKind::Allow(level) => {
-                let _ = level;
-                todo!()
+                self.allow = Some(self.allow.map_or(*level, |allow| allow.min(*level)));
+                return Ok(());
             }
             CommandKind::File(paths) => {
                 self.set = self.open(paths, Some(span))?;

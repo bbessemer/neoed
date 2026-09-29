@@ -86,8 +86,21 @@ pub trait Lsp {
 /// `after`'s diagnostics that `before` has no identical one left to match:
 /// the same severity, source, code and message, wherever they are.
 pub fn introduced(before: &[Diagnostic], after: &[Diagnostic]) -> Vec<Diagnostic> {
-    let _ = (before, after);
-    todo!()
+    let same = |a: &Diagnostic, b: &Diagnostic| {
+        (a.severity, &a.source, &a.code, &a.message) == (b.severity, &b.source, &b.code, &b.message)
+    };
+    let mut unmatched: Vec<&Diagnostic> = before.iter().collect();
+    after
+        .iter()
+        .filter(|a| match unmatched.iter().position(|b| same(a, b)) {
+            Some(i) => {
+                unmatched.swap_remove(i);
+                false
+            }
+            None => true,
+        })
+        .cloned()
+        .collect()
 }
 
 /// Diagnoses the original and `finals` text of each of `changes`, and finds
@@ -100,8 +113,55 @@ pub fn check_changes(
     allow: Option<Severity>,
     force: bool,
 ) -> Result<Checked, LspFailure> {
-    let _ = (lsp, changes, finals, allow, force);
-    todo!()
+    let mut checked = Checked {
+        files: vec![Vec::new(); changes.len()],
+        blocking: Vec::new(),
+    };
+    let typed: Vec<usize> = (0..changes.len())
+        .filter(|&i| changes[i].lang.is_some())
+        .collect();
+    if typed.is_empty() {
+        return Ok(checked);
+    }
+    let documents = |text: &dyn Fn(usize) -> String| {
+        typed
+            .iter()
+            .map(|&i| {
+                let path = &changes[i].path;
+                Ok(Document {
+                    path: std::path::absolute(path)
+                        .map_err(|err| LspFailure(format!("cannot read {path}: {err}")))?,
+                    lang: changes[i].lang.expect("typed"),
+                    text: text(i),
+                })
+            })
+            .collect::<Result<Vec<_>, LspFailure>>()
+    };
+    let before = lsp.diagnose(&documents(&|i| changes[i].old.clone())?)?;
+    let after = lsp.diagnose(&documents(&|i| finals[i].to_string())?)?;
+    let blocks = |severity: Severity| {
+        !force
+            && after.block.is_some_and(|block| severity <= block)
+            && allow.is_none_or(|allow| severity < allow)
+    };
+    for (k, &i) in typed.iter().enumerate() {
+        let Some(diagnostics) = &after.files[k] else {
+            continue;
+        };
+        let original = before.files[k].as_deref().unwrap_or_default();
+        let mut new = introduced(original, diagnostics);
+        new.sort_by_key(|d| d.start);
+        for d in &new {
+            if blocks(d.severity) {
+                checked.blocking.push((i, d.clone()));
+            }
+        }
+        checked.files[i] = new
+            .into_iter()
+            .filter(|d| d.severity <= after.show)
+            .collect();
+    }
+    Ok(checked)
 }
 
 /// `d` as a line of `check` output (spec §4.1), for the file at `path`

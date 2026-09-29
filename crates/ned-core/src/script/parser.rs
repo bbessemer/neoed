@@ -177,7 +177,12 @@ impl Parser<'_> {
 
     /// After `allow`: `errors` or `warnings`.
     fn allow(&mut self) -> Result<CommandKind, ParseError> {
-        todo!()
+        let token = self.bump()?;
+        match &token.kind {
+            TokenKind::Word(w) if w == "errors" => Ok(CommandKind::Allow(Severity::Error)),
+            TokenKind::Word(w) if w == "warnings" => Ok(CommandKind::Allow(Severity::Warning)),
+            _ => Err(expected("`errors` or `warnings`", &token)),
+        }
     }
 
     fn target(&mut self) -> Result<Target, ParseError> {
@@ -1104,7 +1109,7 @@ mod tests {
         assert_eq!(
             message(r#""x""#),
             "expected a command, found a string; \
-             commands are show outline check replace insert delete sub move file create"
+             commands are show outline check replace insert delete sub move file create allow"
         );
     }
 

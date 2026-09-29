@@ -149,8 +149,11 @@ impl Config {
 
     /// `[check] block` for `dir`: `Some(None)` if it's `false`.
     pub fn check_block(&mut self, dir: &Path) -> Result<Option<Option<Severity>>, ConfigError> {
-        let _ = dir;
-        todo!()
+        let dir = std::path::absolute(dir).map_err(|err| io_error(dir, &err))?;
+        Ok(self
+            .layers(&dir)?
+            .into_iter()
+            .find_map(|layer| layer.check_block))
     }
 }
 
