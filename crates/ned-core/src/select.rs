@@ -406,43 +406,47 @@ fn check_lines(
     Err(E::LineOutOfRange { line, files })
 }
 
-/// Fails unless some searched file has a language, and every searched
-/// language has selector items of `kind`.
+/// Fails unless some searched file's language has selector items of `kind`;
+/// files whose language lacks them are skipped. The error is the first such
+/// file's, or `NoLanguage` if no searched file has a language.
 fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]) -> Result<(), E> {
     let mut searched: Vec<usize> = parents.iter().map(|m| m.file).collect();
     searched.dedup();
-    let mut any = false;
+    let mut first_error = None;
     for &i in &searched {
         let Some(lang) = files[i].lang else { continue };
-        let Some(query) = lang.selectors() else {
-            let selector = syntax::selector(kind, name);
-            return Err(E::Unsupported {
-                what: format!("`{selector}` in {lang} files"),
+        let error = match lang.selectors() {
+            None => E::Unsupported {
+                what: format!("`{}` in {lang} files", syntax::selector(kind, name)),
                 instead: r#"use a line, /regex/, "literal" or query{} selector"#,
-            });
+            },
+            Some(query) => {
+                let kinds = syntax::kinds(query);
+                if kinds.contains(&kind) {
+                    return Ok(());
+                }
+                E::UnknownKind {
+                    kind: kind.into(),
+                    lang: lang.to_string(),
+                    kinds: kinds.join(", "),
+                }
+            }
         };
-        let kinds = syntax::kinds(query);
-        if !kinds.contains(&kind) {
-            return Err(E::UnknownKind {
-                kind: kind.into(),
-                lang: lang.to_string(),
-                kinds: kinds.join(", "),
-            });
-        }
-        any = true;
+        first_error.get_or_insert(error);
     }
-    if any || searched.is_empty() {
-        return Ok(());
+    match first_error {
+        Some(error) => Err(error),
+        None if searched.is_empty() => Ok(()),
+        None => Err(E::NoLanguage {
+            selector: syntax::selector(kind, name),
+            files: file_list(
+                &searched
+                    .iter()
+                    .map(|&i| files[i].path.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+        }),
     }
-    Err(E::NoLanguage {
-        selector: syntax::selector(kind, name),
-        files: file_list(
-            &searched
-                .iter()
-                .map(|&i| files[i].path.as_str())
-                .collect::<Vec<_>>(),
-        ),
-    })
 }
 
 /// `source` compiled for each language among the searched files.

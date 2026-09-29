@@ -305,8 +305,11 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 | `table`     | Markdown tables (name = the first header cell)                     |
 | `code`      | Markdown code blocks (name = the info string, or `""` if none)     |
 
-- Using a kind the file's language doesn't support is an error that lists the
-  kinds it does support.
+- A syntax step skips files whose language doesn't support its kind (or has no
+  syntax items yet), as it skips files without a language, so `fn:parse` works
+  in a set that also holds Markdown. If no searched file supports the kind, the
+  step is an error that lists the kinds the first such language does support.
+  `outline` likewise skips files whose language has no syntax items.
 - A syntax item's default span is the **whole item as a reader sees it**,
   including its leading doc comments and attributes or decorators, up to the
   first blank line above it. A `,` directly after the item, on the same line,

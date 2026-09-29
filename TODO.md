@@ -151,7 +151,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       scope is also wrong for items: two `impl:Workspace` candidates were
       given as `112-120>…` and `124-150>…`, the impls' bodies, but a line
       scope must cover the whole item (`111-121>impl:Workspace`) to match it
-- [ ] A syntax step fails when the file set includes a file in a language
+- [x] A syntax step fails when the file set includes a file in a language
       without selector queries yet (e.g. a `.py` file next to `.rs` files),
       even if other files match; skip such files as files without a language
       are skipped, and fail only if no searched file supports the kind

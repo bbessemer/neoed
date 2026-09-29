@@ -566,16 +566,21 @@ impl Executor<'_> {
         let mut files: Vec<usize> = spans.iter().map(|(i, _)| *i).collect();
         files.dedup();
         let mut any = false;
+        let mut unsupported = None;
         for &i in &files {
             let Some(lang) = self.files[i].file.lang else {
                 continue;
             };
             if lang.selectors().is_none() {
-                let what = format!("`outline` in {lang} files");
-                let instead = "use `show`";
-                return Err(error(ExecErrorKind::Unsupported { what, instead }));
+                unsupported.get_or_insert(lang);
+                continue;
             }
             any = true;
+        }
+        if let (false, Some(lang)) = (any, unsupported) {
+            let what = format!("`outline` in {lang} files");
+            let instead = "use `show`";
+            return Err(error(ExecErrorKind::Unsupported { what, instead }));
         }
         if !any {
             return Err(error(ExecErrorKind::NoLanguage {
@@ -591,7 +596,7 @@ impl Executor<'_> {
         let mut last = None;
         for (i, range) in spans {
             let f = &self.files[i].file;
-            if f.lang.is_none() {
+            if f.lang.and_then(|l| l.selectors()).is_none() {
                 continue;
             }
             if last != Some(i) {
