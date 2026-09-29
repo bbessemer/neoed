@@ -43,5 +43,5 @@ Examples:
     }
     END
 
-Topics: show outline check replace insert delete sub move file create selectors
-text config
+Topics: show outline check allow replace insert delete sub move file create
+selectors text config

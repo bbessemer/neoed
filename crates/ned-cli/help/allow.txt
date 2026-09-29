@@ -1,0 +1,15 @@
+allow errors|warnings
+
+While a daemon runs, ned checks each edit with the language servers, and an
+edit that introduces errors is rejected. `allow errors` anywhere in the script
+applies its edits anyway, e.g. for unfinished work with missing symbols; the
+errors are still printed. `allow warnings` lets warnings through when
+`[check] block` is set to warning, but still blocks errors.
+
+Examples:
+    allow errors
+    insert end impl:Parser <<END
+    fn parse_expr(&mut self) -> Expr {
+        todo_parse_expr(self)
+    }
+    END
