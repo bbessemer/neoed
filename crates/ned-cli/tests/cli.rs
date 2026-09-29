@@ -423,6 +423,59 @@ fn missing_file_exits_3() {
     ");
 }
 
+#[test]
+fn quoted_glob_arguments_are_expanded() {
+    let dir = dir_with(&[
+        ("b.rs", "let x = 1;\n"),
+        ("a.rs", "let x = 2;\n"),
+        ("c.py", "x = 3\n"),
+    ]);
+    let out = ned(dir.path(), &["-q", "*.rs", "-e", "sub /x/ with \"y\""], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs: 1 edit, +1 -1
+    b.rs: 1 edit, +1 -1
+    --- stderr
+    ");
+    assert_eq!(read(&dir, "c.py"), "x = 3\n");
+}
+
+#[test]
+fn file_command_expands_globs() {
+    let dir = dir_with(&[("a.rs", "let x = 1;\n"), ("b.rs", "let x = 2;\n")]);
+    let out = ned(
+        dir.path(),
+        &["-q", "-e", "file *.rs; sub /x/ with \"y\""],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs: 1 edit, +1 -1
+    b.rs: 1 edit, +1 -1
+    --- stderr
+    ");
+    assert_eq!(read(&dir, "b.rs"), "let y = 2;\n");
+}
+
+#[test]
+fn glob_matching_nothing_exits_3() {
+    let dir = dir_with(&[("a.rs", "let x = 1;\n")]);
+    let out = ned(
+        dir.path(),
+        &["a.rs", "*.rx", "-e", "sub /x/ with \"y\""],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 3
+    --- stdout
+    --- stderr
+    error: glob `*.rx` matched nothing
+    ");
+    assert_eq!(read(&dir, "a.rs"), "let x = 1;\n");
+}
+
 #[cfg(unix)]
 #[test]
 fn write_failure_exits_3_and_leaves_files_untouched() {

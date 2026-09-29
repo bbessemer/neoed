@@ -788,7 +788,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = format!("{}/", dir.path().display());
         for (name, text) in files {
-            fs::write(dir.path().join(name), text).unwrap();
+            let path = dir.path().join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
         }
         let paths: Vec<String> = files[..initial]
             .iter()
@@ -1137,6 +1139,56 @@ mod tests {
         );
         let paths: Vec<_> = out.result.unwrap().into_iter().map(|c| c.path).collect();
         assert_eq!(paths, ["b.rs", "a.rs"]);
+    }
+
+    /// The files `script`'s last `file` command selects, by running `show`.
+    fn globbed(files: &[&str], script: &str) -> Vec<String> {
+        let files: Vec<(&str, &str)> = files.iter().map(|f| (*f, "x\n")).collect();
+        let out = exec_with(&files, 0, &format!("{script}; show"));
+        assert!(out.result.is_ok(), "{:?}", out.result);
+        out.output
+            .lines()
+            .filter_map(|l| l.strip_suffix(":1"))
+            .map(String::from)
+            .collect()
+    }
+
+    #[test]
+    fn file_expands_globs_in_sorted_order() {
+        let files = ["b.rs", "a.rs", "c.txt", ".hidden.rs", "sub/d.rs"];
+        assert_eq!(globbed(&files, "file {dir}/*.rs"), ["a.rs", "b.rs"]);
+        assert_eq!(globbed(&files, "file {dir}/[ab].r?"), ["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn double_star_recurses() {
+        let files = ["sub/deep/c.rs", "a.rs", "sub/b.rs", "sub/b.txt"];
+        assert_eq!(
+            globbed(&files, "file {dir}/**/*.rs"),
+            ["a.rs", "sub/b.rs", "sub/deep/c.rs"]
+        );
+    }
+
+    #[test]
+    fn globs_match_only_files() {
+        assert_eq!(globbed(&["a.rs", "d.rs/x"], "file {dir}/*.rs"), ["a.rs"]);
+    }
+
+    #[test]
+    fn files_named_twice_are_in_the_set_once() {
+        let files = ["a.rs", "b.rs"];
+        assert_eq!(
+            globbed(&files, "file {dir}/b.rs {dir}/*.rs {dir}/b.rs"),
+            ["b.rs", "a.rs"]
+        );
+    }
+
+    #[test]
+    fn a_glob_matching_nothing_is_an_error() {
+        assert_eq!(
+            exec_with(&[("a.rs", "x\n")], 0, "file {dir}/*.rx").error(),
+            "error: script:1:1: glob `*.rx` matched nothing"
+        );
     }
 
     #[test]
