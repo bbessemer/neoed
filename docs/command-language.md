@@ -72,7 +72,7 @@ need a language.
 ```ebnf
 script     = { line } ;
 line       = [ command { ";" command } ] [ comment ] NEWLINE { heredoc-body } ;
-command    = show | outline | replace | insert | delete | sub | move
+command    = show | outline | replace | insert | delete | sub | move | create
            | file | rename | check ;
 
 show       = "show" [ target [ context ] ] ;
@@ -83,6 +83,7 @@ delete     = "delete" target ;
 sub        = "sub" [ target ] regex "with" text ;
 move       = "move" target position selector ;
 file       = "file" path { path } ;
+create     = "create" path text ;
 rename     = "rename" target "to" name ;            (* reserved *)
 check      = "check" ;                              (* reserved *)
 
@@ -324,6 +325,7 @@ reserved for the LSP milestone.
 | `delete SEL`                              | Removes each span.                                                                                                                                                                                   |
 | `sub [SEL] /re/ with TEXT`                | Replaces every match of `re` inside each span of `SEL` (default: each whole file in the set). `$1`, `${name}` and `$0` expand to captures; `$$` is a literal `$`. Zero matches in total is an error. |
 | `move SEL before\|after\|start\|end DEST` | Deletes each span of `SEL` and inserts its text at `DEST`, which must resolve to one span. The destination may be in another file in the set. Moved text is re-based.                                |
+| `create PATH TEXT`                        | Creates `PATH` holding `TEXT` (line-oriented, re-based to column 0) as if it had existed when the script started: it joins the file set and later commands can edit it. `PATH` must not exist.       |
 
 Notes:
 
@@ -470,6 +472,8 @@ src/parser.rs: 1 edit, +1 -1
 - The edit count is the number of spans edited.
 - `--dry-run` prefixes each summary line with `(dry run) `.
 - `--quiet` prints only the summary lines.
+- A file made by `create` is summarized as `PATH: created, +N`, and its hunks
+  show its whole contents. Missing parent directories are created.
 
 ### 6.4 Formatting
 
