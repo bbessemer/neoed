@@ -14,7 +14,7 @@ use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
 use crate::lang::Language;
 use crate::script::ast::{LineNo, Part, Pattern, Primary, Step, Target, TextKind};
 use crate::syntax::{self, Item};
-use crate::text::{full_lines, strip_indent};
+use crate::text::{full_lines, is_whole_line, strip_indent};
 
 const MAX_CANDIDATES: usize = 10;
 
@@ -265,13 +265,24 @@ impl<'a> Matcher<'a> {
         match self {
             Matcher::Lines { start, end } => {
                 let count = f.buffer.line_count();
-                let (Some(first), Some(last)) =
-                    (line_index(*start, count), line_index(*end, count))
-                else {
+                // `$` is the parent's last line, which is the file's at the top level.
+                let last = f
+                    .buffer
+                    .byte_to_line(parent.end.saturating_sub(1).max(parent.start))
+                    .expect("parent within the buffer");
+                let (Some(first), Some(last)) = (
+                    line_index(*start, count, last),
+                    line_index(*end, count, last),
+                ) else {
                     return Vec::new();
                 };
                 let range = line_range(&f.buffer, first).start..line_range(&f.buffer, last).end;
-                if within(&range) {
+                let scope = if is_whole_line(&f.text, &parent) {
+                    full_lines(&f.text, parent.clone())
+                } else {
+                    parent.clone()
+                };
+                if scope.start <= range.start && range.end <= scope.end {
                     vec![range]
                 } else {
                     Vec::new()
@@ -721,10 +732,11 @@ fn close_name(
     Some(format!("; did you mean {suggestion} ({location})?"))
 }
 
-fn line_index(n: LineNo, count: usize) -> Option<usize> {
+/// The index of line `n` in a file of `count` lines whose `$` is `last`.
+fn line_index(n: LineNo, count: usize, last: usize) -> Option<usize> {
     match n {
         LineNo::Number(n) if (1..=count).contains(&n) => Some(n - 1),
-        LineNo::Last if count > 0 => Some(count - 1),
+        LineNo::Last if count > 0 => Some(last),
         _ => None,
     }
 }
@@ -1070,6 +1082,30 @@ mod tests {
             error("delete 1-4>7", &[("a.rs", TEXT)]),
             "error: script:1:8: 1-4>7 matches nothing in a.rs; it searched 1-4"
         );
+    }
+
+    #[test]
+    fn nested_lines_may_be_an_items_first_or_last_line() {
+        assert_eq!(select("delete fn:b>8", TEXT), ["}\n"]);
+        assert_eq!(
+            select("delete fn:b>6-7", TEXT),
+            ["fn b() {\n    let x = 3;\n"]
+        );
+        let text = "impl S {\n    fn new() {\n        1\n    }\n}\n";
+        assert_eq!(select("delete fn:new>2", text), ["    fn new() {\n"]);
+        assert_eq!(select("delete fn:new>4", text), ["    }\n"]);
+        // A partial-line parent still holds none of its lines.
+        let set = files(&[("a.rs", TEXT)]);
+        assert!(resolve_in("delete /let x = 1/>2", &set).is_err());
+    }
+
+    #[test]
+    fn nested_last_line_is_the_parents() {
+        assert_eq!(select("delete fn:a>$", TEXT), ["}\n"]);
+        assert_eq!(select("delete fn:a>3-$", TEXT), ["    let y = 2;\n}\n"]);
+        assert_eq!(select("delete 2-3>$", TEXT), ["    let y = 2;\n"]);
+        assert_eq!(select("delete $", TEXT), ["}\n"]);
+        assert_eq!(select("delete fn:b>$", "fn b() {}"), ["fn b() {}"]);
     }
 
     #[test]
