@@ -32,3 +32,18 @@ fn uptime(secs: u64) -> String {
     let _ = secs;
     todo!()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uptimes_are_short() {
+        assert_eq!(uptime(0), "0s");
+        assert_eq!(uptime(59), "59s");
+        assert_eq!(uptime(60), "1m");
+        assert_eq!(uptime(3599), "59m");
+        assert_eq!(uptime(3600), "1h0m");
+        assert_eq!(uptime(7500), "2h5m");
+    }
+}

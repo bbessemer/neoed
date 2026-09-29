@@ -52,7 +52,7 @@ it.
 
 `ned daemon start`, `status` and `stop` manage the daemon for the workspace
 containing `DIR` (default: the working directory). `start` spawns it if it isn't
-running; `status` and `stop` never do.
+running and prints its status; `status` and `stop` never spawn it.
 
 ```
 $ ned daemon status
