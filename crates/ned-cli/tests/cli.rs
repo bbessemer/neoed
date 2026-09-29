@@ -54,6 +54,7 @@ typescript = false
 tsx = false
 javascript = false
 go = false
+markdown = false
 ";
 
 /// Runs `ned ARGS` in `dir`, with `stdin` as its input, and reports the exit
@@ -552,7 +553,7 @@ fn unknown_lang_exits_2() {
     assert!(out.starts_with("exit: 2\n"), "{out}");
     assert!(
         out.contains(
-            "unknown language `ruby`; expected one of rust, python, typescript, tsx, javascript, go"
+            "unknown language `ruby`; expected one of rust, python, typescript, tsx, javascript, go, markdown"
         ),
         "{out}"
     );
@@ -906,7 +907,7 @@ fn invalid_config_exits_2_and_writes_nothing() {
     exit: 2
     --- stdout
     --- stderr
-    error: .ned.toml:2:1: invalid config: unknown language `ruby`; expected one of rust, python, typescript, tsx, javascript, go
+    error: .ned.toml:2:1: invalid config: unknown language `ruby`; expected one of rust, python, typescript, tsx, javascript, go, markdown
     ");
     assert_eq!(read(&dir, "a.rs"), FN_A);
     let out = ned(
@@ -1033,4 +1034,28 @@ fn create_writes_a_new_file_and_its_directories() {
     let out = ned(dir.path(), &[], script);
     assert!(out.starts_with("exit: 1\n"), "{out}");
     assert!(out.contains("src/new.rs already exists"), "{out}");
+}
+
+const NOTES: &str = "# Notes\n\n## Todo\n\n- [ ] one\n      more\n- [ ] two\n\n## Done\n\ntext\n";
+
+#[test]
+fn markdown_outline_and_edits() {
+    let dir = dir_with(&[("notes.md", NOTES)]);
+    let out = ned(dir.path(), &["notes.md", "-e", "outline"], "");
+    assert_snapshot!(out, @r#"
+    exit: 0
+    --- stdout
+    notes.md
+    1-11 section:Notes
+      3-7 section:Todo
+      9-11 section:Done
+    --- stderr
+    "#);
+    let script = "insert after item:one \"- [ ] one and a half\"\nreplace section:Done with <<END\n## Done\n\n- [x] zero\nEND\n";
+    let out = ned(dir.path(), &["-q", "notes.md"], script);
+    assert!(out.starts_with("exit: 0\n"), "{out}");
+    assert_eq!(
+        read(&dir, "notes.md"),
+        "# Notes\n\n## Todo\n\n- [ ] one\n      more\n- [ ] one and a half\n- [ ] two\n\n## Done\n\n- [x] zero\n"
+    );
 }

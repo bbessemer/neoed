@@ -165,6 +165,8 @@ mod tests {
             ("a.cjs", Language::JavaScript),
             ("a.jsx", Language::JavaScript),
             ("./dir.d/a.go", Language::Go),
+            ("README.md", Language::Markdown),
+            ("notes.markdown", Language::Markdown),
         ];
         for (path, lang) in cases {
             assert_eq!(Language::detect(path, ""), Some(lang), "{path}");
@@ -210,14 +212,18 @@ mod tests {
         }
         assert_eq!(
             "ruby".parse::<Language>(),
-            Err("unknown language `ruby`; expected one of rust, python, typescript, tsx, javascript, go".into())
+            Err("unknown language `ruby`; expected one of rust, python, typescript, tsx, javascript, go, markdown".into())
         );
     }
 
     #[test]
-    fn go_defaults_to_tabs() {
+    fn default_indents() {
         assert_eq!(Language::Go.default_indent(), "\t");
-        for lang in Language::ALL.into_iter().filter(|&l| l != Language::Go) {
+        assert_eq!(Language::Markdown.default_indent(), "  ");
+        let others = Language::ALL
+            .into_iter()
+            .filter(|&l| l != Language::Go && l != Language::Markdown);
+        for lang in others {
             assert_eq!(lang.default_indent(), "    ", "{lang}");
         }
     }

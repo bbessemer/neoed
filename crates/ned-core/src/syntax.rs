@@ -442,6 +442,61 @@ mod tests {}
         assert_eq!(selector("import", "a\"b\\"), "import:\"a\\\"b\\\\\"");
     }
 
+    fn markdown_items(text: &str) -> Vec<Item> {
+        let lang = Language::Markdown;
+        items(lang.selectors().unwrap(), &lang.parse(text), text)
+    }
+
+    const MARKDOWN: &str = "# Title\n\nIntro.\n\n## 6.4 Formatting\n\n- [ ] item one\n      continued\n- item two\n\n  second para\n\n| Code | Meaning |\n| ---- | ------- |\n| 0    | Success |\n\n```rust\nfn x() {}\n```\n\n```\nplain\n```\n\n    indented\n\n### Deep\n\ntext\n";
+
+    #[test]
+    fn markdown_items_of_every_kind() {
+        let found: Vec<(&str, String)> = markdown_items(MARKDOWN)
+            .into_iter()
+            .map(|i| (i.kind, i.name))
+            .collect();
+        let expected = [
+            ("section", "Title"),
+            ("section", "6.4 Formatting"),
+            ("item", "item one"),
+            ("item", "item two"),
+            ("table", "Code"),
+            ("code", "rust"),
+            ("code", ""),
+            ("code", ""),
+            ("section", "Deep"),
+        ];
+        let expected: Vec<(&str, String)> =
+            expected.iter().map(|(k, n)| (*k, n.to_string())).collect();
+        assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn markdown_spans_end_at_their_last_text() {
+        let items = markdown_items(MARKDOWN);
+        let span = |kind: &str, name: &str| {
+            let item = items
+                .iter()
+                .find(|i| i.kind == kind && i.name == name)
+                .unwrap();
+            &MARKDOWN[item.range.clone()]
+        };
+        assert_eq!(span("section", "Deep"), "### Deep\n\ntext");
+        assert_eq!(span("item", "item one"), "- [ ] item one\n      continued");
+        assert_eq!(span("item", "item two"), "- item two\n\n  second para");
+        assert_eq!(
+            span("table", "Code"),
+            "| Code | Meaning |\n| ---- | ------- |\n| 0    | Success |"
+        );
+        let indented = items.iter().filter(|i| i.kind == "code").nth(2).unwrap();
+        assert_eq!(&MARKDOWN[indented.range.clone()], "    indented");
+    }
+
+    #[test]
+    fn empty_names_are_quoted() {
+        assert_eq!(selector("code", ""), "code:\"\"");
+    }
+
     #[test]
     fn distance_counts_edits_and_transpositions() {
         assert_eq!(distance("parse", "parse"), 0);

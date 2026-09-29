@@ -137,4 +137,19 @@ mod tests {
         let text = "impl<T> std::fmt::Display for W<T> {}\n";
         assert_eq!(outline(text), "1 impl:W\n");
     }
+
+    #[test]
+    fn outlines_markdown_as_a_tree_of_sections() {
+        let text = "# Title\n\n## Two\n\n- a\n- b\n\n| X | Y |\n| - | - |\n\n```rust\nx\n```\n\n### Deep\n\ntext\n";
+        let f = SourceFile::new("a.md", text.into(), Some(Language::Markdown));
+        assert_eq!(
+            render(&f, None),
+            "1-17 section:Title\n  3-17 section:Two\n    15-17 section:Deep\n"
+        );
+        let two = f.items().unwrap().iter().find(|i| i.name == "Two").unwrap();
+        assert_eq!(
+            render(&f, Some(&two.range)),
+            "5 item:a\n6 item:b\n8-9 table:X\n11-13 code:rust\n15-17 section:Deep\n"
+        );
+    }
 }

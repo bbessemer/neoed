@@ -451,6 +451,7 @@ mod tests {
             ("a.ts", Language::TypeScript),
             ("a.tsx", Language::Tsx),
             ("a.js", Language::JavaScript),
+            ("a.md", Language::Markdown),
         ] {
             assert_eq!(
                 commands(&root, None, file, lang),
@@ -534,7 +535,7 @@ mod tests {
         assert_eq!(err.location, format!("{}:2:1", at(&root, ".ned.toml")));
         assert_eq!(
             err.message,
-            "unknown language `ruby`; expected one of rust, python, typescript, tsx, javascript, go"
+            "unknown language `ruby`; expected one of rust, python, typescript, tsx, javascript, go, markdown"
         );
     }
 
