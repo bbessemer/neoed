@@ -347,10 +347,10 @@ Notes:
 - If a moved whole-line span had a blank line directly above or below it, and
   it moves `before` or `after` a whole-line destination, one blank line
   separates it from the destination.
-- `insert before|after` on a syntax item other than an import, when the item
-  has a blank line directly above or below it, separates the new text from it
-  with one blank line, unless the text already starts (for `after`) or ends
-  (for `before`) with a blank line.
+- `insert before|after` on a syntax item other than an import or a Markdown
+  list item, when the item has a blank line directly above or below it,
+  separates the new text from it with one blank line, unless the text already
+  starts (for `after`) or ends (for `before`) with a blank line.
 - **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
   lines in a row, a blank line right after an opening delimiter or right before
   a closing one, or a blank line at the start or end of the file, one blank
