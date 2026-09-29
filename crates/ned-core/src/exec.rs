@@ -813,7 +813,7 @@ pub enum ExecErrorKind {
         kinds: String,
     },
     #[error(
-        "{selector} matches {} items; add `all` or use one of:{}",
+        "{selector} matches {} items; {}",
         .candidates.total,
         .candidates
     )]
@@ -852,15 +852,18 @@ pub enum ExecErrorKind {
 }
 
 /// Selectors that each pick one of an ambiguous selector's matches, with the
-/// location of that match; `total` counts all matches, listed or not.
+/// location of that match; `total` counts all matches, listed or not, and
+/// `shared` those that no selector picks alone, since they share a line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidates {
     pub listed: Vec<(String, String)>,
     pub total: usize,
+    pub shared: usize,
 }
 
 impl fmt::Display for Candidates {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("add `all` or use one of:")?;
         let width = self.listed.iter().map(|(s, _)| s.len()).max();
         for (selector, loc) in &self.listed {
             write!(f, "\n  {selector:<w$}   {loc}", w = width.unwrap_or(0))?;

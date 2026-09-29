@@ -772,6 +772,7 @@ fn candidates(
     Candidates {
         listed,
         total: matches.len(),
+        shared: 0,
     }
 }
 
