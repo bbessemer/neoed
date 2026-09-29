@@ -17,7 +17,11 @@ pub struct Command {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandKind {
-    Show(Option<Target>),
+    /// `show [SEL [+CONTEXT]]`
+    Show {
+        target: Option<Target>,
+        context: usize,
+    },
     Outline(Option<Target>),
     Replace {
         target: Target,

@@ -170,7 +170,7 @@ impl Executor<'_> {
             _ => {}
         }
         match &command.kind {
-            CommandKind::Show(target) => self.show(target.as_ref())?,
+            CommandKind::Show { target, context } => self.show(target.as_ref(), *context)?,
             CommandKind::Outline(target) => self.outline(span, target.as_ref())?,
             CommandKind::Replace { target, text } => {
                 for m in self.resolve(target)? {
@@ -298,7 +298,8 @@ impl Executor<'_> {
         Ok(())
     }
 
-    fn show(&mut self, target: Option<&Target>) -> Result<(), ExecError> {
+    fn show(&mut self, target: Option<&Target>, context: usize) -> Result<(), ExecError> {
+        let _ = context;
         // (file, first line, last line), 0-based.
         let mut spans: Vec<(usize, usize, usize)> = Vec::new();
         match target {

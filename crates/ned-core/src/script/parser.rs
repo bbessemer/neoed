@@ -87,7 +87,10 @@ impl Parser<'_> {
 
     fn command_kind(&mut self, verb: &Token, word: &str) -> Result<CommandKind, ParseError> {
         Ok(match word {
-            "show" => CommandKind::Show(self.optional_target()?),
+            "show" => CommandKind::Show {
+                target: self.optional_target()?,
+                context: 0,
+            },
             "outline" => CommandKind::Outline(self.optional_target()?),
             "replace" => {
                 let target = self.target()?;
@@ -391,6 +394,7 @@ fn expected(what: &'static str, token: &Token) -> ParseError {
         TokenKind::Path(_) => "a path".into(),
         TokenKind::Gt => "`>`".into(),
         TokenKind::DotDot => "`..`".into(),
+        TokenKind::Context(_) => "a context count".into(),
         TokenKind::Semicolon => "`;`".into(),
         TokenKind::Newline => "end of line".into(),
         TokenKind::Eof => "end of script".into(),
@@ -461,7 +465,10 @@ mod tests {
     fn unspan(kind: CommandKind) -> CommandKind {
         use CommandKind::*;
         match kind {
-            Show(t) => Show(t.map(unspan_target)),
+            Show { target, context } => Show {
+                target: target.map(unspan_target),
+                context,
+            },
             Outline(t) => Outline(t.map(unspan_target)),
             Replace { target, text } => Replace {
                 target: unspan_target(target),
@@ -572,11 +579,20 @@ mod tests {
 
     #[test]
     fn show_and_outline() {
-        assert_eq!(one("show"), CommandKind::Show(None));
+        assert_eq!(
+            one("show"),
+            CommandKind::Show {
+                target: None,
+                context: 0
+            }
+        );
         assert_eq!(one("outline"), CommandKind::Outline(None));
         assert_eq!(
             one("show 12-20"),
-            CommandKind::Show(Some(target(vec![lines(N(12), Some(N(20)))])))
+            CommandKind::Show {
+                target: Some(target(vec![lines(N(12), Some(N(20)))])),
+                context: 0,
+            }
         );
         assert_eq!(
             one("outline impl:Parser"),
@@ -725,7 +741,10 @@ mod tests {
 
     #[test]
     fn nested_selectors_and_parts() {
-        let show = |steps| CommandKind::Show(Some(target(steps)));
+        let show = |steps| CommandKind::Show {
+            target: Some(target(steps)),
+            context: 0,
+        };
         assert_eq!(
             one("show impl:Parser.body>fn:new.sig"),
             show(vec![
@@ -759,7 +778,10 @@ mod tests {
 
     #[test]
     fn ranges() {
-        let show = |steps| CommandKind::Show(Some(target(steps)));
+        let show = |steps| CommandKind::Show {
+            target: Some(target(steps)),
+            context: 0,
+        };
         let range = |from: Step, to: Step| {
             step(Primary::Range {
                 from: Box::new(from.primary),
