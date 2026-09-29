@@ -27,14 +27,14 @@ first argument; write a file named `help` as `./help`.
 - Files must be UTF-8. Line endings are detected per file (LF or CRLF), and
   inserted text is converted to match.
 
-| Flag              | Effect                                                                                       |
-| ----------------- | -------------------------------------------------------------------------------------------- |
-| `-n`, `--dry-run` | Resolve and apply edits in memory, print the output, write nothing.                          |
-| `-q`, `--quiet`   | Print only the per-file summary lines on success (§6.3).                                     |
-| `--force`         | Skip the parse-error guard (§4.3).                                                           |
-| `--no-fmt`        | Don't run formatters (§6.4).                                                                 |
-| `--lang LANG`     | Use this language for every file: `rust`, `python`, `typescript`, `tsx`, `javascript`, `go`. |
-| `--context N`     | Context lines around diff hunks (default 1).                                                 |
+| Flag              | Effect                                                                                                   |
+| ----------------- | -------------------------------------------------------------------------------------------------------- |
+| `-n`, `--dry-run` | Resolve and apply edits in memory, print the output, write nothing.                                      |
+| `-q`, `--quiet`   | Print only the per-file summary lines on success (§6.3).                                                 |
+| `--force`         | Skip the parse-error guard (§4.3).                                                                       |
+| `--no-fmt`        | Don't run formatters (§6.4).                                                                             |
+| `--lang LANG`     | Use this language for every file: `rust`, `python`, `typescript`, `tsx`, `javascript`, `go`, `markdown`. |
+| `--context N`     | Context lines around diff hunks (default 1).                                                             |
 
 Otherwise, a file's language is detected from its extension, then from its
 shebang. Line, regex and literal selectors work on any file; syntax selectors
@@ -198,22 +198,26 @@ characters, such as `.` or `-`, must be quoted: `import:"os.path"`.
 
 Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 
-| Kind        | Items                                                        |
-| ----------- | ------------------------------------------------------------ |
-| `fn`        | functions and methods                                        |
-| `class`     | classes                                                      |
-| `struct`    | structs                                                      |
-| `enum`      | enums                                                        |
-| `variant`   | enum variants                                                |
-| `trait`     | traits                                                       |
-| `interface` | interfaces                                                   |
-| `impl`      | impl blocks (name = self type, e.g. `impl:Parser`)           |
-| `type`      | type aliases and declarations                                |
-| `const`     | constants and statics                                        |
-| `var`       | module-level variables and `let`/`var` bindings              |
-| `field`     | struct and class fields                                      |
-| `mod`       | modules and namespaces                                       |
-| `import`    | imports (name = the path as written, e.g. `import:std::fmt`) |
+| Kind        | Items                                                                  |
+| ----------- | ---------------------------------------------------------------------- |
+| `fn`        | functions and methods                                                  |
+| `class`     | classes                                                                |
+| `struct`    | structs                                                                |
+| `enum`      | enums                                                                  |
+| `variant`   | enum variants                                                          |
+| `trait`     | traits                                                                 |
+| `interface` | interfaces                                                             |
+| `impl`      | impl blocks (name = self type, e.g. `impl:Parser`)                     |
+| `type`      | type aliases and declarations                                          |
+| `const`     | constants and statics                                                  |
+| `var`       | module-level variables and `let`/`var` bindings                        |
+| `field`     | struct and class fields                                                |
+| `mod`       | modules and namespaces                                                 |
+| `import`    | imports (name = the path as written, e.g. `import:std::fmt`)           |
+| `section`   | Markdown sections: a heading and its content (name = the heading text) |
+| `item`      | Markdown list items (name = the first line of the item's text)         |
+| `table`     | Markdown tables (name = the first header cell)                         |
+| `code`      | Markdown code blocks (name = the info string, or `""` if none)         |
 
 - Using a kind the file's language doesn't support is an error that lists the
   kinds it does support.
@@ -437,8 +441,9 @@ straight back. The line range covers the item's default span.
 
 - Imports collapse into one line: `1-3 import (3)`.
 - Items inside function bodies are omitted.
-- `field` and `variant` items are listed only when `outline SEL` targets their
-  parent.
+- `field` and `variant` items, and Markdown `item`, `table` and `code` items,
+  are listed only when `outline SEL` targets their parent. In Markdown, the
+  outline is the tree of sections.
 - `outline SEL` lists the items strictly inside each span of `SEL`, starting
   at the left margin, under one header per file.
 - Like syntax steps, `outline` skips files without a language, and is an error
@@ -524,6 +529,7 @@ python = false
 | go                          | `gofmt`                                                                                                   |
 | python                      | `ruff format --stdin-filename {path} -`, or if ruff isn't installed, `black -q --stdin-filename {path} -` |
 | typescript, tsx, javascript | `prettier --stdin-filepath {path}`                                                                        |
+| markdown                    | `prettier --stdin-filepath {path}`                                                                        |
 
 ## 7. Errors and exit codes
 
