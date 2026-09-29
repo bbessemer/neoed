@@ -258,6 +258,9 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
   Error messages list the candidates in exactly these forms (§7): nested in the
   match's nearest enclosing item if that's unique among the matches, otherwise
   scoped by file if that's unique, otherwise by lines.
+- When the last step is a syntax step with a `*` in its name, each candidate
+  names its item instead (`fn:test_*` lists `fn:test_parse`), and is scoped as
+  above only among the matches with the same name.
 
 ### 3.6 Raw query
 
@@ -314,8 +317,9 @@ Notes:
   it moves `before` or `after` a whole-line destination, one blank line
   separates it from the destination.
 - **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
-  lines in a row, or leaves a blank line right after an opening delimiter or
-  right before a closing one, one blank line is removed.
+  lines in a row, a blank line right after an opening delimiter or right before
+  a closing one, or a blank line at the start or end of the file, one blank
+  line is removed.
 - Text that `replace`, `insert` or `move` puts into an empty `.body` is always
   line-oriented, re-based to the enclosing item's indentation plus one indent
   unit (§5.2). An empty single-line body such as `fn f() {}` is opened onto
