@@ -310,3 +310,25 @@ fn workspace_mode_is_checked_by_the_workspace_daemon() {
     );
     assert_eq!(ws.read("a.rs"), CLEAN);
 }
+
+#[test]
+fn rename_spawns_the_daemon_and_stays_inside_the_file_set_or_workspace() {
+    let ws = Workspace::new("");
+    ws.write("a.rs", "// done\nfn foo() {}\n");
+    ws.write("b.rs", "fn g() { foo(); }\n");
+    ws.write("c.rs", "fn h() { foo(); }\n");
+    let out = ws.ned(&["a.rs", "b.rs", "-e", "rename fn:foo to bar"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert_eq!(
+        text(&out.stderr),
+        "error: script:1:1: rename edits files outside the file set: c.rs; add them to the file set, or use -w\n"
+    );
+    let out = ws.ned(&["-w", "-e", "rename fn:foo to bar"]);
+    assert!(out.status.success(), "{out:?}");
+    let stdout = text(&out.stdout);
+    for summary in ["a.rs: 1 edit", "b.rs: 1 edit", "c.rs: 1 edit"] {
+        assert!(stdout.contains(summary), "{stdout}");
+    }
+    assert_eq!(ws.read("a.rs"), "// done\nfn bar() {}\n");
+    assert_eq!(ws.read("c.rs"), "fn h() { bar(); }\n");
+}

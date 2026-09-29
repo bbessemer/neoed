@@ -119,7 +119,8 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       edits while a daemon runs)
 - [ ] Diagnostics that only `cargo check` reports (rust-analyzer flycheck on
       save), e.g. unresolved names, for automatic checking and `check`
-- [ ] `rename` verb (workspace-wide) and `refs:` / `def:` selectors
+- [x] `rename` verb (within the file set, or the workspace with `-w`)
+- [ ] `.refs` / `.def` parts (replacing the reserved `refs:` / `def:`)
 - [ ] LSP formatting fallback when no external formatter is configured
 
 ## 10. REPL

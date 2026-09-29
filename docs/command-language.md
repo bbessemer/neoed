@@ -79,7 +79,7 @@ same files, merging and program lookup, read from the workspace root up. A value
 is a command as an argv array, or `false` for none. `[daemon]` sets
 `idle_timeout`, in seconds. `[check]` sets `show`, the lowest severity `check`
 prints by default (`error`, `warning`, `info` or `hint`; default `warning`),
-and `timeout`, how long `check` waits for a server's diagnostics, in seconds
+and `timeout`, how long `check` and `rename` wait for a server, in seconds
 (default 30). `block` is the lowest severity of an introduced diagnostic that
 rejects an edit (§6.5; default `error`), or `false` for none.
 
@@ -157,7 +157,7 @@ sub        = "sub" [ target ] regex "with" text ;
 move       = "move" target position selector ;
 file       = "file" path { path } ;
 create     = "create" path text ;
-rename     = "rename" target "to" name ;            (* reserved *)
+rename     = "rename" selector "to" name ;
 check      = "check" [ target ] [ level ] ;
 level      = "error" | "warning" | "info" | "hint" ;
 allow      = "allow" ( "errors" | "warnings" ) ;
@@ -435,6 +435,7 @@ reserved for the LSP milestone.
 | `sub [SEL] /re/ with TEXT`                | Replaces every match of `re` inside each span of `SEL` (default: each whole file in the set). `$1`, `${name}` and `$0` expand to captures; `$$` is a literal `$`. Zero matches in total is an error. |
 | `move SEL before\|after\|start\|end DEST` | Deletes each span of `SEL` and inserts its text at `DEST`, which must resolve to one span. The destination may be in another file in the set. Moved text is re-based.                                |
 | `create PATH TEXT`                        | Creates `PATH` holding `TEXT` (line-oriented, re-based to column 0) as if it had existed when the script started: it joins the file set and later commands can edit it. `PATH` must not exist.       |
+| `rename SEL to NAME`                      | Renames the symbol at `SEL`, which must resolve to one span, wherever the language server finds it (below).                                                                                          |
 
 Notes:
 
@@ -465,7 +466,20 @@ Notes:
   unit (§5.2). An empty single-line body such as `fn f() {}` is opened onto
   separate lines.
 
-_(reserved)_ `rename SEL to NAME` does a workspace-wide rename via LSP.
+`rename SEL to NAME` asks the language server (§1.1) to rename the symbol at
+the start of `SEL`'s `.name` (for a syntax item) or of its span, and applies the
+edits it returns like any other edit: under snapshot semantics (§2.3), together
+with the script's other edits, then formatted and checked (§6.5). Each edit the
+server makes counts as one. The edits may reach only the file set, or with
+`-w` any workspace file, which then joins it; an edit to any other file, or a
+rename that would create, rename or delete files, rejects the script.
+`rename` spawns the daemon if need be, and waits up to `[check] timeout` for
+the server to be ready.
+
+```
+rename fn:parse to parse_all
+rename impl:Parser>fn:new>"tokens" to toks
+```
 
 ### 4.3 Parse-error guard
 
@@ -692,6 +706,8 @@ Errors go to stderr, in the form `error: LOC: message`.
 | Line past the end                       | `$` for the last line                                                                                                                                    |
 | No language server for the files        | The `[lsp]` setting for their language                                                                                                                   |
 | Language server failure                 | Installing the server or fixing its `[lsp]` setting, or rerunning once it has indexed                                                                    |
+| Server can't rename there               | Selecting the name itself                                                                                                                                |
+| Rename edits a file outside the set     | `-w`, or `sub` for files outside the workspace                                                                                                           |
 | File not in the set                     | The `file` command that adds it                                                                                                                          |
 | Unsupported in a language               | Selectors that work there                                                                                                                                |
 | Overlapping edits                       | Merging them, or a second invocation                                                                                                                     |
@@ -715,12 +731,12 @@ error: script:2:28: unterminated heredoc <<END (started here); end it with a lin
                              ^
 ```
 
-| Code | Meaning                                                                                                                                                |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 0    | Success, including dry runs and skipped formatters                                                                                                     |
-| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unsupported kind, parse-error guard, introduced diagnostics, move into its own source |
-| 2    | Usage error (bad flags or arguments), script syntax error, invalid query or config, reserved feature, or no language server                            |
-| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, write failure, or language server failure                                               |
+| Code | Meaning                                                                                                                                                                                   |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Success, including dry runs and skipped formatters                                                                                                                                        |
+| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unsupported kind, parse-error guard, introduced diagnostics, move into its own source, rename refused or outside the set |
+| 2    | Usage error (bad flags or arguments), script syntax error, invalid query or config, reserved feature, or no language server                                                               |
+| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, write failure, or language server failure                                                                                  |
 
 On any non-zero exit, no file is modified. Reads that ran before the failure
 still print their output.
@@ -872,4 +888,5 @@ ned src/*.rs -e 'sub /\bold_name\b/ with "new_name"'
 
 sed is competitive here, but needs BSD `[[:<:]]` word boundaries on macOS and
 reports nothing. ned prints a per-file diff, and exits 1 if nothing matched.
-Once the LSP milestone lands, `rename` will do this semantically.
+With a language server, `rename fn:old_name to new_name` does it semantically,
+skipping comments, strings and unrelated names.

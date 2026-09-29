@@ -146,6 +146,21 @@ impl Buffer {
         offset
     }
 
+    /// The LSP position of a byte offset: a 0-based line, and UTF-16 code units
+    /// into it.
+    pub fn lsp_position(&self, offset: usize) -> (u32, u32) {
+        let offset = offset.min(self.len_bytes());
+        let line = self.rope.byte_to_line(offset);
+        let start = self.rope.line_to_byte(line);
+        let units: usize = self
+            .rope
+            .byte_slice(start..offset)
+            .chars()
+            .map(char::len_utf16)
+            .sum();
+        (line as u32, units as u32)
+    }
+
     pub fn slice(&self, range: Range<usize>) -> Result<String, BufferError> {
         self.check_range(&range)?;
         Ok(self.rope.byte_slice(range).to_string())
@@ -350,6 +365,21 @@ mod tests {
         assert_eq!(buffer.lsp_offset(1, 1), 5);
         assert_eq!(buffer.lsp_offset(1, 3), 9);
         assert_eq!(buffer.lsp_offset(2, 4), 16);
+    }
+
+    #[test]
+    fn lsp_positions_invert_lsp_offsets() {
+        let buffer = Buffer::new("ab\né😀x\r\nlast");
+        for (offset, position) in [
+            (0, (0, 0)),
+            (2, (0, 2)),
+            (5, (1, 1)),
+            (9, (1, 3)),
+            (16, (2, 4)),
+        ] {
+            assert_eq!(buffer.lsp_position(offset), position, "{offset}");
+        }
+        assert_eq!(buffer.lsp_position(buffer.len_bytes()), (2, 4));
     }
 
     #[test]

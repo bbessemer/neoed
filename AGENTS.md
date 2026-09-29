@@ -144,9 +144,9 @@ daemon (socket, lock, lazy spawn, idle exit) behind `ned daemon`, and starts
 language servers (`lsp`, `servers`; `[lsp]` config in `ned-core`) for `open`
 requests and diagnostics, through the `Lsp` trait in `ned-core`: `check [SEL]
 [LEVEL]`, and edits checked while a daemon runs (introduced errors block
-unless `allow errors`); the version names the build commit, and a daemon serves
-only its own build. Next (§9): `rename`/`refs:`/`def:`, the formatting
-fallback.
+unless `allow errors`), and `rename` (`textDocument/rename`, within the file set
+or `-w` workspace); the version names the build commit, and a daemon serves
+only its own build. Next (§9): `.refs`/`.def`, the formatting fallback.
 
 ## Key Documentation
 
@@ -180,7 +180,7 @@ fallback.
 Cargo.toml         workspace; shared version, edition, lints
 crates/ned-core/   library: buffer, script parser, selectors, languages, exec, formatting
 crates/ned-cli/    `ned` binary: args, I/O, output rendering only
-crates/ned-daemon/ per-workspace daemon (Unix socket) and its sync client; LSP later
+crates/ned-daemon/ per-workspace daemon (Unix socket), its sync client, language servers
 queries/<lang>/    tree-sitter selector queries (.scm), one dir per language
 docs/              specs, agent guide, Claude Code skill
 bench/             token-cost benchmark (uv project; cases/ back spec §8's table)

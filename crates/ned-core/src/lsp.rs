@@ -74,6 +74,33 @@ pub struct Checked {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LspFailure(pub String);
 
+/// A replacement of the text between two positions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextEdit {
+    pub start: Position,
+    pub end: Position,
+    pub text: String,
+}
+
+/// A server's edits to one file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileEdits {
+    /// Absolute.
+    pub path: PathBuf,
+    pub edits: Vec<TextEdit>,
+}
+
+/// A server's answer to a rename.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Renamed {
+    Edits(Vec<FileEdits>),
+    /// Why the server can't rename there; the message ends with a fix.
+    Refused(String),
+    /// The document's language has no server.
+    NoServer,
+}
+
 /// What `ned` asks of the workspace's language servers.
 pub trait Lsp {
     /// Diagnostics for each of `documents`, as their text stands.
@@ -81,6 +108,14 @@ pub trait Lsp {
 
     /// Brings the servers' copies of `documents` up to date.
     fn sync(&mut self, documents: &[Document]) -> Result<(), LspFailure>;
+
+    /// The edits that rename the symbol at `position` in `document` to `name`.
+    fn rename(
+        &mut self,
+        document: &Document,
+        position: Position,
+        name: &str,
+    ) -> Result<Renamed, LspFailure>;
 }
 
 /// `after`'s diagnostics that `before` has no identical one left to match:
@@ -491,6 +526,10 @@ mod tests {
 
         fn sync(&mut self, _: &[Document]) -> Result<(), LspFailure> {
             unreachable!("check_changes doesn't sync")
+        }
+
+        fn rename(&mut self, _: &Document, _: Position, _: &str) -> Result<Renamed, LspFailure> {
+            unreachable!("not renamed in these tests")
         }
     }
 

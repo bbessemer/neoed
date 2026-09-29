@@ -63,6 +63,11 @@ pub enum CommandKind {
     /// severe level an introduced diagnostic may have without rejecting the
     /// edits.
     Allow(Severity),
+    /// `rename SEL to NAME`, via the language server.
+    Rename {
+        selector: Selector,
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

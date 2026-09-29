@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ned_core::lsp::{Diagnosis, Document, Lsp, LspFailure};
+use ned_core::lsp::{Diagnosis, Document, Lsp, LspFailure, Position, Renamed};
 use thiserror::Error;
 
 use crate::paths::{Paths, runtime_dir};
@@ -87,7 +87,9 @@ impl Client {
         let mut stream = UnixStream::connect(&self.paths.socket)?;
         let timeout = match request {
             Request::Status | Request::Stop => REPLY_TIMEOUT,
-            Request::Open { .. } | Request::Diagnose { .. } => SERVER_REPLY_TIMEOUT,
+            Request::Open { .. } | Request::Diagnose { .. } | Request::Rename { .. } => {
+                SERVER_REPLY_TIMEOUT
+            }
         };
         stream.set_read_timeout(Some(timeout))?;
         let mut line = serde_json::to_string(request).expect("requests serialize");
@@ -167,6 +169,25 @@ impl Lsp for Workspace {
         let documents = documents.to_vec();
         match self.request(&Request::Open { documents })? {
             Response::Opened => Ok(()),
+            other => Err(LspFailure(
+                ClientError::Protocol(format!("{other:?}")).to_string(),
+            )),
+        }
+    }
+
+    fn rename(
+        &mut self,
+        document: &Document,
+        position: Position,
+        name: &str,
+    ) -> Result<Renamed, LspFailure> {
+        let request = Request::Rename {
+            document: document.clone(),
+            position,
+            name: name.into(),
+        };
+        match self.request(&request)? {
+            Response::Renamed(renamed) => Ok(renamed),
             other => Err(LspFailure(
                 ClientError::Protocol(format!("{other:?}")).to_string(),
             )),

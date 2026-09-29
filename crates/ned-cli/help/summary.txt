@@ -14,6 +14,7 @@ Commands, separated by newlines or `;`:
   delete SEL
   sub [SEL] /re/ with TEXT      regex replace inside SEL; $1 ${name} $0
   move SEL before|after|start|end DEST
+  rename SEL to NAME            rename a symbol everywhere, via its language server
   file PATH...                  set the files later commands act on; globs ok
   create PATH TEXT              make a new file; later commands can edit it
 
@@ -44,5 +45,5 @@ Examples:
     }
     END
 
-Topics: show outline check allow replace insert delete sub move file create
-selectors text config
+Topics: show outline check allow replace insert delete sub move rename file
+create selectors text config

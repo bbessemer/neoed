@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use ned_core::config::Config;
 use std::time::Duration;
 
-use ned_core::lsp::{Diagnosis, Severity};
+use ned_core::lsp::{Diagnosis, Position, Renamed, Severity};
 
 use crate::lsp::{LspError, Server};
 use crate::protocol::{Document, ServerStatus};
@@ -86,6 +86,31 @@ impl Servers {
                 .unwrap_or(Some(Severity::Error)),
             files,
         })
+    }
+
+    /// `open`s the document, brings its server's other documents up to date
+    /// with the disk, and renames the symbol at `position` to `name`.
+    pub async fn rename(
+        &mut self,
+        document: &Document,
+        position: Position,
+        name: &str,
+    ) -> Result<Renamed, ServersError> {
+        self.open(std::slice::from_ref(document)).await?;
+        let mut config = Config::new(self.user_config.as_deref())?;
+        let Some(command) = config.server(&self.root, document.lang)? else {
+            return Ok(Renamed::NoServer);
+        };
+        let timeout = config.check_timeout(&self.root)?.unwrap_or(DEFAULT_TIMEOUT);
+        let server = self.servers.get_mut(&command).expect("opened above");
+        server.refresh(&document.path);
+        let timeout = Duration::from_secs(timeout);
+        // Servers such as pyright give no sign of loading the workspace, but
+        // diagnose a document only once they have.
+        server.diagnostics(&document.path, timeout).await?;
+        Ok(server
+            .rename(&document.path, position, name, timeout)
+            .await?)
     }
 
     pub fn status(&self) -> Vec<ServerStatus> {

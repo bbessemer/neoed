@@ -86,7 +86,14 @@ END
 insert after struct:Lexer "impl Lexer {}"
 ```
 
-Rename across files with a word-bounded regex:
+Rename a symbol everywhere it's used with `rename`, which asks the language
+server. Pass `-w` so it can reach every file in the workspace:
+
+```ned
+rename impl:Parser>fn:new to create
+```
+
+Without a language server, rename with a word-bounded regex:
 
 ```ned
 file src/**/*.rs
@@ -139,7 +146,9 @@ END
   select whole lines with `.lines`.
 - **Partial matches get verbatim text.** `insert after /re/` inserts right
   after the match, even mid-line, and `insert end /re/` or `"a".."b"` does the
-  same at the span's end; add `.lines` to insert after the whole line.
+  same at the span's end; add `.lines` to insert after the whole line. A
+  heredoc's final newline is dropped there, so a blank line ending it vanishes;
+  target the item itself (`insert before fn:x`) instead.
 - **`..` binds tighter than `>`.** `fn:f>"a".."b"` is a range inside `fn:f`;
   `fn:f>"a"..fn:f>"b"` nests the range's end into another step and matches
   nothing.

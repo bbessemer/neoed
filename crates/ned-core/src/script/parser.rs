@@ -127,14 +127,7 @@ impl Parser<'_> {
             },
             "check" => self.check()?,
             "allow" => self.allow()?,
-            "rename" => {
-                let instead = r#"use sub /\bOLD\b/ with "NEW" over the files"#;
-                let reserved = E::Reserved {
-                    what: word.into(),
-                    instead,
-                };
-                return Err(ParseError::new(reserved, verb.span.clone()));
-            }
+            "rename" => self.rename()?,
             _ => {
                 return Err(ParseError::new(
                     E::UnknownCommand(word.into()),
@@ -183,6 +176,21 @@ impl Parser<'_> {
             TokenKind::Word(w) if w == "warnings" => Ok(CommandKind::Allow(Severity::Warning)),
             _ => Err(expected("`errors` or `warnings`", &token)),
         }
+    }
+
+    /// After `rename`: `SEL to NAME`.
+    fn rename(&mut self) -> Result<CommandKind, ParseError> {
+        let selector = self.dest()?;
+        let to = self.bump()?;
+        if !matches!(&to.kind, TokenKind::Word(w) if w == "to") {
+            return Err(expected("`to`", &to));
+        }
+        let token = self.bump()?;
+        let name = match token.kind {
+            TokenKind::Word(name) | TokenKind::Str(name) => name,
+            _ => return Err(expected("a name", &token)),
+        };
+        Ok(CommandKind::Rename { selector, name })
     }
 
     fn target(&mut self) -> Result<Target, ParseError> {
@@ -438,6 +446,7 @@ pub fn usage(verb: &str) -> Option<&'static str> {
         "create" => "create PATH TEXT",
         "check" => "check [SEL] [LEVEL]",
         "allow" => "allow errors|warnings",
+        "rename" => "rename SEL to NAME",
         _ => return None,
     })
 }
@@ -569,6 +578,10 @@ mod tests {
             Check { target, level } => Check {
                 target: target.map(unspan_target),
                 level,
+            },
+            Rename { selector, name } => Rename {
+                selector: unspan_selector(selector),
+                name,
             },
         }
     }
@@ -796,6 +809,33 @@ mod tests {
     }
 
     #[test]
+    fn rename_command() {
+        assert_eq!(
+            one("rename impl:P>fn:new to create"),
+            CommandKind::Rename {
+                selector: selector(vec![syntax("impl", "P"), syntax("fn", "new")]),
+                name: "create".into(),
+            }
+        );
+        assert_eq!(
+            one(r#"rename "old" to "r#type""#),
+            CommandKind::Rename {
+                selector: selector(vec![literal("old")]),
+                name: "r#type".into(),
+            }
+        );
+        assert_eq!(
+            message("rename fn:x y"),
+            "expected `to`, found `y`; usage: rename SEL to NAME"
+        );
+        assert_eq!(
+            message("rename fn:x to"),
+            "expected a name, found end of script; usage: rename SEL to NAME"
+        );
+        assert_eq!(error("rename all fn:x to y").kind, E::AllNotAllowed);
+    }
+
+    #[test]
     fn file_command() {
         assert_eq!(
             commands(r#"file src/*.rs "my file.rs"; delete 1"#),
@@ -999,10 +1039,6 @@ mod tests {
             (e.kind, e.span),
             (E::UnknownCommand("frobnicate".into()), 0..10)
         );
-        assert!(
-            matches!(error("rename fn:x to y").kind, E::Reserved { what, .. } if what == "rename")
-        );
-
         assert!(matches!(error("show refs:foo").kind, E::Reserved { what, .. } if what == "refs:"));
         assert!(matches!(error("show def:foo").kind, E::Reserved { what, .. } if what == "def:"));
         assert!(matches!(
@@ -1109,7 +1145,7 @@ mod tests {
         assert_eq!(
             message(r#""x""#),
             "expected a command, found a string; \
-             commands are show outline check replace insert delete sub move file create allow"
+             commands are show outline check replace insert delete sub move rename file create allow"
         );
     }
 
@@ -1155,11 +1191,6 @@ mod tests {
 
     #[test]
     fn reserved_features_name_what_to_use_instead() {
-        assert_eq!(
-            message("rename fn:x to y"),
-            r#"`rename` is not yet supported; use sub /\bOLD\b/ with "NEW" over the files"#
-        );
-
         assert_eq!(
             message("show refs:foo"),
             "`refs:` is not yet supported; select uses with a /regex/"
