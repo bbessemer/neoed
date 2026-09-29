@@ -114,6 +114,9 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       and moves), while `;` and newlines keep snapshot semantics (§2.3). The
       script stays one transaction. It avoids a second ned call for, e.g.,
       `create`, `move` or `rename` followed by an edit that selects the result
+- [ ] A FILE argument that doesn't exist but names a verb, as in
+      `ned outline src/a.rs`, is an error suggesting
+      `ned src/a.rs -e outline`, instead of waiting for a script on stdin
 
 ## 9. LSP daemon _(split)_
 
