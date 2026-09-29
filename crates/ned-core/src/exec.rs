@@ -184,7 +184,9 @@ impl Executor<'_> {
                 text,
             } => {
                 for m in self.resolve(&implied_body(target, *position))? {
-                    let (range, new) = insert(&self.files[m.file].file, m.range, *position, text);
+                    let f = &self.files[m.file].file;
+                    let text = separated(f, target, *position, &m.range, text);
+                    let (range, new) = insert(f, m.range, *position, &text);
                     self.push(index, span, m.file, range, new)?;
                 }
             }
@@ -679,6 +681,39 @@ fn with_trailing_comma<'t>(f: &SourceFile, range: &Range<usize>, new: &'t Text) 
     })
 }
 
+/// `new`, with a blank line separating it from the syntax item at `range`
+/// when inserting before or after an item that has one (§4.2).
+fn separated<'t>(
+    f: &SourceFile,
+    target: &Target,
+    position: Position,
+    range: &Range<usize>,
+    new: &'t Text,
+) -> Cow<'t, Text> {
+    let item = matches!(
+        target.selector.steps.last(),
+        Some(Step { primary: Primary::Syntax { kind, .. }, parts }) if parts.is_empty() && kind != "import"
+    );
+    let t = &f.text;
+    if !item
+        || !text::is_whole_line(t, range)
+        || !text::blank_separated(t, text::full_lines(t, range.clone()))
+    {
+        return Cow::Borrowed(new);
+    }
+    let blank = |line: Option<&str>| line.is_some_and(|l| l.trim().is_empty());
+    let mut value = new.value.clone();
+    match position {
+        Position::After if !blank(new.value.split('\n').next()) => value.insert(0, '\n'),
+        Position::Before if !blank(new.value.split('\n').next_back()) => value.push('\n'),
+        _ => return Cow::Borrowed(new),
+    }
+    Cow::Owned(Text {
+        value,
+        kind: new.kind,
+    })
+}
+
 /// The text `move` carries from `range`: its full lines, to be re-based, if
 /// it's whole-line, else the span verbatim. The flag says whether a blank line
 /// was directly above or below those full lines.
@@ -699,16 +734,12 @@ fn moved_text(f: &SourceFile, range: &Range<usize>) -> (Text, bool) {
     if value.ends_with('\n') {
         value.pop();
     }
-    let above = t[..full.start].strip_suffix('\n').and_then(|before| {
-        let line = &before[before.rfind('\n').map_or(0, |i| i + 1)..];
-        line.trim().is_empty().then_some(())
-    });
-    let below = t[full.end..].lines().next().filter(|l| l.trim().is_empty());
+
     let text = Text {
         value,
         kind: TextKind::Heredoc,
     };
-    (text, above.is_some() || below.is_some())
+    (text, text::blank_separated(t, full))
 }
 
 /// The span and text of an insertion at `position` of `range` (§4.2, §5):
@@ -1769,7 +1800,7 @@ fn main() {}
         );
         assert_eq!(
             edited(ITEMS, "insert after fn:main \"fn b() {}\""),
-            format!("{ITEMS}fn b() {{}}\n")
+            format!("{ITEMS}\nfn b() {{}}\n")
         );
     }
 
