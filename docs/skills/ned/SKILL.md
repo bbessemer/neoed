@@ -31,6 +31,8 @@ Add `-n` to preview without writing.
 1. `outline` to find the item. Each line is a selector you can paste back.
 2. `show SEL` to read only what you need, with line numbers.
 3. Edit in one script, then read the diff that ned prints.
+4. `check` (or `check SEL`, `check SEL hint`) to see the language server's
+   errors and warnings, instead of running the build.
 
 ```ned
 outline
