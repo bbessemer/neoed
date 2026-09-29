@@ -1,3 +1,4 @@
+mod daemon;
 mod help;
 
 use std::io::{self, Read};
@@ -19,7 +20,7 @@ use ned_core::{fs, script};
     args_conflicts_with_subcommands = true,
     disable_help_subcommand = true,
     // clap leaves a user-defined `help` subcommand out of the usage.
-    override_usage = "ned [OPTIONS] [FILES]... [-e SCRIPT]...\n       ned help [TOPIC]    (the command language)"
+    override_usage = "ned [OPTIONS] [FILES]... [-e SCRIPT]...\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -56,13 +57,22 @@ struct Cli {
 enum Command {
     /// Print a summary of the command language, or details of one topic.
     Help { topic: Option<help::Topic> },
+    /// Manage the language-server daemon for the workspace containing DIR.
+    Daemon {
+        #[command(subcommand)]
+        action: daemon::Action,
+    },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    if let Some(Command::Help { topic }) = cli.command {
-        print!("{}", help::text(topic));
-        return ExitCode::SUCCESS;
+    match cli.command {
+        Some(Command::Help { topic }) => {
+            print!("{}", help::text(topic));
+            return ExitCode::SUCCESS;
+        }
+        Some(Command::Daemon { action }) => return daemon::run(action),
+        None => {}
     }
     let src = if cli.scripts.is_empty() {
         let mut src = String::new();
