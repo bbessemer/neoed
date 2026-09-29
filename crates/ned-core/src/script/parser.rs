@@ -120,6 +120,10 @@ impl Parser<'_> {
                 dest: self.dest()?,
             },
             "file" => CommandKind::File(self.paths()?),
+            "create" => CommandKind::Create {
+                path: self.path()?,
+                text: self.text()?,
+            },
             "rename" | "check" => {
                 let instead = if word == "rename" {
                     r#"use sub /\bOLD\b/ with "NEW" over the files"#
@@ -298,6 +302,20 @@ impl Parser<'_> {
         }
         Ok(paths)
     }
+
+    fn path(&mut self) -> Result<String, ParseError> {
+        match self.lexer.path()? {
+            Some(Token {
+                kind: TokenKind::Path(path),
+                span,
+                ..
+            }) => {
+                self.last_end = span.end;
+                Ok(path)
+            }
+            _ => Err(expected("a path", self.peek()?)),
+        }
+    }
 }
 
 fn primary(token: Token) -> Result<Primary, ParseError> {
@@ -384,6 +402,7 @@ pub fn usage(verb: &str) -> Option<&'static str> {
         "sub" => "sub [[all] SEL] /re/ with TEXT",
         "move" => "move [all] SEL before|after|start|end DEST",
         "file" => "file PATH...",
+        "create" => "create PATH TEXT",
         _ => return None,
     })
 }
@@ -510,6 +529,7 @@ mod tests {
                 dest: unspan_selector(dest),
             },
             File(paths) => File(paths),
+            Create { path, text } => Create { path, text },
         }
     }
 

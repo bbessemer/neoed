@@ -41,6 +41,12 @@ pub fn summary(path: &str, edits: usize, stat: DiffStat, dry_run: bool) -> Strin
     format!("{prefix}{path}: {edits} edit{plural}, {stat}")
 }
 
+/// The summary line of a file made by `create`: `PATH: created, +A`.
+pub fn created_summary(path: &str, stat: DiffStat, dry_run: bool) -> String {
+    let _ = (path, stat, dry_run);
+    String::new()
+}
+
 /// Unified-diff hunks with `@@ -a,b +c,d @@` headers and no file headers,
 /// rendered with `\n` line endings.
 pub fn hunks(old: &str, new: &str, context: usize) -> String {

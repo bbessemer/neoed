@@ -47,6 +47,11 @@ pub enum CommandKind {
     },
     /// Replaces the file set; paths may be globs.
     File(Vec<String>),
+    /// Creates a file holding the text, as if it had existed from the start.
+    Create {
+        path: String,
+        text: Text,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

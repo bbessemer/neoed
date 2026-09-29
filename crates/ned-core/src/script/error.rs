@@ -68,7 +68,7 @@ pub enum ParseErrorKind {
 }
 
 /// Every command, as error messages list them.
-pub const COMMANDS: &str = "show outline replace insert delete sub move file";
+pub const COMMANDS: &str = "show outline replace insert delete sub move file create";
 
 fn quote_hint(c: char) -> &'static str {
     match c {

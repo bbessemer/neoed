@@ -36,6 +36,8 @@ pub struct Change {
     pub new: String,
     pub edits: usize,
     pub lang: Option<Language>,
+    /// Made by `create`; `old` is empty.
+    pub created: bool,
 }
 
 /// Settings from the command line that affect a run.
@@ -95,6 +97,7 @@ impl Executor<'_> {
                 new: l.edits.apply(),
                 edits: l.edits.len(),
                 lang: l.file.lang,
+                created: false,
             })
             .collect();
         if !self.options.force {
@@ -162,6 +165,12 @@ impl Executor<'_> {
         let span = &command.span;
         let error = |kind| ExecError::new(kind, Some(span.clone()));
         match &command.kind {
+            CommandKind::Create { .. } => {
+                return Err(error(ExecErrorKind::Unsupported {
+                    what: "`create`".into(),
+                    instead: "",
+                }));
+            }
             CommandKind::File(paths) => {
                 self.set = self.open(paths, Some(span))?;
                 return Ok(());
@@ -206,7 +215,7 @@ impl Executor<'_> {
                 position,
                 dest,
             } => self.move_to(index, span, target, *position, dest)?,
-            CommandKind::File(_) => unreachable!("handled above"),
+            CommandKind::File(_) | CommandKind::Create { .. } => unreachable!("handled above"),
         }
         Ok(())
     }
@@ -877,6 +886,8 @@ pub enum ExecErrorKind {
         "move destination is inside the moved span at {location}; choose a destination outside it"
     )]
     MoveIntoSource { location: String },
+    #[error("{path} already exists; edit it with `file {path}`")]
+    FileExists { path: String },
     /// `note` is empty, or where relative paths start.
     #[error("glob `{glob}` matched nothing{note}")]
     NoGlobMatch { glob: String, note: String },

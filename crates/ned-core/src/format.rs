@@ -687,6 +687,7 @@ mod tests {
             new: new.into(),
             edits: 1,
             lang,
+            created: false,
         }
     }
 

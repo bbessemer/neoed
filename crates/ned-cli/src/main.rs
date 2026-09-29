@@ -163,7 +163,8 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::UnknownKind { .. }
         | ExecErrorKind::MissingPart { .. }
         | ExecErrorKind::PartNeedsItem { .. }
-        | ExecErrorKind::MoveIntoSource { .. } => 1,
+        | ExecErrorKind::MoveIntoSource { .. }
+        | ExecErrorKind::FileExists { .. } => 1,
         ExecErrorKind::Unsupported { .. }
         | ExecErrorKind::NoFiles
         | ExecErrorKind::InvalidQuery { .. } => 2,
