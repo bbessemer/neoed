@@ -96,17 +96,17 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] `insert before|after` with heredoc TEXT widens a partial-line target to
       its whole lines, as if `.lines` were given (string TEXT stays verbatim),
       so `insert after /re/ <<END` can't land mid-line
-- [ ] Name trait impls `TRAIT for TYPE` too: `impl:"Display for Language"`
+- [x] Name trait impls `TRAIT for TYPE` too: `impl:"Display for Language"`
       picks one impl, while `impl:Language` still matches every impl of the
       type
-- [ ] Markdown sections get a `.body`: the content after the heading line, so
+- [x] Markdown sections get a `.body`: the content after the heading line, so
       `insert start|end section:X` and `replace section:X.body` work
 - [ ] `replace ITEM with TEXT` keeps the item's attributes and doc comments
       (`#[test]`, `///`) unless TEXT starts with its own, so replacing a test
       function can't silently drop `#[test]`
 - [ ] `insert before ITEM` with TEXT that is only attributes or doc comments
       adds no separating blank line: the text attaches to the item
-- [ ] A syntax step that matches nothing suggests the same name under another
+- [x] A syntax step that matches nothing suggests the same name under another
       kind first (`struct:LspError` → "did you mean enum:LspError?"), before
       the close-name hint
 - [ ] Explicit chaining with `|`: `CMD | CMD` runs the right command against
@@ -123,10 +123,10 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] A `replace` whose TEXT starts with a copy of the line just above its
       span, or ends with a copy of the line just below, prints a note naming
       the duplicated line (the range was probably off by one)
-- [ ] A regex, literal or heredoc lies inside a whole-line parent (a syntax
+- [x] A regex, literal or heredoc lies inside a whole-line parent (a syntax
       item) if it lies within its lines, as nested line selectors do, so
       `fn:x>"    let a"` matches and `^` means a real line start (also in `sub`)
-- [ ] No-match hints for `P>"a"..P>"b"` (suggest `P>"a".."b"`) and for a string
+- [x] No-match hints for `P>"a"..P>"b"` (suggest `P>"a".."b"`) and for a string
       literal that matches as escaped source text (suggest `"\\n"` for `"\n"`)
 - [ ] Markdown list re-basing: list-item TEXT inserted, replaced or moved next
       to any line of a list item anchors to the item: re-based to its marker
