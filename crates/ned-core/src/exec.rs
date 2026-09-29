@@ -121,7 +121,9 @@ impl Executor<'_> {
         for path in paths {
             for path in expand(path, span)? {
                 let i = self.load(&path, span.cloned())?;
-                set.push(i);
+                if !set.contains(&i) {
+                    set.push(i);
+                }
             }
         }
         Ok(set)
@@ -418,8 +420,28 @@ impl Executor<'_> {
 /// step with no parts (§4.2).
 /// The files `path` names: itself, or a glob's sorted matches.
 fn expand(path: &str, span: Option<&Range<usize>>) -> Result<Vec<String>, ExecError> {
-    let _ = span;
-    Ok(vec![path.to_string()])
+    let options = glob::MatchOptions {
+        require_literal_leading_dot: true,
+        ..glob::MatchOptions::new()
+    };
+    let paths = match glob::glob_with(path, options) {
+        Ok(paths) if path.contains(['*', '?', '[']) => paths,
+        // Not a glob, or not a valid one, such as `a[.rs`: a plain path.
+        _ => return Ok(vec![path.to_string()]),
+    };
+    let mut files: Vec<String> = paths
+        .filter_map(Result::ok)
+        .filter(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    if files.is_empty() {
+        return Err(ExecError::new(
+            ExecErrorKind::NoGlobMatch(path.into()),
+            span.cloned(),
+        ));
+    }
+    files.sort();
+    Ok(files)
 }
 
 fn implied_body(target: &Target, position: Position) -> Cow<'_, Target> {
