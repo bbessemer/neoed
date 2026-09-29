@@ -56,6 +56,11 @@ impl EditSet {
         Ok(())
     }
 
+    /// Removes the edit that `command` made at `range`.
+    pub fn remove(&mut self, range: &Range<usize>, command: usize) {
+        unimplemented!("{range:?} {command}")
+    }
+
     pub fn is_empty(&self) -> bool {
         self.edits.is_empty()
     }
@@ -282,6 +287,18 @@ mod tests {
         assert_eq!(set.len(), 1);
         assert!(!set.is_empty());
         assert_eq!(set.apply(), "Xcdef");
+    }
+
+    #[test]
+    fn removed_edits_make_room() {
+        let buf = Buffer::new("abcdef");
+        let mut set = EditSet::new(&buf);
+        set.push(edit(0..2, "", 0)).unwrap();
+        set.push(edit(4..6, "", 1)).unwrap();
+        set.remove(&(0..2), 0);
+        set.push(edit(0..3, "", 2)).unwrap();
+        assert_eq!(set.len(), 2);
+        assert_eq!(set.apply(), "d");
     }
 
     #[test]

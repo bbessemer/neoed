@@ -1936,6 +1936,48 @@ mod tests {
         );
     }
 
+    const BLOCK: &str = "mod t {\n    fn x() {}\n\n    fn a() {}\n\n    fn b() {}\n}\n";
+
+    #[test]
+    fn deleting_neighbours_merges_their_blank_lines() {
+        assert_eq!(
+            edited(BLOCK, "delete fn:a; delete fn:b"),
+            "mod t {\n    fn x() {}\n}\n"
+        );
+        assert_eq!(
+            edited(BLOCK, "delete fn:x; delete fn:a"),
+            "mod t {\n    fn b() {}\n}\n"
+        );
+        assert_eq!(
+            edited(BLOCK, "delete fn:b; delete fn:x"),
+            "mod t {\n    fn a() {}\n}\n"
+        );
+        assert_eq!(edited(BLOCK, "delete all mod:t>fn:*"), "mod t {\n}\n");
+        let four = BLOCK.replace("fn b() {}\n", "fn b() {}\n\n    fn c() {}\n");
+        assert_eq!(
+            edited(&four, "delete fn:a; delete fn:b"),
+            "mod t {\n    fn x() {}\n\n    fn c() {}\n}\n"
+        );
+    }
+
+    #[test]
+    fn moving_neighbours_out_merges_their_blank_lines() {
+        let text = "mod t {\n    fn a() {}\n\n    fn b() {}\n}\n\nfn z() {}\n";
+        assert_eq!(
+            edited(text, "move fn:a after fn:z; move fn:b after fn:z"),
+            "mod t {\n}\n\nfn z() {}\n\nfn a() {}\n\nfn b() {}\n"
+        );
+    }
+
+    #[test]
+    fn deleting_the_same_lines_twice_still_overlaps() {
+        assert!(
+            exec(BLOCK, "delete fn:a; delete fn:a")
+                .error()
+                .contains("edit overlaps command 1"),
+        );
+    }
+
     #[test]
     fn delete_partial_span() {
         assert_eq!(edited(TEXT, "delete \" = 2\""), TEXT.replace(" = 2", ""));
