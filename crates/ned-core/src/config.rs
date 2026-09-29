@@ -96,8 +96,11 @@ impl Config {
 
     /// `[daemon] idle_timeout` for a daemon in `dir`, in seconds.
     pub fn idle_timeout(&mut self, dir: &Path) -> Result<Option<u64>, ConfigError> {
-        let _ = dir;
-        todo!()
+        let dir = std::path::absolute(dir).map_err(|err| io_error(dir, &err))?;
+        Ok(self
+            .layers(&dir)?
+            .into_iter()
+            .find_map(|layer| layer.idle_timeout))
     }
 }
 

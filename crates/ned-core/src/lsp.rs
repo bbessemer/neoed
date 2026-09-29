@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::config::{Config, ConfigError};
+use crate::config::{Config, ConfigError, Entry, program};
 use crate::lang::Language;
 
 impl Config {
@@ -13,15 +13,45 @@ impl Config {
         root: &Path,
         lang: Language,
     ) -> Result<Option<Vec<String>>, ConfigError> {
-        let _ = (root, lang);
-        todo!()
+        let configured = self.layers(root)?.into_iter().find_map(|layer| {
+            let command = match layer.lsp.get(&lang)? {
+                Entry::Command(command) => Some(command.clone()),
+                Entry::Off => None,
+            };
+            Some((command, layer.dir.clone()))
+        });
+        let (command, base) = match configured {
+            Some((command, base)) => (command, Some(base)),
+            None => (
+                default_server(lang).map(|c| c.iter().map(|w| w.to_string()).collect()),
+                None,
+            ),
+        };
+        Ok(command.map(|mut command: Vec<String>| {
+            command[0] = program(&command[0], base.as_deref(), root);
+            command
+        }))
+    }
+}
+
+fn default_server(lang: Language) -> Option<&'static [&'static str]> {
+    match lang {
+        Language::Rust => Some(&["rust-analyzer"]),
+        Language::Go => Some(&["gopls"]),
+        Language::Python => Some(&["pyright-langserver", "--stdio"]),
+        Language::TypeScript | Language::Tsx | Language::JavaScript => {
+            Some(&["typescript-language-server", "--stdio"])
+        }
+        Language::Markdown => None,
     }
 }
 
 /// The LSP `languageId` of `lang`.
 pub fn language_id(lang: Language) -> &'static str {
-    let _ = lang;
-    todo!()
+    match lang {
+        Language::Tsx => "typescriptreact",
+        lang => lang.name(),
+    }
 }
 
 #[cfg(test)]
