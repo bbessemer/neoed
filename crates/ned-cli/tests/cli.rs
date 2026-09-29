@@ -384,12 +384,14 @@ fn syntax_error_exits_2_with_caret() {
 #[test]
 fn unsupported_feature_exits_2() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
-    let out = ned(dir.path(), &["parser.rs", "-e", "move 1 after 2"], "");
+    let out = ned(dir.path(), &["parser.rs", "-e", "check"], "");
     assert_snapshot!(out, @r"
     exit: 2
     --- stdout
     --- stderr
-    error: script:1:1: `move` is not yet supported
+    error: script:1:1: `check` is not yet supported
+    1:check
+      ^
     ");
 }
 
@@ -965,7 +967,26 @@ fn move_across_files() {
         ],
         "",
     );
-    assert_snapshot!(out, @"");
+    assert_snapshot!(out, @r#"
+    exit: 0
+    --- stdout
+    parser.rs: 1 edit, +0 -4
+    @@ -17,6 +17,2 @@
+         }
+    -
+    -    fn debug_dump(&self) {
+    -        eprintln!("{}", self.src);
+    -    }
+     }
+    debug.rs: 1 edit, +3 -0
+    @@ -2,2 +2,5 @@
+         fn trace(&self) {}
+    +    fn debug_dump(&self) {
+    +        eprintln!("{}", self.src);
+    +    }
+     }
+    --- stderr
+    "#);
 }
 
 #[test]
@@ -976,6 +997,11 @@ fn move_into_its_own_source_exits_1() {
         &["parser.rs", "-e", "move impl:Parser after fn:new"],
         "",
     );
-    assert_snapshot!(out, @"");
+    assert_snapshot!(out, @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: script:1:1: move destination is inside the moved span at parser.rs:9-22
+    ");
     assert_eq!(read(&dir, "parser.rs"), PARSER);
 }

@@ -259,11 +259,40 @@ impl Executor<'_> {
         position: Position,
         dest: &Selector,
     ) -> Result<(), ExecError> {
-        let _ = (index, target, position, dest);
-        Err(ExecError::new(
-            ExecErrorKind::Unsupported("`move`".into()),
-            Some(span.clone()),
-        ))
+        let dest = Target {
+            all: false,
+            selector: dest.clone(),
+        };
+        let to = self.resolve(&implied_body(&dest, position))?.remove(0);
+        for from in self.resolve(target)? {
+            let source = &self.files[from.file].file;
+            let removal = delete(source, from.range.clone());
+            let (mut moved, separated) = moved_text(source, &from.range);
+            let target = &self.files[to.file].file;
+            if separated && text::is_whole_line(&target.text, &to.range) {
+                match position {
+                    Position::Before => moved.value.push('\n'),
+                    Position::After => moved.value.insert(0, '\n'),
+                    Position::Start | Position::End => {}
+                }
+            }
+            let moved = with_trailing_comma(target, &to.range, &moved);
+            let (range, new) = insert(target, to.range.clone(), position, &moved);
+            if from.file == to.file && removal.start < range.start && range.end < removal.end {
+                let location = format!(
+                    "{}:{}",
+                    source.path,
+                    line_numbers(&source.buffer, &from.range)
+                );
+                return Err(ExecError::new(
+                    ExecErrorKind::MoveIntoSource { location },
+                    Some(span.clone()),
+                ));
+            }
+            self.push(index, span, from.file, removal, String::new())?;
+            self.push(index, span, to.file, range, new)?;
+        }
+        Ok(())
     }
 
     fn show(&mut self, target: Option<&Target>) -> Result<(), ExecError> {
@@ -570,23 +599,7 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, St
         return fill_body(f, item, range, new);
     }
     let t = &f.text;
-    let trailing_comma = f
-        .items()
-        .unwrap_or_default()
-        .iter()
-        .any(|i| i.range == range && i.trailing_comma);
-    let with_comma;
-    let new = if trailing_comma && !new.value.trim_end().ends_with(',') {
-        let mut value = new.value.clone();
-        value.insert(value.trim_end().len(), ',');
-        with_comma = Text {
-            value,
-            kind: new.kind,
-        };
-        &with_comma
-    } else {
-        new
-    };
+    let new = &*with_trailing_comma(f, &range, new);
     let unit = indent_unit(f);
     if text::is_whole_line(t, &range) {
         let full = text::full_lines(t, range);
@@ -599,6 +612,57 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, St
         let indent = text::indent_at(t, range.start);
         (range, verbatim(new, indent, &unit))
     }
+}
+
+/// `new`, with a `,` appended if the item at `range` ends with one and `new`
+/// doesn't (§3.3).
+fn with_trailing_comma<'t>(f: &SourceFile, range: &Range<usize>, new: &'t Text) -> Cow<'t, Text> {
+    let trailing_comma = f
+        .items()
+        .unwrap_or_default()
+        .iter()
+        .any(|i| i.range == *range && i.trailing_comma);
+    if !trailing_comma || new.value.trim_end().ends_with(',') {
+        return Cow::Borrowed(new);
+    }
+    let mut value = new.value.clone();
+    value.insert(value.trim_end().len(), ',');
+    Cow::Owned(Text {
+        value,
+        kind: new.kind,
+    })
+}
+
+/// The text `move` carries from `range`: its full lines, to be re-based, if
+/// it's whole-line, else the span verbatim. The flag says whether a blank line
+/// was directly above or below those full lines.
+fn moved_text(f: &SourceFile, range: &Range<usize>) -> (Text, bool) {
+    let t = &f.text;
+    if !text::is_whole_line(t, range) {
+        let value = t[range.clone()].replace("\r\n", "\n");
+        return (
+            Text {
+                value,
+                kind: TextKind::Str,
+            },
+            false,
+        );
+    }
+    let full = text::full_lines(t, range.clone());
+    let mut value = t[full.clone()].replace("\r\n", "\n");
+    if value.ends_with('\n') {
+        value.pop();
+    }
+    let above = t[..full.start].strip_suffix('\n').and_then(|before| {
+        let line = &before[before.rfind('\n').map_or(0, |i| i + 1)..];
+        line.trim().is_empty().then_some(())
+    });
+    let below = t[full.end..].lines().next().filter(|l| l.trim().is_empty());
+    let text = Text {
+        value,
+        kind: TextKind::Heredoc,
+    };
+    (text, above.is_some() || below.is_some())
 }
 
 /// The span and text of an insertion at `position` of `range` (§4.2, §5):
@@ -1367,7 +1431,7 @@ fn main() {}
         let out = exec_with(
             &[("a.rs", MOVE), ("b.rs", b)],
             2,
-            "move fn:helper_y end file:b.rs>impl:B",
+            "move fn:helper_y end file:{dir}/b.rs>impl:B",
         );
         let changes = out.result.unwrap();
         assert_eq!(changes[0].path, "a.rs");
@@ -1416,14 +1480,14 @@ fn main() {}
     fn move_from_crlf_to_lf() {
         let out = exec_with(
             &[
-                ("a.rs", "fn a() {}\r\n\r\nfn b() {}\r\n"),
+                ("a.rs", "use x;\r\n\r\nfn a() {}\r\n\r\nfn b() {}\r\n"),
                 ("b.rs", "fn c() {}\n"),
             ],
             2,
-            "move fn:a after file:b.rs>fn:c",
+            "move fn:a after file:{dir}/b.rs>fn:c",
         );
         let changes = out.result.unwrap();
-        assert_eq!(changes[0].new, "fn b() {}\r\n");
+        assert_eq!(changes[0].new, "use x;\r\n\r\nfn b() {}\r\n");
         assert_eq!(changes[1].new, "fn c() {}\n\nfn a() {}\n");
     }
 

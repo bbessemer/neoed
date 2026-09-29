@@ -68,9 +68,9 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 
 ## 7. Multi-file and advanced edits
 
-- [ ] Globs and multiple files per script; per-file selector scoping
-- [ ] `move SEL to before|after SEL` (within and across files)
-- [ ] `--dry-run` diff-only mode
+- [x] Globs and multiple files per script; per-file selector scoping
+- [x] `move SEL to before|after SEL` (within and across files)
+- [x] `--dry-run` diff-only mode
 
 ## 8. Agent ergonomics
 

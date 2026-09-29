@@ -119,8 +119,8 @@ whole-line/re-basing text helpers (`text`), the executor (`exec::run`),
 language detection and parsing (`lang`), syntax items and parts from
 `queries/<lang>/selectors.scm` (`syntax`; Rust only until TODO.md §12),
 `outline`, and external formatters with `.ned.toml` config (`format`). The CLI
-supports every selector and verb except `move`, with the parse-error guard and
-formatting. Next: multi-file and advanced edits (TODO.md §7).
+supports every selector and verb, globbed file sets, the parse-error guard, and
+formatting. Next: agent ergonomics (TODO.md §8).
 
 ## Key Documentation
 
@@ -137,6 +137,7 @@ formatting. Next: multi-file and advanced edits (TODO.md §7).
 | `tree-sitter` + grammar crates    | Parsing: Rust, Python, TS/JS, Go (linked in) |
 | `ropey`                           | Rope text buffer                             |
 | `regex`                           | Regex selectors and `sub`                    |
+| `glob`                            | File-set globs                               |
 | `similar`                         | Diff output                                  |
 | `serde` + `toml`                  | Config (`.ned.toml`)                         |
 | `thiserror` / `anyhow`            | Errors in core / CLI                         |
