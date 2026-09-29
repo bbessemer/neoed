@@ -958,6 +958,36 @@ mod tests {
     }
 
     #[test]
+    fn ranges_run_from_one_match_to_the_next_match_of_the_end() {
+        assert_eq!(select("delete fn:a..fn:b", TEXT), [TEXT.trim_end()]);
+        assert_eq!(
+            select("delete all /let x/../let y/", TEXT),
+            ["let x = 1;\n    let y"]
+        );
+        assert_eq!(
+            select("delete /let x/../let y/.lines", TEXT),
+            ["    let x = 1;\n    let y = 2;\n"]
+        );
+        assert_eq!(select("delete fn:b>/let/..$", TEXT), ["let x = 3;\n}\n"]);
+    }
+
+    #[test]
+    fn ranges_skip_starts_inside_an_earlier_range() {
+        assert_eq!(select("delete all /a/../b/", "a b a b\n"), ["a b", "a b"]);
+        assert_eq!(select("delete all /a/../b/", "a a b\n"), ["a a b"]);
+    }
+
+    #[test]
+    fn ambiguous_ranges_list_candidates() {
+        assert_eq!(
+            error("delete /a/../b/", &[("a.rs", "a b\na b\n")]),
+            "error: script:1:8: /a/../b/ matches 2 items; add `all` or use one of:\n  \
+             1>/a/../b/   a.rs:1\n  \
+             2>/a/../b/   a.rs:2"
+        );
+    }
+
+    #[test]
     fn nested_steps_resolve_within_each_span() {
         let set = files(&[("a.rs", TEXT)]);
         let m = resolve_in("delete 6-8>/let x/", &set).unwrap();

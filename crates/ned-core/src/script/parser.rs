@@ -744,6 +744,41 @@ mod tests {
     }
 
     #[test]
+    fn ranges() {
+        let show = |steps| CommandKind::Show(Some(target(steps)));
+        let range = |from: Step, to: Step| {
+            step(Primary::Range {
+                from: Box::new(from.primary),
+                to: Box::new(to.primary),
+            })
+        };
+        assert_eq!(
+            one("show /^## 6/../^## 7/"),
+            show(vec![range(
+                step(Primary::Regex(pattern("^## 6"))),
+                step(Primary::Regex(pattern("^## 7")))
+            )])
+        );
+        assert_eq!(
+            one("show impl:P>fn:a..fn:c.lines"),
+            show(vec![
+                syntax("impl", "P"),
+                parts(range(syntax("fn", "a"), syntax("fn", "c")), &[Part::Lines]),
+            ])
+        );
+        assert_eq!(
+            one(r#"show "BEGIN"..$"#),
+            show(vec![range(literal("BEGIN"), lines(Last, None))])
+        );
+        assert_eq!(error("show /a/ ../b/").kind, E::SpaceInSelector);
+        assert_eq!(error("show /a/.. /b/").kind, E::SpaceInSelector);
+        assert_eq!(
+            message("show /a/-/b/"),
+            "unexpected character `-`; ranges between selectors are written SEL..SEL, e.g. /a/../b/"
+        );
+    }
+
+    #[test]
     fn several_commands() {
         assert_eq!(commands("show 1; delete 2\n\n# c\nshow").len(), 3);
         assert_eq!(
