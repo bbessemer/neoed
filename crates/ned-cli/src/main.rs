@@ -145,6 +145,6 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         ExecErrorKind::Unsupported(_)
         | ExecErrorKind::NoFiles
         | ExecErrorKind::InvalidQuery { .. } => 2,
-        ExecErrorKind::Io { .. } => 3,
+        ExecErrorKind::Io { .. } | ExecErrorKind::NoGlobMatch(_) => 3,
     }
 }

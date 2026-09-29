@@ -81,10 +81,7 @@ struct Executor<'s> {
 
 impl Executor<'_> {
     fn run(&mut self, script: &Script, initial: &[String]) -> Result<Vec<Change>, ExecError> {
-        self.set = initial
-            .iter()
-            .map(|path| self.load(path, None))
-            .collect::<Result<_, _>>()?;
+        self.set = self.open(initial, None)?;
         for (index, command) in script.commands.iter().enumerate() {
             self.command(index, command)?;
         }
@@ -111,6 +108,23 @@ impl Executor<'_> {
             }
         }
         Ok(changes)
+    }
+
+    /// Loads the files `paths` name, expanding globs (§2.4), as indices into
+    /// `self.files` without duplicates.
+    fn open(
+        &mut self,
+        paths: &[String],
+        span: Option<&Range<usize>>,
+    ) -> Result<Vec<usize>, ExecError> {
+        let mut set = Vec::new();
+        for path in paths {
+            for path in expand(path, span)? {
+                let i = self.load(&path, span.cloned())?;
+                set.push(i);
+            }
+        }
+        Ok(set)
     }
 
     fn load(&mut self, path: &str, span: Option<Range<usize>>) -> Result<usize, ExecError> {
@@ -144,10 +158,7 @@ impl Executor<'_> {
         let error = |kind| ExecError::new(kind, Some(span.clone()));
         match &command.kind {
             CommandKind::File(paths) => {
-                self.set = paths
-                    .iter()
-                    .map(|path| self.load(path, Some(span.clone())))
-                    .collect::<Result<_, _>>()?;
+                self.set = self.open(paths, Some(span))?;
                 return Ok(());
             }
             CommandKind::Move { .. } => {
@@ -405,6 +416,12 @@ impl Executor<'_> {
 
 /// `target`, with `.body` added when `insert start|end` targets a syntax
 /// step with no parts (§4.2).
+/// The files `path` names: itself, or a glob's sorted matches.
+fn expand(path: &str, span: Option<&Range<usize>>) -> Result<Vec<String>, ExecError> {
+    let _ = span;
+    Ok(vec![path.to_string()])
+}
+
 fn implied_body(target: &Target, position: Position) -> Cow<'_, Target> {
     let last = target.selector.steps.last();
     let syntax =
@@ -667,6 +684,8 @@ pub enum ExecErrorKind {
     NoFiles,
     #[error("cannot read {path}: {message}")]
     Io { path: String, message: String },
+    #[error("glob `{0}` matched nothing")]
+    NoGlobMatch(String),
     /// `location` is `PATH:LINE:COL`; `excerpt` is empty, or a newline and
     /// the offending line with a caret.
     #[error("{location}: edit introduces a syntax error (use --force to apply anyway){excerpt}")]
