@@ -339,21 +339,27 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
   `impl:Parser>fn:new`, `fn:main>/unwrap\(\)/`, `100-200>fn:new`.
 - A **part** narrows each span of its step:
 
-| Part      | Span                                                                              |
-| --------- | --------------------------------------------------------------------------------- |
-| `.body`   | the item's block, between its delimiters (`{}`, or a Python indented block)       |
-| `.sig`    | from the start of the item (after its doc and attributes) up to its body          |
-| `.params` | the parameter list, between its parentheses                                       |
-| `.name`   | the item's name identifier                                                        |
-| `.doc`    | the item's leading doc comment lines                                              |
-| `.lines`  | the span widened to the whole lines it touches (any selector)                     |
-| `.refs`   | each reference to the symbol at the span (below), without its declaration         |
-| `.def`    | the symbol's definition: the item it names, or its identifier if it names no item |
+| Part      | Span                                                                                                                             |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `.body`   | the item's block, between its delimiters (`{}`, or a Python indented block); for a Markdown section, the lines after its heading |
+| `.sig`    | from the start of the item (after its doc and attributes) up to its body                                                         |
+| `.params` | the parameter list, between its parentheses                                                                                      |
+| `.name`   | the item's name identifier                                                                                                       |
+| `.doc`    | the item's leading doc comment lines                                                                                             |
+| `.lines`  | the span widened to the whole lines it touches (any selector)                                                                    |
+| `.refs`   | each reference to the symbol at the span (below), without its declaration                                                        |
+| `.def`    | the symbol's definition: the item it names, or its identifier if it names no item                                                |
 
 - For `.body` and `.params`: if the opening delimiter ends its line and the
   closing delimiter starts its line, the part is the whole lines between them.
   Otherwise it's the text between the delimiters, with surrounding whitespace
   trimmed.
+- A Markdown section's `.body` runs from the first non-blank line after its
+  heading to the end of its content, subsections included, so
+  `insert end section:"3. Selectors"` adds after the last subsection. It's
+  empty if the heading has no content; text put there goes on the lines right
+  after the heading. `ned` adds no blank lines between Markdown blocks: put
+  them in the text. `.sig` is the heading line.
 - `.doc` covers whole lines. On an item with no body (such as a trait method
   declaration), `.sig` is the whole item.
 - `.refs` and `.def` ask the language server (§1.1) about the symbol at the

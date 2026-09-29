@@ -51,9 +51,13 @@ pub struct Item {
     /// The item node alone.
     pub node: Range<usize>,
     pub name_range: Range<usize>,
-    /// The `@body` and `@params` nodes, delimiters included.
+    /// The `@body` and `@params` nodes, delimiters included, unless
+    /// `body_lines`.
     pub body: Option<Range<usize>>,
     pub params: Option<Range<usize>>,
+    /// Whether `body` is the whole lines after a `@head` (a Markdown
+    /// section's heading) rather than a delimited node.
+    pub body_lines: bool,
     /// The leading doc comments.
     pub doc: Option<Range<usize>>,
 }
@@ -179,6 +183,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                         .map_or(node.start_byte()..node.start_byte(), |n| n.byte_range()),
                     body,
                     params,
+                    body_lines: false,
                     doc,
                 }
             },
@@ -554,6 +559,26 @@ mod tests {}
         let expected: Vec<(&str, String)> =
             expected.iter().map(|(k, n)| (*k, n.to_string())).collect();
         assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn section_bodies_are_the_lines_after_the_heading() {
+        let text = "# A\n\nintro\n\n## B\n\nb text\n\n## C\n\n# D";
+        let items = markdown_items(text);
+        let section = |name: &str| items.iter().find(|i| i.name == name).unwrap();
+        let body = |name: &str| part(section(name), Part::Body, text).map(|r| &text[r]);
+        assert_eq!(body("A"), Some("intro\n\n## B\n\nb text\n\n## C\n"));
+        assert_eq!(body("B"), Some("b text\n"));
+        assert_eq!(body("C"), Some(""));
+        assert_eq!(part(section("C"), Part::Body, text), Some(31..31));
+        assert_eq!(
+            part(section("D"), Part::Body, text),
+            Some(text.len()..text.len())
+        );
+        assert_eq!(
+            part(section("A"), Part::Sig, text).map(|r| &text[r]),
+            Some("# A")
+        );
     }
 
     #[test]

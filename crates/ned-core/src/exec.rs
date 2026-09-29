@@ -2111,6 +2111,36 @@ mod tests {
     }
 
     #[test]
+    fn markdown_section_bodies() {
+        let md = |script: &str| {
+            let text = "# A\n\nintro\n\n## B\n\nb text\n\n## C\n\n# D";
+            exec_with(&[("a.md", text)], 1, script)
+                .new_text()
+                .to_string()
+        };
+        assert_eq!(
+            md("insert end section:B \"more\""),
+            "# A\n\nintro\n\n## B\n\nb text\nmore\n\n## C\n\n# D"
+        );
+        assert_eq!(
+            md("replace section:B.body with \"new\""),
+            "# A\n\nintro\n\n## B\n\nnew\n\n## C\n\n# D"
+        );
+        assert_eq!(
+            md("insert start section:C \"c\""),
+            "# A\n\nintro\n\n## B\n\nb text\n\n## C\nc\n\n# D"
+        );
+        assert_eq!(
+            md("insert end section:D \"d\""),
+            "# A\n\nintro\n\n## B\n\nb text\n\n## C\n\n# D\nd\n"
+        );
+        assert_eq!(
+            md("insert end section:A <<END\n\n## E\nEND\n"),
+            "# A\n\nintro\n\n## B\n\nb text\n\n## C\n\n## E\n\n# D"
+        );
+    }
+
+    #[test]
     fn sub_inserts_text_verbatim() {
         assert_eq!(
             edited(TEXT, "sub /1;\\n/ with <<END\n1;\n  // one\nEND\n"),
