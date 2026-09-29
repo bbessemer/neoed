@@ -45,6 +45,9 @@ fn stage(path: &Path, contents: &str) -> io::Result<(PathBuf, PathBuf)> {
     };
     let temp = temp_path(&target);
     let result = (|| {
+        if let Some(dir) = target.parent().filter(|d| !d.as_os_str().is_empty()) {
+            fs::create_dir_all(dir)?;
+        }
         let mut file = File::create_new(&temp)?;
         file.write_all(contents.as_bytes())?;
         file.sync_all()?;
@@ -142,8 +145,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join("a.rs");
         fs::write(&a, "old a").unwrap();
-        let missing = dir.path().join("no-such-dir").join("b.rs");
-        let result = write_atomic(&[(a.clone(), "new a".into()), (missing, "new b".into())]);
+        let under_a_file = a.join("b.rs");
+        let result = write_atomic(&[(a.clone(), "new a".into()), (under_a_file, "new b".into())]);
         assert!(result.is_err());
         assert_eq!(fs::read_to_string(&a).unwrap(), "old a");
         assert_eq!(entries(dir.path()), ["a.rs"]);

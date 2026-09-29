@@ -75,6 +75,15 @@ delete fn:debug_dump
 move fn:new after fn:parse
 ```
 
+Create a file, then keep editing it in the same script:
+
+```ned
+create src/lexer.rs <<END
+pub struct Lexer;
+END
+insert after struct:Lexer "impl Lexer {}"
+```
+
 Rename across files with a word-bounded regex:
 
 ```ned

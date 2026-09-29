@@ -131,7 +131,11 @@ fn main() -> ExitCode {
         let stat = DiffStat::between(&change.old, &change.new);
         println!(
             "{}",
-            diff::summary(&change.path, change.edits, stat, cli.dry_run)
+            if change.created {
+                diff::created_summary(&change.path, stat, cli.dry_run)
+            } else {
+                diff::summary(&change.path, change.edits, stat, cli.dry_run)
+            }
         );
         if !cli.quiet {
             print!("{}", diff::hunks(&change.old, &change.new, cli.context));

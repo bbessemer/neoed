@@ -69,6 +69,8 @@ pub fn run(script: &Script, src: &str, files: &[String], options: &Options) -> R
 struct Loaded {
     file: SourceFile,
     edits: EditSet,
+    /// Made by `create`: its original text is what `create` gave it.
+    created: bool,
 }
 
 struct Executor<'s> {
@@ -90,27 +92,62 @@ impl Executor<'_> {
         let changes: Vec<Change> = self
             .files
             .iter()
-            .filter(|l| !l.edits.is_empty())
+            .filter(|l| l.created || !l.edits.is_empty())
             .map(|l| Change {
                 path: l.file.path.clone(),
-                old: l.file.text.clone(),
+                old: if l.created {
+                    String::new()
+                } else {
+                    l.file.text.clone()
+                },
                 new: l.edits.apply(),
                 edits: l.edits.len(),
                 lang: l.file.lang,
-                created: false,
+                created: l.created,
             })
             .collect();
         if !self.options.force {
             for (l, change) in self
                 .files
                 .iter()
-                .filter(|l| !l.edits.is_empty())
+                .filter(|l| l.created || !l.edits.is_empty())
                 .zip(&changes)
             {
-                guard(&l.file, &change.new)?;
+                if l.created {
+                    let empty = SourceFile::new(&l.file.path, String::new(), l.file.lang);
+                    guard(&empty, &change.new)?;
+                } else {
+                    guard(&l.file, &change.new)?;
+                }
             }
         }
         Ok(changes)
+    }
+
+    /// Adds a file made by `create` to the file set, holding `new` (§4.2).
+    fn create(&mut self, path: &str, new: &Text) -> Result<(), ExecErrorKind> {
+        let loaded = self.files.iter().any(|l| same_path(&l.file.path, path));
+        if loaded || std::path::Path::new(path).exists() {
+            return Err(ExecErrorKind::FileExists { path: path.into() });
+        }
+        let lang = self
+            .options
+            .lang
+            .or_else(|| Language::detect(path, &new.value));
+        let text = if new.value.is_empty() {
+            String::new()
+        } else {
+            line_oriented(new, "", lang.map_or("    ", |l| l.default_indent()))
+        };
+        let file = SourceFile::new(path, text, lang);
+        let edits = EditSet::new(&file.buffer);
+        self.files.push(Loaded {
+            file,
+            edits,
+            created: true,
+        });
+        self.set.push(self.files.len() - 1);
+        Ok(())
     }
 
     /// Loads the files `paths` name, expanding globs (§2.4), as indices into
@@ -157,7 +194,11 @@ impl Executor<'_> {
         let lang = self.options.lang.or_else(|| Language::detect(path, &text));
         let file = SourceFile::new(path, text, lang);
         let edits = EditSet::new(&file.buffer);
-        self.files.push(Loaded { file, edits });
+        self.files.push(Loaded {
+            file,
+            edits,
+            created: false,
+        });
         Ok(self.files.len() - 1)
     }
 
@@ -165,12 +206,7 @@ impl Executor<'_> {
         let span = &command.span;
         let error = |kind| ExecError::new(kind, Some(span.clone()));
         match &command.kind {
-            CommandKind::Create { .. } => {
-                return Err(error(ExecErrorKind::Unsupported {
-                    what: "`create`".into(),
-                    instead: "",
-                }));
-            }
+            CommandKind::Create { path, text } => return self.create(path, text).map_err(error),
             CommandKind::File(paths) => {
                 self.set = self.open(paths, Some(span))?;
                 return Ok(());
