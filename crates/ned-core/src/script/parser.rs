@@ -367,18 +367,7 @@ fn primary(token: Token) -> Result<Primary, ParseError> {
         }
         TokenKind::Syntax { kind, name } => match kind.as_str() {
             "file" => Primary::File(name),
-            "refs" | "def" => {
-                let instead = if kind == "refs" {
-                    "select uses with a /regex/"
-                } else {
-                    "select the definition with kind:NAME, e.g. fn:NAME"
-                };
-                let reserved = E::Reserved {
-                    what: format!("{kind}:"),
-                    instead,
-                };
-                return Err(ParseError::new(reserved, token.span));
-            }
+            "refs" | "def" => return Err(ParseError::new(E::PartAsKind(kind), token.span)),
             _ => Primary::Syntax { kind, name },
         },
         TokenKind::Query(query) => Primary::Query(query),

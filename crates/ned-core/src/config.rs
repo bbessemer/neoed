@@ -30,7 +30,8 @@ pub(crate) struct Layer {
     pub(crate) lsp: HashMap<Language, Entry>,
     pub(crate) idle_timeout: Option<u64>,
     pub(crate) check_show: Option<Severity>,
-    pub(crate) check_timeout: Option<u64>,
+    pub(crate) lsp_timeout: Option<u64>,
+
     /// `Some(None)` for `block = false`.
     pub(crate) check_block: Option<Option<Severity>>,
 }
@@ -65,7 +66,7 @@ struct RawDaemon {
 #[serde(deny_unknown_fields)]
 struct RawCheck {
     show: Option<Severity>,
-    timeout: Option<u64>,
+
     block: Option<RawBlock>,
 }
 
@@ -144,7 +145,7 @@ impl Config {
         Ok(self
             .layers(&dir)?
             .into_iter()
-            .find_map(|layer| layer.check_timeout))
+            .find_map(|layer| layer.lsp_timeout))
     }
 
     /// `[check] block` for `dir`: `Some(None)` if it's `false`.
@@ -213,13 +214,28 @@ fn load(path: &Path) -> Result<Option<Layer>, ConfigError> {
         }
         Ok(entries)
     };
+    let mut lsp = raw.lsp;
+    let lsp_timeout = match lsp.remove("timeout") {
+        None => None,
+        Some(value) => match value.get_ref() {
+            Value::Integer(secs) if *secs >= 0 => Some(*secs as u64),
+            _ => {
+                return Err(error(
+                    Some(value.span()),
+                    "`timeout` must be a number of seconds".into(),
+                ));
+            }
+        },
+    };
     Ok(Some(Layer {
         dir: path.parent().unwrap_or(path).to_path_buf(),
         format: entries(raw.format)?,
-        lsp: entries(raw.lsp)?,
+        lsp: entries(lsp)?,
+        lsp_timeout,
+
         idle_timeout: raw.daemon.idle_timeout,
         check_show: raw.check.show,
-        check_timeout: raw.check.timeout,
+
         check_block: match raw.check.block {
             None => None,
             Some(RawBlock::Level(level)) => Some(Some(level)),
