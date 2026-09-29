@@ -1,0 +1,12 @@
+move [all] SEL before|after|start|end DEST
+
+Removes each span of SEL, as `delete` does, and inserts its text at DEST, as
+`insert` does: re-indented, and inside the .body for start/end on a syntax
+item. DEST must be one span, possibly in another file of the set. With `all`,
+spans arrive in their original order. A moved item keeps one blank line of
+separation for before/after.
+
+Examples:
+    move fn:helper after fn:main
+    move all fn:test_* end mod:tests
+    file src/a.rs src/b.rs; move fn:util end file:src/b.rs>impl:B

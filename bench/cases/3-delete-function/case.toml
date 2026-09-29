@@ -1,0 +1,30 @@
+task = "Delete a function"
+fixture = "parser"
+
+[ned]
+command = '''
+ned src/parser.rs -e 'delete fn:debug_dump'
+'''
+
+[sed]
+caveat = "depends on the closing brace's indentation; leaves a stray blank line"
+command = '''
+sed -i '' '/fn debug_dump/,/^    }$/d' src/parser.rs
+'''
+
+[python]
+command = '''
+python3 - <<'EOF'
+from pathlib import Path
+p = Path("src/parser.rs")
+s = p.read_text()
+old = '\n    fn debug_dump(&self) {\n        eprintln!("{}", self.src);\n    }\n'
+assert s.count(old) == 1
+p.write_text(s.replace(old, ''))
+EOF
+'''
+
+[str_replace]
+call = '''
+{"path": "src/parser.rs", "old_str": "\n\n    fn debug_dump(&self) {\n        eprintln!(\"{}\", self.src);\n    }", "new_str": ""}
+'''

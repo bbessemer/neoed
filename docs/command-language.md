@@ -11,7 +11,14 @@ Sections marked _(reserved)_ define syntax that parses but is rejected with a
 
 ```
 ned [FLAGS] [FILE...] [-e SCRIPT]...
+ned help [TOPIC]
 ```
+
+`ned help` prints a summary of the language, sized to fit in an agent's
+context. `ned help TOPIC` details one verb (`show`, `outline`, `replace`,
+`insert`, `delete`, `sub`, `move`, `file`), or `selectors`, `text` or `config`.
+An unknown topic is a usage error that lists the topics. `help` must be the
+first argument; write a file named `help` as `./help`.
 
 - `-e SCRIPT` may be repeated; the scripts are joined with newlines, in order.
 - Without `-e`, the script is read from stdin.
@@ -501,6 +508,19 @@ Errors go to stderr, in the form `error: LOC: message`.
 - Every error ends with a concrete fix: candidate selectors, a nearby name, or
   the flag to use.
 
+| Error                                   | Fix it suggests                                                                                                                                          |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Script syntax                           | Quoting, for a bare word where text or a selector belongs; otherwise the command's usage, e.g. `usage: replace [all] SEL with TEXT`                      |
+| Selector matches nothing                | A close syntax name; a literal match that differs only in case or spacing; a regex that matches with `i`; the spans a nested step searched; or `outline` |
+| Ambiguous selector                      | Candidate selectors (§3.5)                                                                                                                               |
+| Missing part, part on a non-syntax step | The parts the item has, or an example                                                                                                                    |
+| Invalid query                           | The closest node type or field name in the grammar                                                                                                       |
+| Line past the end                       | `$` for the last line                                                                                                                                    |
+| File not in the set                     | The `file` command that adds it                                                                                                                          |
+| Unsupported in a language               | Selectors that work there                                                                                                                                |
+| Overlapping edits                       | Merging them, or a second invocation                                                                                                                     |
+| Missing file or empty glob              | The working directory paths are relative to                                                                                                              |
+
 ```
 error: script:1:8: fn:new matches 2 items; add `all` or use one of:
   impl:Parser>fn:new   src/parser.rs:10-12
@@ -514,7 +534,7 @@ error: src/parser.rs:15:31: edit introduces a syntax error (use --force to apply
 15:        let tok = (self.next();
                                  ^
 
-error: script:2:28: unterminated heredoc <<END (started here)
+error: script:2:28: unterminated heredoc <<END (started here); end it with a line holding only END
 2:replace fn:parse.body with <<END
                              ^
 ```
@@ -541,6 +561,9 @@ Token counts are for the full command text, measured with tiktoken's
 `o200k_base` encoding as a proxy for LLM tokenizers. They count input only. ned
 also prints a diff, which saves the read-back that `sed` and Python usually need
 for verification.
+
+`bench/` reproduces the table: `uv run bench.py --check`, run there, applies
+every variant to a copy of the files, checks the result, and counts its tokens.
 
 The examples use this file, `src/parser.rs`:
 
@@ -571,14 +594,14 @@ impl Parser {
 
 | #   | Task                            | ned | sed | Python |           str_replace |
 | --- | ------------------------------- | --: | --: | -----: | --------------------: |
-| 1   | Change a string in one function |  22 | 20† |     70 |                    33 |
-| 2   | Add a method to an impl         |  41 |   — |     93 |                    78 |
-| 3   | Delete a function               |  13 | 18† |     65 |                    45 |
-| 4   | Change a function's params      |  20 |  28 |     68 |                    37 |
-| 5   | Replace a function body         |  38 |   — |     90 |                    63 |
-| 6   | Add an import                   |  21 |  23 |     62 |                    39 |
-| 7   | Insert into a Python block      |  30 |   — |     70 |                    42 |
-| 8   | Rename an identifier in 5 files |  18 |  25 |     64 | 1 call per occurrence |
+| 1   | Change a string in one function |  22 | 20† |     61 |                    32 |
+| 2   | Add a method to an impl         |  41 |   — |     94 |                    74 |
+| 3   | Delete a function               |  13 | 18† |     70 |                    44 |
+| 4   | Change a function's params      |  20 |  27 |     63 |                    34 |
+| 5   | Replace a function body         |  38 |   — |     93 |                    62 |
+| 6   | Add an import                   |  21 |  23 |     63 |                    35 |
+| 7   | Insert into a Python block      |  30 |   — |     67 |                    38 |
+| 8   | Rename an identifier in 5 files |  18 |  25 |     48 | 1 call per occurrence |
 
 † = not scoped or not reliable. — = not practical.
 

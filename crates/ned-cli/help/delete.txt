@@ -1,0 +1,10 @@
+delete [all] SEL
+
+Removes each span of SEL. A whole-line span removes its full lines. If that
+leaves two blank lines in a row, or a blank line next to a bracket or at the
+start or end of the file, one blank line goes too.
+
+Examples:
+    delete fn:debug_dump
+    delete all fn:test_*
+    delete impl:Parser>"#[inline] "

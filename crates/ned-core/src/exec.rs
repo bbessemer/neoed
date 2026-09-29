@@ -12,7 +12,7 @@ use crate::lang::Language;
 use crate::outline;
 use crate::script::Script;
 use crate::script::ast::{
-    Command, CommandKind, Part, Pattern, Position, Primary, Selector, Target, Text, TextKind,
+    Command, CommandKind, Part, Pattern, Position, Primary, Selector, Step, Target, Text, TextKind,
 };
 use crate::script::error::{excerpt, location};
 use crate::select::{self, Match, SourceFile, line_numbers, same_path};
@@ -146,7 +146,10 @@ impl Executor<'_> {
                 span.clone(),
             )
         };
-        let bytes = fs::read(path).map_err(|e| io(e.to_string()))?;
+        let bytes = fs::read(path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => io(format!("no such file{}", relative_note(path))),
+            _ => io(e.to_string()),
+        })?;
         let text = String::from_utf8(bytes).map_err(|_| io("not valid UTF-8".into()))?;
         let lang = self.options.lang.or_else(|| Language::detect(path, &text));
         let file = SourceFile::new(path, text, lang);
@@ -366,7 +369,8 @@ impl Executor<'_> {
             };
             if lang.selectors().is_none() {
                 let what = format!("`outline` in {lang} files");
-                return Err(error(ExecErrorKind::Unsupported(what)));
+                let instead = "use `show`";
+                return Err(error(ExecErrorKind::Unsupported { what, instead }));
             }
             any = true;
         }
@@ -418,7 +422,7 @@ impl Executor<'_> {
                 .collect(),
         };
         let mut total = 0;
-        for scope in scopes {
+        for scope in &scopes {
             let haystack = &self.files[scope.file].file.text[scope.range.clone()];
             let edits: Vec<(Range<usize>, String)> = regex
                 .captures_iter(haystack)
@@ -443,16 +447,34 @@ impl Executor<'_> {
             .iter()
             .filter_map(|(on, flag)| on.then_some(*flag))
             .collect::<String>();
+            let selector = format!("/{}/{flags}", pattern.source.replace('/', "\\/"));
+            let set: Vec<&SourceFile> = self.set.iter().map(|&i| &self.files[i].file).collect();
+            let parents: Vec<Match> = scopes
+                .iter()
+                .map(|m| Match {
+                    file: self
+                        .set
+                        .iter()
+                        .position(|&i| i == m.file)
+                        .expect("scopes are in the set"),
+                    range: m.range.clone(),
+                })
+                .collect();
+            let step = Step {
+                primary: Primary::Regex(pattern.clone()),
+                parts: Vec::new(),
+            };
+            let hint = select::hint(&step, &set, &parents, &selector);
             return Err(ExecError::new(
                 ExecErrorKind::NoMatch {
-                    selector: format!("/{}/{flags}", pattern.source.replace('/', "\\/")),
+                    selector,
                     files: self
                         .set
                         .iter()
                         .map(|&i| self.files[i].file.path.as_str())
                         .collect::<Vec<_>>()
                         .join(", "),
-                    hint: String::new(),
+                    hint,
                 },
                 Some(span.clone()),
             ));
@@ -463,6 +485,25 @@ impl Executor<'_> {
 
 /// `target`, with `.body` added when `insert start|end` targets a syntax
 /// step with no parts (§4.2).
+/// For a relative `path`, ` (paths are relative to DIR)`, naming the working
+/// directory; otherwise empty.
+fn relative_note(path: &str) -> String {
+    match std::env::current_dir() {
+        Ok(cwd) if std::path::Path::new(path).is_relative() => {
+            format!(" (paths are relative to {})", cwd.display())
+        }
+        _ => String::new(),
+    }
+}
+
+fn last_line_hint(line: &str) -> &'static str {
+    if line == "$" {
+        ""
+    } else {
+        "; use `$` for the last line"
+    }
+}
+
 /// The files `path` names: itself, or a glob's sorted matches.
 fn expand(path: &str, span: Option<&Range<usize>>) -> Result<Vec<String>, ExecError> {
     let options = glob::MatchOptions {
@@ -480,10 +521,11 @@ fn expand(path: &str, span: Option<&Range<usize>>) -> Result<Vec<String>, ExecEr
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
     if files.is_empty() {
-        return Err(ExecError::new(
-            ExecErrorKind::NoGlobMatch(path.into()),
-            span.cloned(),
-        ));
+        let kind = ExecErrorKind::NoGlobMatch {
+            glob: path.into(),
+            note: relative_note(path),
+        };
+        return Err(ExecError::new(kind, span.cloned()));
     }
     files.sort();
     Ok(files)
@@ -753,9 +795,14 @@ pub enum ExecErrorKind {
     },
     #[error("{selector} needs a language, but {files} has none; use --lang")]
     NoLanguage { selector: String, files: String },
-    #[error("{item} has no .{part}")]
-    MissingPart { item: String, part: String },
-    #[error(".{part} needs a syntax item (kind:name)")]
+    /// `has` lists the parts the item has, e.g. `.sig .name .lines`.
+    #[error("{item} has no .{part}; it has {has}")]
+    MissingPart {
+        item: String,
+        part: String,
+        has: String,
+    },
+    #[error(".{part} needs a syntax item, e.g. fn:NAME.{part}")]
     PartNeedsItem { part: String },
     #[error("invalid {lang} query: {message}")]
     InvalidQuery { lang: String, message: String },
@@ -774,22 +821,30 @@ pub enum ExecErrorKind {
         selector: String,
         candidates: Candidates,
     },
-    #[error("line {line} is past the end of {files}")]
+    #[error("line {line} is past the end of {files}{hint}", hint = last_line_hint(line))]
     LineOutOfRange { line: String, files: String },
-    #[error("file:{path} is not in the file set: {files}")]
+    #[error(
+        "file:{path} is not in the file set: {files}; add it with `file {set} {path}`",
+        set = files.replace(", ", " ")
+    )]
     NotInFileSet { path: String, files: String },
-    #[error("{0} is not yet supported")]
-    Unsupported(String),
-    #[error("edit overlaps command {command} at {location}")]
+    #[error("{what} is not yet supported; {instead}")]
+    Unsupported { what: String, instead: &'static str },
+    #[error(
+        "edit overlaps command {command} at {location}; merge the two edits, or make one in a separate ned run"
+    )]
     Overlap { command: usize, location: String },
     #[error("no files to edit; pass FILE arguments or use `file PATH`")]
     NoFiles,
     #[error("cannot read {path}: {message}")]
     Io { path: String, message: String },
-    #[error("move destination is inside the moved span at {location}")]
+    #[error(
+        "move destination is inside the moved span at {location}; choose a destination outside it"
+    )]
     MoveIntoSource { location: String },
-    #[error("glob `{0}` matched nothing")]
-    NoGlobMatch(String),
+    /// `note` is empty, or where relative paths start.
+    #[error("glob `{glob}` matched nothing{note}")]
+    NoGlobMatch { glob: String, note: String },
     /// `location` is `PATH:LINE:COL`; `excerpt` is empty, or a newline and
     /// the offending line with a caret.
     #[error("{location}: edit introduces a syntax error (use --force to apply anyway){excerpt}")]
@@ -1170,7 +1225,7 @@ mod tests {
     fn sub_without_matches_is_an_error() {
         assert_eq!(
             exec(TEXT, "sub /nope/ with \"x\"").error(),
-            "error: script:1:1: /nope/ matches nothing in a.rs"
+            "error: script:1:1: /nope/ matches nothing in a.rs; `show` prints the text to match against"
         );
     }
 
@@ -1188,11 +1243,11 @@ mod tests {
     fn overlapping_edits_name_the_earlier_command() {
         assert_eq!(
             exec(TEXT, "replace 2 with \"a\"\ndelete 2-3").error(),
-            "error: script:2:1: edit overlaps command 1 at a.rs:2"
+            "error: script:2:1: edit overlaps command 1 at a.rs:2; merge the two edits, or make one in a separate ned run"
         );
         assert_eq!(
             exec(TEXT, "show 1; delete 2-3; replace \"y\" with \"z\"").error(),
-            "error: script:1:21: edit overlaps command 2 at a.rs:2-3"
+            "error: script:1:21: edit overlaps command 2 at a.rs:2-3; merge the two edits, or make one in a separate ned run"
         );
     }
 
@@ -1214,7 +1269,7 @@ mod tests {
         assert_eq!(out.output, "a.rs:1\n1:fn a() {\n");
         assert_eq!(
             out.error(),
-            "error: script:2:8: /nope/ matches nothing in a.rs"
+            "error: script:2:8: /nope/ matches nothing in a.rs; `show` prints the text to match against"
         );
     }
 
@@ -1463,7 +1518,8 @@ fn main() {}
     fn move_into_its_own_source_is_an_error() {
         assert_eq!(
             exec(MOVE, "move impl:A before fn:b").error(),
-            "error: script:1:1: move destination is inside the moved span at a.rs:1-7"
+            "error: script:1:1: move destination is inside the moved span at a.rs:1-7; \
+             choose a destination outside it"
         );
     }
 

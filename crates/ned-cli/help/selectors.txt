@@ -1,0 +1,15 @@
+selectors
+
+Lines: 12, 12-20, 12-$, $ (last line).
+Regex: /re/ with flags i, s. Literal: "text" (escapes \n \t \" \\).
+Block: <<END heredoc matches whole lines, ignoring indentation.
+Syntax: kind:name, with * as a wildcard; quote other names: import:"os.path".
+  Kinds: fn class struct enum variant trait interface impl type const var
+  field mod import (which depend on the language; outline shows them).
+  impl:Name is the impl's self type. A syntax item includes its doc comments
+  and attributes.
+Parts: .body .params (inside the delimiters) .name .sig .doc .lines.
+Nest with > (no spaces): impl:Parser>fn:new>"x". Scope: 40-80>fn:new,
+file:src/a.rs>fn:new. Raw: query{(node) @sel}.
+Ambiguous matches are errors listing selectors to paste; `all SEL` takes every
+match.

@@ -3,7 +3,7 @@
 use std::ops::Range;
 
 use super::ast::*;
-use super::error::{ParseError, ParseErrorKind as E};
+use super::error::{COMMANDS, ParseError, ParseErrorKind as E};
 use super::lexer::{Lexer, Token, TokenKind};
 
 pub fn parse(src: &str) -> Result<Script, ParseError> {
@@ -64,9 +64,29 @@ impl Parser<'_> {
     fn command(&mut self) -> Result<Command, ParseError> {
         let verb = self.bump()?;
         let TokenKind::Word(word) = &verb.kind else {
-            return Err(expected("a command", &verb));
+            let mut err = expected("a command", &verb);
+            if let E::Expected { hint, .. } = &mut err.kind {
+                *hint = format!("; commands are {COMMANDS}");
+            }
+            return Err(err);
         };
-        let kind = match word.as_str() {
+        let kind = self.command_kind(&verb, word).map_err(|mut err| {
+            if let E::Expected { hint, .. } = &mut err.kind
+                && hint.is_empty()
+                && let Some(usage) = usage(word)
+            {
+                *hint = format!("; usage: {usage}");
+            }
+            err
+        })?;
+        Ok(Command {
+            kind,
+            span: verb.span.start..self.last_end,
+        })
+    }
+
+    fn command_kind(&mut self, verb: &Token, word: &str) -> Result<CommandKind, ParseError> {
+        Ok(match word {
             "show" => CommandKind::Show(self.optional_target()?),
             "outline" => CommandKind::Outline(self.optional_target()?),
             "replace" => {
@@ -91,13 +111,23 @@ impl Parser<'_> {
             },
             "file" => CommandKind::File(self.paths()?),
             "rename" | "check" => {
-                return Err(ParseError::new(E::Reserved(word.clone()), verb.span));
+                let instead = if word == "rename" {
+                    r#"use sub /\bOLD\b/ with "NEW" over the files"#
+                } else {
+                    "run the project's build or linter"
+                };
+                let reserved = E::Reserved {
+                    what: word.into(),
+                    instead,
+                };
+                return Err(ParseError::new(reserved, verb.span.clone()));
             }
-            _ => return Err(ParseError::new(E::UnknownCommand(word.clone()), verb.span)),
-        };
-        Ok(Command {
-            kind,
-            span: verb.span.start..self.last_end,
+            _ => {
+                return Err(ParseError::new(
+                    E::UnknownCommand(word.into()),
+                    verb.span.clone(),
+                ));
+            }
         })
     }
 
@@ -248,7 +278,16 @@ fn primary(token: Token) -> Result<Primary, ParseError> {
         TokenKind::Syntax { kind, name } => match kind.as_str() {
             "file" => Primary::File(name),
             "refs" | "def" => {
-                return Err(ParseError::new(E::Reserved(format!("{kind}:")), token.span));
+                let instead = if kind == "refs" {
+                    "select uses with a /regex/"
+                } else {
+                    "select the definition with kind:NAME, e.g. fn:NAME"
+                };
+                let reserved = E::Reserved {
+                    what: format!("{kind}:"),
+                    instead,
+                };
+                return Err(ParseError::new(reserved, token.span));
             }
             _ => Primary::Syntax { kind, name },
         },
@@ -299,6 +338,25 @@ fn validate_regex(
     Ok(pattern)
 }
 
+const KEYWORDS: [&str; 8] = [
+    "all", "with", "to", "before", "after", "start", "end", "file",
+];
+
+/// The syntax of the command `verb`, as `ned help VERB` starts.
+pub fn usage(verb: &str) -> Option<&'static str> {
+    Some(match verb {
+        "show" => "show [SEL]",
+        "outline" => "outline [SEL]",
+        "replace" => "replace [all] SEL with TEXT",
+        "insert" => "insert before|after|start|end [all] SEL TEXT",
+        "delete" => "delete [all] SEL",
+        "sub" => "sub [[all] SEL] /re/ with TEXT",
+        "move" => "move [all] SEL before|after|start|end DEST",
+        "file" => "file PATH...",
+        _ => return None,
+    })
+}
+
 fn expected(what: &'static str, token: &Token) -> ParseError {
     let found = match &token.kind {
         TokenKind::Word(w) => format!("`{w}`"),
@@ -315,10 +373,22 @@ fn expected(what: &'static str, token: &Token) -> ParseError {
         TokenKind::Newline => "end of line".into(),
         TokenKind::Eof => "end of script".into(),
     };
+    let hint = match &token.kind {
+        // A keyword out of place is a usage mistake, not unquoted text.
+        TokenKind::Word(w)
+            if (what == "a selector" || what.starts_with("text"))
+                && !KEYWORDS.contains(&w.as_str())
+                && usage(w).is_none() =>
+        {
+            format!("; quote literal text: \"{w}\"")
+        }
+        _ => String::new(),
+    };
     ParseError::new(
         E::Expected {
             expected: what,
             found,
+            hint,
         },
         token.span.clone(),
     )
@@ -743,10 +813,12 @@ mod tests {
             (e.kind, e.span),
             (E::UnknownCommand("frobnicate".into()), 0..10)
         );
-        assert_eq!(error("rename fn:x to y").kind, E::Reserved("rename".into()));
-        assert_eq!(error("check").kind, E::Reserved("check".into()));
-        assert_eq!(error("show refs:foo").kind, E::Reserved("refs:".into()));
-        assert_eq!(error("show def:foo").kind, E::Reserved("def:".into()));
+        assert!(
+            matches!(error("rename fn:x to y").kind, E::Reserved { what, .. } if what == "rename")
+        );
+        assert!(matches!(error("check").kind, E::Reserved { what, .. } if what == "check"));
+        assert!(matches!(error("show refs:foo").kind, E::Reserved { what, .. } if what == "refs:"));
+        assert!(matches!(error("show def:foo").kind, E::Reserved { what, .. } if what == "def:"));
         assert!(matches!(
             error("12").kind,
             E::Expected {
@@ -810,5 +882,107 @@ mod tests {
             error(r#"sub /x/ /[/ with "y""#).kind,
             E::InvalidRegex(_)
         ));
+    }
+
+    fn message(src: &str) -> String {
+        error(src).kind.to_string()
+    }
+
+    #[test]
+    fn bare_words_suggest_quoting() {
+        assert_eq!(
+            message(r#"replace x with "y""#),
+            r#"expected a selector, found `x`; quote literal text: "x""#
+        );
+        assert_eq!(
+            message("replace 3 with foo"),
+            r#"expected text (a string or heredoc), found `foo`; quote literal text: "foo""#
+        );
+    }
+
+    #[test]
+    fn other_syntax_errors_show_the_usage() {
+        assert_eq!(
+            message(r#"replace 3 "x""#),
+            "expected `with`, found a string; usage: replace [all] SEL with TEXT"
+        );
+        assert_eq!(
+            message(r#"insert inside 3 "a""#),
+            "expected before, after, start, or end, found `inside`; \
+             usage: insert before|after|start|end [all] SEL TEXT"
+        );
+        assert_eq!(
+            message("delete"),
+            "expected a selector, found end of script; usage: delete [all] SEL"
+        );
+        assert_eq!(
+            message("move 3 after"),
+            "expected a selector, found end of script; \
+             usage: move [all] SEL before|after|start|end DEST"
+        );
+        assert_eq!(
+            message(r#""x""#),
+            "expected a command, found a string; \
+             commands are show outline replace insert delete sub move file"
+        );
+    }
+
+    #[test]
+    fn every_command_has_a_usage_starting_with_it() {
+        for verb in [
+            "show", "outline", "replace", "insert", "delete", "sub", "move", "file",
+        ] {
+            let usage = usage(verb).unwrap_or_else(|| panic!("no usage for {verb}"));
+            assert!(usage.starts_with(verb), "{usage}");
+        }
+        assert_eq!(usage("frobnicate"), None);
+    }
+
+    #[test]
+    fn lexical_errors_suggest_fixes() {
+        assert_eq!(
+            message("show @"),
+            r#"unexpected character `@`; quote literal text: "...""#
+        );
+        assert_eq!(
+            message("show 'x'"),
+            r#"unexpected character `'`; strings use double quotes: "...""#
+        );
+        assert_eq!(
+            message("show 0"),
+            "line numbers start at 1; use 1 for the first line"
+        );
+        assert_eq!(
+            message("show 99999999999999999999999"),
+            "line number is too large; use `$` for the last line"
+        );
+        assert_eq!(
+            message("replace 1 with <<END\nx\n"),
+            "unterminated heredoc <<END (started here); end it with a line holding only END"
+        );
+        assert_eq!(
+            message("show /(/"),
+            r#"invalid regex: unclosed group; escape literal characters such as ( [ . * with \, or select a "string""#
+        );
+    }
+
+    #[test]
+    fn reserved_features_name_what_to_use_instead() {
+        assert_eq!(
+            message("rename fn:x to y"),
+            r#"`rename` is not yet supported; use sub /\bOLD\b/ with "NEW" over the files"#
+        );
+        assert_eq!(
+            message("check"),
+            "`check` is not yet supported; run the project's build or linter"
+        );
+        assert_eq!(
+            message("show refs:foo"),
+            "`refs:` is not yet supported; select uses with a /regex/"
+        );
+        assert_eq!(
+            message("show def:foo"),
+            "`def:` is not yet supported; select the definition with kind:NAME, e.g. fn:NAME"
+        );
     }
 }

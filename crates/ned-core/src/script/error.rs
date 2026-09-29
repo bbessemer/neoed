@@ -12,7 +12,7 @@ pub struct ParseError {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ParseErrorKind {
-    #[error("unexpected character `{0}`")]
+    #[error("unexpected character `{0}`; {hint}", hint = quote_hint(*.0))]
     UnexpectedChar(char),
     #[error(
         "unterminated string; close it with `\"` on the same line (use \\n or a heredoc for multi-line text)"
@@ -28,28 +28,30 @@ pub enum ParseErrorKind {
     UnterminatedQuery,
     #[error("unknown part `.{0}`; parts are .body .sig .params .name .doc .lines")]
     UnknownPart(String),
-    #[error("line numbers start at 1")]
+    #[error("line numbers start at 1; use 1 for the first line")]
     ZeroLine,
     #[error("expected a line number or `$` after `-`, e.g. 12-20 or 12-$")]
     MissingRangeEnd,
     #[error("line range {start}-{end} is reversed; write {end}-{start}")]
     ReversedLines { start: usize, end: usize },
-    #[error("line number is too large")]
+    #[error("line number is too large; use `$` for the last line")]
     LineOverflow,
     #[error("expected a tag after `<<`, e.g. <<END")]
     MissingHeredocTag,
-    #[error("unterminated heredoc <<{0} (started here)")]
+    #[error("unterminated heredoc <<{0} (started here); end it with a line holding only {0}")]
     UnterminatedHeredoc(String),
     #[error("expected a name after `{0}:`, e.g. {0}:foo or {0}:*")]
     MissingName(String),
-    #[error("unknown command `{0}`; commands are show outline replace insert delete sub move file")]
+    #[error("unknown command `{0}`; commands are {list}", list = COMMANDS)]
     UnknownCommand(String),
-    #[error("`{0}` is not yet supported")]
-    Reserved(String),
-    #[error("expected {expected}, found {found}")]
+    #[error("`{what}` is not yet supported; {instead}")]
+    Reserved { what: String, instead: &'static str },
+    /// `hint` is empty, or `; ` and a fix.
+    #[error("expected {expected}, found {found}{hint}")]
     Expected {
         expected: &'static str,
         found: String,
+        hint: String,
     },
     #[error("selectors can't contain spaces; write e.g. `impl:Parser>fn:new`")]
     SpaceInSelector,
@@ -57,8 +59,21 @@ pub enum ParseErrorKind {
     AllNotAllowed,
     #[error("`sub` needs a regex before `with`, e.g. sub fn:parse /old/ with \"new\"")]
     MissingSubPattern,
-    #[error("invalid regex: {0}")]
+    #[error(
+        "invalid regex: {0}; escape literal characters such as ( [ . * with \\, or select a \"string\""
+    )]
     InvalidRegex(String),
+}
+
+/// Every command, as error messages list them.
+pub const COMMANDS: &str = "show outline replace insert delete sub move file";
+
+fn quote_hint(c: char) -> &'static str {
+    if c == '\'' {
+        "strings use double quotes: \"...\""
+    } else {
+        "quote literal text: \"...\""
+    }
 }
 
 impl ParseError {
@@ -121,7 +136,8 @@ mod tests {
         assert_eq!(
             e.render(src),
             format!(
-                "error: script:2:28: unterminated heredoc <<END (started here)\n\
+                "error: script:2:28: unterminated heredoc <<END (started here); \
+                 end it with a line holding only END\n\
                  2:replace fn:parse.body with <<END\n{}^",
                 " ".repeat(29)
             )
@@ -145,7 +161,7 @@ mod tests {
         let e = err(ParseErrorKind::UnexpectedChar('@'), 5..6);
         assert_eq!(
             e.render("\"é\" @"),
-            "error: script:1:5: unexpected character `@`\n1:\"é\" @\n      ^"
+            format!("error: script:1:5: {}\n1:\"é\" @\n      ^", e.kind)
         );
     }
 
@@ -154,16 +170,13 @@ mod tests {
         let e = err(ParseErrorKind::ZeroLine, 7..8);
         assert_eq!(
             e.render("show\r\nx 0\r\n"),
-            "error: script:2:2: line numbers start at 1\n2:x 0\n   ^"
+            format!("error: script:2:2: {}\n2:x 0\n   ^", e.kind)
         );
     }
 
     #[test]
     fn error_past_last_line_has_no_excerpt() {
         let e = err(ParseErrorKind::ZeroLine, 5..5);
-        assert_eq!(
-            e.render("show\n"),
-            "error: script:2:1: line numbers start at 1"
-        );
+        assert_eq!(e.render("show\n"), format!("error: script:2:1: {}", e.kind));
     }
 }

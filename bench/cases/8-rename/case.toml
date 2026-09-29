@@ -1,0 +1,25 @@
+task = "Rename an identifier in 5 files"
+fixture = "rename"
+
+[ned]
+command = '''
+ned src/*.rs -e 'sub /\bold_name\b/ with "new_name"'
+'''
+
+[sed]
+command = '''
+sed -i '' 's/[[:<:]]old_name[[:>:]]/new_name/g' src/*.rs
+'''
+
+[python]
+command = '''
+python3 - <<'EOF'
+import re
+from pathlib import Path
+for p in Path("src").glob("*.rs"):
+    p.write_text(re.sub(r"\bold_name\b", "new_name", p.read_text()))
+EOF
+'''
+
+[str_replace]
+note = "1 call per occurrence"

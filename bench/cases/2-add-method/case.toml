@@ -1,0 +1,32 @@
+task = "Add a method to an impl"
+fixture = "parser"
+
+[ned]
+command = '''
+ned src/parser.rs <<'EOF'
+insert end impl:Parser <<END
+
+fn peek(&self) -> Option<char> {
+    self.src[self.pos..].chars().next()
+}
+END
+EOF
+'''
+
+[python]
+command = '''
+python3 - <<'EOF'
+from pathlib import Path
+p = Path("src/parser.rs")
+s = p.read_text()
+old = '        eprintln!("{}", self.src);\n    }\n'
+assert s.count(old) == 1
+new = old + '\n    fn peek(&self) -> Option<char> {\n        self.src[self.pos..].chars().next()\n    }\n'
+p.write_text(s.replace(old, new))
+EOF
+'''
+
+[str_replace]
+call = '''
+{"path": "src/parser.rs", "old_str": "        eprintln!(\"{}\", self.src);\n    }", "new_str": "        eprintln!(\"{}\", self.src);\n    }\n\n    fn peek(&self) -> Option<char> {\n        self.src[self.pos..].chars().next()\n    }"}
+'''

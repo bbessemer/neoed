@@ -11,7 +11,7 @@ use tree_sitter::{Query, QueryCursor, QueryError, QueryErrorKind, StreamingItera
 use crate::buffer::{Buffer, LineEnding};
 use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
 use crate::lang::Language;
-use crate::script::ast::{LineNo, Part, Primary, Step, Target, TextKind};
+use crate::script::ast::{LineNo, Part, Pattern, Primary, Step, Target, TextKind};
 use crate::syntax::{self, Item};
 use crate::text::{full_lines, strip_indent};
 
@@ -142,6 +142,7 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
                         syntax::part(item, *part, &f.text).ok_or_else(|| E::MissingPart {
                             item: syntax::selector(item.kind, &item.name),
                             part: part_name(*part).into(),
+                            has: parts_of(item),
                         })?
                     }
                     (_, None) => unreachable!("checked above"),
@@ -377,7 +378,10 @@ fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]
         let Some(lang) = files[i].lang else { continue };
         let Some(query) = lang.selectors() else {
             let selector = syntax::selector(kind, name);
-            return Err(E::Unsupported(format!("`{selector}` in {lang} files")));
+            return Err(E::Unsupported {
+                what: format!("`{selector}` in {lang} files"),
+                instead: r#"use a line, /regex/, "literal" or query{} selector"#,
+            });
         };
         let kinds = syntax::kinds(query);
         if !kinds.contains(&kind) {
@@ -418,7 +422,7 @@ fn compile_query(
         }
         let query = Query::new(&lang.grammar(), source).map_err(|err| E::InvalidQuery {
             lang: lang.to_string(),
-            message: query_error(&err),
+            message: query_error(&err, &lang.grammar()),
         })?;
         queries.push((lang, query));
     }
@@ -435,28 +439,196 @@ fn compile_query(
     Ok(queries)
 }
 
-fn query_error(err: &QueryError) -> String {
+fn query_error(err: &QueryError, grammar: &tree_sitter::Language) -> String {
     let message = &err.message;
+    let closest = |wanted: &str, names: Vec<&str>| {
+        let limit = (wanted.chars().count() / 3).max(2);
+        names
+            .into_iter()
+            .map(|n| (syntax::distance(wanted, n), n))
+            .filter(|(d, _)| *d <= limit)
+            .min()
+            .map_or(String::new(), |(_, n)| format!("; did you mean `{n}`?"))
+    };
+    let hint = match err.kind {
+        QueryErrorKind::NodeType => {
+            let kinds = (0..grammar.node_kind_count() as u16)
+                .filter(|&id| grammar.node_kind_is_named(id) && grammar.node_kind_is_visible(id))
+                .filter_map(|id| grammar.node_kind_for_id(id))
+                .collect();
+            closest(message.trim_matches('"'), kinds)
+        }
+        QueryErrorKind::Field => {
+            let fields = (1..=grammar.field_count() as u16)
+                .filter_map(|id| grammar.field_name_for_id(id))
+                .collect();
+            closest(message.trim_matches('"'), fields)
+        }
+        QueryErrorKind::Predicate => "; predicates look like (#eq? @capture \"text\")".into(),
+        QueryErrorKind::Language => String::new(),
+        _ => "; queries look like (node field: (child) @sel)".into(),
+    };
     let what = match err.kind {
         QueryErrorKind::NodeType => format!("unknown node type `{}`", message.trim_matches('"')),
-        QueryErrorKind::Field => format!("unknown field `{message}`"),
+        QueryErrorKind::Field => format!("unknown field `{}`", message.trim_matches('"')),
         QueryErrorKind::Capture => format!("unknown capture `@{message}`"),
         QueryErrorKind::Predicate => "bad predicate".into(),
         QueryErrorKind::Structure => "impossible pattern".into(),
         QueryErrorKind::Syntax => "syntax error".into(),
         QueryErrorKind::Language => return message.clone(),
     };
-    format!("{what} at column {}", err.column + 1)
+    format!("{what} at column {}{hint}", err.column + 1)
+}
+
+/// The parts `item` has, as `.body .sig ...`.
+fn parts_of(item: &Item) -> String {
+    [
+        item.body.is_some().then_some(".body"),
+        Some(".sig"),
+        item.params.is_some().then_some(".params"),
+        Some(".name"),
+        item.doc.is_some().then_some(".doc"),
+        Some(".lines"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+/// The fix for a `step` that matched nothing within `parents` (§7): a close
+/// syntax name, a literal match ignoring case and spacing, a case-insensitive
+/// regex match, the spans a nested step searched, or where to look.
+pub(crate) fn hint(
+    step: &Step,
+    files: &[&SourceFile],
+    parents: &[Match],
+    selector: &str,
+) -> String {
+    if let Some(hint) = close_name(step, files, parents, selector) {
+        return hint;
+    }
+    let location = |m: &Match| {
+        let f = files[m.file];
+        let lines = line_numbers(&f.buffer, &m.range);
+        if files.len() > 1 {
+            format!("{}:{lines}", f.path)
+        } else {
+            lines
+        }
+    };
+    match &step.primary {
+        Primary::Literal(text) => {
+            if let Some(m) = near_literal(&text.value, files, parents) {
+                return format!(
+                    "; ignoring case and spacing, it matches at {}",
+                    location(&m)
+                );
+            }
+        }
+        Primary::Regex(pattern) if !pattern.flags.case_insensitive => {
+            if let Some(m) = case_insensitive_match(pattern, files, parents) {
+                return format!(
+                    "; it matches case-insensitively at {} (add the i flag)",
+                    location(&m)
+                );
+            }
+        }
+        _ => {}
+    }
+    let nested = parents
+        .iter()
+        .any(|p| p.range != (0..files[p.file].text.len()));
+    if nested {
+        let mut searched: Vec<String> = parents.iter().take(3).map(location).collect();
+        if parents.len() > 3 {
+            searched.push("...".into());
+        }
+        return format!("; it searched {}", searched.join(", "));
+    }
+    match step.primary {
+        Primary::Syntax { .. } => "; `outline` lists the items".into(),
+        _ => "; `show` prints the text to match against".into(),
+    }
+}
+
+/// The first place within `parents` where `needle` occurs once case and runs
+/// of whitespace are ignored.
+fn near_literal(needle: &str, files: &[&SourceFile], parents: &[Match]) -> Option<Match> {
+    let (needle, _) = fold(needle);
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return None;
+    }
+    parents.iter().find_map(|p| {
+        let (haystack, offsets) = fold(&files[p.file].text[p.range.clone()]);
+        let at = haystack.find(needle)?;
+        let start = p.range.start + offsets[at];
+        let end = p.range.start + offsets[at + needle.len() - 1] + 1;
+        Some(Match {
+            file: p.file,
+            range: start..end,
+        })
+    })
+}
+
+/// The first match of `pattern` within `parents` when case is ignored.
+fn case_insensitive_match(
+    pattern: &Pattern,
+    files: &[&SourceFile],
+    parents: &[Match],
+) -> Option<Match> {
+    let mut folded = pattern.clone();
+    folded.flags.case_insensitive = true;
+    let re = folded.regex().ok()?;
+    parents.iter().find_map(|p| {
+        let found = re.find(&files[p.file].text[p.range.clone()])?;
+        let start = p.range.start + found.start();
+        Some(Match {
+            file: p.file,
+            range: start..(start + found.len()).max(start + 1),
+        })
+    })
+}
+
+/// `text` lowercased, with each run of whitespace as one space, and the byte
+/// offset in `text` of each byte of the result.
+fn fold(text: &str) -> (String, Vec<usize>) {
+    let mut folded = String::new();
+    let mut offsets = Vec::new();
+    let mut in_space = false;
+    for (i, c) in text.char_indices() {
+        if c.is_whitespace() {
+            if !in_space {
+                folded.push(' ');
+                offsets.push(i);
+            }
+            in_space = true;
+            continue;
+        }
+        in_space = false;
+        for lower in c.to_lowercase() {
+            let before = folded.len();
+            folded.push(lower);
+            offsets.extend(std::iter::repeat_n(i, folded.len() - before));
+        }
+    }
+    (folded, offsets)
 }
 
 /// `; did you mean SEL (LINES)?`, naming the item closest in name to a syntax
-/// `step` that matched nothing within `parents`; empty if none is close.
-fn hint(step: &Step, files: &[&SourceFile], parents: &[Match], selector: &str) -> String {
+/// `step` that matched nothing within `parents`, if one is close.
+fn close_name(
+    step: &Step,
+    files: &[&SourceFile],
+    parents: &[Match],
+    selector: &str,
+) -> Option<String> {
     let Primary::Syntax { kind, name } = &step.primary else {
-        return String::new();
+        return None;
     };
     if name.contains('*') {
-        return String::new();
+        return None;
     }
     let limit = (name.chars().count() / 3).max(2);
     let best = parents
@@ -472,9 +644,7 @@ fn hint(step: &Step, files: &[&SourceFile], parents: &[Match], selector: &str) -
         })
         .filter(|(d, ..)| *d <= limit)
         .min_by_key(|(d, ..)| *d);
-    let Some((_, file, item)) = best else {
-        return String::new();
-    };
+    let (_, file, item) = best?;
     let written = syntax::selector(kind, name);
     let fixed = syntax::selector(kind, &item.name);
     let suggestion = match selector.rfind(&written) {
@@ -492,7 +662,7 @@ fn hint(step: &Step, files: &[&SourceFile], parents: &[Match], selector: &str) -
     } else {
         lines
     };
-    format!("; did you mean {suggestion} ({location})?")
+    Some(format!("; did you mean {suggestion} ({location})?"))
 }
 
 fn line_index(n: LineNo, count: usize) -> Option<usize> {
@@ -727,11 +897,11 @@ mod tests {
     fn line_past_end_is_an_error() {
         assert_eq!(
             error("delete 9", &[("a.rs", TEXT)]),
-            "error: script:1:8: line 9 is past the end of a.rs (8 lines)"
+            "error: script:1:8: line 9 is past the end of a.rs (8 lines); use `$` for the last line"
         );
         assert_eq!(
             error("delete 7-12", &[("a.rs", TEXT)]),
-            "error: script:1:8: line 12 is past the end of a.rs (8 lines)"
+            "error: script:1:8: line 12 is past the end of a.rs (8 lines); use `$` for the last line"
         );
         assert_eq!(
             error("delete $", &[("a.rs", "")]),
@@ -747,7 +917,8 @@ mod tests {
         assert_eq!(matches[0].file, 0);
         assert_eq!(
             error("delete 9", &[("a.rs", TEXT), ("b.rs", "x\n")]),
-            "error: script:1:8: line 9 is past the end of a.rs (8 lines), b.rs (1 line)"
+            "error: script:1:8: line 9 is past the end of a.rs (8 lines), b.rs (1 line); \
+             use `$` for the last line"
         );
     }
 
@@ -798,7 +969,7 @@ mod tests {
     fn nested_lines_must_lie_inside_the_parent() {
         assert_eq!(
             error("delete 1-4>7", &[("a.rs", TEXT)]),
-            "error: script:1:8: 1-4>7 matches nothing in a.rs"
+            "error: script:1:8: 1-4>7 matches nothing in a.rs; it searched 1-4"
         );
     }
 
@@ -839,7 +1010,8 @@ mod tests {
                 "delete <<END\nfn b() {\nlet x = 3;\n}\nEND\n",
                 &[("a.rs", TEXT)]
             ),
-            "error: script:1:8: <<END matches nothing in a.rs"
+            "error: script:1:8: <<END matches nothing in a.rs; \
+             ignoring case and spacing, it matches at 6-8"
         );
         let text = "  let x = 1;\n    let y = 2;\n";
         assert!(
@@ -865,7 +1037,8 @@ mod tests {
     fn heredoc_must_match_whole_lines() {
         assert_eq!(
             error("delete <<END\nlet x\nEND\n", &[("a.rs", TEXT)]),
-            "error: script:1:8: <<END matches nothing in a.rs"
+            "error: script:1:8: <<END matches nothing in a.rs; \
+             ignoring case and spacing, it matches at 2"
         );
     }
 
@@ -905,7 +1078,8 @@ mod tests {
         );
         assert_eq!(
             error("delete file:c.rs>/x/", &[("a.rs", "x\n"), ("b.rs", "x\n")]),
-            "error: script:1:8: file:c.rs is not in the file set: a.rs, b.rs"
+            "error: script:1:8: file:c.rs is not in the file set: a.rs, b.rs; \
+             add it with `file a.rs b.rs c.rs`"
         );
     }
 
@@ -936,7 +1110,7 @@ mod tests {
     fn zero_matches_is_an_error_even_with_all() {
         assert_eq!(
             error("delete all /z/", &[("a.rs", "x\n"), ("b.rs", "y\n")]),
-            "error: script:1:12: /z/ matches nothing in a.rs, b.rs"
+            "error: script:1:12: /z/ matches nothing in a.rs, b.rs; `show` prints the text to match against"
         );
     }
 
@@ -1047,7 +1221,8 @@ mod tests {
                 "delete query{(identifier) @sel (#eq? @sel)}",
                 &[("a.rs", RUST)]
             ),
-            "error: script:1:8: invalid rust query: bad predicate at column 1"
+            "error: script:1:8: invalid rust query: bad predicate at column 1; \
+             predicates look like (#eq? @capture \"text\")"
         );
         let err = resolve_in("delete query{(identifier}", &files(&[("a.rs", RUST)])).unwrap_err();
         assert!(
@@ -1091,23 +1266,23 @@ mod tests {
     fn parts_need_syntax_items_that_have_them() {
         assert_eq!(
             error("delete fn:main.doc", &[("a.rs", RUST)]),
-            "error: script:1:8: fn:main has no .doc"
+            "error: script:1:8: fn:main has no .doc; it has .body .sig .params .name .lines"
         );
         assert_eq!(
             error("delete import:std::fmt.body", &[("a.rs", RUST)]),
-            "error: script:1:8: import:std::fmt has no .body"
+            "error: script:1:8: import:std::fmt has no .body; it has .sig .name .lines"
         );
         assert_eq!(
             error("delete /x/.body", &[("a.rs", RUST)]),
-            "error: script:1:8: .body needs a syntax item (kind:name)"
+            "error: script:1:8: .body needs a syntax item, e.g. fn:NAME.body"
         );
         assert_eq!(
             error("delete fn:main.body.name", &[("a.rs", RUST)]),
-            "error: script:1:8: .name needs a syntax item (kind:name)"
+            "error: script:1:8: .name needs a syntax item, e.g. fn:NAME.name"
         );
         assert_eq!(
             error("delete fn:main.lines.body", &[("a.rs", RUST)]),
-            "error: script:1:8: .body needs a syntax item (kind:name)"
+            "error: script:1:8: .body needs a syntax item, e.g. fn:NAME.body"
         );
     }
 
@@ -1263,6 +1438,50 @@ fn main() {
     }
 
     #[test]
+    fn no_match_suggests_a_near_literal_or_regex() {
+        assert_eq!(
+            error(r#"delete "LET  y""#, &[("a.rs", TEXT)]),
+            "error: script:1:8: \"LET  y\" matches nothing in a.rs; \
+             ignoring case and spacing, it matches at 3"
+        );
+        assert_eq!(
+            error("delete /LET Y/", &[("a.rs", TEXT), ("b.rs", "")]),
+            "error: script:1:8: /LET Y/ matches nothing in a.rs, b.rs; \
+             it matches case-insensitively at a.rs:3 (add the i flag)"
+        );
+    }
+
+    #[test]
+    fn nested_no_match_names_the_spans_searched() {
+        assert_eq!(
+            error("delete fn:a>/zzz/", &[("a.rs", TEXT)]),
+            "error: script:1:8: fn:a>/zzz/ matches nothing in a.rs; it searched 1-4"
+        );
+        let many = "fn f() {}\n".repeat(5);
+        assert_eq!(
+            error("delete all fn:f>/zzz/", &[("a.rs", &many)]),
+            "error: script:1:12: fn:f>/zzz/ matches nothing in a.rs; it searched 1, 2, 3, ..."
+        );
+    }
+
+    #[test]
+    fn invalid_queries_suggest_close_names() {
+        assert_eq!(
+            error("delete query{(call_expresion) @sel}", &[("a.rs", RUST)]),
+            "error: script:1:8: invalid rust query: unknown node type `call_expresion` at column 2; \
+             did you mean `call_expression`?"
+        );
+        assert_eq!(
+            error(
+                "delete query{(function_item nme: (identifier)) @sel}",
+                &[("a.rs", RUST)]
+            ),
+            "error: script:1:8: invalid rust query: unknown field `nme` at column 16; \
+             did you mean `name`?"
+        );
+    }
+
+    #[test]
     fn no_match_suggests_a_close_name() {
         assert_eq!(
             error("delete fn:prase", &[("a.rs", RUST)]),
@@ -1282,7 +1501,7 @@ fn main() {
         );
         assert_eq!(
             error("delete fn:zzzzzz", &[("a.rs", RUST)]),
-            "error: script:1:8: fn:zzzzzz matches nothing in a.rs"
+            "error: script:1:8: fn:zzzzzz matches nothing in a.rs; `outline` lists the items"
         );
     }
 
@@ -1311,7 +1530,8 @@ fn main() {
     fn syntax_steps_are_not_yet_supported_for_other_languages() {
         assert_eq!(
             error("delete fn:main", &[("a.py", "def main():\n    pass\n")]),
-            "error: script:1:8: `fn:main` in python files is not yet supported"
+            "error: script:1:8: `fn:main` in python files is not yet supported; \
+             use a line, /regex/, \"literal\" or query{} selector"
         );
     }
 }

@@ -69,7 +69,9 @@ fn ned(dir: &Path, args: &[&str], stdin: &str) -> String {
         .write_stdin(stdin)
         .output()
         .unwrap();
-    report(&output)
+    // Messages name the working directory; keep snapshots independent of it.
+    let dir = fs::canonicalize(dir).unwrap();
+    report(&output).replace(dir.to_str().unwrap(), "{dir}")
 }
 
 fn report(output: &Output) -> String {
@@ -339,7 +341,7 @@ fn failed_script_keeps_reads_and_writes_nothing() {
     parser.rs:1
     1:use std::fmt;
     --- stderr
-    error: script:3:8: "nope" matches nothing in parser.rs
+    error: script:3:8: "nope" matches nothing in parser.rs; `show` prints the text to match against
     "#);
     assert_eq!(read(&dir, "parser.rs"), PARSER);
 }
@@ -362,7 +364,7 @@ fn overlapping_edits_exit_1() {
     exit: 1
     --- stdout
     --- stderr
-    error: script:2:1: edit overlaps command 1 at parser.rs:15
+    error: script:2:1: edit overlaps command 1 at parser.rs:15; merge the two edits, or make one in a separate ned run
     ");
     assert_eq!(read(&dir, "parser.rs"), PARSER);
 }
@@ -389,7 +391,7 @@ fn unsupported_feature_exits_2() {
     exit: 2
     --- stdout
     --- stderr
-    error: script:1:1: `check` is not yet supported
+    error: script:1:1: `check` is not yet supported; run the project's build or linter
     1:check
       ^
     ");
@@ -421,7 +423,7 @@ fn missing_file_exits_3() {
     exit: 3
     --- stdout
     --- stderr
-    error: cannot read nope.rs: No such file or directory (os error 2)
+    error: cannot read nope.rs: no such file (paths are relative to {dir})
     ");
 }
 
@@ -473,7 +475,7 @@ fn glob_matching_nothing_exits_3() {
     exit: 3
     --- stdout
     --- stderr
-    error: glob `*.rx` matched nothing
+    error: glob `*.rx` matched nothing (paths are relative to {dir})
     ");
     assert_eq!(read(&dir, "a.rs"), "let x = 1;\n");
 }
@@ -490,7 +492,7 @@ fn write_failure_exits_3_and_leaves_files_untouched() {
     exit: 3
     --- stdout
     --- stderr
-    error: cannot write files: Permission denied (os error 13)
+    error: cannot write files: Permission denied (os error 13); no file was changed
     ");
     assert_eq!(read(&dir, "a.txt"), "a\n");
 }
@@ -695,7 +697,7 @@ fn missing_part_exits_1() {
     exit: 1
     --- stdout
     --- stderr
-    error: script:1:6: fn:new has no .doc
+    error: script:1:6: fn:new has no .doc; it has .body .sig .params .name .lines
     ");
 }
 
@@ -751,7 +753,7 @@ fn outline_in_a_deferred_language_exits_2() {
     exit: 2
     --- stdout
     --- stderr
-    error: script:1:1: `outline` in python files is not yet supported
+    error: script:1:1: `outline` in python files is not yet supported; use `show`
     ");
 }
 
@@ -1001,7 +1003,7 @@ fn move_into_its_own_source_exits_1() {
     exit: 1
     --- stdout
     --- stderr
-    error: script:1:1: move destination is inside the moved span at parser.rs:9-22
+    error: script:1:1: move destination is inside the moved span at parser.rs:9-22; choose a destination outside it
     ");
     assert_eq!(read(&dir, "parser.rs"), PARSER);
 }

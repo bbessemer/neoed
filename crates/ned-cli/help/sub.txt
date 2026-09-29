@@ -1,0 +1,12 @@
+sub [[all] SEL] /re/ with TEXT
+
+Replaces every match of the regex inside each span of SEL, or of every file in
+the set. In TEXT, $1, ${name} and $0 expand to captures and $$ is a literal $.
+The replacement is verbatim. No match at all is an error. Regexes use Rust
+syntax; ^ and $ match at line boundaries; flags: i (ignore case), s (. matches
+newline).
+
+Examples:
+    sub /\bold_name\b/ with "new_name"
+    sub fn:parse /tok(\d)/ with "token$1"
+    file src/*.rs; sub /Result<(\w+), Error>/ with "Result<$1>"

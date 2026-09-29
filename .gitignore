@@ -1,2 +1,5 @@
 /target
 *.pending-snap
+.venv/
+__pycache__/
+.pytest_cache/

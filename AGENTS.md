@@ -29,7 +29,8 @@ in this section unless explicitly told to.
    reading files or env vars containing secrets at all; ask the engineer if you
    need to verify something secret-related.
 
-4. **Keep tasks small and focused.** Target PRs under 800 lines.
+4. **Keep tasks small and focused.** Target PRs under 800 lines. Documentation
+   counts at a steep discount, since it's much cheaper to review.
    - When the assigned task is complete, **stop** — even if the next step is
      obvious or a TODO file exists.
    - If a task is obviously too large, plan it, split it into sub-tasks, and
@@ -119,8 +120,9 @@ whole-line/re-basing text helpers (`text`), the executor (`exec::run`),
 language detection and parsing (`lang`), syntax items and parts from
 `queries/<lang>/selectors.scm` (`syntax`; Rust only until TODO.md §12),
 `outline`, and external formatters with `.ned.toml` config (`format`). The CLI
-supports every selector and verb, globbed file sets, the parse-error guard, and
-formatting. Next: agent ergonomics (TODO.md §8).
+supports every selector and verb, globbed file sets, the parse-error guard,
+formatting, and `ned help`. Every error ends with a fix. Next: the LSP daemon
+(TODO.md §9).
 
 ## Key Documentation
 
@@ -128,6 +130,8 @@ formatting. Next: agent ergonomics (TODO.md §8).
 - `docs/command-language.md` — authoritative spec for syntax,
   selectors, verbs, output, and exit codes. Tests are written against it;
   update it _before_ changing behaviour.
+- `docs/agent-guide.md`, `docs/skills/ned/SKILL.md` — how agents use `ned`;
+  keep in step with behaviour (every ```ned block is parsed by a test).
 
 ## Tech Stack / Dependencies
 
@@ -153,7 +157,8 @@ Cargo.toml         workspace; shared version, edition, lints
 crates/ned-core/   library: buffer, script parser, selectors, languages, exec, formatting
 crates/ned-cli/    `ned` binary: args, I/O, output rendering only
 queries/<lang>/    tree-sitter selector queries (.scm), one dir per language
-docs/              specs
+docs/              specs, agent guide, Claude Code skill
+bench/             token-cost benchmark (uv project; cases/ back spec §8's table)
 ```
 
 Planned crates: `ned-daemon` (LSP), `ned-repl`, `ned-mcp`. All logic lives in
@@ -193,13 +198,15 @@ Planned crates: `ned-daemon` (LSP), `ned-repl`, `ned-mcp`. All logic lives in
 
 ## Local Development
 
-| Target / Script                             | Description           |
-| ------------------------------------------- | --------------------- |
-| `cargo build`                               | Build workspace       |
-| `cargo test`                                | Run all tests         |
-| `cargo clippy --all-targets -- -D warnings` | Lint                  |
-| `cargo fmt --check`                         | Format check          |
-| `cargo run -q -p ned-cli -- ARGS`           | Run `ned` from source |
+| Target / Script                             | Description                |
+| ------------------------------------------- | -------------------------- |
+| `cargo build`                               | Build workspace            |
+| `cargo test`                                | Run all tests              |
+| `cargo clippy --all-targets -- -D warnings` | Lint                       |
+| `cargo fmt --check`                         | Format check               |
+| `cargo run -q -p ned-cli -- ARGS`           | Run `ned` from source      |
+| `cd bench && uv run bench.py --check`       | Token benchmark vs spec §8 |
+| `cd bench && uv run pytest`                 | Benchmark unit tests       |
 
 ## Deployment Notes
 
