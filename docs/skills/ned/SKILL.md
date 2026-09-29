@@ -168,7 +168,10 @@ END
   after the match, even mid-line, and `insert end /re/` or `"a".."b"` does the
   same at the span's end; add `.lines` to insert after the whole line. A
   heredoc's final newline is dropped there, so a blank line ending it vanishes;
-  target the item itself (`insert before fn:x`) instead.
+  target the item itself (`insert before fn:x`) instead. Likewise
+  `replace /^- \[ \] Foo/ with "- [x] Foo bar"` replaces only the match and
+  keeps the rest of the line, duplicating it: use `sub` for a prefix, or
+  `.lines` (also on a range's end, `/a/../b/.lines`) to replace whole lines.
 - **Replacing an item replaces its attributes.** `replace fn:x with ...` covers
   `#[test]` and `///` lines too, so repeat them in TEXT, or replace `.sig` or
   `.body` instead. A `#[test]` dropped this way fails nothing: the test just
