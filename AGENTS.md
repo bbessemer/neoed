@@ -29,7 +29,8 @@ in this section unless explicitly told to.
    reading files or env vars containing secrets at all; ask the engineer if you
    need to verify something secret-related.
 
-4. **Keep tasks small and focused.** Target PRs under 800 lines.
+4. **Keep tasks small and focused.** Target PRs under 800 lines. Documentation
+   counts at a steep discount, since it's much cheaper to review.
    - When the assigned task is complete, **stop** — even if the next step is
      obvious or a TODO file exists.
    - If a task is obviously too large, plan it, split it into sub-tasks, and
