@@ -75,6 +75,7 @@ impl Language {
     pub fn default_indent(self) -> &'static str {
         match self {
             Language::Go => "\t",
+            Language::Markdown => "  ",
             _ => "    ",
         }
     }

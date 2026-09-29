@@ -79,7 +79,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                 }
             }
         }
-        if let (Some((kind, node)), Some(name)) = (item, name) {
+        if let Some((kind, node)) = item {
             found.push(Found {
                 kind,
                 node,
@@ -95,12 +95,23 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
     found.sort_by_key(|f| {
         (
             f.kind,
-            f.name.start_byte(),
+            f.name.map_or(f.node.start_byte(), |n| n.start_byte()),
             f.node.start_byte(),
             Reverse(f.node.end_byte()),
         )
     });
-    found.dedup_by(|b, a| a.kind == b.kind && a.name == b.name);
+    found.dedup_by(|b, a| a.kind == b.kind && a.name.is_some() && a.name == b.name);
+    // One item per node, under its first name if it has one.
+    found.sort_by_key(|f| {
+        (
+            f.kind,
+            f.node.start_byte(),
+            Reverse(f.node.end_byte()),
+            f.name.is_none(),
+            f.name.map(|n| n.start_byte()),
+        )
+    });
+    found.dedup_by(|b, a| a.kind == b.kind && a.node == b.node);
 
     let mut items: Vec<Item> =
         found
@@ -114,6 +125,8 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                      params,
                  }| {
                     let mut range = node.byte_range();
+                    // Some nodes (Markdown blocks) take the blank lines after them.
+                    range.end = range.start + text[range.clone()].trim_end().len();
                     let comma = node
                         .next_sibling()
                         .filter(|n| n.kind() == "," && !n.is_named())
@@ -136,11 +149,15 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                     }
                     Item {
                         kind,
-                        name: text[name.byte_range()].to_string(),
+                        name: name.map_or(String::new(), |n| {
+                            let text = &text[n.byte_range()];
+                            text.lines().next().unwrap_or_default().trim().to_string()
+                        }),
                         range,
                         trailing_comma: comma.is_some(),
                         node: node.byte_range(),
-                        name_range: name.byte_range(),
+                        name_range: name
+                            .map_or(node.start_byte()..node.start_byte(), |n| n.byte_range()),
                         body,
                         params,
                         doc,
@@ -156,7 +173,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
 struct Found<'t> {
     kind: &'static str,
     node: Node<'t>,
-    name: Node<'t>,
+    name: Option<Node<'t>>,
     body: Option<Range<usize>>,
     params: Option<Range<usize>>,
 }

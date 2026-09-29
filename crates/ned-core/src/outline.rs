@@ -38,7 +38,8 @@ pub fn render(f: &SourceFile, within: Option<&Range<usize>>) -> String {
             continue;
         }
         let depth = stack.len();
-        if matches!(item.kind, "field" | "variant") && !(within.is_some() && depth == 0) {
+        let member = matches!(item.kind, "field" | "variant" | "item" | "table" | "code");
+        if member && !(within.is_some() && depth == 0) {
             continue;
         }
         stack.push(item);

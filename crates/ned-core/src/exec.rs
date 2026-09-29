@@ -737,7 +737,7 @@ fn separated<'t>(
 ) -> Cow<'t, Text> {
     let item = matches!(
         target.selector.steps.last(),
-        Some(Step { primary: Primary::Syntax { kind, .. }, parts }) if parts.is_empty() && kind != "import"
+        Some(Step { primary: Primary::Syntax { kind, .. }, parts }) if parts.is_empty() && kind != "import" && kind != "item"
     );
     let t = &f.text;
     if !item

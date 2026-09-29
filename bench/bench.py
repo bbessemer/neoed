@@ -23,7 +23,7 @@ REPO = ROOT.parent
 SPEC = REPO / "docs" / "command-language.md"
 TOOLS = ["ned", "sed", "python", "str_replace"]
 HEADERS = ["ned", "sed", "Python", "str_replace"]
-LANGUAGES = ["rust", "python", "typescript", "tsx", "javascript", "go"]
+LANGUAGES = ["rust", "python", "typescript", "tsx", "javascript", "go", "markdown"]
 # The spec's counts: tiktoken's o200k_base, as a proxy for LLM tokenizers.
 ENCODING = "o200k_base"
 
@@ -91,17 +91,24 @@ def render_table(cases: list[Case], cells: dict[int, list[str]]) -> str:
 
     def line(values: list[str]) -> str:
         padded = [
-            v.ljust(w) if i < 2 else v.rjust(w) for i, (v, w) in enumerate(zip(values, widths))
+            v.ljust(w) if i < 2 else v.rjust(w)
+            for i, (v, w) in enumerate(zip(values, widths))
         ]
         return "| " + " | ".join(padded) + " |"
 
-    separator = ["-" * w if i < 2 else "-" * (w - 1) + ":" for i, w in enumerate(widths)]
-    return "\n".join([line(header), "| " + " | ".join(separator) + " |", *map(line, rows)])
+    separator = [
+        "-" * w if i < 2 else "-" * (w - 1) + ":" for i, w in enumerate(widths)
+    ]
+    return "\n".join(
+        [line(header), "| " + " | ".join(separator) + " |", *map(line, rows)]
+    )
 
 
 def files_under(root: Path) -> dict[str, str]:
     return {
-        str(p.relative_to(root)): p.read_text() for p in sorted(root.rglob("*")) if p.is_file()
+        str(p.relative_to(root)): p.read_text()
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
     }
 
 
@@ -118,15 +125,27 @@ def run(case: Case, tool: str, env: dict[str, str]) -> str | None:
                 return str(err)
         else:
             result = subprocess.run(
-                ["bash", "-c", variant["command"]], cwd=work, env=env, capture_output=True, text=True
+                ["bash", "-c", variant["command"]],
+                cwd=work,
+                env=env,
+                capture_output=True,
+                text=True,
             )
             if result.returncode != 0:
                 first = (result.stderr.strip().splitlines() or [""])[0]
                 return f"exit {result.returncode}: {first}"
-        expected = files_under(ROOT / "fixtures" / case.fixture) | files_under(case.dir / "after")
+        expected = files_under(ROOT / "fixtures" / case.fixture) | files_under(
+            case.dir / "after"
+        )
         actual = files_under(work)
-        wrong = sorted(p for p in expected.keys() | actual.keys() if expected.get(p) != actual.get(p))
-        return f"differs from the expected result in {', '.join(wrong)}" if wrong else None
+        wrong = sorted(
+            p
+            for p in expected.keys() | actual.keys()
+            if expected.get(p) != actual.get(p)
+        )
+        return (
+            f"differs from the expected result in {', '.join(wrong)}" if wrong else None
+        )
 
 
 def bsd_sed() -> bool:
@@ -136,7 +155,9 @@ def bsd_sed() -> bool:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true", help="fail if the spec's table differs")
+    parser.add_argument(
+        "--check", action="store_true", help="fail if the spec's table differs"
+    )
     args = parser.parse_args(argv)
 
     import tiktoken
@@ -165,7 +186,10 @@ def main(argv: list[str]) -> int:
                     continue
                 row.append(cell(variant, len(encoding.encode(text_of(variant)))))
                 if tool == "sed" and not bsd_sed():
-                    print(f"case {case.number} sed: not run (needs BSD sed)", file=sys.stderr)
+                    print(
+                        f"case {case.number} sed: not run (needs BSD sed)",
+                        file=sys.stderr,
+                    )
                     continue
                 problem = run(case, tool, env)
                 if problem and "caveat" in variant:
@@ -180,7 +204,10 @@ def main(argv: list[str]) -> int:
         spec = spec_table(SPEC.read_text())
         for number, row in cells.items():
             if spec.get(number) != row:
-                print(f"spec §8 row {number}: {spec.get(number)} != {row}", file=sys.stderr)
+                print(
+                    f"spec §8 row {number}: {spec.get(number)} != {row}",
+                    file=sys.stderr,
+                )
                 failed = True
     return 1 if failed else 0
 
