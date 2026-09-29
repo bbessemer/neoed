@@ -77,8 +77,8 @@ fn daemon(action: Action) -> anyhow::Result<()> {
             dir.clone().unwrap_or_else(|| PathBuf::from("."))
         }
     };
-    let root =
-        paths::workspace_root(&dir).with_context(|| format!("cannot read {}", dir.display()))?;
+    let root = ned_core::workspace::root(&dir)
+        .with_context(|| format!("cannot read {}", dir.display()))?;
     let paths = Paths::new(&paths::runtime_dir()?, &root, VERSION);
     let client = match action {
         Action::Start { .. } => Some(Client::connect_or_spawn(
@@ -114,12 +114,11 @@ fn daemon(_: Action) -> anyhow::Result<()> {
     anyhow::bail!("the daemon is Unix-only for now")
 }
 
-/// The daemon for the working directory's workspace, for `check`.
+/// The daemon for the workspace at `root`, for `check` and checking edits.
 #[cfg(unix)]
-pub fn workspace() -> ned_daemon::client::Workspace {
+pub fn workspace(root: PathBuf) -> ned_daemon::client::Workspace {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ned"));
-    let dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    ned_daemon::client::Workspace::new(exe, dir, VERSION)
+    ned_daemon::client::Workspace::new(exe, root, VERSION)
 }
 
 /// Checks the edit, if a daemon is running for the workspace (spec §6.5).

@@ -9,13 +9,13 @@ use clap::{Parser, Subcommand};
 use ned_core::buffer::Buffer;
 use ned_core::config::{self, Config};
 use ned_core::diff::{self, DiffStat};
-use ned_core::exec::{self, ExecErrorKind, Options};
+use ned_core::exec::{self, ExecErrorKind, Initial, Options};
 use ned_core::format::{self, Outcome};
 use ned_core::lang::Language;
 use ned_core::lsp;
 #[cfg(unix)]
 use ned_core::lsp::Lsp;
-use ned_core::{fs, script};
+use ned_core::{fs, script, workspace};
 
 /// Token-economical, syntax-aware line editor for AI agents.
 #[derive(Parser)]
@@ -25,13 +25,17 @@ use ned_core::{fs, script};
     args_conflicts_with_subcommands = true,
     disable_help_subcommand = true,
     // clap leaves a user-defined `help` subcommand out of the usage.
-    override_usage = "ned [OPTIONS] [FILES]... [-e SCRIPT]...\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]"
+    override_usage = "ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]"
 )]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
     /// Files to edit: the initial file set.
     files: Vec<String>,
+    /// Start with every file in the workspace, DIR or the one containing the
+    /// working directory, instead of FILES.
+    #[arg(short, long, value_name = "DIR", num_args = 0..=1, conflicts_with = "files")]
+    workspace: Option<Option<PathBuf>>,
     /// A script to run; repeat to join several with newlines. Without -e, the
     /// script is read from stdin.
     #[arg(short = 'e', value_name = "SCRIPT")]
@@ -104,13 +108,28 @@ fn main() -> ExitCode {
         lang: cli.lang,
         force: cli.force,
     };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let root = match &cli.workspace {
+        Some(Some(dir)) => match dir.canonicalize() {
+            Ok(dir) => dir,
+            Err(err) => {
+                eprintln!("error: cannot read {}: {err}", dir.display());
+                return ExitCode::from(3);
+            }
+        },
+        _ => workspace::root(&cwd).unwrap_or(cwd),
+    };
+    let initial = match cli.workspace {
+        Some(_) => Initial::Workspace(root.clone()),
+        None => Initial::Files(&cli.files),
+    };
     #[cfg(unix)]
-    let mut workspace = daemon::workspace();
+    let mut workspace = daemon::workspace(root);
     #[cfg(unix)]
     let lsp: Option<&mut dyn Lsp> = Some(&mut workspace);
     #[cfg(not(unix))]
     let lsp = None;
-    let run = exec::run(&parsed, &src, &cli.files, &options, lsp);
+    let run = exec::run(&parsed, &src, initial, &options, lsp);
     print!("{}", run.output);
     let changes = match run.result {
         Ok(changes) => changes,

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use ned_core::lsp::{Diagnosis, Document, Lsp, LspFailure};
 use thiserror::Error;
 
-use crate::paths::{Paths, runtime_dir, workspace_root};
+use crate::paths::{Paths, runtime_dir};
 use crate::protocol::{Request, Response};
 
 const START_TIMEOUT: Duration = Duration::from_secs(5);
@@ -103,17 +103,18 @@ impl Client {
 /// spawned if need be) on first use.
 pub struct Workspace {
     exe: PathBuf,
-    dir: PathBuf,
+    root: PathBuf,
     version: String,
     client: Option<Client>,
 }
 
 impl Workspace {
-    /// Spawns the daemon as `exe daemon run`, for `ned` build `version`.
-    pub fn new(exe: PathBuf, dir: PathBuf, version: &str) -> Workspace {
+    /// The daemon for the workspace at `root`, spawned as `exe daemon run`
+    /// for `ned` build `version`.
+    pub fn new(exe: PathBuf, root: PathBuf, version: &str) -> Workspace {
         Workspace {
             exe,
-            dir,
+            root,
             version: version.into(),
             client: None,
         }
@@ -122,10 +123,9 @@ impl Workspace {
     /// Whether a daemon is running for the workspace; never spawns one.
     pub fn running(&mut self) -> bool {
         if self.client.is_none()
-            && let Ok(root) = workspace_root(&self.dir)
             && let Ok(runtime) = runtime_dir()
         {
-            self.client = Client::connect(&Paths::new(&runtime, &root, &self.version));
+            self.client = Client::connect(&Paths::new(&runtime, &self.root, &self.version));
         }
         self.client.is_some()
     }
@@ -135,11 +135,10 @@ impl Workspace {
         if let Some(client) = &self.client {
             return Ok(client.clone());
         }
-        let root = workspace_root(&self.dir)
-            .map_err(|err| LspFailure(format!("cannot read {}: {err}", self.dir.display())))?;
+
         let runtime = runtime_dir().map_err(|err| LspFailure(err.to_string()))?;
-        let paths = Paths::new(&runtime, &root, &self.version);
-        let client = Client::connect_or_spawn(&paths, &self.exe, &root)
+        let paths = Paths::new(&runtime, &self.root, &self.version);
+        let client = Client::connect_or_spawn(&paths, &self.exe, &self.root)
             .map_err(|err| LspFailure(err.to_string()))?;
         Ok(self.client.insert(client).clone())
     }

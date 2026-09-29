@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::fs;
 use std::ops::Range;
+use std::path::PathBuf;
 
 use tree_sitter::Node;
 
@@ -19,6 +20,15 @@ use crate::script::error::{excerpt, location};
 use crate::select::{self, Match, SourceFile, line_numbers, same_path};
 use crate::syntax::{self, Item};
 use crate::text;
+
+/// Where the initial file set comes from (spec §2.4).
+#[derive(Debug, Clone)]
+pub enum Initial<'a> {
+    /// `FILE` arguments; globs are expanded.
+    Files(&'a [String]),
+    /// Every file in the workspace at this root (`-w`).
+    Workspace(PathBuf),
+}
 
 /// The result of running a script: the output of the reads that ran, in
 /// command order, and either every modified file or the error that rejected
@@ -52,12 +62,12 @@ pub struct Options {
     pub force: bool,
 }
 
-/// Runs `script` (parsed from `src`) with `files` as the initial file set.
-/// Nothing is written.
+/// Runs `script` (parsed from `src`) on the `initial` file set. Nothing is
+/// written.
 pub fn run<'s, 'l: 's>(
     script: &Script,
     src: &'s str,
-    files: &[String],
+    initial: Initial,
     options: &'s Options,
     lsp: Option<&'s mut (dyn Lsp + 'l)>,
 ) -> Run {
@@ -70,7 +80,7 @@ pub fn run<'s, 'l: 's>(
         set: Vec::new(),
         output: String::new(),
     };
-    let result = executor.run(script, files);
+    let result = executor.run(script, initial);
     Run {
         output: executor.output,
         result,
@@ -100,8 +110,14 @@ struct Executor<'s> {
 }
 
 impl Executor<'_> {
-    fn run(&mut self, script: &Script, initial: &[String]) -> Result<Vec<Change>, ExecError> {
-        self.set = self.open(initial, None)?;
+    fn run(&mut self, script: &Script, initial: Initial) -> Result<Vec<Change>, ExecError> {
+        self.set = match initial {
+            Initial::Files(paths) => self.open(paths, None)?,
+            Initial::Workspace(root) => {
+                let _ = root;
+                todo!()
+            }
+        };
         for (index, command) in script.commands.iter().enumerate() {
             self.command(index, command)?;
         }
@@ -1190,7 +1206,7 @@ mod tests {
             .collect();
         let src = script.replace("{dir}/", &root);
         let parsed = parse(&src).unwrap();
-        let run = run(&parsed, &src, &paths, options, lsp);
+        let run = run(&parsed, &src, Initial::Files(&paths), options, lsp);
         let strip = |s: &str| s.replace(&root, "");
         Outcome {
             output: strip(&run.output),
@@ -1624,7 +1640,7 @@ mod tests {
         let err = run(
             &parsed,
             "show",
-            std::slice::from_ref(&missing),
+            Initial::Files(std::slice::from_ref(&missing)),
             &Options::default(),
             None,
         )
@@ -1646,7 +1662,7 @@ mod tests {
         let err = run(
             &parsed,
             "show",
-            std::slice::from_ref(&path),
+            Initial::Files(std::slice::from_ref(&path)),
             &Options::default(),
             None,
         )
@@ -1661,9 +1677,15 @@ mod tests {
     #[test]
     fn commands_need_files() {
         let parsed = parse("show 1").unwrap();
-        let err = run(&parsed, "show 1", &[], &Options::default(), None)
-            .result
-            .unwrap_err();
+        let err = run(
+            &parsed,
+            "show 1",
+            Initial::Files(&[]),
+            &Options::default(),
+            None,
+        )
+        .result
+        .unwrap_err();
         assert_eq!(
             err.render("show 1"),
             "error: script:1:1: no files to edit; pass FILE arguments or use `file PATH`"
@@ -2340,13 +2362,19 @@ fn main() {}
     #[test]
     fn allow_records_the_most_permissive_level() {
         let src = "allow warnings\nallow errors\nallow warnings";
-        let out = run(&parse(src).unwrap(), src, &[], &Options::default(), None);
+        let out = run(
+            &parse(src).unwrap(),
+            src,
+            Initial::Files(&[]),
+            &Options::default(),
+            None,
+        );
         assert_eq!(out.result.unwrap(), vec![]);
         assert_eq!(out.allow, Some(Severity::Error));
         let out = run(
             &parse("show 1").unwrap(),
             "show 1",
-            &[],
+            Initial::Files(&[]),
             &Options::default(),
             None,
         );
