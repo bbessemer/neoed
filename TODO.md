@@ -101,6 +101,11 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       type
 - [ ] Markdown sections get a `.body`: the content after the heading line, so
       `insert start|end section:X` and `replace section:X.body` work
+- [ ] `replace ITEM with TEXT` keeps the item's attributes and doc comments
+      (`#[test]`, `///`) unless TEXT starts with its own, so replacing a test
+      function can't silently drop `#[test]`
+- [ ] `insert before ITEM` with TEXT that is only attributes or doc comments
+      adds no separating blank line: the text attaches to the item
 
 ## 9. LSP daemon _(split)_
 
@@ -144,6 +149,9 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] A line selector nested in a syntax item can't select the item's last
       line (`fn:b>$`, `fn:b>8`): the line's newline lies outside the item's
       span, which ends at `}`
+- [ ] Formatting a file that `create` makes in a new directory reports
+      `rustfmt not found`: the formatter runs in the file's directory, which
+      doesn't exist until the write; run it in the nearest existing ancestor
 
 ## Future improvements
 
