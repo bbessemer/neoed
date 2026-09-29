@@ -11,5 +11,7 @@ Syntax: kind:name, with * as a wildcard; quote other names: import:"os.path".
 Parts: .body .params (inside the delimiters) .name .sig .doc .lines.
 Nest with > (no spaces): impl:Parser>fn:new>"x". Scope: 40-80>fn:new,
 file:src/a.rs>fn:new. Raw: query{(node) @sel}.
+Range: A..B runs from a match of A to the end of the next match of B:
+/^## 6/../^## 7/, fn:a..fn:c. Add .lines for whole lines.
 Ambiguous matches are errors listing selectors to paste; `all SEL` takes every
 match.

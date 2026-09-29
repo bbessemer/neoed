@@ -69,10 +69,10 @@ pub enum ParseErrorKind {
 pub const COMMANDS: &str = "show outline replace insert delete sub move file";
 
 fn quote_hint(c: char) -> &'static str {
-    if c == '\'' {
-        "strings use double quotes: \"...\""
-    } else {
-        "quote literal text: \"...\""
+    match c {
+        '\'' => "strings use double quotes: \"...\"",
+        '-' => "ranges between selectors are written SEL..SEL, e.g. /a/../b/",
+        _ => "quote literal text: \"...\"",
     }
 }
 

@@ -199,8 +199,22 @@ impl Parser<'_> {
     /// The primary `first` starts, which may be a range, `first..TO`.
     fn range(&mut self, first: Token) -> Result<Primary, ParseError> {
         let from = primary(first)?;
-        let _ = &mut self.peeked;
-        Ok(from)
+        let next = self.peek()?;
+        if next.kind != TokenKind::DotDot {
+            return Ok(from);
+        }
+        if next.space_before {
+            return Err(ParseError::new(E::SpaceInSelector, next.span.clone()));
+        }
+        self.bump()?;
+        let token = self.bump()?;
+        if token.space_before {
+            return Err(ParseError::new(E::SpaceInSelector, token.span));
+        }
+        Ok(Primary::Range {
+            from: Box::new(from),
+            to: Box::new(primary(token)?),
+        })
     }
 
     fn position(&mut self) -> Result<Position, ParseError> {

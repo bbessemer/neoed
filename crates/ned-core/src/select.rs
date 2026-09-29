@@ -295,7 +295,22 @@ impl<'a> Matcher<'a> {
                     Vec::new()
                 }
             }
-            Matcher::Range(..) => Vec::new(),
+            Matcher::Range(from, to) => {
+                let ends = to.find(f, parent.clone());
+                let mut ranges = Vec::new();
+                let mut searched_to = parent.start;
+                for start in from.find(f, parent.clone()) {
+                    if start.start < searched_to {
+                        continue;
+                    }
+                    let Some(end) = ends.iter().find(|e| e.start >= start.end) else {
+                        break;
+                    };
+                    searched_to = end.end;
+                    ranges.push(start.start..end.end);
+                }
+                ranges
+            }
             Matcher::Query(queries) => {
                 let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
                     return Vec::new();
@@ -968,7 +983,7 @@ mod tests {
             select("delete /let x/../let y/.lines", TEXT),
             ["    let x = 1;\n    let y = 2;\n"]
         );
-        assert_eq!(select("delete fn:b>/let/..$", TEXT), ["let x = 3;\n}\n"]);
+        assert_eq!(select(r#"delete fn:b>/let/.."}""#, TEXT), ["let x = 3;\n}"]);
     }
 
     #[test]
