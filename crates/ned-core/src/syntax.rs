@@ -3,7 +3,8 @@
 //!
 //! A query in `queries/<lang>/selectors.scm` captures each item node as its
 //! kind (`@fn`, `@struct`, ...) and the item's name node as `@name`, in one
-//! pattern, with optional `@body` and `@params` nodes for those parts.
+//! pattern, with optional `@body` and `@params` nodes for those parts, or a
+//! `@head` node whose following lines are the body (a Markdown heading).
 //! Standalone `@doc` and `@attr` patterns capture the doc comments and
 //! attributes that extend an item's default span when they directly precede
 //! it.
@@ -71,14 +72,15 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
     while let Some(m) = matches.next() {
-        let (mut item, mut name, mut body, mut params, mut trait_name) =
-            (None, None, None, None, None);
+        let (mut item, mut name, mut body, mut params, mut trait_name, mut head) =
+            (None, None, None, None, None, None);
         for capture in m.captures() {
             match names[capture.index as usize] {
                 "name" => name = Some(capture.node),
                 "body" => body = Some(capture.node.byte_range()),
                 "params" => params = Some(capture.node.byte_range()),
                 "trait_name" => trait_name = Some(capture.node),
+                "head" => head = Some(capture.node.byte_range()),
                 "doc" => leading.push((capture.node.byte_range(), true)),
                 "attr" => leading.push((capture.node.byte_range(), false)),
                 other => {
@@ -96,6 +98,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                 body,
                 params,
                 trait_name,
+                head,
             });
         }
     }
@@ -139,6 +142,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                  body,
                  params,
                  trait_name,
+                 head,
              }| {
                 let mut range = node.byte_range();
                 // Some nodes (Markdown blocks) take the blank lines after them.
@@ -169,6 +173,10 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                         doc = Some(l.start..doc.map_or(l.end, |d| d.end));
                     }
                 }
+                let body = match &head {
+                    Some(head) => Some(lines_after(text, head.clone(), &range)),
+                    None => body,
+                };
                 Item {
                     kind,
                     name: match trait_name {
@@ -183,7 +191,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                         .map_or(node.start_byte()..node.start_byte(), |n| n.byte_range()),
                     body,
                     params,
-                    body_lines: false,
+                    body_lines: head.is_some(),
                     doc,
                 }
             },
@@ -201,6 +209,7 @@ struct Found<'t> {
     body: Option<Range<usize>>,
     params: Option<Range<usize>>,
     trait_name: Option<Node<'t>>,
+    head: Option<Range<usize>>,
 }
 
 /// Whether only whitespace, and no blank line, separates `leading` from
@@ -211,11 +220,29 @@ fn directly_before(text: &str, leading: &Range<usize>, start: usize) -> bool {
         && gap.matches('\n').count() + usize::from(text[..leading.end].ends_with('\n')) <= 1
 }
 
+/// The whole lines after `head` to the end of `range`'s last line, from the
+/// first non-blank one; empty at the end if there are none.
+fn lines_after(text: &str, head: Range<usize>, range: &Range<usize>) -> Range<usize> {
+    let mut start = full_lines(text, head).end;
+    let end = full_lines(text, range.clone()).end.max(start);
+    while start < end {
+        let line = full_lines(text, start..start);
+        if !text[line.clone()].trim().is_empty() {
+            break;
+        }
+        start = line.end;
+    }
+    start..end
+}
+
 /// The span of `part` of `item` (§3.4); `None` if the item doesn't have it.
 /// `.lines`, `.refs` and `.def` aren't item parts.
 pub fn part(item: &Item, part: Part, text: &str) -> Option<Range<usize>> {
     match part {
-        Part::Body => item.body.clone().map(|r| inside(text, r)),
+        Part::Body => item
+            .body
+            .clone()
+            .map(|r| if item.body_lines { r } else { inside(text, r) }),
         Part::Params => item.params.clone().map(|r| inside(text, r)),
         Part::Name => Some(item.name_range.clone()),
         Part::Sig => Some(match &item.body {

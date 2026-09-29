@@ -1283,7 +1283,8 @@ fn empty_body<'f>(f: &'f SourceFile, range: &Range<usize>) -> Option<&'f Item> {
 }
 
 /// The span and text that fill `item`'s empty body with `new` (§4.2):
-/// line-oriented, one indent unit inside the item, and on lines of its own.
+/// line-oriented, one indent unit inside the item, and on lines of its own;
+/// for a body of lines (a Markdown section), on the lines after its heading.
 fn fill_body(
     f: &SourceFile,
     item: &Item,
@@ -1292,6 +1293,16 @@ fn fill_body(
 ) -> (Range<usize>, String) {
     let t = &f.text;
     let unit = indent_unit(f);
+    if item.body_lines {
+        // The lines right after the heading, which may end the file.
+        let lines = line_oriented(new, text::indent_at(t, item.node.start), &unit);
+        let lead = if t[..range.start].ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        return (range, format!("{lead}{lines}"));
+    }
     let indent = format!("{}{unit}", text::indent_at(t, item.node.start));
     let lines = line_oriented(new, &indent, &unit);
     let body = item.body.clone().expect("an empty body is a body");
