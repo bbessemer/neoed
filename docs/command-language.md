@@ -75,7 +75,7 @@ line       = [ command { ";" command } ] [ comment ] NEWLINE { heredoc-body } ;
 command    = show | outline | replace | insert | delete | sub | move
            | file | rename | check ;
 
-show       = "show" [ target ] ;
+show       = "show" [ target [ context ] ] ;
 outline    = "outline" [ target ] ;
 replace    = "replace" target "with" text ;
 insert     = "insert" position target text ;
@@ -90,6 +90,7 @@ position   = "before" | "after" | "start" | "end" ;
 target     = [ "all" ] selector ;
 selector   = step { ">" step } ;
 step       = primary [ ".." primary ] { part } ;
+context    = "+" digit { digit } ;
 part       = ".body" | ".sig" | ".params" | ".name" | ".doc" | ".lines" ;
 primary    = lines | regex | literal | syntax | query ;
 
@@ -307,8 +308,9 @@ reserved for the LSP milestone.
 
 ### 4.1 Reads
 
-- **`show [SEL]`** prints the lines containing each selected span, numbered
-  (§6.1). Without a selector, it prints each whole file in the set.
+- **`show [SEL [+N]]`** prints the lines containing each selected span,
+  numbered (§6.1), with `N` lines of context around each. Without a selector,
+  it prints each whole file in the set.
 - **`outline [SEL]`** prints the symbol tree (§6.2) of each file, or of the
   items inside `SEL`.
 
@@ -409,8 +411,9 @@ all commands, once per modified file, in the order the files first appear.
 ### 6.1 `show`
 
 Each selected region is headed `PATH:START-END`, or `PATH:N` for a single line.
-Its lines follow as `N:text`, with no padding. If spans are within one line of
-each other, their regions merge.
+Its lines follow as `N:text`, with no padding. `show SEL +N` adds up to `N`
+lines of context before and after each span. If regions are within one line of
+each other, they merge.
 
 ```
 src/parser.rs:14-17
