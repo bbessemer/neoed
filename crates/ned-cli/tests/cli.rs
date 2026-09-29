@@ -387,18 +387,14 @@ fn syntax_error_exits_2_with_caret() {
 #[test]
 fn unsupported_feature_exits_2() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
-    let out = ned(
-        dir.path(),
-        &["parser.rs", "-e", "rename fn:parse to go"],
-        "",
-    );
+    let out = ned(dir.path(), &["parser.rs", "-e", "show refs:parse"], "");
     assert_snapshot!(out, @r#"
     exit: 2
     --- stdout
     --- stderr
-    error: script:1:1: `rename` is not yet supported; use sub /\bOLD\b/ with "NEW" over the files
-    1:rename fn:parse to go
-      ^
+    error: script:1:6: `refs:` is not yet supported; select uses with a /regex/
+    1:show refs:parse
+           ^
     "#);
 }
 
