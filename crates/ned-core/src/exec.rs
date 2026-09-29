@@ -813,7 +813,7 @@ pub enum ExecErrorKind {
         kinds: String,
     },
     #[error(
-        "{selector} matches {} items; add `all` or use one of:{}",
+        "{selector} matches {} items; {}",
         .candidates.total,
         .candidates
     )]
@@ -852,22 +852,37 @@ pub enum ExecErrorKind {
 }
 
 /// Selectors that each pick one of an ambiguous selector's matches, with the
-/// location of that match; `total` counts all matches, listed or not.
+/// location of that match; `total` counts all matches, listed or not, and
+/// `shared` those that no selector picks alone, since they share a line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidates {
     pub listed: Vec<(String, String)>,
     pub total: usize,
+    pub shared: usize,
 }
 
 impl fmt::Display for Candidates {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.listed.is_empty() {
+            return f.write_str(
+                "add `all`, or select longer text; matches on the same line can't be picked by scope",
+            );
+        }
+        f.write_str("add `all` or use one of:")?;
         let width = self.listed.iter().map(|(s, _)| s.len()).max();
         for (selector, loc) in &self.listed {
             write!(f, "\n  {selector:<w$}   {loc}", w = width.unwrap_or(0))?;
         }
-        let more = self.total - self.listed.len();
+        let more = self.total - self.shared - self.listed.len();
         if more > 0 {
             write!(f, "\n  … and {more} more")?;
+        }
+        if self.shared > 0 {
+            let shared = self.shared;
+            write!(
+                f,
+                "\n  {shared} more share a line with another match; select longer text to pick one"
+            )?;
         }
         Ok(())
     }

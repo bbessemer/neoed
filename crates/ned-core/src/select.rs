@@ -1,6 +1,7 @@
 //! Resolving selectors to spans of files (command-language spec, §3).
 
 use std::cell::OnceCell;
+use std::collections::HashMap;
 use std::ops::Range;
 
 use regex::Regex;
@@ -741,8 +742,7 @@ fn candidates(
         .iter()
         .map(|m| enclosing(files[m.file], &m.range))
         .collect();
-    let listed = (0..matches.len())
-        .take(MAX_CANDIDATES)
+    let all: Vec<(String, String)> = (0..matches.len())
         .map(|i| {
             let (m, selector) = (&matches[i], &named[i]);
             let f = &files[m.file];
@@ -769,8 +769,20 @@ fn candidates(
             (format!("{scope}{selector}"), format!("{}:{lines}", f.path))
         })
         .collect();
+    // Matches on one line get the same line-scoped selector, which picks none
+    // of them alone.
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for (selector, _) in &all {
+        *counts.entry(selector).or_default() += 1;
+    }
+    let unique: Vec<(String, String)> = all
+        .iter()
+        .filter(|(selector, _)| counts[selector.as_str()] == 1)
+        .cloned()
+        .collect();
     Candidates {
-        listed,
+        shared: all.len() - unique.len(),
+        listed: unique.into_iter().take(MAX_CANDIDATES).collect(),
         total: matches.len(),
     }
 }
@@ -1128,6 +1140,31 @@ mod tests {
             "error: script:1:8: <<END matches 2 items; add `all` or use one of:\n  \
              1-2><<END   a.rs:1-2\n  \
              3-4><<END   a.rs:3-4"
+        );
+    }
+
+    #[test]
+    fn matches_sharing_a_line_are_counted_not_listed() {
+        assert_eq!(
+            error("delete /x/", &[("a.rs", "x x\nx\n")]),
+            "error: script:1:8: /x/ matches 3 items; add `all` or use one of:\n  \
+             2>/x/   a.rs:2\n  \
+             2 more share a line with another match; select longer text to pick one"
+        );
+        assert_eq!(
+            error("delete /x/", &[("a.rs", "x x\n"), ("b.rs", "x\n")]),
+            "error: script:1:8: /x/ matches 3 items; add `all` or use one of:\n  \
+             file:b.rs>/x/   b.rs:1\n  \
+             2 more share a line with another match; select longer text to pick one"
+        );
+    }
+
+    #[test]
+    fn matches_that_all_share_lines_list_no_candidates() {
+        assert_eq!(
+            error("delete \"a\"", &[("a.rs", "a a\nb\n")]),
+            "error: script:1:8: \"a\" matches 2 items; add `all`, or select longer text; \
+             matches on the same line can't be picked by scope"
         );
     }
 

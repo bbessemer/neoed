@@ -265,6 +265,9 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
   Error messages list the candidates in exactly these forms (§7): nested in the
   match's nearest enclosing item if that's unique among the matches, otherwise
   scoped by file if that's unique, otherwise by lines.
+- Every listed candidate picks exactly one match. Matches that share a line
+  with another match can't be picked by scope, so they aren't listed; the error
+  counts them and suggests selecting longer text, or `all`.
 - When the last step is a syntax step with a `*` in its name, each candidate
   names its item instead (`fn:test_*` lists `fn:test_parse`), and is scoped as
   above only among the matches with the same name.
@@ -512,7 +515,7 @@ Errors go to stderr, in the form `error: LOC: message`.
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Script syntax                           | Quoting, for a bare word where text or a selector belongs; otherwise the command's usage, e.g. `usage: replace [all] SEL with TEXT`                      |
 | Selector matches nothing                | A close syntax name; a literal match that differs only in case or spacing; a regex that matches with `i`; the spans a nested step searched; or `outline` |
-| Ambiguous selector                      | Candidate selectors (§3.5)                                                                                                                               |
+| Ambiguous selector                      | Candidate selectors (§3.5), or longer text for matches that share a line                                                                                 |
 | Missing part, part on a non-syntax step | The parts the item has, or an example                                                                                                                    |
 | Invalid query                           | The closest node type or field name in the grammar                                                                                                       |
 | Line past the end                       | `$` for the last line                                                                                                                                    |
