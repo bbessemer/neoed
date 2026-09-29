@@ -10,7 +10,10 @@ version. Further arguments are flags:
 
 - `fail`: print an error and exit instead of initializing;
 - `pull`: offer pull diagnostics instead of publishing them;
-- `cancel-once`: with `pull`, cancel the first diagnostic request.
+- `cancel-once`: with `pull`, cancel the first diagnostic request;
+- `ra`: act like rust-analyzer: report no progress, and only say it's
+  quiescent once given a document containing "done".
+
 """
 
 import json
@@ -89,13 +92,17 @@ while (message := read()) is not None:
                 "interFileDependencies": False,
                 "workspaceDiagnostics": False,
             }
-        send({"id": message["id"], "result": {"capabilities": capabilities}})
+        result = {"capabilities": capabilities}
+        if "ra" in flags:
+            result["serverInfo"] = {"name": "rust-analyzer"}
+        send({"id": message["id"], "result": result})
     elif method == "initialized":
         request(
             "workspace/configuration", {"items": [{"section": "a"}, {"section": "b"}]}
         )
-        request("window/workDoneProgress/create", {"token": "index"})
-        progress("begin")
+        if "ra" not in flags:
+            request("window/workDoneProgress/create", {"token": "index"})
+            progress("begin")
     elif method in ("textDocument/didOpen", "textDocument/didChange"):
         document = params["textDocument"]
         if method == "textDocument/didOpen":
@@ -105,7 +112,10 @@ while (message := read()) is not None:
         documents[document["uri"]] = text
         if "crash" in text:
             sys.exit(1)
-        if "done" in text:
+        if "done" in text and "ra" in flags:
+            status = {"health": "ok", "quiescent": True}
+            send({"method": "experimental/serverStatus", "params": status})
+        elif "done" in text:
             progress("end")
         if "pull" not in flags:
             publish = {

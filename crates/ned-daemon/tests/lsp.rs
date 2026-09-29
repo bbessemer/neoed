@@ -379,6 +379,31 @@ async fn diagnose_waits_for_indexing_up_to_the_timeout() {
 }
 
 #[tokio::test]
+async fn rust_analyzer_is_busy_until_it_says_it_is_quiescent() {
+    let ws = Workspace::new();
+    let config = format!(
+        "[lsp]\nrust = [{FAKE:?}, {:?}, \"ra\", \"pull\"]\n\n[check]\ntimeout = 1\n",
+        ws.log
+    );
+    fs::write(ws.dir.path().join(".ned.toml"), config).unwrap();
+    let mut servers = ws.servers();
+    let err = servers
+        .diagnose(&[ws.rust("a.rs", "ERROR")])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("rerun"), "{err}");
+    let diagnosis = servers
+        .diagnose(&[ws.rust("a.rs", "done ERROR")])
+        .await
+        .unwrap();
+    assert_eq!(
+        diagnosis.files,
+        [Some(vec![fake(0, 5, "ERROR", Severity::Error)])]
+    );
+    servers.shutdown().await;
+}
+
+#[tokio::test]
 async fn diagnose_returns_the_configured_level_and_skips_serverless_files() {
     let ws = Workspace::with_config("\n[check]\nshow = \"hint\"\n");
     let mut servers = ws.servers();

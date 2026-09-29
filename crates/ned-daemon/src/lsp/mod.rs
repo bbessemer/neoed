@@ -205,6 +205,12 @@ impl Server {
         let result = server.request("initialize", params).await?;
         let provider = &result["capabilities"]["diagnosticProvider"];
         server.pulls = !(provider.is_null() || *provider == Value::Bool(false));
+        // rust-analyzer's only sign of loading the project is
+        // `experimental/serverStatus`; until it's quiescent, it has nothing
+        // to report.
+        if result["serverInfo"]["name"] == "rust-analyzer" {
+            server.shared.lock().unwrap().state.quiescent = Some(false);
+        }
         server.notify("initialized", json!({}));
         // pyright analyzes nothing until it has been sent settings.
         server.notify("workspace/didChangeConfiguration", json!({"settings": {}}));
