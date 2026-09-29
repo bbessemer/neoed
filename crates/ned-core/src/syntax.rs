@@ -187,7 +187,7 @@ fn directly_before(text: &str, leading: &Range<usize>, start: usize) -> bool {
 }
 
 /// The span of `part` of `item` (§3.4); `None` if the item doesn't have it.
-/// `.lines` isn't an item part.
+/// `.lines`, `.refs` and `.def` aren't item parts.
 pub fn part(item: &Item, part: Part, text: &str) -> Option<Range<usize>> {
     match part {
         Part::Body => item.body.clone().map(|r| inside(text, r)),
@@ -201,7 +201,7 @@ pub fn part(item: &Item, part: Part, text: &str) -> Option<Range<usize>> {
             None => item.node.clone(),
         }),
         Part::Doc => item.doc.clone().map(|r| full_lines(text, r)),
-        Part::Lines => None,
+        Part::Lines | Part::Refs | Part::Def => None,
     }
 }
 

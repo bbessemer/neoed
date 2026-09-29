@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ned_core::lsp::{Diagnosis, Document, Lsp, LspFailure, Position, Renamed};
+use ned_core::lsp::{Diagnosis, Document, Locate, Located, Lsp, LspFailure, Position, Renamed};
 use thiserror::Error;
 
 use crate::paths::{Paths, runtime_dir};
@@ -87,9 +87,10 @@ impl Client {
         let mut stream = UnixStream::connect(&self.paths.socket)?;
         let timeout = match request {
             Request::Status | Request::Stop => REPLY_TIMEOUT,
-            Request::Open { .. } | Request::Diagnose { .. } | Request::Rename { .. } => {
-                SERVER_REPLY_TIMEOUT
-            }
+            Request::Open { .. }
+            | Request::Diagnose { .. }
+            | Request::Rename { .. }
+            | Request::Locate { .. } => SERVER_REPLY_TIMEOUT,
         };
         stream.set_read_timeout(Some(timeout))?;
         let mut line = serde_json::to_string(request).expect("requests serialize");
@@ -188,6 +189,25 @@ impl Lsp for Workspace {
         };
         match self.request(&request)? {
             Response::Renamed(renamed) => Ok(renamed),
+            other => Err(LspFailure(
+                ClientError::Protocol(format!("{other:?}")).to_string(),
+            )),
+        }
+    }
+
+    fn locate(
+        &mut self,
+        kind: Locate,
+        document: &Document,
+        position: Position,
+    ) -> Result<Located, LspFailure> {
+        let request = Request::Locate {
+            kind,
+            document: document.clone(),
+            position,
+        };
+        match self.request(&request)? {
+            Response::Located(located) => Ok(located),
             other => Err(LspFailure(
                 ClientError::Protocol(format!("{other:?}")).to_string(),
             )),

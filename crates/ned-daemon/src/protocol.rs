@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 pub use ned_core::lsp::Document;
-use ned_core::lsp::{Diagnosis, Position, Renamed};
+use ned_core::lsp::{Diagnosis, Locate, Located, Position, Renamed};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +26,13 @@ pub enum Request {
         position: Position,
         name: String,
     },
+    /// `Open` the document, then find references to or the definition of the
+    /// symbol at `position` in it.
+    Locate {
+        kind: Locate,
+        document: Document,
+        position: Position,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +43,7 @@ pub enum Response {
     Opened,
     Diagnosis(Diagnosis),
     Renamed(Renamed),
+    Located(Located),
     Error(String),
 }
 

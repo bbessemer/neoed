@@ -93,6 +93,14 @@ server. Pass `-w` so it can reach every file in the workspace:
 rename impl:Parser>fn:new to create
 ```
 
+Find a symbol's uses, or read its definition, with the `.refs` and `.def`
+parts. They work on any step, and reach every workspace file with `-w`:
+
+```ned
+show all fn:parse.refs
+show fn:main>"helper(".def
+```
+
 Without a language server, rename with a word-bounded regex:
 
 ```ned

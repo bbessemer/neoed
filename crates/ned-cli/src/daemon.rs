@@ -99,7 +99,11 @@ fn daemon(action: Action) -> anyhow::Result<()> {
     };
     match client.request(&request)? {
         Response::Status(status) => print!("{}", status_text(&status)),
-        Response::Opened | Response::Diagnosis(_) | Response::Renamed(_) | Response::Stopped => {
+        Response::Opened
+        | Response::Diagnosis(_)
+        | Response::Renamed(_)
+        | Response::Located(_)
+        | Response::Stopped => {
             println!("stopped the daemon for {shown}")
         }
         Response::Error(err) => {

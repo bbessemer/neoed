@@ -318,6 +318,8 @@ impl<'a> Lexer<'a> {
             "name" => Part::Name,
             "doc" => Part::Doc,
             "lines" => Part::Lines,
+            "refs" => Part::Refs,
+            "def" => Part::Def,
             _ => {
                 return Err(ParseError::new(
                     E::UnknownPart(name.into()),

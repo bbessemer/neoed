@@ -46,8 +46,8 @@ pub enum ParseErrorKind {
     MissingName(String),
     #[error("unknown command `{0}`; commands are {list}", list = COMMANDS)]
     UnknownCommand(String),
-    #[error("`{what}` is not yet supported; {instead}")]
-    Reserved { what: String, instead: &'static str },
+    #[error("`{0}:` is a part, not a kind; select the symbol and add .{0}, e.g. fn:NAME.{0}")]
+    PartAsKind(String),
     /// `hint` is empty, or `; ` and a fix.
     #[error("expected {expected}, found {found}{hint}")]
     Expected {

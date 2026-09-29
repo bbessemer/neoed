@@ -144,9 +144,9 @@ daemon (socket, lock, lazy spawn, idle exit) behind `ned daemon`, and starts
 language servers (`lsp`, `servers`; `[lsp]` config in `ned-core`) for `open`
 requests and diagnostics, through the `Lsp` trait in `ned-core`: `check [SEL]
 [LEVEL]`, and edits checked while a daemon runs (introduced errors block
-unless `allow errors`), and `rename` (`textDocument/rename`, within the file set
-or `-w` workspace); the version names the build commit, and a daemon serves
-only its own build. Next (§9): `.refs`/`.def`, the formatting fallback.
+unless `allow errors`), `rename`, and the `.refs`/`.def` parts (within the file
+set or `-w` workspace); the version names the build commit, and a daemon serves
+only its own build. Next (§9): the formatting fallback.
 
 ## Key Documentation
 
@@ -220,6 +220,10 @@ Planned crates: `ned-repl`, `ned-mcp`. All logic lives in
   `assert_cmd` + `insta` snapshots (review snapshots with `cargo insta review`).
 - Query files under `queries/` are code: every selector kind needs a test per
   language.
+- Keep `.ned.toml` organized by what a setting configures: a setting several
+  features use belongs in the section they share (`[lsp] timeout` covers every
+  server request), not the section of the feature that first needed it. Move
+  it when its use widens; no aliases before 1.0.
 
 ## Local Development
 

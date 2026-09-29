@@ -30,7 +30,8 @@ pub(crate) struct Layer {
     pub(crate) lsp: HashMap<Language, Entry>,
     pub(crate) idle_timeout: Option<u64>,
     pub(crate) check_show: Option<Severity>,
-    pub(crate) check_timeout: Option<u64>,
+    pub(crate) lsp_timeout: Option<u64>,
+
     /// `Some(None)` for `block = false`.
     pub(crate) check_block: Option<Option<Severity>>,
 }
@@ -65,7 +66,7 @@ struct RawDaemon {
 #[serde(deny_unknown_fields)]
 struct RawCheck {
     show: Option<Severity>,
-    timeout: Option<u64>,
+
     block: Option<RawBlock>,
 }
 
@@ -138,13 +139,13 @@ impl Config {
             .find_map(|layer| layer.check_show))
     }
 
-    /// `[check] timeout` for `dir`, in seconds.
-    pub fn check_timeout(&mut self, dir: &Path) -> Result<Option<u64>, ConfigError> {
+    /// `[lsp] timeout` for `dir`, in seconds.
+    pub fn lsp_timeout(&mut self, dir: &Path) -> Result<Option<u64>, ConfigError> {
         let dir = std::path::absolute(dir).map_err(|err| io_error(dir, &err))?;
         Ok(self
             .layers(&dir)?
             .into_iter()
-            .find_map(|layer| layer.check_timeout))
+            .find_map(|layer| layer.lsp_timeout))
     }
 
     /// `[check] block` for `dir`: `Some(None)` if it's `false`.
@@ -213,13 +214,28 @@ fn load(path: &Path) -> Result<Option<Layer>, ConfigError> {
         }
         Ok(entries)
     };
+    let mut lsp = raw.lsp;
+    let lsp_timeout = match lsp.remove("timeout") {
+        None => None,
+        Some(value) => match value.get_ref() {
+            Value::Integer(secs) if *secs >= 0 => Some(*secs as u64),
+            _ => {
+                return Err(error(
+                    Some(value.span()),
+                    "`timeout` must be a number of seconds".into(),
+                ));
+            }
+        },
+    };
     Ok(Some(Layer {
         dir: path.parent().unwrap_or(path).to_path_buf(),
         format: entries(raw.format)?,
-        lsp: entries(raw.lsp)?,
+        lsp: entries(lsp)?,
+        lsp_timeout,
+
         idle_timeout: raw.daemon.idle_timeout,
         check_show: raw.check.show,
-        check_timeout: raw.check.timeout,
+
         check_block: match raw.check.block {
             None => None,
             Some(RawBlock::Level(level)) => Some(Some(level)),
@@ -331,17 +347,50 @@ pub(crate) mod tests {
     #[test]
     fn check_settings_nearest_wins() {
         let root = tree(&[
-            ("config.toml", "[check]\nshow = \"hint\"\ntimeout = 5\n"),
+            ("config.toml", "[check]\nshow = \"hint\"\n"),
             ("ws/.ned.toml", "[check]\nshow = \"error\"\n"),
         ]);
         let mut config = Config::new(Some(&root.path().join("config.toml"))).unwrap();
         let ws = root.path().join("ws");
         assert_eq!(config.check_show(&ws), Ok(Some(Severity::Error)));
-        assert_eq!(config.check_timeout(&ws), Ok(Some(5)));
         assert_eq!(config.check_show(root.path()), Ok(Some(Severity::Hint)));
         let mut none = Config::new(None).unwrap();
         assert_eq!(none.check_show(&ws), Ok(Some(Severity::Error)));
-        assert_eq!(none.check_timeout(&ws), Ok(None));
+    }
+
+    #[test]
+    fn the_lsp_timeout_sits_beside_the_servers_and_nearest_wins() {
+        let root = tree(&[
+            ("config.toml", "[lsp]\ntimeout = 5\n"),
+            ("ws/.ned.toml", "[lsp]\nrust = [\"ra\"]\ntimeout = 9\n"),
+        ]);
+        let mut config = Config::new(Some(&root.path().join("config.toml"))).unwrap();
+        let ws = root.path().join("ws");
+        assert_eq!(config.lsp_timeout(&ws), Ok(Some(9)));
+        assert_eq!(config.lsp_timeout(root.path()), Ok(Some(5)));
+        assert_eq!(
+            config.layers(&ws).unwrap()[0].lsp.len(),
+            1,
+            "rust, not timeout"
+        );
+        assert_eq!(Config::new(None).unwrap().lsp_timeout(&ws), Ok(Some(9)));
+    }
+
+    #[test]
+    fn bad_timeouts_are_errors() {
+        let root = tree(&[(".ned.toml", "[check]\ntimeout = 5\n")]);
+        let err = Config::new(None)
+            .unwrap()
+            .lsp_timeout(root.path())
+            .unwrap_err();
+        assert!(err.message.contains("unknown field `timeout`"), "{err}");
+        let root = tree(&[(".ned.toml", "[lsp]\ntimeout = \"soon\"\n")]);
+        let err = Config::new(None)
+            .unwrap()
+            .lsp_timeout(root.path())
+            .unwrap_err();
+        assert!(err.location.ends_with(".ned.toml:2:11"), "{err}");
+        assert!(err.message.contains("seconds"), "{err}");
     }
 
     #[test]

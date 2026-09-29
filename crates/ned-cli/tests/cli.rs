@@ -392,7 +392,7 @@ fn unsupported_feature_exits_2() {
     exit: 2
     --- stdout
     --- stderr
-    error: script:1:6: `refs:` is not yet supported; select uses with a /regex/
+    error: script:1:6: `refs:` is a part, not a kind; select the symbol and add .refs, e.g. fn:NAME.refs
     1:show refs:parse
            ^
     "#);

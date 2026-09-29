@@ -241,7 +241,8 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::MoveIntoSource { .. }
         | ExecErrorKind::FileExists { .. }
         | ExecErrorKind::RenameRefused { .. }
-        | ExecErrorKind::RenameOutside { .. } => 1,
+        | ExecErrorKind::Outside { .. }
+        | ExecErrorKind::AmbiguousLocated { .. } => 1,
         ExecErrorKind::Unsupported { .. }
         | ExecErrorKind::NoFiles
         | ExecErrorKind::InvalidQuery { .. }
