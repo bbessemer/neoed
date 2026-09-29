@@ -7,7 +7,9 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+use crate::buffer::Buffer;
 use crate::config::{Config, ConfigError, Entry, program};
+use crate::exec::Change;
 use crate::lang::Language;
 
 /// A file's text, as `ned` sees it.
@@ -47,12 +49,25 @@ pub struct Diagnostic {
     pub code: Option<String>,
 }
 
-/// Diagnostics for some documents, with the workspace's `[check] show`.
+/// Diagnostics for some documents, with the workspace's `[check]` levels.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnosis {
     pub show: Severity,
+    /// The lowest severity of an introduced diagnostic that rejects an edit;
+    /// `None` for none.
+    pub block: Option<Severity>,
     /// One per document, in order; `None` where its language has no server.
     pub files: Vec<Option<Vec<Diagnostic>>>,
+}
+
+/// What an edit's changed files introduced (spec §6.5).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Checked {
+    /// Per changed file: its introduced diagnostics at the `show` level or
+    /// above, by position.
+    pub files: Vec<Vec<Diagnostic>>,
+    /// The introduced diagnostics that reject the edit, by changed file.
+    pub blocking: Vec<(usize, Diagnostic)>,
 }
 
 /// Why language servers couldn't answer; the message ends with a fix.
@@ -63,6 +78,58 @@ pub struct LspFailure(pub String);
 pub trait Lsp {
     /// Diagnostics for each of `documents`, as their text stands.
     fn diagnose(&mut self, documents: &[Document]) -> Result<Diagnosis, LspFailure>;
+
+    /// Brings the servers' copies of `documents` up to date.
+    fn sync(&mut self, documents: &[Document]) -> Result<(), LspFailure>;
+}
+
+/// `after`'s diagnostics that `before` has no identical one left to match:
+/// the same severity, source, code and message, wherever they are.
+pub fn introduced(before: &[Diagnostic], after: &[Diagnostic]) -> Vec<Diagnostic> {
+    let _ = (before, after);
+    todo!()
+}
+
+/// Diagnoses the original and `finals` text of each of `changes`, and finds
+/// what the edit introduced. `allow` raises the block level (`allow
+/// errors`: `Error`); `force` blocks nothing.
+pub fn check_changes(
+    lsp: &mut dyn Lsp,
+    changes: &[Change],
+    finals: &[&str],
+    allow: Option<Severity>,
+    force: bool,
+) -> Result<Checked, LspFailure> {
+    let _ = (lsp, changes, finals, allow, force);
+    todo!()
+}
+
+/// `d` as a line of `check` output (spec §4.1), for the file at `path`
+/// holding `buffer`.
+pub fn render(path: &str, buffer: &Buffer, d: &Diagnostic) -> String {
+    let start = buffer.lsp_offset(d.start.line, d.start.character);
+    let line = buffer.byte_to_line(start).unwrap_or(d.start.line as usize);
+    let line_start = buffer.line_range(line).map_or(start, |r| r.start);
+    let column = buffer
+        .slice(line_start..start)
+        .map_or(0, |s| s.chars().count())
+        + 1;
+    let tag = match (&d.source, &d.code) {
+        (Some(source), Some(code)) => format!(" [{source} {code}]"),
+        (Some(tag), None) | (None, Some(tag)) => format!(" [{tag}]"),
+        (None, None) => String::new(),
+    };
+    let mut message = d.message.lines();
+    let first = message.next().unwrap_or_default();
+    let mut out = format!(
+        "{path}:{}:{column}: {}: {first}{tag}\n",
+        line + 1,
+        d.severity
+    );
+    for rest in message {
+        out.push_str(&format!("  {rest}\n"));
+    }
+    out
 }
 
 impl Severity {

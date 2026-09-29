@@ -48,6 +48,9 @@ struct Cli {
     /// Don't run formatters.
     #[arg(long)]
     no_fmt: bool,
+    /// Don't check edits with language servers.
+    #[arg(long)]
+    no_check: bool,
     /// Use this language for every file instead of detecting it.
     #[arg(long, value_name = "LANG")]
     lang: Option<Language>,

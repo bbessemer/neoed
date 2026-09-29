@@ -9,7 +9,7 @@ use tree_sitter::Node;
 
 use crate::edit::{Edit, EditError, EditSet};
 use crate::lang::Language;
-use crate::lsp::{Document, Lsp, LspFailure, Severity};
+use crate::lsp::{Document, Lsp, LspFailure, Severity, render};
 use crate::outline;
 use crate::script::Script;
 use crate::script::ast::{
@@ -27,6 +27,8 @@ use crate::text;
 pub struct Run {
     pub output: String,
     pub result: Result<Vec<Change>, ExecError>,
+    /// The script's most permissive `allow` (§4.4).
+    pub allow: Option<Severity>,
 }
 
 /// A modified file, with the number of spans edited.
@@ -63,7 +65,7 @@ pub fn run<'s, 'l: 's>(
         src,
         options,
         lsp: lsp.map(|lsp| -> &'s mut dyn Lsp { lsp }),
-
+        allow: None,
         files: Vec::new(),
         set: Vec::new(),
         output: String::new(),
@@ -72,6 +74,7 @@ pub fn run<'s, 'l: 's>(
     Run {
         output: executor.output,
         result,
+        allow: executor.allow,
     }
 }
 
@@ -92,6 +95,8 @@ struct Executor<'s> {
     output: String,
     /// The workspace's language servers, for `check`.
     lsp: Option<&'s mut dyn Lsp>,
+    /// The most permissive `allow` so far.
+    allow: Option<Severity>,
 }
 
 impl Executor<'_> {
@@ -218,6 +223,10 @@ impl Executor<'_> {
         let error = |kind| ExecError::new(kind, Some(span.clone()));
         match &command.kind {
             CommandKind::Create { path, text } => return self.create(path, text).map_err(error),
+            CommandKind::Allow(level) => {
+                let _ = level;
+                todo!()
+            }
             CommandKind::File(paths) => {
                 self.set = self.open(paths, Some(span))?;
                 return Ok(());
@@ -263,7 +272,9 @@ impl Executor<'_> {
                 dest,
             } => self.move_to(index, span, target, *position, dest)?,
             CommandKind::Check { target, level } => self.check(span, target.as_ref(), *level)?,
-            CommandKind::File(_) | CommandKind::Create { .. } => unreachable!("handled above"),
+            CommandKind::File(_) | CommandKind::Create { .. } | CommandKind::Allow(_) => {
+                unreachable!("handled above")
+            }
         }
         Ok(())
     }
@@ -547,28 +558,7 @@ impl Executor<'_> {
                 if !ranges.is_empty() && !ranges.iter().any(|r| start < r.end && end > r.start) {
                     continue;
                 }
-                let line = f
-                    .buffer
-                    .byte_to_line(start)
-                    .unwrap_or(d.start.line as usize);
-                let line_start = f.buffer.line_range(line).map_or(start, |r| r.start);
-                let column = f.text[line_start..start].chars().count() + 1;
-                let tag = match (&d.source, &d.code) {
-                    (Some(source), Some(code)) => format!(" [{source} {code}]"),
-                    (Some(tag), None) | (None, Some(tag)) => format!(" [{tag}]"),
-                    (None, None) => String::new(),
-                };
-                let mut message = d.message.lines();
-                let first = message.next().unwrap_or_default();
-                out.push_str(&format!(
-                    "{}:{}:{column}: {}: {first}{tag}\n",
-                    f.path,
-                    line + 1,
-                    d.severity
-                ));
-                for rest in message {
-                    out.push_str(&format!("  {rest}\n"));
-                }
+                out.push_str(&render(&f.path, &f.buffer, d));
             }
         }
         if out.is_empty() {
@@ -2154,8 +2144,14 @@ fn main() {}
                 .collect();
             Ok(Diagnosis {
                 show: self.show.unwrap_or(Severity::Warning),
+                block: Some(Severity::Error),
                 files,
             })
+        }
+
+        fn sync(&mut self, documents: &[Document]) -> Result<(), LspFailure> {
+            self.asked.extend_from_slice(documents);
+            Ok(())
         }
     }
 

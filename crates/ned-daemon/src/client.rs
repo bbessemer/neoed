@@ -118,6 +118,11 @@ impl Workspace {
             client: None,
         }
     }
+
+    /// Whether a daemon is running for the workspace; never spawns one.
+    pub fn running(&mut self) -> bool {
+        todo!()
+    }
 }
 
 impl Lsp for Workspace {
@@ -147,5 +152,10 @@ impl Lsp for Workspace {
             Response::Error(message) => Err(LspFailure(message)),
             other => Err(failure(&ClientError::Protocol(format!("{other:?}")))),
         }
+    }
+
+    fn sync(&mut self, documents: &[Document]) -> Result<(), LspFailure> {
+        let _ = documents;
+        todo!()
     }
 }

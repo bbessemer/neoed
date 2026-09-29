@@ -126,6 +126,7 @@ impl Parser<'_> {
                 text: self.text()?,
             },
             "check" => self.check()?,
+            "allow" => self.allow()?,
             "rename" => {
                 let instead = r#"use sub /\bOLD\b/ with "NEW" over the files"#;
                 let reserved = E::Reserved {
@@ -172,6 +173,11 @@ impl Parser<'_> {
             _ => None,
         };
         Ok(CommandKind::Check { target, level })
+    }
+
+    /// After `allow`: `errors` or `warnings`.
+    fn allow(&mut self) -> Result<CommandKind, ParseError> {
+        todo!()
     }
 
     fn target(&mut self) -> Result<Target, ParseError> {
@@ -426,6 +432,7 @@ pub fn usage(verb: &str) -> Option<&'static str> {
         "file" => "file PATH...",
         "create" => "create PATH TEXT",
         "check" => "check [SEL] [LEVEL]",
+        "allow" => "allow errors|warnings",
         _ => return None,
     })
 }
@@ -553,6 +560,7 @@ mod tests {
             },
             File(paths) => File(paths),
             Create { path, text } => Create { path, text },
+            Allow(level) => Allow(level),
             Check { target, level } => Check {
                 target: target.map(unspan_target),
                 level,
