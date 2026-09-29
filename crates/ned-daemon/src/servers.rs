@@ -1,6 +1,6 @@
 //! The workspace's language servers, started as documents need them.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use ned_core::config::Config;
@@ -68,23 +68,50 @@ impl Servers {
         documents: &[Document],
         saved: bool,
     ) -> Result<Diagnosis, ServersError> {
-        if saved {
-            todo!()
-        }
         self.open(documents).await?;
         let mut config = Config::new(self.user_config.as_deref())?;
         let show = config.check_show(&self.root)?.unwrap_or(Severity::Warning);
         let timeout = config.lsp_timeout(&self.root)?.unwrap_or(DEFAULT_TIMEOUT);
+        let timeout = Duration::from_secs(timeout);
+        let commands = documents
+            .iter()
+            .map(|d| config.server(&self.root, d.lang))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut notes = Vec::new();
+        let mut unfinished = HashSet::new();
+        if saved {
+            // Each document is saved once its server has diagnosed it, so
+            // work begun before the save has been counted, and every one is
+            // saved before waiting for the work, so that's waited for once.
+            let mut begun = BTreeMap::new();
+            for (document, command) in documents.iter().zip(&commands) {
+                let Some(command) = command else { continue };
+                let server = self.servers.get_mut(command).expect("opened above");
+                server.diagnostics(&document.path, timeout).await?;
+                if let Some(count) = server.save(&document.path) {
+                    begun.entry(command).or_insert(count);
+                }
+            }
+            for (command, count) in begun {
+                let server = &self.servers[command];
+                if let Some(note) = server.after_save(count, timeout).await? {
+                    notes.push(note);
+                    unfinished.insert(command);
+                }
+            }
+        }
         let mut files = Vec::new();
-        for document in documents {
-            let Some(command) = config.server(&self.root, document.lang)? else {
+        for (document, command) in documents.iter().zip(&commands) {
+            let Some(command) = command else {
                 files.push(None);
                 continue;
             };
-            let server = self.servers.get_mut(&command).expect("opened above");
-            let diagnostics = server
-                .diagnostics(&document.path, Duration::from_secs(timeout))
-                .await?;
+            let server = self.servers.get_mut(command).expect("opened above");
+            let diagnostics = match unfinished.contains(command) {
+                true => server.reported(&document.path, timeout).await?,
+                false if saved => server.saved_diagnostics(&document.path, timeout).await?,
+                false => server.diagnostics(&document.path, timeout).await?,
+            };
             files.push(Some(diagnostics));
         }
         Ok(Diagnosis {
@@ -93,7 +120,7 @@ impl Servers {
                 .check_block(&self.root)?
                 .unwrap_or(Some(Severity::Error)),
             files,
-            notes: Vec::new(),
+            notes,
         })
     }
 

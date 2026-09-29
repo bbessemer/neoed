@@ -553,7 +553,10 @@ async fn only_saved_diagnoses_of_files_holding_their_text_save() {
     let mut servers = ws.servers();
     saved(&ws, "// done\n");
     let a = ws.rust("a.rs", "// done\n// CARGO\n");
-    let unsaved = servers.diagnose(&[a.clone()], false).await.unwrap();
+    let unsaved = servers
+        .diagnose(std::slice::from_ref(&a), false)
+        .await
+        .unwrap();
     assert_eq!(unsaved.files, [Some(vec![])]);
     let changed = servers.diagnose(&[a], true).await.unwrap();
     assert_eq!(changed.files, [Some(vec![])]);
@@ -589,6 +592,33 @@ async fn an_unfinished_save_time_check_is_a_note() {
         ["fake_lsp.py's check on save didn't finish within 1s; raise [lsp] timeout"]
     );
     servers.shutdown().await;
+}
+
+#[tokio::test]
+async fn servers_pulled_from_add_what_they_publish_on_save() {
+    for flags in [
+        &["pull", "flycheck"][..],
+        &["pull", "flycheck", "flycheck-slow"],
+    ] {
+        let ws = Workspace::with_flags(flags, "timeout = 1\n");
+        let mut servers = ws.servers();
+        let a = saved(&ws, "// done\n// CARGO\n// WARN\n");
+        let mut diagnosis = servers.diagnose(&[a], true).await.unwrap();
+        diagnosis.files[0]
+            .as_mut()
+            .unwrap()
+            .sort_by_key(|d| d.start);
+        assert_eq!(
+            diagnosis.files,
+            [Some(vec![
+                cargo(1, 8),
+                fake(2, 3, "WARN", Severity::Warning)
+            ])],
+            "{flags:?}"
+        );
+        assert_eq!(diagnosis.notes.len(), flags.len() - 2, "{flags:?}");
+        servers.shutdown().await;
+    }
 }
 
 /// rust-analyzer reports `cargo check`'s errors for saved files: `cargo test

@@ -905,9 +905,11 @@ impl Executor<'_> {
             let message = "`check` needs the language-server daemon, which is Unix-only for now; run the project's build or linter";
             return Err(error(ExecErrorKind::Lsp(message.into())));
         };
-        let diagnosis = lsp
+        let mut diagnosis = lsp
             .diagnose(&documents, true)
             .map_err(|LspFailure(message)| error(ExecErrorKind::Lsp(message)))?;
+
+        self.notes.append(&mut diagnosis.notes);
         if diagnosis.files.iter().all(Option::is_none) {
             let mut langs: Vec<&str> = documents.iter().map(|d| d.lang.name()).collect();
             langs.dedup();

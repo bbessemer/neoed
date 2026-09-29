@@ -30,6 +30,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long pushed diagnostics must stay unchanged to count as final.
 const SETTLE: Duration = Duration::from_millis(100);
+/// How soon after a save a server must start work for it to be waited for.
+const SAVE_GRACE: Duration = Duration::from_millis(500);
 /// Errors that ask for a request to be sent again: ServerCancelled and
 /// ContentModified.
 const RETRY: [i64; 2] = [-32802, -32801];
@@ -47,6 +49,9 @@ pub struct Server {
     pulls: bool,
     /// Whether the server answers `textDocument/formatting`.
     formats: bool,
+    /// Whether the server wants `textDocument/didSave`, and if so, whether
+    /// with the text.
+    saves: Option<bool>,
     /// Signalled whenever the server sends a notification or exits.
     changed: Arc<Notify>,
     /// Forwards the server's stderr to the daemon's.
@@ -91,6 +96,9 @@ struct State {
     progress: HashSet<String>,
     /// rust-analyzer's `experimental/serverStatus`, once sent.
     quiescent: Option<bool>,
+    /// Counts the times work began: progress, or rust-analyzer ceasing to
+    /// be quiescent.
+    begun: u64,
 }
 
 #[derive(Debug, Error)]
@@ -192,6 +200,7 @@ impl Server {
             documents: HashMap::new(),
             pulls: false,
             formats: false,
+            saves: None,
             changed,
         };
         let root_uri = uri(root);
@@ -229,6 +238,11 @@ impl Server {
         server.pulls = !(provider.is_null() || *provider == Value::Bool(false));
         let provider = &result["capabilities"]["documentFormattingProvider"];
         server.formats = !(provider.is_null() || *provider == Value::Bool(false));
+        server.saves = match &result["capabilities"]["textDocumentSync"]["save"] {
+            Value::Bool(true) => Some(false),
+            Value::Object(save) => Some(save.get("includeText") == Some(&Value::Bool(true))),
+            _ => None,
+        };
         // rust-analyzer's only sign of loading the project is
         // `experimental/serverStatus`; until it's quiescent, it has nothing
         // to report.
@@ -330,24 +344,7 @@ impl Server {
             .await?;
         let uri = uri(path);
         if self.pulls {
-            loop {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                let params = json!({"textDocument": {"uri": uri}});
-                match self
-                    .request_within(remaining, "textDocument/diagnostic", params)
-                    .await
-                {
-                    Ok(report) => return Ok(convert(&report["items"])),
-                    Err(LspError::Failed { code, .. }) if RETRY.contains(&code) => {
-                        if Instant::now() >= deadline {
-                            return Err(timed_out());
-                        }
-                        time::sleep(SETTLE).await;
-                    }
-                    Err(LspError::Timeout { .. }) => return Err(timed_out()),
-                    Err(err) => return Err(err),
-                }
-            }
+            return self.pull(path, deadline, &timed_out).await;
         }
         let (version, synced) = self
             .documents
@@ -373,6 +370,139 @@ impl Server {
         }
         let shared = self.shared.lock().unwrap();
         Ok(convert(&shared.published[&uri].diagnostics))
+    }
+
+    /// The diagnostics pulled for `path`, retrying while the server asks to,
+    /// until `deadline`.
+    async fn pull(
+        &mut self,
+        path: &Path,
+        deadline: Instant,
+        timed_out: &impl Fn() -> LspError,
+    ) -> Result<Vec<Diagnostic>, LspError> {
+        let params = json!({"textDocument": {"uri": uri(path)}});
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match self
+                .request_within(remaining, "textDocument/diagnostic", params.clone())
+                .await
+            {
+                Ok(report) => return Ok(convert(&report["items"])),
+                Err(LspError::Failed { code, .. }) if RETRY.contains(&code) => {
+                    if Instant::now() >= deadline {
+                        return Err(timed_out());
+                    }
+                    time::sleep(SETTLE).await;
+                }
+                Err(LspError::Timeout { .. }) => return Err(timed_out()),
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    /// Tells the server that `path`, if its file holds the text the server has,
+    /// was saved, if the server wants to know. The count of work begun before,
+    /// for `after_save`, if so.
+    pub fn save(&mut self, path: &Path) -> Option<u64> {
+        let include_text = self.saves?;
+        let open = self.documents.get(path)?;
+        if std::fs::read_to_string(path).ok()? != open.text {
+            return None;
+        }
+        let mut params = json!({"textDocument": {"uri": uri(path)}});
+        if include_text {
+            params["text"] = json!(open.text);
+        }
+        let begun = self.shared.lock().unwrap().state.begun;
+        self.notify("textDocument/didSave", params);
+        Some(begun)
+    }
+
+    /// Waits, up to `timeout`, for the work the server starts soon after a save
+    /// (`begun` from `save`) to finish; a note if it doesn't.
+    pub async fn after_save(
+        &self,
+        begun: u64,
+        timeout: Duration,
+    ) -> Result<Option<String>, LspError> {
+        let name = self.name.clone();
+        let timed_out = move || LspError::Timeout {
+            name: name.clone(),
+            method: "didSave".into(),
+            secs: timeout.as_secs(),
+        };
+        let started = |shared: &Shared| shared.state.begun > begun;
+        match self
+            .wait_until(Instant::now() + SAVE_GRACE, &timed_out, started)
+            .await
+        {
+            Ok(()) => {}
+            Err(LspError::Timeout { .. }) => return Ok(None),
+            Err(err) => return Err(err),
+        }
+        let idle = |shared: &Shared| !shared.state.busy();
+        match self
+            .wait_until(Instant::now() + timeout, &timed_out, idle)
+            .await
+        {
+            Ok(()) => Ok(None),
+            Err(LspError::Timeout { .. }) => Ok(Some(format!(
+                "{}'s check on save didn't finish within {}s; raise [lsp] timeout",
+                self.name,
+                timeout.as_secs()
+            ))),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// `diagnostics`, with those of the checks run on save, which servers
+    /// that are pulled from still publish (rust-analyzer's `cargo check`).
+    pub async fn saved_diagnostics(
+        &mut self,
+        path: &Path,
+        timeout: Duration,
+    ) -> Result<Vec<Diagnostic>, LspError> {
+        let diagnostics = self.diagnostics(path, timeout).await?;
+        Ok(match self.pulls {
+            true => self.with_published(path, diagnostics),
+            false => diagnostics,
+        })
+    }
+
+    /// What the server has reported for `path`, without waiting for it to be
+    /// idle: what it gives when pulled from, if it is, and what it published.
+    pub async fn reported(
+        &mut self,
+        path: &Path,
+        timeout: Duration,
+    ) -> Result<Vec<Diagnostic>, LspError> {
+        let pulled = match self.pulls {
+            true => {
+                let name = self.name.clone();
+                let timed_out = move || LspError::Timeout {
+                    name: name.clone(),
+                    method: "diagnostics".into(),
+                    secs: timeout.as_secs(),
+                };
+                self.pull(path, Instant::now() + timeout, &timed_out)
+                    .await?
+            }
+            false => Vec::new(),
+        };
+        Ok(self.with_published(path, pulled))
+    }
+
+    /// `diagnostics` and those published for `path` that it doesn't have.
+    fn with_published(&self, path: &Path, mut diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
+        let shared = self.shared.lock().unwrap();
+        if let Some(published) = shared.published.get(&uri(path)) {
+            for diagnostic in convert(&published.diagnostics) {
+                if !diagnostics.contains(&diagnostic) {
+                    diagnostics.push(diagnostic);
+                }
+            }
+        }
+        diagnostics
     }
 
     /// The edits that rename the symbol at `position` in `path` to `name`,
@@ -820,6 +950,7 @@ impl State {
                 match params["value"]["kind"].as_str() {
                     Some("begin") => {
                         self.progress.insert(token);
+                        self.begun += 1;
                     }
                     Some("end") => {
                         self.progress.remove(&token);
@@ -827,7 +958,13 @@ impl State {
                     _ => {}
                 }
             }
-            "experimental/serverStatus" => self.quiescent = params["quiescent"].as_bool(),
+            "experimental/serverStatus" => {
+                let quiescent = params["quiescent"].as_bool();
+                if quiescent == Some(false) && self.quiescent != Some(false) {
+                    self.begun += 1;
+                }
+                self.quiescent = quiescent;
+            }
             _ => {}
         }
     }
