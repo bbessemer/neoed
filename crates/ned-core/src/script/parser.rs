@@ -91,7 +91,11 @@ impl Parser<'_> {
             },
             "file" => CommandKind::File(self.paths()?),
             "rename" | "check" => {
-                return Err(ParseError::new(E::Reserved(word.clone()), verb.span));
+                let reserved = E::Reserved {
+                    what: word.clone(),
+                    instead: "",
+                };
+                return Err(ParseError::new(reserved, verb.span));
             }
             _ => return Err(ParseError::new(E::UnknownCommand(word.clone()), verb.span)),
         };
@@ -248,7 +252,11 @@ fn primary(token: Token) -> Result<Primary, ParseError> {
         TokenKind::Syntax { kind, name } => match kind.as_str() {
             "file" => Primary::File(name),
             "refs" | "def" => {
-                return Err(ParseError::new(E::Reserved(format!("{kind}:")), token.span));
+                let reserved = E::Reserved {
+                    what: format!("{kind}:"),
+                    instead: "",
+                };
+                return Err(ParseError::new(reserved, token.span));
             }
             _ => Primary::Syntax { kind, name },
         },
@@ -299,6 +307,12 @@ fn validate_regex(
     Ok(pattern)
 }
 
+/// The syntax of the command `verb`, as `ned help VERB` starts.
+pub fn usage(verb: &str) -> Option<&'static str> {
+    let _ = verb;
+    None
+}
+
 fn expected(what: &'static str, token: &Token) -> ParseError {
     let found = match &token.kind {
         TokenKind::Word(w) => format!("`{w}`"),
@@ -319,6 +333,7 @@ fn expected(what: &'static str, token: &Token) -> ParseError {
         E::Expected {
             expected: what,
             found,
+            hint: String::new(),
         },
         token.span.clone(),
     )
@@ -743,10 +758,12 @@ mod tests {
             (e.kind, e.span),
             (E::UnknownCommand("frobnicate".into()), 0..10)
         );
-        assert_eq!(error("rename fn:x to y").kind, E::Reserved("rename".into()));
-        assert_eq!(error("check").kind, E::Reserved("check".into()));
-        assert_eq!(error("show refs:foo").kind, E::Reserved("refs:".into()));
-        assert_eq!(error("show def:foo").kind, E::Reserved("def:".into()));
+        assert!(
+            matches!(error("rename fn:x to y").kind, E::Reserved { what, .. } if what == "rename")
+        );
+        assert!(matches!(error("check").kind, E::Reserved { what, .. } if what == "check"));
+        assert!(matches!(error("show refs:foo").kind, E::Reserved { what, .. } if what == "refs:"));
+        assert!(matches!(error("show def:foo").kind, E::Reserved { what, .. } if what == "def:"));
         assert!(matches!(
             error("12").kind,
             E::Expected {

@@ -142,6 +142,7 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
                         syntax::part(item, *part, &f.text).ok_or_else(|| E::MissingPart {
                             item: syntax::selector(item.kind, &item.name),
                             part: part_name(*part).into(),
+                            has: String::new(),
                         })?
                     }
                     (_, None) => unreachable!("checked above"),
@@ -377,7 +378,10 @@ fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]
         let Some(lang) = files[i].lang else { continue };
         let Some(query) = lang.selectors() else {
             let selector = syntax::selector(kind, name);
-            return Err(E::Unsupported(format!("`{selector}` in {lang} files")));
+            return Err(E::Unsupported {
+                what: format!("`{selector}` in {lang} files"),
+                instead: "",
+            });
         };
         let kinds = syntax::kinds(query);
         if !kinds.contains(&kind) {

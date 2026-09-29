@@ -366,7 +366,8 @@ impl Executor<'_> {
             };
             if lang.selectors().is_none() {
                 let what = format!("`outline` in {lang} files");
-                return Err(error(ExecErrorKind::Unsupported(what)));
+                let instead = "";
+                return Err(error(ExecErrorKind::Unsupported { what, instead }));
             }
             any = true;
         }
@@ -753,8 +754,13 @@ pub enum ExecErrorKind {
     },
     #[error("{selector} needs a language, but {files} has none; use --lang")]
     NoLanguage { selector: String, files: String },
-    #[error("{item} has no .{part}")]
-    MissingPart { item: String, part: String },
+    /// `has` lists the parts the item has, e.g. `.sig .name .lines`.
+    #[error("{item} has no .{part}; it has {has}")]
+    MissingPart {
+        item: String,
+        part: String,
+        has: String,
+    },
     #[error(".{part} needs a syntax item (kind:name)")]
     PartNeedsItem { part: String },
     #[error("invalid {lang} query: {message}")]
@@ -778,8 +784,8 @@ pub enum ExecErrorKind {
     LineOutOfRange { line: String, files: String },
     #[error("file:{path} is not in the file set: {files}")]
     NotInFileSet { path: String, files: String },
-    #[error("{0} is not yet supported")]
-    Unsupported(String),
+    #[error("{what} is not yet supported; {instead}")]
+    Unsupported { what: String, instead: &'static str },
     #[error("edit overlaps command {command} at {location}")]
     Overlap { command: usize, location: String },
     #[error("no files to edit; pass FILE arguments or use `file PATH`")]

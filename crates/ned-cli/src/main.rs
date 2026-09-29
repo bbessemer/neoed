@@ -164,7 +164,7 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::MissingPart { .. }
         | ExecErrorKind::PartNeedsItem { .. }
         | ExecErrorKind::MoveIntoSource { .. } => 1,
-        ExecErrorKind::Unsupported(_)
+        ExecErrorKind::Unsupported { .. }
         | ExecErrorKind::NoFiles
         | ExecErrorKind::InvalidQuery { .. } => 2,
         ExecErrorKind::Io { .. } | ExecErrorKind::NoGlobMatch(_) => 3,

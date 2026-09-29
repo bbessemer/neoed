@@ -44,12 +44,14 @@ pub enum ParseErrorKind {
     MissingName(String),
     #[error("unknown command `{0}`; commands are show outline replace insert delete sub move file")]
     UnknownCommand(String),
-    #[error("`{0}` is not yet supported")]
-    Reserved(String),
-    #[error("expected {expected}, found {found}")]
+    #[error("`{what}` is not yet supported; {instead}")]
+    Reserved { what: String, instead: &'static str },
+    /// `hint` is empty, or `; ` and a fix.
+    #[error("expected {expected}, found {found}{hint}")]
     Expected {
         expected: &'static str,
         found: String,
+        hint: String,
     },
     #[error("selectors can't contain spaces; write e.g. `impl:Parser>fn:new`")]
     SpaceInSelector,
