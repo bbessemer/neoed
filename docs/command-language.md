@@ -11,7 +11,14 @@ Sections marked _(reserved)_ define syntax that parses but is rejected with a
 
 ```
 ned [FLAGS] [FILE...] [-e SCRIPT]...
+ned help [TOPIC]
 ```
+
+`ned help` prints a summary of the language, sized to fit in an agent's
+context. `ned help TOPIC` details one verb (`show`, `outline`, `replace`,
+`insert`, `delete`, `sub`, `move`, `file`), or `selectors`, `text` or `config`.
+An unknown topic is a usage error that lists the topics. `help` must be the
+first argument; write a file named `help` as `./help`.
 
 - `-e SCRIPT` may be repeated; the scripts are joined with newlines, in order.
 - Without `-e`, the script is read from stdin.
