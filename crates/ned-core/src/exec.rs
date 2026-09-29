@@ -1176,7 +1176,7 @@ mod tests {
     fn sub_without_matches_is_an_error() {
         assert_eq!(
             exec(TEXT, "sub /nope/ with \"x\"").error(),
-            "error: script:1:1: /nope/ matches nothing in a.rs"
+            "error: script:1:1: /nope/ matches nothing in a.rs; `show` prints the text to match against"
         );
     }
 
@@ -1194,11 +1194,11 @@ mod tests {
     fn overlapping_edits_name_the_earlier_command() {
         assert_eq!(
             exec(TEXT, "replace 2 with \"a\"\ndelete 2-3").error(),
-            "error: script:2:1: edit overlaps command 1 at a.rs:2"
+            "error: script:2:1: edit overlaps command 1 at a.rs:2; merge the two edits, or make one in a separate ned run"
         );
         assert_eq!(
             exec(TEXT, "show 1; delete 2-3; replace \"y\" with \"z\"").error(),
-            "error: script:1:21: edit overlaps command 2 at a.rs:2-3"
+            "error: script:1:21: edit overlaps command 2 at a.rs:2-3; merge the two edits, or make one in a separate ned run"
         );
     }
 
@@ -1220,7 +1220,7 @@ mod tests {
         assert_eq!(out.output, "a.rs:1\n1:fn a() {\n");
         assert_eq!(
             out.error(),
-            "error: script:2:8: /nope/ matches nothing in a.rs"
+            "error: script:2:8: /nope/ matches nothing in a.rs; `show` prints the text to match against"
         );
     }
 
@@ -1469,7 +1469,8 @@ fn main() {}
     fn move_into_its_own_source_is_an_error() {
         assert_eq!(
             exec(MOVE, "move impl:A before fn:b").error(),
-            "error: script:1:1: move destination is inside the moved span at a.rs:1-7"
+            "error: script:1:1: move destination is inside the moved span at a.rs:1-7; \
+             choose a destination outside it"
         );
     }
 

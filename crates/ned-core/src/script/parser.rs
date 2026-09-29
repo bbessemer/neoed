@@ -828,4 +828,106 @@ mod tests {
             E::InvalidRegex(_)
         ));
     }
+
+    fn message(src: &str) -> String {
+        error(src).kind.to_string()
+    }
+
+    #[test]
+    fn bare_words_suggest_quoting() {
+        assert_eq!(
+            message(r#"replace x with "y""#),
+            r#"expected a selector, found `x`; quote literal text: "x""#
+        );
+        assert_eq!(
+            message("replace 3 with foo"),
+            r#"expected text (a string or heredoc), found `foo`; quote literal text: "foo""#
+        );
+    }
+
+    #[test]
+    fn other_syntax_errors_show_the_usage() {
+        assert_eq!(
+            message(r#"replace 3 "x""#),
+            "expected `with`, found a string; usage: replace [all] SEL with TEXT"
+        );
+        assert_eq!(
+            message(r#"insert inside 3 "a""#),
+            "expected before, after, start, or end, found `inside`; \
+             usage: insert before|after|start|end [all] SEL TEXT"
+        );
+        assert_eq!(
+            message("delete"),
+            "expected a selector, found end of script; usage: delete [all] SEL"
+        );
+        assert_eq!(
+            message("move 3 after"),
+            "expected a selector, found end of script; \
+             usage: move [all] SEL before|after|start|end DEST"
+        );
+        assert_eq!(
+            message(r#""x""#),
+            "expected a command, found a string; \
+             commands are show outline replace insert delete sub move file"
+        );
+    }
+
+    #[test]
+    fn every_command_has_a_usage_starting_with_it() {
+        for verb in [
+            "show", "outline", "replace", "insert", "delete", "sub", "move", "file",
+        ] {
+            let usage = usage(verb).unwrap_or_else(|| panic!("no usage for {verb}"));
+            assert!(usage.starts_with(verb), "{usage}");
+        }
+        assert_eq!(usage("frobnicate"), None);
+    }
+
+    #[test]
+    fn lexical_errors_suggest_fixes() {
+        assert_eq!(
+            message("show @"),
+            r#"unexpected character `@`; quote literal text: "...""#
+        );
+        assert_eq!(
+            message("show 'x'"),
+            r#"unexpected character `'`; strings use double quotes: "...""#
+        );
+        assert_eq!(
+            message("show 0"),
+            "line numbers start at 1; use 1 for the first line"
+        );
+        assert_eq!(
+            message("show 99999999999999999999999"),
+            "line number is too large; use `$` for the last line"
+        );
+        assert_eq!(
+            message("replace 1 with <<END\nx\n"),
+            "unterminated heredoc <<END (started here); end it with a line holding only END"
+        );
+        assert_eq!(
+            message("show /(/"),
+            r#"invalid regex: unclosed group; escape literal characters such as ( [ . * with \, or select a "string""#
+        );
+    }
+
+    #[test]
+    fn reserved_features_name_what_to_use_instead() {
+        assert_eq!(
+            message("rename fn:x to y"),
+            r#"`rename` is not yet supported; use sub /\bOLD\b/ with "NEW" over the files"#
+        );
+        assert_eq!(
+            message("check"),
+            "`check` is not yet supported; run the project's build or linter"
+        );
+        assert_eq!(
+            message("show refs:foo"),
+            "`refs:` is not yet supported; select uses with a /regex/"
+        );
+        assert_eq!(
+            message("show def:foo"),
+            "`def:` is not yet supported; select the definition with kind:NAME, e.g. fn:NAME"
+        );
+    }
 }

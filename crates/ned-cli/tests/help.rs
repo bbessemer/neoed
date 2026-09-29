@@ -71,6 +71,9 @@ fn every_topic_fits_its_budget_and_starts_with_its_name() {
         let text = stdout(&["help", &topic]);
         assert!(text.len() <= TOPIC_BYTES, "{topic}: {} bytes", text.len());
         assert!(text.starts_with(&topic), "{topic}: {text:?}");
+        if let Some(usage) = ned_core::script::parser::usage(&topic) {
+            assert_eq!(text.lines().next(), Some(usage), "{topic}");
+        }
     }
 }
 

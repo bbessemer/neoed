@@ -731,11 +731,11 @@ mod tests {
     fn line_past_end_is_an_error() {
         assert_eq!(
             error("delete 9", &[("a.rs", TEXT)]),
-            "error: script:1:8: line 9 is past the end of a.rs (8 lines)"
+            "error: script:1:8: line 9 is past the end of a.rs (8 lines); use `$` for the last line"
         );
         assert_eq!(
             error("delete 7-12", &[("a.rs", TEXT)]),
-            "error: script:1:8: line 12 is past the end of a.rs (8 lines)"
+            "error: script:1:8: line 12 is past the end of a.rs (8 lines); use `$` for the last line"
         );
         assert_eq!(
             error("delete $", &[("a.rs", "")]),
@@ -751,7 +751,8 @@ mod tests {
         assert_eq!(matches[0].file, 0);
         assert_eq!(
             error("delete 9", &[("a.rs", TEXT), ("b.rs", "x\n")]),
-            "error: script:1:8: line 9 is past the end of a.rs (8 lines), b.rs (1 line)"
+            "error: script:1:8: line 9 is past the end of a.rs (8 lines), b.rs (1 line); \
+             use `$` for the last line"
         );
     }
 
@@ -802,7 +803,7 @@ mod tests {
     fn nested_lines_must_lie_inside_the_parent() {
         assert_eq!(
             error("delete 1-4>7", &[("a.rs", TEXT)]),
-            "error: script:1:8: 1-4>7 matches nothing in a.rs"
+            "error: script:1:8: 1-4>7 matches nothing in a.rs; it searched 1-4"
         );
     }
 
@@ -843,7 +844,8 @@ mod tests {
                 "delete <<END\nfn b() {\nlet x = 3;\n}\nEND\n",
                 &[("a.rs", TEXT)]
             ),
-            "error: script:1:8: <<END matches nothing in a.rs"
+            "error: script:1:8: <<END matches nothing in a.rs; \
+             ignoring case and spacing, it matches at 6-8"
         );
         let text = "  let x = 1;\n    let y = 2;\n";
         assert!(
@@ -869,7 +871,8 @@ mod tests {
     fn heredoc_must_match_whole_lines() {
         assert_eq!(
             error("delete <<END\nlet x\nEND\n", &[("a.rs", TEXT)]),
-            "error: script:1:8: <<END matches nothing in a.rs"
+            "error: script:1:8: <<END matches nothing in a.rs; \
+             ignoring case and spacing, it matches at 2"
         );
     }
 
@@ -909,7 +912,8 @@ mod tests {
         );
         assert_eq!(
             error("delete file:c.rs>/x/", &[("a.rs", "x\n"), ("b.rs", "x\n")]),
-            "error: script:1:8: file:c.rs is not in the file set: a.rs, b.rs"
+            "error: script:1:8: file:c.rs is not in the file set: a.rs, b.rs; \
+             add it with `file a.rs b.rs c.rs`"
         );
     }
 
@@ -940,7 +944,7 @@ mod tests {
     fn zero_matches_is_an_error_even_with_all() {
         assert_eq!(
             error("delete all /z/", &[("a.rs", "x\n"), ("b.rs", "y\n")]),
-            "error: script:1:12: /z/ matches nothing in a.rs, b.rs"
+            "error: script:1:12: /z/ matches nothing in a.rs, b.rs; `show` prints the text to match against"
         );
     }
 
@@ -1051,7 +1055,8 @@ mod tests {
                 "delete query{(identifier) @sel (#eq? @sel)}",
                 &[("a.rs", RUST)]
             ),
-            "error: script:1:8: invalid rust query: bad predicate at column 1"
+            "error: script:1:8: invalid rust query: bad predicate at column 1; \
+             predicates look like (#eq? @capture \"text\")"
         );
         let err = resolve_in("delete query{(identifier}", &files(&[("a.rs", RUST)])).unwrap_err();
         assert!(
@@ -1095,23 +1100,23 @@ mod tests {
     fn parts_need_syntax_items_that_have_them() {
         assert_eq!(
             error("delete fn:main.doc", &[("a.rs", RUST)]),
-            "error: script:1:8: fn:main has no .doc"
+            "error: script:1:8: fn:main has no .doc; it has .body .sig .params .name .lines"
         );
         assert_eq!(
             error("delete import:std::fmt.body", &[("a.rs", RUST)]),
-            "error: script:1:8: import:std::fmt has no .body"
+            "error: script:1:8: import:std::fmt has no .body; it has .sig .name .lines"
         );
         assert_eq!(
             error("delete /x/.body", &[("a.rs", RUST)]),
-            "error: script:1:8: .body needs a syntax item (kind:name)"
+            "error: script:1:8: .body needs a syntax item, e.g. fn:NAME.body"
         );
         assert_eq!(
             error("delete fn:main.body.name", &[("a.rs", RUST)]),
-            "error: script:1:8: .name needs a syntax item (kind:name)"
+            "error: script:1:8: .name needs a syntax item, e.g. fn:NAME.name"
         );
         assert_eq!(
             error("delete fn:main.lines.body", &[("a.rs", RUST)]),
-            "error: script:1:8: .body needs a syntax item (kind:name)"
+            "error: script:1:8: .body needs a syntax item, e.g. fn:NAME.body"
         );
     }
 
@@ -1267,6 +1272,50 @@ fn main() {
     }
 
     #[test]
+    fn no_match_suggests_a_near_literal_or_regex() {
+        assert_eq!(
+            error(r#"delete "LET  y""#, &[("a.rs", TEXT)]),
+            "error: script:1:8: \"LET  y\" matches nothing in a.rs; \
+             ignoring case and spacing, it matches at 3"
+        );
+        assert_eq!(
+            error("delete /LET Y/", &[("a.rs", TEXT), ("b.rs", "")]),
+            "error: script:1:8: /LET Y/ matches nothing in a.rs, b.rs; \
+             it matches case-insensitively at a.rs:3 (add the i flag)"
+        );
+    }
+
+    #[test]
+    fn nested_no_match_names_the_spans_searched() {
+        assert_eq!(
+            error("delete fn:a>/zzz/", &[("a.rs", TEXT)]),
+            "error: script:1:8: fn:a>/zzz/ matches nothing in a.rs; it searched 1-4"
+        );
+        let many = "fn f() {}\n".repeat(5);
+        assert_eq!(
+            error("delete all fn:f>/zzz/", &[("a.rs", &many)]),
+            "error: script:1:12: fn:f>/zzz/ matches nothing in a.rs; it searched 1, 2, 3, ..."
+        );
+    }
+
+    #[test]
+    fn invalid_queries_suggest_close_names() {
+        assert_eq!(
+            error("delete query{(call_expresion) @sel}", &[("a.rs", RUST)]),
+            "error: script:1:8: invalid rust query: unknown node type `call_expresion` at column 2; \
+             did you mean `call_expression`?"
+        );
+        assert_eq!(
+            error(
+                "delete query{(function_item nme: (identifier)) @sel}",
+                &[("a.rs", RUST)]
+            ),
+            "error: script:1:8: invalid rust query: unknown field `nme` at column 16; \
+             did you mean `name`?"
+        );
+    }
+
+    #[test]
     fn no_match_suggests_a_close_name() {
         assert_eq!(
             error("delete fn:prase", &[("a.rs", RUST)]),
@@ -1286,7 +1335,7 @@ fn main() {
         );
         assert_eq!(
             error("delete fn:zzzzzz", &[("a.rs", RUST)]),
-            "error: script:1:8: fn:zzzzzz matches nothing in a.rs"
+            "error: script:1:8: fn:zzzzzz matches nothing in a.rs; `outline` lists the items"
         );
     }
 
@@ -1315,7 +1364,8 @@ fn main() {
     fn syntax_steps_are_not_yet_supported_for_other_languages() {
         assert_eq!(
             error("delete fn:main", &[("a.py", "def main():\n    pass\n")]),
-            "error: script:1:8: `fn:main` in python files is not yet supported"
+            "error: script:1:8: `fn:main` in python files is not yet supported; \
+             use a line, /regex/, \"literal\" or query{} selector"
         );
     }
 }
