@@ -239,7 +239,9 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::MissingPart { .. }
         | ExecErrorKind::PartNeedsItem { .. }
         | ExecErrorKind::MoveIntoSource { .. }
-        | ExecErrorKind::FileExists { .. } => 1,
+        | ExecErrorKind::FileExists { .. }
+        | ExecErrorKind::RenameRefused { .. }
+        | ExecErrorKind::RenameOutside { .. } => 1,
         ExecErrorKind::Unsupported { .. }
         | ExecErrorKind::NoFiles
         | ExecErrorKind::InvalidQuery { .. }

@@ -78,6 +78,7 @@ pub fn run<'s, 'l: 's>(
         lsp: lsp.map(|lsp| -> &'s mut dyn Lsp { lsp }),
         allow: None,
         named: Vec::new(),
+        workspace: None,
         files: Vec::new(),
         set: Vec::new(),
         output: String::new(),
@@ -120,6 +121,8 @@ struct Executor<'s> {
     allow: Option<Severity>,
     /// Every path the file set has held, in the order the script named them.
     named: Vec<String>,
+    /// Every file `-w` listed: what `rename` may reach beyond the set.
+    workspace: Option<Vec<String>>,
 }
 
 impl Executor<'_> {
@@ -128,7 +131,9 @@ impl Executor<'_> {
             Initial::Files(paths) => self.open(paths, None)?,
             Initial::Workspace(root) => {
                 let cwd = std::env::current_dir().unwrap_or_default();
-                workspace::files(&root, &cwd)
+                let paths = workspace::files(&root, &cwd);
+                self.workspace = Some(paths.clone());
+                paths
                     .into_iter()
                     .map(|path| Member {
                         path,
@@ -378,6 +383,7 @@ impl Executor<'_> {
                 dest,
             } => self.move_to(index, span, target, *position, dest)?,
             CommandKind::Check { target, level } => self.check(span, target.as_ref(), *level)?,
+            CommandKind::Rename { selector, name } => self.rename(index, span, selector, name)?,
             CommandKind::File(_) | CommandKind::Create { .. } | CommandKind::Allow(_) => {
                 unreachable!("handled above")
             }
@@ -705,6 +711,17 @@ impl Executor<'_> {
         }
         self.output.push_str(&out);
         Ok(())
+    }
+
+    /// Renames the symbol at `selector` to `name`, via the language server (§4.2).
+    fn rename(
+        &mut self,
+        index: usize,
+        span: &Range<usize>,
+        selector: &Selector,
+        name: &str,
+    ) -> Result<(), ExecError> {
+        todo!("{index} {span:?} {selector:?} {name}")
     }
 
     fn sub(
@@ -1193,6 +1210,16 @@ pub enum ExecErrorKind {
     Lsp(String),
     #[error("no language server for {langs}; set one with `[lsp] {first} = [\"PROGRAM\", ...]` in .ned.toml", first = langs.split(", ").next().unwrap_or_default())]
     NoServer { langs: String },
+    /// `message` ends with a fix.
+    #[error("cannot rename at {location}: {message}")]
+    RenameRefused { location: String, message: String },
+    /// `workspace`: under `-w`, where the boundary is the workspace.
+    #[error(
+        "rename edits files outside the {}: {files}; {}",
+        if *workspace { "workspace" } else { "file set" },
+        if *workspace { "these are ignored or outside the root; rename with `sub` instead" } else { "add them to the file set, or use -w" }
+    )]
+    RenameOutside { files: String, workspace: bool },
 }
 
 /// Selectors that each pick one of an ambiguous selector's matches, with the
@@ -1256,7 +1283,7 @@ mod tests {
     use std::fs;
 
     use super::*;
-    use crate::lsp::{Diagnosis, Diagnostic, Document, LspFailure, Position};
+    use crate::lsp::{Diagnosis, Diagnostic, Document, LspFailure, Position, Renamed};
     use crate::script::parse;
 
     const TEXT: &str =
@@ -2297,6 +2324,10 @@ fn main() {}
         fn sync(&mut self, documents: &[Document]) -> Result<(), LspFailure> {
             self.asked.extend_from_slice(documents);
             Ok(())
+        }
+
+        fn rename(&mut self, _: &Document, _: Position, _: &str) -> Result<Renamed, LspFailure> {
+            unreachable!("not renamed in these tests")
         }
     }
 

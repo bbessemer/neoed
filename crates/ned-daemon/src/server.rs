@@ -110,6 +110,14 @@ impl Daemon<'_> {
                         Err(err) => Response::Error(err.to_string()),
                     }
                 }
+                Ok(Request::Rename {
+                    document,
+                    position,
+                    name,
+                }) => match self.servers.rename(&document, position, &name).await {
+                    Ok(renamed) => Response::Renamed(renamed),
+                    Err(err) => Response::Error(err.to_string()),
+                },
                 Err(err) => Response::Error(format!("invalid request: {err}")),
             };
             reply(&mut write, &response).await;

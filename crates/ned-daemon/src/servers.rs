@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use ned_core::config::Config;
 use std::time::Duration;
 
-use ned_core::lsp::{Diagnosis, Severity};
+use ned_core::lsp::{Diagnosis, Position, Renamed, Severity};
 
 use crate::lsp::{LspError, Server};
 use crate::protocol::{Document, ServerStatus};
@@ -86,6 +86,17 @@ impl Servers {
                 .unwrap_or(Some(Severity::Error)),
             files,
         })
+    }
+
+    /// `open`s the document, brings its server's other documents up to date
+    /// with the disk, and renames the symbol at `position` to `name`.
+    pub async fn rename(
+        &mut self,
+        document: &Document,
+        position: Position,
+        name: &str,
+    ) -> Result<Renamed, ServersError> {
+        todo!("{document:?} {position:?} {name}")
     }
 
     pub fn status(&self) -> Vec<ServerStatus> {

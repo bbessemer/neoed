@@ -127,14 +127,7 @@ impl Parser<'_> {
             },
             "check" => self.check()?,
             "allow" => self.allow()?,
-            "rename" => {
-                let instead = r#"use sub /\bOLD\b/ with "NEW" over the files"#;
-                let reserved = E::Reserved {
-                    what: word.into(),
-                    instead,
-                };
-                return Err(ParseError::new(reserved, verb.span.clone()));
-            }
+            "rename" => self.rename()?,
             _ => {
                 return Err(ParseError::new(
                     E::UnknownCommand(word.into()),
@@ -183,6 +176,11 @@ impl Parser<'_> {
             TokenKind::Word(w) if w == "warnings" => Ok(CommandKind::Allow(Severity::Warning)),
             _ => Err(expected("`errors` or `warnings`", &token)),
         }
+    }
+
+    /// After `rename`: `SEL to NAME`.
+    fn rename(&mut self) -> Result<CommandKind, ParseError> {
+        todo!()
     }
 
     fn target(&mut self) -> Result<Target, ParseError> {
@@ -438,6 +436,7 @@ pub fn usage(verb: &str) -> Option<&'static str> {
         "create" => "create PATH TEXT",
         "check" => "check [SEL] [LEVEL]",
         "allow" => "allow errors|warnings",
+        "rename" => "rename SEL to NAME",
         _ => return None,
     })
 }
@@ -569,6 +568,10 @@ mod tests {
             Check { target, level } => Check {
                 target: target.map(unspan_target),
                 level,
+            },
+            Rename { selector, name } => Rename {
+                selector: unspan_selector(selector),
+                name,
             },
         }
     }

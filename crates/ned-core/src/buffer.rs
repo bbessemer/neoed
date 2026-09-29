@@ -146,6 +146,12 @@ impl Buffer {
         offset
     }
 
+    /// The LSP position of a byte offset: a 0-based line, and UTF-16 code units
+    /// into it.
+    pub fn lsp_position(&self, offset: usize) -> (u32, u32) {
+        todo!("{offset}")
+    }
+
     pub fn slice(&self, range: Range<usize>) -> Result<String, BufferError> {
         self.check_range(&range)?;
         Ok(self.rope.byte_slice(range).to_string())

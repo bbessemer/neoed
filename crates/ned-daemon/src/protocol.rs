@@ -3,8 +3,8 @@
 
 use std::path::PathBuf;
 
-use ned_core::lsp::Diagnosis;
 pub use ned_core::lsp::Document;
+use ned_core::lsp::{Diagnosis, Position, Renamed};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,6 +20,12 @@ pub enum Request {
     Diagnose {
         documents: Vec<Document>,
     },
+    /// `Open` the document, then rename the symbol at `position` in it.
+    Rename {
+        document: Document,
+        position: Position,
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +35,7 @@ pub enum Response {
     Stopped,
     Opened,
     Diagnosis(Diagnosis),
+    Renamed(Renamed),
     Error(String),
 }
 
