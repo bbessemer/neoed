@@ -109,7 +109,12 @@ async fn opening_starts_and_initializes_a_server() {
         .collect();
     assert_eq!(
         methods,
-        ["initialize", "initialized", "textDocument/didOpen"]
+        [
+            "initialize",
+            "initialized",
+            "workspace/didChangeConfiguration",
+            "textDocument/didOpen"
+        ]
     );
 
     let init = &messages[0]["params"];
@@ -119,7 +124,7 @@ async fn opening_starts_and_initializes_a_server() {
     assert_eq!(init["capabilities"]["window"]["workDoneProgress"], true);
     assert_eq!(init["capabilities"]["workspace"]["configuration"], true);
 
-    let open = &messages[2]["params"]["textDocument"];
+    let open = &messages[3]["params"]["textDocument"];
     assert_eq!(open["uri"], uri(&ws.root().join("a.rs")));
     assert_eq!(open["languageId"], "rust");
     assert_eq!(open["version"], 1);
