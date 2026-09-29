@@ -1243,6 +1243,30 @@ mod tests {
     }
 
     #[test]
+    fn nested_matches_may_start_in_an_items_indentation() {
+        let text = "impl S {\n    fn new() {\n        1\n    }\n}\n";
+        assert_eq!(select("delete fn:new>\"    fn new\"", text), ["    fn new"]);
+        assert_eq!(
+            select("delete fn:new><<END\nfn new() {\nEND\n", text),
+            ["    fn new() {\n"]
+        );
+        assert_eq!(select("delete fn:new>/^    fn/", text), ["    fn"]);
+        // `^` is a line start, not the start of the item.
+        let set = files(&[("a.rs", text)]);
+        assert!(resolve_in("delete fn:new>/^fn/", &set).is_err());
+        assert!(resolve_in("delete /new\\(\\) \\{/>/^/", &set).is_err());
+    }
+
+    #[test]
+    fn candidates_nest_matches_in_an_items_indentation() {
+        let text = "impl S {\n    fn a() {}\n    fn b() {}\n}\n";
+        assert_eq!(
+            listed("delete impl:S>\"    fn\"", &[("a.rs", text)]),
+            ["impl:S>fn:a>\"    fn\"", "impl:S>fn:b>\"    fn\""]
+        );
+    }
+
+    #[test]
     fn lines_part_widens_to_whole_lines() {
         assert_eq!(select("delete \"y = 2\".lines", TEXT), ["    let y = 2;\n"]);
         assert_eq!(

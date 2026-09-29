@@ -2094,6 +2094,15 @@ mod tests {
     }
 
     #[test]
+    fn sub_in_an_item_reaches_its_first_line_indentation() {
+        let text = "impl S {\n    fn new() {\n        1\n    }\n}\n";
+        assert_eq!(
+            edited(text, "sub fn:new /^    / with \"\""),
+            "impl S {\nfn new() {\n    1\n}\n}\n"
+        );
+    }
+
+    #[test]
     fn sub_inserts_text_verbatim() {
         assert_eq!(
             edited(TEXT, "sub /1;\\n/ with <<END\n1;\n  // one\nEND\n"),

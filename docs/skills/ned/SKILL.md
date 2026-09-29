@@ -162,10 +162,6 @@ END
   names lines 15 and 16 of the file, which must lie inside `fn:parse`.
 - **Use `delete` to remove lines.** `replace 12 with ""` leaves an empty line,
   because line-oriented text always ends with a newline.
-- **Items start at their first token.** A literal that includes a line's
-  leading spaces won't match inside an item such as `fn:x`, because the item
-  starts at `fn`, not at the line's indentation. Drop the leading spaces, or
-  select whole lines with `.lines`.
 - **Partial matches get verbatim text.** `insert after /re/` inserts right
   after the match, even mid-line, and `insert end /re/` or `"a".."b"` does the
   same at the span's end; add `.lines` to insert after the whole line. A

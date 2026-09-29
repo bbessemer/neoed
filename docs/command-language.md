@@ -331,9 +331,11 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 ### 3.4 Nesting and parts
 
 - `A>B` resolves `B` within each span of `A`. That is, `B`'s matches must lie
-  inside `A`, at any depth. A line lies inside a span that covers whole lines
-  (such as a syntax item) if its text does, so `fn:new>12` can select the
-  item's first or last line. Any kinds of primaries can be mixed:
+  inside `A`, at any depth. A match lies inside a span that covers whole lines
+  (such as a syntax item) if it lies within those lines, so `fn:new>12` can
+  select the item's first or last line, `fn:new>"    fn new"` can include its
+  indentation, and `^` in a nested regex is a line start; `sub`'s scopes work
+  the same way. Any kinds of primaries can be mixed:
   `impl:Parser>fn:new`, `fn:main>/unwrap\(\)/`, `100-200>fn:new`.
 - A **part** narrows each span of its step:
 
