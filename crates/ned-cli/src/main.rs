@@ -6,9 +6,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use ned_core::config::{self, Config};
 use ned_core::diff::{self, DiffStat};
 use ned_core::exec::{self, ExecErrorKind, Options};
-use ned_core::format::{self, Formatters, Outcome};
+use ned_core::format::{self, Outcome};
 use ned_core::lang::Language;
 use ned_core::{fs, script};
 
@@ -109,8 +110,8 @@ fn main() -> ExitCode {
     let outcomes = if cli.no_fmt {
         vec![Outcome::Unchanged; changes.len()]
     } else {
-        let formatted = Formatters::new(format::user_config().as_deref())
-            .and_then(|mut formatters| format::run(&changes, &mut formatters));
+        let formatted = Config::new(config::user_config().as_deref())
+            .and_then(|mut config| format::run(&changes, &mut config));
         match formatted {
             Ok(outcomes) => outcomes,
             Err(err) => {

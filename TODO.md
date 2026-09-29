@@ -110,8 +110,8 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 ## 9. LSP daemon _(split)_
 
 - [x] `ned-daemon` crate: per-workspace socket, lazy spawn, idle timeout
-- [ ] LSP client (`lsp-types`, `tokio`): initialize, didOpen/didChange, shutdown
-- [ ] Server configuration per language (rust-analyzer, gopls, pyright, tsserver)
+- [x] LSP client (`lsp-types`, `tokio`): initialize, didOpen/didChange, shutdown
+- [x] Server configuration per language (rust-analyzer, gopls, pyright, tsserver)
 - [ ] `check` verb: diagnostics for edited files
 - [ ] `rename` verb (workspace-wide) and `refs:` / `def:` selectors
 - [ ] LSP formatting fallback when no external formatter is configured

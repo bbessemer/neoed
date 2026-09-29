@@ -12,3 +12,7 @@ wins) or ~/.config/ned/config.toml:
 
 {path} is the file's absolute path; {edition} comes from Cargo.toml.
 --no-fmt skips formatting.
+
+Language servers (for daemon features) are set the same way, under [lsp]:
+rust-analyzer, gopls, pyright-langserver, typescript-language-server by
+default. [daemon] idle_timeout = SECS (default 600).

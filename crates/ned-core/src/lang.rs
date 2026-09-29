@@ -6,9 +6,12 @@ use std::str::FromStr;
 
 use std::sync::OnceLock;
 
+use serde::{Deserialize, Serialize};
+
 use tree_sitter::{Parser, Query, Tree};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Language {
     Rust,
     Python,

@@ -47,8 +47,8 @@ Language-server features run through a daemon, one per workspace, that keeps
 the servers warm between invocations. A workspace is the nearest directory,
 from the working directory up, that holds `.git`, `.hg` or `.jj`; without one,
 it's the working directory. Features that need the daemon spawn it on demand,
-and it exits after 10 minutes without a request. Everything else works without
-it.
+and it exits after 10 minutes without a request (see `idle_timeout` below).
+Everything else works without it.
 
 `ned daemon start`, `status` and `stop` manage the daemon for the workspace
 containing `DIR` (default: the working directory). `start` spawns it if it isn't
@@ -57,11 +57,43 @@ running and prints its status; `status` and `stop` never spawn it.
 ```
 $ ned daemon status
 daemon for /home/me/proj: pid 4121, up 3m
+  rust-analyzer: ready, 12 files
 $ ned daemon stop
 stopped the daemon for /home/me/proj
 $ ned daemon status
 no daemon for /home/me/proj
 ```
+
+The daemon starts a language's server the first time a feature needs it, and
+keeps each server's view of the files in sync with the text `ned` sends it.
+`status` lists each server with its state (`indexing`, `ready` or `exited`)
+and the number of files it has open. A server that exits is started again when
+next needed. Servers are shut down with the daemon.
+
+Servers are configured per language under `[lsp]`, like formatters (§6.4): the
+same files, merging and program lookup, read from the workspace root up. A value
+is a command as an argv array, or `false` for none. `[daemon]` sets
+`idle_timeout`, in seconds.
+
+```toml
+[lsp]
+python = ["basedpyright-langserver", "--stdio"]
+markdown = false
+
+[daemon]
+idle_timeout = 1800
+```
+
+| Language                    | Default server                       |
+| --------------------------- | ------------------------------------ |
+| rust                        | `rust-analyzer`                      |
+| go                          | `gopls`                              |
+| python                      | `pyright-langserver --stdio`         |
+| typescript, tsx, javascript | `typescript-language-server --stdio` |
+| markdown                    | none                                 |
+
+A server that isn't installed is an error when a feature needs it, naming the
+`[lsp]` setting to change.
 
 The daemon listens on a Unix socket in `$XDG_RUNTIME_DIR/ned/`, or
 `$TMPDIR/ned-UID/` without it; `ned` refuses a directory that isn't owned by the

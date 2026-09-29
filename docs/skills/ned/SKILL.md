@@ -133,7 +133,14 @@ END
   starts at `fn`, not at the line's indentation. Drop the leading spaces, or
   select whole lines with `.lines`.
 - **Partial matches get verbatim text.** `insert after /re/` inserts right
-  after the match, even mid-line; add `.lines` to insert after the whole line.
+  after the match, even mid-line, and `insert end /re/` or `"a".."b"` does the
+  same at the span's end; add `.lines` to insert after the whole line.
+- **`..` binds tighter than `>`.** `fn:f>"a".."b"` is a range inside `fn:f`;
+  `fn:f>"a"..fn:f>"b"` nests the range's end into another step and matches
+  nothing.
+- **Literals match the file's characters.** In a ned string, `\n` is a
+  newline, so matching Rust source that contains the two characters `\n` needs
+  `\\n`. A shorter literal, or `sub` with a regex, is easier.
 - **Re-basing follows the target line.** `<<END` text takes the indentation of
   the line it's inserted next to, so after a wrapped list item's continuation
   line it gets the hanging indent. For code, use `<<END` (a quoted `<<'END'`

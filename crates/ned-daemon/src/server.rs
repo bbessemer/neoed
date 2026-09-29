@@ -1,7 +1,7 @@
 //! The daemon's event loop.
 
 use std::fs::{self, File, TryLockError};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use std::{io, process};
 
@@ -13,14 +13,21 @@ use tokio::time;
 
 use crate::paths::Paths;
 use crate::protocol::{Request, Response, Status};
+use crate::servers::Servers;
 
 /// How long a client has to send its request once connected.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Serves `root`'s daemon at `paths` until a `stop` request, `idle` without
-/// a request, or SIGTERM or SIGINT. Returns at once if another daemon holds
-/// the lock.
-pub fn serve(paths: &Paths, root: &Path, idle: Duration) -> io::Result<()> {
+/// a request, or SIGTERM or SIGINT, reading server settings from
+/// `user_config` and the workspace's config files. Returns at once if another
+/// daemon holds the lock.
+pub fn serve(
+    paths: &Paths,
+    root: &Path,
+    user_config: Option<PathBuf>,
+    idle: Duration,
+) -> io::Result<()> {
     let lock = File::options()
         .write(true)
         .create(true)
@@ -36,10 +43,11 @@ pub fn serve(paths: &Paths, root: &Path, idle: Duration) -> io::Result<()> {
         Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
         _ => {}
     }
-    let daemon = Daemon {
+    let mut daemon = Daemon {
         paths,
         root,
         started: Instant::now(),
+        servers: Servers::new(root.to_path_buf(), user_config),
     };
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -51,10 +59,11 @@ struct Daemon<'a> {
     paths: &'a Paths,
     root: &'a Path,
     started: Instant,
+    servers: Servers,
 }
 
 impl Daemon<'_> {
-    async fn listen(&self, lock: File, idle: Duration) -> io::Result<()> {
+    async fn listen(&mut self, lock: File, idle: Duration) -> io::Result<()> {
         let listener = UnixListener::bind(&self.paths.socket)?;
         let mut terminate = signal(SignalKind::terminate())?;
         let mut interrupt = signal(SignalKind::interrupt())?;
@@ -88,13 +97,19 @@ impl Daemon<'_> {
                     // the reply can take over.
                     self.release(listener, lock);
                     reply(&mut write, &Response::Stopped).await;
+                    self.servers.shutdown().await;
                     return Ok(());
                 }
+                Ok(Request::Open { documents }) => match self.servers.open(&documents).await {
+                    Ok(()) => Response::Opened,
+                    Err(err) => Response::Error(err.to_string()),
+                },
                 Err(err) => Response::Error(format!("invalid request: {err}")),
             };
             reply(&mut write, &response).await;
         }
         self.release(listener, lock);
+        self.servers.shutdown().await;
         Ok(())
     }
 
@@ -104,6 +119,7 @@ impl Daemon<'_> {
             root: self.root.to_path_buf(),
             pid: process::id(),
             uptime_secs: self.started.elapsed().as_secs(),
+            servers: self.servers.status(),
         }
     }
 

@@ -7,8 +7,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use std::{io, process};
 
+use ned_core::lang::Language;
 use ned_daemon::client::ClientError;
-use ned_daemon::protocol::{Request, Response};
+use ned_daemon::protocol::{Document, Request, Response};
 use ned_daemon::{Client, Paths, server};
 use tempfile::TempDir;
 
@@ -37,7 +38,9 @@ impl Daemon {
 
     fn start(mut self, idle: Duration) -> Daemon {
         let (paths, root) = (self.paths.clone(), self.root.clone());
-        self.thread = Some(thread::spawn(move || server::serve(&paths, &root, idle)));
+        self.thread = Some(thread::spawn(move || {
+            server::serve(&paths, &root, None, idle)
+        }));
         let deadline = Instant::now() + Duration::from_secs(5);
         while Client::connect(&self.paths).is_none() {
             assert!(Instant::now() < deadline, "the daemon didn't start");
@@ -107,7 +110,7 @@ fn requests_keep_a_daemon_from_idling() {
 #[test]
 fn a_second_daemon_for_a_workspace_returns_at_once() {
     let daemon = Daemon::new().start(IDLE);
-    server::serve(&daemon.paths, &daemon.root, IDLE).unwrap();
+    server::serve(&daemon.paths, &daemon.root, None, IDLE).unwrap();
     assert!(matches!(
         daemon.client().request(&Request::Status),
         Ok(Response::Status(_))
@@ -157,4 +160,36 @@ fn a_missing_program_cannot_start() {
     let exe = daemon.root.join("no-such-ned");
     let err = Client::connect_or_spawn(&daemon.paths, &exe, &daemon.root).unwrap_err();
     assert!(matches!(err, ClientError::Spawn { .. }), "{err}");
+}
+
+#[test]
+fn open_starts_servers_that_status_lists_and_stop_shuts_down() {
+    let fake = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake_lsp.py");
+    let daemon = Daemon::new();
+    let log = daemon.root.join("lsp.log");
+    let config = format!("[lsp]\nrust = [{fake:?}, {log:?}]\n");
+    std::fs::write(daemon.root.join(".ned.toml"), config).unwrap();
+    let mut daemon = daemon.start(IDLE);
+    let open = Request::Open {
+        documents: vec![Document {
+            path: daemon.root.join("a.rs"),
+            lang: Language::Rust,
+            text: "fn a() {}\n".into(),
+        }],
+    };
+    assert_eq!(daemon.client().request(&open).unwrap(), Response::Opened);
+    let Response::Status(status) = daemon.client().request(&Request::Status).unwrap() else {
+        panic!("not a status");
+    };
+    assert_eq!(status.servers.len(), 1);
+    assert_eq!(status.servers[0].name, "fake_lsp.py");
+    assert_eq!(status.servers[0].documents, 1);
+
+    assert_eq!(
+        daemon.client().request(&Request::Stop).unwrap(),
+        Response::Stopped
+    );
+    daemon.join();
+    let log = std::fs::read_to_string(&log).unwrap();
+    assert!(log.lines().last().unwrap().contains("\"exit\""), "{log}");
 }
