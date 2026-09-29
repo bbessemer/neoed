@@ -16,7 +16,7 @@ use ned_core::{fs, script};
 #[derive(Parser)]
 #[command(
     name = "ned",
-    version,
+    version = env!("NED_VERSION"),
     args_conflicts_with_subcommands = true,
     disable_help_subcommand = true,
     // clap leaves a user-defined `help` subcommand out of the usage.

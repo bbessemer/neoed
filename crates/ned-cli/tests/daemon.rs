@@ -64,14 +64,23 @@ fn the_version_names_the_build() {
     let output = cargo_bin_cmd!("ned").arg("--version").output().unwrap();
     let version = String::from_utf8(output.stdout).unwrap();
     let build = version
-        .strip_prefix(&format!("ned {} (", env!("CARGO_PKG_VERSION")))
-        .and_then(|rest| rest.strip_suffix(")\n"))
+        .strip_prefix(&format!("ned {}+", env!("CARGO_PKG_VERSION")))
+        .and_then(|rest| rest.strip_suffix('\n'))
         .expect(&version);
-    let commit = build.split(['-', ' ']).next().unwrap();
+    let mut identifiers = build.split('.');
+    let commit = identifiers.next().unwrap();
     assert!(
         commit.len() >= 7 && commit.chars().all(|c| c.is_ascii_hexdigit()),
         "{version}"
     );
+    if let Some(dirty) = identifiers.next() {
+        assert_eq!(dirty, "dirty", "{version}");
+        assert!(
+            identifiers.next().unwrap().parse::<u64>().is_ok(),
+            "{version}"
+        );
+    }
+    assert_eq!(identifiers.next(), None, "{version}");
 }
 
 #[test]
