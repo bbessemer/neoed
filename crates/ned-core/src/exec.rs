@@ -1110,8 +1110,16 @@ impl Executor<'_> {
         let regex = pattern
             .regex()
             .expect("regexes are validated when the script is parsed");
-        let scopes = match scope {
-            Some(target) => self.resolve(target)?,
+        let scopes: Vec<Match> = match scope {
+            // A scope's whole lines, as a nested step searches them (§3.4).
+            Some(target) => self
+                .resolve(target)?
+                .into_iter()
+                .map(|m| Match {
+                    range: select::scope(&self.files[m.file].file.text, &m.range),
+                    ..m
+                })
+                .collect(),
             None => self
                 .read(|_| true)?
                 .into_iter()
@@ -1275,7 +1283,8 @@ fn empty_body<'f>(f: &'f SourceFile, range: &Range<usize>) -> Option<&'f Item> {
 }
 
 /// The span and text that fill `item`'s empty body with `new` (§4.2):
-/// line-oriented, one indent unit inside the item, and on lines of its own.
+/// line-oriented, one indent unit inside the item, and on lines of its own;
+/// for a body of lines (a Markdown section), on the lines after its heading.
 fn fill_body(
     f: &SourceFile,
     item: &Item,
@@ -1284,6 +1293,16 @@ fn fill_body(
 ) -> (Range<usize>, String) {
     let t = &f.text;
     let unit = indent_unit(f);
+    if item.body_lines {
+        // The lines right after the heading, which may end the file.
+        let lines = line_oriented(new, text::indent_at(t, item.node.start), &unit);
+        let lead = if t[..range.start].ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        return (range, format!("{lead}{lines}"));
+    }
     let indent = format!("{}{unit}", text::indent_at(t, item.node.start));
     let lines = line_oriented(new, &indent, &unit);
     let body = item.body.clone().expect("an empty body is a body");
@@ -2090,6 +2109,45 @@ mod tests {
         assert_eq!(
             edited(TEXT, "sub all /let \\w/ /let/ with \"var\""),
             TEXT.replace("let", "var")
+        );
+    }
+
+    #[test]
+    fn sub_in_an_item_reaches_its_first_line_indentation() {
+        let text = "impl S {\n    fn new() {\n        1\n    }\n}\n";
+        assert_eq!(
+            edited(text, "sub fn:new /^    / with \"\""),
+            "impl S {\nfn new() {\n    1\n}\n}\n"
+        );
+    }
+
+    #[test]
+    fn markdown_section_bodies() {
+        let md = |script: &str| {
+            let text = "# A\n\nintro\n\n## B\n\nb text\n\n## C\n\n# D";
+            exec_with(&[("a.md", text)], 1, script)
+                .new_text()
+                .to_string()
+        };
+        assert_eq!(
+            md("insert end section:B \"more\""),
+            "# A\n\nintro\n\n## B\n\nb text\nmore\n\n## C\n\n# D"
+        );
+        assert_eq!(
+            md("replace section:B.body with \"new\""),
+            "# A\n\nintro\n\n## B\n\nnew\n\n## C\n\n# D"
+        );
+        assert_eq!(
+            md("insert start section:C \"c\""),
+            "# A\n\nintro\n\n## B\n\nb text\n\n## C\nc\n\n# D"
+        );
+        assert_eq!(
+            md("insert end section:D \"d\""),
+            "# A\n\nintro\n\n## B\n\nb text\n\n## C\n\n# D\nd\n"
+        );
+        assert_eq!(
+            md("insert end section:A <<END\n\n## E\nEND\n"),
+            "# A\n\nintro\n\n## B\n\nb text\n\n## C\n\n## E\n\n# D"
         );
     }
 

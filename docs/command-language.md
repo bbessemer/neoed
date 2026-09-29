@@ -295,7 +295,7 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 | `variant`   | enum variants                                                      |
 | `trait`     | traits                                                             |
 | `interface` | interfaces                                                         |
-| `impl`      | impl blocks (name = self type, e.g. `impl:Parser`)                 |
+| `impl`      | impl blocks (name = self type, or `TRAIT for TYPE`; see below)     |
 | `type`      | type aliases and declarations                                      |
 | `const`     | constants and statics                                              |
 | `var`       | module-level variables and `let`/`var` bindings                    |
@@ -307,6 +307,10 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 | `table`     | Markdown tables (name = the first header cell)                     |
 | `code`      | Markdown code blocks (name = the info string, or `""` if none)     |
 
+- An inherent impl is named by its self type (`impl:Parser`), a trait impl by
+  `TRAIT for TYPE` (`impl:"Display for Parser"`), each the last path segment
+  without generic arguments (`impl<T> fmt::Display for Foo<T>` is
+  `"Display for Foo"`). `impl:TYPE` also matches every trait impl of the type.
 - A syntax step skips files whose language doesn't support its kind (or has no
   syntax items yet), as it skips files without a language, so `fn:parse` works
   in a set that also holds Markdown. If no searched file supports the kind, the
@@ -327,27 +331,35 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 ### 3.4 Nesting and parts
 
 - `A>B` resolves `B` within each span of `A`. That is, `B`'s matches must lie
-  inside `A`, at any depth. A line lies inside a span that covers whole lines
-  (such as a syntax item) if its text does, so `fn:new>12` can select the
-  item's first or last line. Any kinds of primaries can be mixed:
+  inside `A`, at any depth. A match lies inside a span that covers whole lines
+  (such as a syntax item) if it lies within those lines, so `fn:new>12` can
+  select the item's first or last line, `fn:new>"    fn new"` can include its
+  indentation, and `^` in a nested regex is a line start; `sub`'s scopes work
+  the same way. Any kinds of primaries can be mixed:
   `impl:Parser>fn:new`, `fn:main>/unwrap\(\)/`, `100-200>fn:new`.
 - A **part** narrows each span of its step:
 
-| Part      | Span                                                                              |
-| --------- | --------------------------------------------------------------------------------- |
-| `.body`   | the item's block, between its delimiters (`{}`, or a Python indented block)       |
-| `.sig`    | from the start of the item (after its doc and attributes) up to its body          |
-| `.params` | the parameter list, between its parentheses                                       |
-| `.name`   | the item's name identifier                                                        |
-| `.doc`    | the item's leading doc comment lines                                              |
-| `.lines`  | the span widened to the whole lines it touches (any selector)                     |
-| `.refs`   | each reference to the symbol at the span (below), without its declaration         |
-| `.def`    | the symbol's definition: the item it names, or its identifier if it names no item |
+| Part      | Span                                                                                                                             |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `.body`   | the item's block, between its delimiters (`{}`, or a Python indented block); for a Markdown section, the lines after its heading |
+| `.sig`    | from the start of the item (after its doc and attributes) up to its body                                                         |
+| `.params` | the parameter list, between its parentheses                                                                                      |
+| `.name`   | the item's name identifier                                                                                                       |
+| `.doc`    | the item's leading doc comment lines                                                                                             |
+| `.lines`  | the span widened to the whole lines it touches (any selector)                                                                    |
+| `.refs`   | each reference to the symbol at the span (below), without its declaration                                                        |
+| `.def`    | the symbol's definition: the item it names, or its identifier if it names no item                                                |
 
 - For `.body` and `.params`: if the opening delimiter ends its line and the
   closing delimiter starts its line, the part is the whole lines between them.
   Otherwise it's the text between the delimiters, with surrounding whitespace
   trimmed.
+- A Markdown section's `.body` runs from the first non-blank line after its
+  heading to the end of its content, subsections included, so
+  `insert end section:"3. Selectors"` adds after the last subsection. It's
+  empty if the heading has no content; text put there goes on the lines right
+  after the heading. `ned` adds no blank lines between Markdown blocks: put
+  them in the text. `.sig` is the heading line.
 - `.doc` covers whole lines. On an item with no body (such as a trait method
   declaration), `.sig` is the whole item.
 - `.refs` and `.def` ask the language server (§1.1) about the symbol at the
@@ -724,23 +736,23 @@ Errors go to stderr, in the form `error: LOC: message`.
 - Every error ends with a concrete fix: candidate selectors, a nearby name, or
   the flag to use.
 
-| Error                                                     | Fix it suggests                                                                                                                                          |
-| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Script syntax                                             | Quoting, for a bare word where text or a selector belongs; otherwise the command's usage, e.g. `usage: replace [all] SEL with TEXT`                      |
-| Selector matches nothing                                  | A close syntax name; a literal match that differs only in case or spacing; a regex that matches with `i`; the spans a nested step searched; or `outline` |
-| Ambiguous selector                                        | Candidate selectors (§3.5), or longer text for matches that share a line                                                                                 |
-| Missing part, part on a non-syntax step                   | The parts the item has, or an example                                                                                                                    |
-| Invalid query                                             | The closest node type or field name in the grammar                                                                                                       |
-| Line past the end                                         | `$` for the last line                                                                                                                                    |
-| No language server for the files                          | The `[lsp]` setting for their language                                                                                                                   |
-| Language server failure                                   | Installing the server or fixing its `[lsp]` setting, or rerunning once it has indexed                                                                    |
-| Server can't rename there                                 | Selecting the name itself                                                                                                                                |
-| Rename, `.refs` or `.def` reaching a file outside the set | `-w`; outside the workspace, a regex (`sub`, for a rename)                                                                                               |
-| Ambiguous `.refs` or `.def` result                        | `all`, with the matches' locations                                                                                                                       |
-| File not in the set                                       | The `file` command that adds it                                                                                                                          |
-| Unsupported in a language                                 | Selectors that work there                                                                                                                                |
-| Overlapping edits                                         | Merging them, or a second invocation                                                                                                                     |
-| Missing file or empty glob                                | The working directory paths are relative to                                                                                                              |
+| Error                                                     | Fix it suggests                                                                                                                                                                                                                                                                                         |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Script syntax                                             | Quoting, for a bare word where text or a selector belongs; otherwise the command's usage, e.g. `usage: replace [all] SEL with TEXT`                                                                                                                                                                     |
+| Selector matches nothing                                  | The same name under another kind; a close syntax name; for `P>"a"..P>"b"`, `P>"a".."b"`; a string literal that matches as escaped source text (`"\\n"` for `"\n"`); a literal match that differs only in case or spacing; a regex that matches with `i`; the spans a nested step searched; or `outline` |
+| Ambiguous selector                                        | Candidate selectors (§3.5), or longer text for matches that share a line                                                                                                                                                                                                                                |
+| Missing part, part on a non-syntax step                   | The parts the item has, or an example                                                                                                                                                                                                                                                                   |
+| Invalid query                                             | The closest node type or field name in the grammar                                                                                                                                                                                                                                                      |
+| Line past the end                                         | `$` for the last line                                                                                                                                                                                                                                                                                   |
+| No language server for the files                          | The `[lsp]` setting for their language                                                                                                                                                                                                                                                                  |
+| Language server failure                                   | Installing the server or fixing its `[lsp]` setting, or rerunning once it has indexed                                                                                                                                                                                                                   |
+| Server can't rename there                                 | Selecting the name itself                                                                                                                                                                                                                                                                               |
+| Rename, `.refs` or `.def` reaching a file outside the set | `-w`; outside the workspace, a regex (`sub`, for a rename)                                                                                                                                                                                                                                              |
+| Ambiguous `.refs` or `.def` result                        | `all`, with the matches' locations                                                                                                                                                                                                                                                                      |
+| File not in the set                                       | The `file` command that adds it                                                                                                                                                                                                                                                                         |
+| Unsupported in a language                                 | Selectors that work there                                                                                                                                                                                                                                                                               |
+| Overlapping edits                                         | Merging them, or a second invocation                                                                                                                                                                                                                                                                    |
+| Missing file or empty glob                                | The working directory paths are relative to                                                                                                                                                                                                                                                             |
 
 ```
 error: script:1:8: fn:new matches 2 items; add `all` or use one of:

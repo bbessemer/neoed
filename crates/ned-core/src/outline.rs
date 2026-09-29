@@ -134,9 +134,9 @@ mod tests {
     }
 
     #[test]
-    fn names_impls_by_self_type() {
+    fn names_trait_impls_by_trait_and_self_type() {
         let text = "impl<T> std::fmt::Display for W<T> {}\n";
-        assert_eq!(outline(text), "1 impl:W\n");
+        assert_eq!(outline(text), "1 impl:\"Display for W\"\n");
     }
 
     #[test]

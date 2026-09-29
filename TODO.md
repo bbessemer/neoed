@@ -96,17 +96,17 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] `insert before|after` with heredoc TEXT widens a partial-line target to
       its whole lines, as if `.lines` were given (string TEXT stays verbatim),
       so `insert after /re/ <<END` can't land mid-line
-- [ ] Name trait impls `TRAIT for TYPE` too: `impl:"Display for Language"`
+- [x] Name trait impls `TRAIT for TYPE` too: `impl:"Display for Language"`
       picks one impl, while `impl:Language` still matches every impl of the
       type
-- [ ] Markdown sections get a `.body`: the content after the heading line, so
+- [x] Markdown sections get a `.body`: the content after the heading line, so
       `insert start|end section:X` and `replace section:X.body` work
 - [ ] `replace ITEM with TEXT` keeps the item's attributes and doc comments
       (`#[test]`, `///`) unless TEXT starts with its own, so replacing a test
       function can't silently drop `#[test]`
 - [ ] `insert before ITEM` with TEXT that is only attributes or doc comments
       adds no separating blank line: the text attaches to the item
-- [ ] A syntax step that matches nothing suggests the same name under another
+- [x] A syntax step that matches nothing suggests the same name under another
       kind first (`struct:LspError` → "did you mean enum:LspError?"), before
       the close-name hint
 - [ ] Explicit chaining with `|`: `CMD | CMD` runs the right command against
@@ -118,11 +118,19 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       `ned outline src/a.rs`, is an error suggesting
       `ned src/a.rs -e outline`, instead of waiting for a script on stdin
 - [ ] Searching with `show all /re/` over a glob or `-w`: no match is a normal
-      answer, so say `no matches` (exit 1, as grep does) instead of an error
+      answer, so say `no matches` (exit 0) instead of an error
       listing the files searched with a hint to `show` them
 - [ ] A `replace` whose TEXT starts with a copy of the line just above its
       span, or ends with a copy of the line just below, prints a note naming
       the duplicated line (the range was probably off by one)
+- [x] A regex, literal or heredoc lies inside a whole-line parent (a syntax
+      item) if it lies within its lines, as nested line selectors do, so
+      `fn:x>"    let a"` matches and `^` means a real line start (also in `sub`)
+- [x] No-match hints for `P>"a"..P>"b"` (suggest `P>"a".."b"`) and for a string
+      literal that matches as escaped source text (suggest `"\\n"` for `"\n"`)
+- [ ] Markdown list re-basing: list-item TEXT inserted, replaced or moved next
+      to any line of a list item anchors to the item: re-based to its marker
+      column, inserted after the whole item (children included)
 
 ## 9. LSP daemon _(split)_
 
@@ -190,9 +198,13 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [x] `a_stale_socket_is_replaced` (ned-daemon `tests/daemon.rs`) is flaky:
       about 1 run in 5 fails `Client::connect(..).is_none()` just after
       binding and dropping a listener
+- [ ] `create a.rs "fn a() {}\n"` followed by `insert after fn:a ...` in the
+      same script leaves a trailing blank line (rustfmt removes it)
 
 ## Future improvements
 
 - [ ] Smarter indent conversion in re-basing: normalize space widths (e.g.
       2-space text into a 4-space file), detect alignment (continuation lines
       aligned to a delimiter rather than indented by levels) and preserve it
+- [ ] Re-basing keeps block-quote prefixes (`> `): inserted lines take the
+      target line's `>` markers, not just its whitespace

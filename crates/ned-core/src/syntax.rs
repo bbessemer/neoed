@@ -3,7 +3,8 @@
 //!
 //! A query in `queries/<lang>/selectors.scm` captures each item node as its
 //! kind (`@fn`, `@struct`, ...) and the item's name node as `@name`, in one
-//! pattern, with optional `@body` and `@params` nodes for those parts.
+//! pattern, with optional `@body` and `@params` nodes for those parts, or a
+//! `@head` node whose following lines are the body (a Markdown heading).
 //! Standalone `@doc` and `@attr` patterns capture the doc comments and
 //! attributes that extend an item's default span when they directly precede
 //! it.
@@ -40,6 +41,9 @@ pub const KINDS: [&str; 18] = [
 pub struct Item {
     pub kind: &'static str,
     pub name: String,
+    /// For a trait impl, named `TRAIT for TYPE`: the self type, which the
+    /// item's selector also matches.
+    pub base_name: Option<String>,
     /// The default span: the item with its leading doc comments and
     /// attributes, and a `,` that directly follows it.
     pub range: Range<usize>,
@@ -48,9 +52,13 @@ pub struct Item {
     /// The item node alone.
     pub node: Range<usize>,
     pub name_range: Range<usize>,
-    /// The `@body` and `@params` nodes, delimiters included.
+    /// The `@body` and `@params` nodes, delimiters included, unless
+    /// `body_lines`.
     pub body: Option<Range<usize>>,
     pub params: Option<Range<usize>>,
+    /// Whether `body` is the whole lines after a `@head` (a Markdown
+    /// section's heading) rather than a delimited node.
+    pub body_lines: bool,
     /// The leading doc comments.
     pub doc: Option<Range<usize>>,
 }
@@ -64,12 +72,15 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
     while let Some(m) = matches.next() {
-        let (mut item, mut name, mut body, mut params) = (None, None, None, None);
+        let (mut item, mut name, mut body, mut params, mut trait_name, mut head) =
+            (None, None, None, None, None, None);
         for capture in m.captures() {
             match names[capture.index as usize] {
                 "name" => name = Some(capture.node),
                 "body" => body = Some(capture.node.byte_range()),
                 "params" => params = Some(capture.node.byte_range()),
+                "trait_name" => trait_name = Some(capture.node),
+                "head" => head = Some(capture.node.byte_range()),
                 "doc" => leading.push((capture.node.byte_range(), true)),
                 "attr" => leading.push((capture.node.byte_range(), false)),
                 other => {
@@ -86,6 +97,8 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                 name,
                 body,
                 params,
+                trait_name,
+                head,
             });
         }
     }
@@ -113,6 +126,12 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
     });
     found.dedup_by(|b, a| a.kind == b.kind && a.node == b.node);
 
+    let name_text = |name: Option<Node>| {
+        name.map_or(String::new(), |n| {
+            let text = &text[n.byte_range()];
+            text.lines().next().unwrap_or_default().trim().to_string()
+        })
+    };
     let mut items: Vec<Item> = found
         .into_iter()
         .map(
@@ -122,6 +141,8 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                  name,
                  body,
                  params,
+                 trait_name,
+                 head,
              }| {
                 let mut range = node.byte_range();
                 // Some nodes (Markdown blocks) take the blank lines after them.
@@ -152,12 +173,17 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                         doc = Some(l.start..doc.map_or(l.end, |d| d.end));
                     }
                 }
+                let body = match &head {
+                    Some(head) => Some(lines_after(text, head.clone(), &range)),
+                    None => body,
+                };
                 Item {
                     kind,
-                    name: name.map_or(String::new(), |n| {
-                        let text = &text[n.byte_range()];
-                        text.lines().next().unwrap_or_default().trim().to_string()
-                    }),
+                    name: match trait_name {
+                        Some(t) => format!("{} for {}", &text[t.byte_range()], name_text(name)),
+                        None => name_text(name),
+                    },
+                    base_name: trait_name.map(|_| name_text(name)),
                     range,
                     trailing_comma: comma.is_some(),
                     node: node.byte_range(),
@@ -165,6 +191,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                         .map_or(node.start_byte()..node.start_byte(), |n| n.byte_range()),
                     body,
                     params,
+                    body_lines: head.is_some(),
                     doc,
                 }
             },
@@ -181,6 +208,8 @@ struct Found<'t> {
     name: Option<Node<'t>>,
     body: Option<Range<usize>>,
     params: Option<Range<usize>>,
+    trait_name: Option<Node<'t>>,
+    head: Option<Range<usize>>,
 }
 
 /// Whether only whitespace, and no blank line, separates `leading` from
@@ -191,11 +220,29 @@ fn directly_before(text: &str, leading: &Range<usize>, start: usize) -> bool {
         && gap.matches('\n').count() + usize::from(text[..leading.end].ends_with('\n')) <= 1
 }
 
+/// The whole lines after `head` to the end of `range`'s last line, from the
+/// first non-blank one; empty at the end if there are none.
+fn lines_after(text: &str, head: Range<usize>, range: &Range<usize>) -> Range<usize> {
+    let mut start = full_lines(text, head).end;
+    let end = full_lines(text, range.clone()).end.max(start);
+    while start < end {
+        let line = full_lines(text, start..start);
+        if !text[line.clone()].trim().is_empty() {
+            break;
+        }
+        start = line.end;
+    }
+    start..end
+}
+
 /// The span of `part` of `item` (§3.4); `None` if the item doesn't have it.
 /// `.lines`, `.refs` and `.def` aren't item parts.
 pub fn part(item: &Item, part: Part, text: &str) -> Option<Range<usize>> {
     match part {
-        Part::Body => item.body.clone().map(|r| inside(text, r)),
+        Part::Body => item
+            .body
+            .clone()
+            .map(|r| if item.body_lines { r } else { inside(text, r) }),
         Part::Params => item.params.clone().map(|r| inside(text, r)),
         Part::Name => Some(item.name_range.clone()),
         Part::Sig => Some(match &item.body {
@@ -257,6 +304,15 @@ pub fn name_matches(pattern: &str, name: &str) -> bool {
         }
     }
     rest.len() >= last.len() && rest.ends_with(last)
+}
+
+/// Whether `item`'s name, or its base name, matches `pattern`.
+pub fn item_matches(pattern: &str, item: &Item) -> bool {
+    name_matches(pattern, &item.name)
+        || item
+            .base_name
+            .as_ref()
+            .is_some_and(|base| name_matches(pattern, base))
 }
 
 /// `kind:name`, with the name quoted when it has characters a bare name can't.
@@ -380,14 +436,14 @@ mod tests {}
             ("trait", "Parse"),
             ("type", "Output"),
             ("fn", "parse"),
-            ("impl", "Wrapper"),
+            ("impl", "Parse for Wrapper"),
             ("type", "Output"),
             ("fn", "parse"),
             ("impl", "Parser"),
             ("fn", "new"),
             ("var", "pos"),
             ("var", "len"),
-            ("impl", "Token"),
+            ("impl", "Display for Token"),
             ("type", "Result"),
             ("const", "MAX"),
             ("const", "NAME"),
@@ -396,6 +452,35 @@ mod tests {}
         let expected: Vec<(&str, String)> =
             expected.iter().map(|(k, n)| (*k, n.to_string())).collect();
         assert_eq!(names(RUST), expected);
+    }
+
+    #[test]
+    fn trait_impls_are_named_trait_for_type() {
+        let text = "impl<T> From<T> for a::B<T> {}\nimpl X for &Foo {}\n\
+                    impl std::ops::Add for Foo {}\nimpl<T> Y for a::C<T> {}\nimpl Foo {}\n";
+        let found: Vec<(String, Option<String>)> = items_in(text)
+            .into_iter()
+            .map(|i| (i.name, i.base_name))
+            .collect();
+        let base = |name: &str| Some(name.to_string());
+        assert_eq!(
+            found,
+            [
+                ("From for B".into(), base("B")),
+                ("X for Foo".into(), base("Foo")),
+                ("Add for Foo".into(), base("Foo")),
+                ("Y for C".into(), base("C")),
+                ("Foo".into(), None),
+            ]
+        );
+        let display = items_in(RUST)
+            .into_iter()
+            .find(|i| i.name == "Display for Token")
+            .unwrap();
+        assert!(item_matches("Token", &display));
+        assert!(item_matches("Display for *", &display));
+        assert!(item_matches("* for Token", &display));
+        assert!(!item_matches("Display", &display));
     }
 
     #[test]
@@ -501,6 +586,26 @@ mod tests {}
         let expected: Vec<(&str, String)> =
             expected.iter().map(|(k, n)| (*k, n.to_string())).collect();
         assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn section_bodies_are_the_lines_after_the_heading() {
+        let text = "# A\n\nintro\n\n## B\n\nb text\n\n## C\n\n# D";
+        let items = markdown_items(text);
+        let section = |name: &str| items.iter().find(|i| i.name == name).unwrap();
+        let body = |name: &str| part(section(name), Part::Body, text).map(|r| &text[r]);
+        assert_eq!(body("A"), Some("intro\n\n## B\n\nb text\n\n## C\n"));
+        assert_eq!(body("B"), Some("b text\n"));
+        assert_eq!(body("C"), Some(""));
+        assert_eq!(part(section("C"), Part::Body, text), Some(31..31));
+        assert_eq!(
+            part(section("D"), Part::Body, text),
+            Some(text.len()..text.len())
+        );
+        assert_eq!(
+            part(section("A"), Part::Sig, text).map(|r| &text[r]),
+            Some("# A")
+        );
     }
 
     #[test]

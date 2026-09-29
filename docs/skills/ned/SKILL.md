@@ -9,7 +9,9 @@ description: Read, search, create and edit source files with ned, a syntax-aware
 script applies, or none do. It prints a summary and diff hunks for each file,
 so you don't need to read the file back to check the edit.
 
-Syntax selectors (`fn:parse`, `impl:Parser`) work in Rust files. In other
+Syntax selectors work in Rust (`fn:parse`, `impl:Parser`,
+`impl:"Display for Parser"`) and Markdown (`section:"Install"`, `item:`,
+`table:`, `code:`); `insert end section:X` appends to a section. In other
 files, use lines, regexes, literals or `query{}`. Run `ned help` for the whole
 language in one screen, and `ned help TOPIC` for one verb.
 
@@ -162,21 +164,14 @@ END
   names lines 15 and 16 of the file, which must lie inside `fn:parse`.
 - **Use `delete` to remove lines.** `replace 12 with ""` leaves an empty line,
   because line-oriented text always ends with a newline.
-- **Items start at their first token.** A literal that includes a line's
-  leading spaces won't match inside an item such as `fn:x`, because the item
-  starts at `fn`, not at the line's indentation. Drop the leading spaces, or
-  select whole lines with `.lines`.
 - **Partial matches get verbatim text.** `insert after /re/` inserts right
   after the match, even mid-line, and `insert end /re/` or `"a".."b"` does the
   same at the span's end; add `.lines` to insert after the whole line. A
   heredoc's final newline is dropped there, so a blank line ending it vanishes;
-  target the item itself (`insert before fn:x`) instead.
-- **`..` binds tighter than `>`.** `fn:f>"a".."b"` is a range inside `fn:f`;
-  `fn:f>"a"..fn:f>"b"` nests the range's end into another step and matches
-  nothing.
-- **Literals match the file's characters.** In a ned string, `\n` is a
-  newline, so matching Rust source that contains the two characters `\n` needs
-  `\\n`. A shorter literal, or `sub` with a regex, is easier.
+  target the item itself (`insert before fn:x`) instead. Likewise
+  `replace /^- \[ \] Foo/ with "- [x] Foo bar"` replaces only the match and
+  keeps the rest of the line, duplicating it: use `sub` for a prefix, or
+  `.lines` (also on a range's end, `/a/../b/.lines`) to replace whole lines.
 - **Replacing an item replaces its attributes.** `replace fn:x with ...` covers
   `#[test]` and `///` lines too, so repeat them in TEXT, or replace `.sig` or
   `.body` instead. A `#[test]` dropped this way fails nothing: the test just

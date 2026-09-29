@@ -127,11 +127,11 @@ pub fn resolve_within(
         0 => Err(error(E::NoMatch {
             selector: selector.into(),
             files: file_list(&files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>()),
-            hint: target
-                .selector
-                .steps
-                .last()
-                .map(|step| hint(step, files, &parents, selector))
+            hint: range_precedence(&target.selector, src)
+                .or_else(|| {
+                    let step = target.selector.steps.last()?;
+                    Some(hint(step, files, &parents, selector))
+                })
                 .unwrap_or_default(),
         })),
         1 => Ok(matches),
@@ -274,6 +274,8 @@ impl<'a> Matcher<'a> {
 
     fn find(&self, f: &SourceFile, parent: Range<usize>) -> Vec<Range<usize>> {
         let within = |r: &Range<usize>| parent.start <= r.start && r.end <= parent.end;
+        let scope = scope(&f.text, &parent);
+        let in_scope = |r: &Range<usize>| scope.start <= r.start && r.end <= scope.end;
         match self {
             Matcher::Lines { start, end } => {
                 let count = f.buffer.line_count();
@@ -289,20 +291,15 @@ impl<'a> Matcher<'a> {
                     return Vec::new();
                 };
                 let range = line_range(&f.buffer, first).start..line_range(&f.buffer, last).end;
-                let scope = if is_whole_line(&f.text, &parent) {
-                    full_lines(&f.text, parent.clone())
-                } else {
-                    parent.clone()
-                };
-                if scope.start <= range.start && range.end <= scope.end {
+                if in_scope(&range) {
                     vec![range]
                 } else {
                     Vec::new()
                 }
             }
             Matcher::Regex(re) => re
-                .find_iter(&f.text[parent.clone()])
-                .map(|m| parent.start + m.start()..parent.start + m.end())
+                .find_iter(&f.text[scope.clone()])
+                .map(|m| scope.start + m.start()..scope.start + m.end())
                 .collect(),
             Matcher::Str(needle) => {
                 let needle = match f.buffer.line_ending() {
@@ -312,15 +309,15 @@ impl<'a> Matcher<'a> {
                 if needle.is_empty() {
                     return Vec::new();
                 }
-                f.text[parent.clone()]
+                f.text[scope.clone()]
                     .match_indices(&needle)
-                    .map(|(i, _)| parent.start + i..parent.start + i + needle.len())
+                    .map(|(i, _)| scope.start + i..scope.start + i + needle.len())
                     .collect()
             }
             Matcher::Heredoc { lines, raw } => {
                 let whole: Vec<(Range<usize>, &str)> = (0..f.buffer.line_count())
                     .map(|i| line_range(&f.buffer, i))
-                    .filter(|r| within(r))
+                    .filter(|r| in_scope(r))
                     .map(|r| {
                         let content = f.text[r.clone()].trim_end_matches('\n');
                         let content = content.strip_suffix('\r').unwrap_or(content);
@@ -397,7 +394,7 @@ impl<'a> Matcher<'a> {
                 .items()
                 .unwrap_or_default()
                 .iter()
-                .filter(|i| i.kind == *kind && syntax::name_matches(name, &i.name))
+                .filter(|i| i.kind == *kind && syntax::item_matches(name, i))
                 .map(|i| i.range.clone())
                 .filter(within)
                 .collect(),
@@ -575,16 +572,53 @@ fn parts_of(item: &Item) -> String {
     .join(" ")
 }
 
-/// The fix for a `step` that matched nothing within `parents` (§7): a close
-/// syntax name, a literal match ignoring case and spacing, a case-insensitive
-/// regex match, the spans a nested step searched, or where to look.
+/// The hint for a range whose end repeats the steps before it, as in
+/// `P>"a"..P>"b"`: `..` binds tighter than `>`, so that's a range from `"a"`
+/// to `P` followed by the step `"b"`, and `P>"a".."b"` was meant.
+fn range_precedence(selector: &Selector, src: &str) -> Option<String> {
+    let steps = &selector.steps;
+    let text = |range: &Range<usize>| src.get(range.clone());
+    (0..steps.len()).find_map(|i| {
+        let Primary::Range { to, .. } = &steps[i].primary else {
+            return None;
+        };
+        let j = (0..i).find(|&j| steps[j].primary == **to && steps[j].parts.is_empty())?;
+        let k = i + (i - j);
+        let repeated = steps.get(i + 1..k)?;
+        let same = |a: &Step, b: &Step| a.primary == b.primary && a.parts == b.parts;
+        if k >= steps.len()
+            || !steps[j + 1..i]
+                .iter()
+                .zip(repeated)
+                .all(|(a, b)| same(a, b))
+        {
+            return None;
+        }
+        let from = text(&steps[i].span)?.strip_suffix(text(&steps[j].span)?)?;
+        let fixed = format!(
+            "{}{from}{}",
+            text(&(selector.span.start..steps[i].span.start))?,
+            text(&(steps[k].span.start..selector.span.end))?
+        );
+        Some(format!(
+            "; `..` binds tighter than `>`: did you mean {fixed}?"
+        ))
+    })
+}
+
+/// The fix for a `step` that matched nothing within `parents` (§7): its name
+/// under another kind, a close syntax name, a literal match ignoring case and
+/// spacing, a case-insensitive regex match, the spans a nested step searched,
+/// or where to look.
 pub(crate) fn hint(
     step: &Step,
     files: &[&SourceFile],
     parents: &[Match],
     selector: &str,
 ) -> String {
-    if let Some(hint) = close_name(step, files, parents, selector) {
+    if let Some(hint) = other_kind(step, files, parents, selector)
+        .or_else(|| close_name(step, files, parents, selector))
+    {
         return hint;
     }
     let location = |m: &Match| {
@@ -596,9 +630,26 @@ pub(crate) fn hint(
             lines
         }
     };
+    // The hints search where the step did: each parent's lines, if whole.
+    let scopes: Vec<Match> = parents
+        .iter()
+        .map(|p| Match {
+            file: p.file,
+            range: scope(&files[p.file].text, &p.range),
+        })
+        .collect();
     match &step.primary {
         Primary::Literal(text) => {
-            if let Some(m) = near_literal(&text.value, files, parents) {
+            if text.kind == TextKind::Str
+                && let Some((escaped, m)) = escaped_literal(&text.value, files, &scopes)
+            {
+                let quoted = escaped.replace('\\', "\\\\").replace('"', "\\\"");
+                return format!(
+                    "; as source text it matches at {}: \"{quoted}\"",
+                    location(&m)
+                );
+            }
+            if let Some(m) = near_literal(&text.value, files, &scopes) {
                 return format!(
                     "; ignoring case and spacing, it matches at {}",
                     location(&m)
@@ -606,7 +657,7 @@ pub(crate) fn hint(
             }
         }
         Primary::Regex(pattern) if !pattern.flags.case_insensitive => {
-            if let Some(m) = case_insensitive_match(pattern, files, parents) {
+            if let Some(m) = case_insensitive_match(pattern, files, &scopes) {
                 return format!(
                     "; it matches case-insensitively at {} (add the i flag)",
                     location(&m)
@@ -649,6 +700,33 @@ fn near_literal(needle: &str, files: &[&SourceFile], parents: &[Match]) -> Optio
             range: start..end,
         })
     })
+}
+
+/// `needle` as source code writes it, with its newlines, tabs, backslashes
+/// and quotes escaped, and where that first occurs within `parents`, if it
+/// differs from `needle`.
+fn escaped_literal(
+    needle: &str,
+    files: &[&SourceFile],
+    parents: &[Match],
+) -> Option<(String, Match)> {
+    let escaped = needle
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\t', "\\t")
+        .replace('"', "\\\"");
+    if escaped == needle {
+        return None;
+    }
+    let found = parents.iter().find_map(|p| {
+        let at = files[p.file].text[p.range.clone()].find(&escaped)?;
+        let start = p.range.start + at;
+        Some(Match {
+            file: p.file,
+            range: start..start + escaped.len(),
+        })
+    })?;
+    Some((escaped, found))
 }
 
 /// The first match of `pattern` within `parents` when case is ignored.
@@ -719,20 +797,81 @@ fn close_name(
                 .iter()
                 .filter(|i| i.kind == kind && p.range.start <= i.range.start)
                 .filter(|i| i.range.end <= p.range.end)
-                .map(|i| (syntax::distance(name, &i.name), p.file, i))
+                .map(|i| {
+                    // A trait impl is also named by its self type.
+                    let (d, closest) = [Some(&i.name), i.base_name.as_ref()]
+                        .into_iter()
+                        .flatten()
+                        .map(|n| (syntax::distance(name, n), n))
+                        .min()
+                        .expect("an item has a name");
+                    (d, p.file, closest, i)
+                })
         })
         .filter(|(d, ..)| *d <= limit)
         .min_by_key(|(d, ..)| *d);
-    let (_, file, item) = best?;
-    let written = syntax::selector(kind, name);
-    let fixed = syntax::selector(kind, &item.name);
-    let suggestion = match selector.rfind(&written) {
+    let (_, file, closest, item) = best?;
+    Some(did_you_mean(
+        selector,
+        &syntax::selector(kind, name),
+        &syntax::selector(kind, closest),
+        files,
+        file,
+        item,
+    ))
+}
+
+/// `; did you mean SEL (LINES)?`, naming an item of another kind with the name
+/// of a syntax `step` that matched nothing within `parents`, taking kinds in
+/// their order in `KINDS`.
+fn other_kind(
+    step: &Step,
+    files: &[&SourceFile],
+    parents: &[Match],
+    selector: &str,
+) -> Option<String> {
+    let Primary::Syntax { kind, name } = &step.primary else {
+        return None;
+    };
+    let (file, item) = parents
+        .iter()
+        .flat_map(|p| {
+            files[p.file]
+                .items()
+                .unwrap_or_default()
+                .iter()
+                .filter(|i| i.kind != kind && syntax::item_matches(name, i))
+                .filter(|i| p.range.start <= i.range.start && i.range.end <= p.range.end)
+                .map(|i| (p.file, i))
+        })
+        .min_by_key(|(_, i)| syntax::KINDS.iter().position(|k| *k == i.kind))?;
+    Some(did_you_mean(
+        selector,
+        &syntax::selector(kind, name),
+        &syntax::selector(item.kind, name),
+        files,
+        file,
+        item,
+    ))
+}
+
+/// `; did you mean SEL (LINES)?`: `selector` with its last `written` step
+/// replaced by `fixed`, which selects `item` in `files[file]`.
+fn did_you_mean(
+    selector: &str,
+    written: &str,
+    fixed: &str,
+    files: &[&SourceFile],
+    file: usize,
+    item: &Item,
+) -> String {
+    let suggestion = match selector.rfind(written) {
         Some(i) => format!(
             "{}{fixed}{}",
             &selector[..i],
             &selector[i + written.len()..]
         ),
-        None => fixed,
+        None => fixed.to_string(),
     };
     let f = files[file];
     let lines = line_numbers(&f.buffer, &item.range);
@@ -741,7 +880,7 @@ fn close_name(
     } else {
         lines
     };
-    Some(format!("; did you mean {suggestion} ({location})?"))
+    format!("; did you mean {suggestion} ({location})?")
 }
 
 /// The index of line `n` in a file of `count` lines whose `$` is `last`.
@@ -827,11 +966,24 @@ fn candidates(
             ..
         })
     );
-    let named: Vec<String> = found
+    // For a syntax step: the name each candidate selects its item by, the
+    // item, and whether the name replaces the step's.
+    let chosen: Vec<Option<(String, &Item, bool)>> = found
         .iter()
-        .map(|c| {
-            last.and_then(|step| named(step, files[c.m.file], &c.core))
-                .unwrap_or_else(|| src[split..selector.span.end].to_string())
+        .map(|c| last.and_then(|step| named(step, files[c.m.file], &c.core)))
+        .collect();
+    let named: Vec<String> = chosen
+        .iter()
+        .map(|chosen| match (chosen, last) {
+            (Some((name, item, true)), Some(step)) => {
+                let parts: String = step
+                    .parts
+                    .iter()
+                    .map(|&p| format!(".{}", part_name(p)))
+                    .collect();
+                format!("{}{parts}", syntax::selector(item.kind, name))
+            }
+            _ => src[split..selector.span.end].to_string(),
         })
         .collect();
     let enclosing: Vec<Option<String>> = found
@@ -844,14 +996,16 @@ fn candidates(
             let f = &files[c.m.file];
             let lines = line_numbers(&f.buffer, &c.core);
             let parent = &parents[c.parent].range;
-            let scope = if is_whole_line(&f.text, parent) {
-                full_lines(&f.text, parent.clone())
-            } else {
-                parent.clone()
-            };
+            let scope = scope(&f.text, parent);
             let covered = full_lines(&f.text, c.core.clone());
             let lines_fit = scope.start <= covered.start && covered.end <= scope.end;
-            let peers: Vec<usize> = (0..found.len()).filter(|&j| named[j] == *last).collect();
+            // The matches this candidate's last step also selects.
+            let peers: Vec<usize> = (0..found.len())
+                .filter(|&j| match (&chosen[i], &chosen[j]) {
+                    (Some((name, ..)), Some((_, item, _))) => syntax::item_matches(name, item),
+                    _ => named[j] == *last,
+                })
+                .collect();
             let unique_item = enclosing[i].as_ref().filter(|&item| {
                 peers
                     .iter()
@@ -901,37 +1055,41 @@ fn candidates(
     }
 }
 
-/// The `last` step with its wildcard name replaced by the name of the
-/// innermost item of its kind holding `range`, if it has one.
-fn named(last: &Step, f: &SourceFile, range: &Range<usize>) -> Option<String> {
+/// The name that `last`, a syntax step, selects `range`'s item by in a
+/// candidate, the item, and whether the name replaces the step's: it does
+/// for a wildcard, and for a trait impl found by its self type.
+fn named<'f>(
+    last: &Step,
+    f: &'f SourceFile,
+    range: &Range<usize>,
+) -> Option<(String, &'f Item, bool)> {
     let Primary::Syntax { kind, name } = &last.primary else {
         return None;
     };
-    if !name.contains('*') {
-        return None;
-    }
     let item = f
         .items()?
         .iter()
-        .rev()
-        .find(|i| i.kind == kind && i.range.start <= range.start && range.end <= i.range.end)?;
-    let parts: String = last
-        .parts
-        .iter()
-        .map(|&p| format!(".{}", part_name(p)))
-        .collect();
-    Some(format!("{}{parts}", syntax::selector(kind, &item.name)))
+        .find(|i| i.kind == kind && i.range == *range)?;
+    Some(
+        if name.contains('*') || !syntax::name_matches(name, &item.name) {
+            (item.name.clone(), item, true)
+        } else {
+            (name.clone(), item, false)
+        },
+    )
 }
 
-/// The selector of the innermost item that strictly contains `range` and
-/// lies strictly inside `parent`, where a step nested in the parent finds it.
+/// The selector of the innermost item that strictly contains `range` (within
+/// its lines, §3.4) and lies strictly inside `parent`, where a step nested in
+/// the parent finds it.
 fn enclosing(f: &SourceFile, range: &Range<usize>, parent: &Range<usize>) -> Option<String> {
     f.items()?
         .iter()
         .rev()
         .find(|i| {
-            i.range.start <= range.start
-                && range.end <= i.range.end
+            let lines = scope(&f.text, &i.range);
+            lines.start <= range.start
+                && range.end <= lines.end
                 && i.range != *range
                 && parent.start <= i.range.start
                 && i.range.end <= parent.end
@@ -953,6 +1111,16 @@ pub(crate) fn line_numbers(buffer: &Buffer, range: &Range<usize>) -> String {
         first.to_string()
     } else {
         format!("{first}-{last}")
+    }
+}
+
+/// The span that a step nested in `parent` searches (§3.4): its whole lines,
+/// indentation and line ending included, if it covers whole lines.
+pub(crate) fn scope(text: &str, parent: &Range<usize>) -> Range<usize> {
+    if is_whole_line(text, parent) {
+        full_lines(text, parent.clone())
+    } else {
+        parent.clone()
     }
 }
 
@@ -1155,6 +1323,29 @@ mod tests {
         assert_eq!(select("delete 2-3>$", TEXT), ["    let y = 2;\n"]);
         assert_eq!(select("delete $", TEXT), ["}\n"]);
         assert_eq!(select("delete fn:b>$", "fn b() {}"), ["fn b() {}"]);
+    }
+
+    #[test]
+    fn nested_matches_may_start_in_an_items_indentation() {
+        let text = "impl S {\n    fn new() {\n        1\n    }\n}\n";
+        assert_eq!(select("delete fn:new>\"    fn new\"", text), ["    fn new"]);
+        assert_eq!(
+            select("delete fn:new><<END\nfn new() {\nEND\n", text),
+            ["    fn new() {\n"]
+        );
+        assert_eq!(select("delete fn:new>/^    fn/", text), ["    fn"]);
+        // `^` is a line start, not the start of the item.
+        let set = files(&[("a.rs", text)]);
+        assert!(resolve_in("delete fn:new>/^fn/", &set).is_err());
+    }
+
+    #[test]
+    fn candidates_nest_matches_in_an_items_indentation() {
+        let text = "impl S {\n    fn a() {}\n    fn b() {}\n}\n";
+        assert_eq!(
+            listed("delete impl:S>\"    fn\"", &[("a.rs", text)]),
+            ["impl:S>fn:a>\"    fn\"", "impl:S>fn:b>\"    fn\""]
+        );
     }
 
     #[test]
@@ -1711,6 +1902,78 @@ fn main() {
         assert_eq!(
             listed("delete impl:A.body", &[("a.rs", text)]),
             ["1-3>impl:A.body", "4-6>impl:A.body"]
+        );
+    }
+
+    const IMPLS: &str = "struct S;\nimpl S {\n    fn a() {}\n}\nimpl Display for S {\n    fn fmt() {}\n}\nimpl Debug for S {}\n";
+
+    #[test]
+    fn trait_impls_match_by_full_name_or_self_type() {
+        assert_eq!(
+            select("delete impl:\"Display for S\"", IMPLS),
+            ["impl Display for S {\n    fn fmt() {}\n}"]
+        );
+        assert_eq!(select("delete all impl:\"* for S\"", IMPLS).len(), 2);
+        assert_eq!(select("delete all impl:S", IMPLS).len(), 3);
+        assert_eq!(select("delete impl:S>fn:fmt", IMPLS), ["fn fmt() {}"]);
+        assert!(
+            error("delete impl:SS", &[("a.rs", IMPLS)]).contains("did you mean impl:S ("),
+            "a close self type is suggested"
+        );
+    }
+
+    #[test]
+    fn trait_impl_candidates_use_their_full_names() {
+        assert_eq!(
+            listed("delete impl:S", &[("a.rs", IMPLS)]),
+            [
+                "2-4>impl:S",
+                "impl:\"Display for S\"",
+                "impl:\"Debug for S\""
+            ]
+        );
+    }
+
+    #[test]
+    fn a_name_under_another_kind_is_suggested_first() {
+        let text = "enum E {\n    A,\n}\nstruct S;\n";
+        assert_eq!(
+            error("delete struct:E", &[("a.rs", text)]),
+            "error: script:1:8: struct:E matches nothing in a.rs; did you mean enum:E (1-3)?"
+        );
+        assert!(
+            error(
+                "delete mod:m>fn:S",
+                &[("a.rs", "mod m {\n    struct S;\n}\n")]
+            )
+            .ends_with("did you mean mod:m>struct:S (2)?")
+        );
+    }
+
+    #[test]
+    fn a_range_end_nested_like_its_start_suggests_the_plain_range() {
+        assert!(
+            error("delete fn:a>\"let x\"..fn:a>\"let y\"", &[("a.rs", TEXT)]).ends_with(
+                "; `..` binds tighter than `>`: did you mean fn:a>\"let x\"..\"let y\"?"
+            )
+        );
+        let text = "mod m {\n    fn a() {\n        x;\n        y;\n    }\n}\n";
+        assert!(
+            error(
+                "delete mod:m>fn:a>\"x\"..mod:m>fn:a>\"y\"",
+                &[("a.rs", text)]
+            )
+            .ends_with("did you mean mod:m>fn:a>\"x\"..\"y\"?")
+        );
+    }
+
+    #[test]
+    fn a_literal_matching_as_escaped_source_text_is_suggested() {
+        let text = "let s = \"a\\nb\\t\";\n";
+        assert_eq!(
+            error("delete \"a\\nb\\t\"", &[("a.rs", text)]),
+            "error: script:1:8: \"a\\nb\\t\" matches nothing in a.rs; \
+             as source text it matches at 1: \"a\\\\nb\\\\t\""
         );
     }
 

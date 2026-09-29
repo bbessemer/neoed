@@ -3,7 +3,7 @@
 ; pattern match (a list item opening with a code block, a code block without an
 ; info string) has the empty name.
 
-(section (atx_heading heading_content: (inline) @name)) @section
+(section (atx_heading heading_content: (inline) @name) @head) @section
 
 (list_item (paragraph (inline) @name)) @item
 (list_item) @item
