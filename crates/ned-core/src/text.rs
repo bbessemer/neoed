@@ -96,23 +96,28 @@ pub fn rebase_tail(text: &str, indent: &str, unit: &str) -> String {
 }
 
 /// Widens a whole-line deletion by one adjacent blank line when deleting
-/// `range` would leave two blank lines in a row, or a blank line right after
-/// an opening delimiter or right before a closing one (§4.2).
+/// `range` would leave two blank lines in a row, a blank line right after an
+/// opening delimiter or right before a closing one, or a blank line at the
+/// start or end of the file (§4.2).
 pub fn tidy_delete(text: &str, range: Range<usize>) -> Range<usize> {
     let blank = |line: &str| line.trim().is_empty();
-    if range.start == 0 || range.end == text.len() {
-        return range;
-    }
-    let prev_start = line_start(text, range.start - 1);
-    let prev = &text[prev_start..range.start];
-    let next_end = next_line(text, range.end);
-    let next = &text[range.end..next_end];
-    if blank(next) && (blank(prev) || prev.trim_end().ends_with(['{', '(', '['])) {
-        range.start..next_end
-    } else if blank(prev) && next.trim_start().starts_with(['}', ')', ']']) {
-        prev_start..range.end
-    } else {
-        range
+    // The lines around the span, with their other ends; `None` at the start
+    // or end of the file, which count as delimiters.
+    let prev = (range.start > 0).then(|| {
+        let start = line_start(text, range.start - 1);
+        (start, &text[start..range.start])
+    });
+    let next = (range.end < text.len()).then(|| {
+        let end = next_line(text, range.end);
+        (end, &text[range.end..end])
+    });
+    let after_opening =
+        prev.is_none_or(|(_, p)| blank(p) || p.trim_end().ends_with(['{', '(', '[']));
+    let before_closing = next.is_none_or(|(_, n)| n.trim_start().starts_with(['}', ')', ']']));
+    match (prev, next) {
+        (_, Some((end, next))) if blank(next) && after_opening => range.start..end,
+        (Some((start, prev)), _) if blank(prev) && before_closing => start..range.end,
+        _ => range,
     }
 }
 

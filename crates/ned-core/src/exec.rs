@@ -1090,7 +1090,7 @@ mod tests {
         assert_eq!(edited("a\n\nb\n\nc\n", "delete 3"), "a\n\nc\n");
         assert_eq!(
             edited(TEXT, "delete 6-8"),
-            "fn a() {\n    let x = 1;\n    let y = 2;\n}\n\n"
+            "fn a() {\n    let x = 1;\n    let y = 2;\n}\n"
         );
         assert_eq!(
             edited(TEXT, "delete \"let y = 2;\""),
