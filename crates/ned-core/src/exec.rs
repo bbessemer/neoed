@@ -299,7 +299,6 @@ impl Executor<'_> {
     }
 
     fn show(&mut self, target: Option<&Target>, context: usize) -> Result<(), ExecError> {
-        let _ = context;
         // (file, first line, last line), 0-based.
         let mut spans: Vec<(usize, usize, usize)> = Vec::new();
         match target {
@@ -322,7 +321,11 @@ impl Executor<'_> {
                     } else {
                         line(m.range.end - 1)
                     };
-                    spans.push((m.file, first, last));
+                    spans.push((
+                        m.file,
+                        first.saturating_sub(context),
+                        (last + context).min(max),
+                    ));
                 }
             }
         }

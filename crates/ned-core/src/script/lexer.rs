@@ -283,8 +283,13 @@ impl<'a> Lexer<'a> {
     fn context(&mut self) -> Result<usize, ParseError> {
         let start = self.pos;
         self.pos += 1;
-        let _ = start;
-        Ok(0)
+        let digits = self.take_while(|c| c.is_ascii_digit());
+        match digits {
+            "" => Err(ParseError::new(E::MissingContext, start..self.pos)),
+            _ => digits
+                .parse()
+                .map_err(|_| ParseError::new(E::LineOverflow, start..self.pos)),
+        }
     }
 
     fn line_no(&mut self) -> Result<LineNo, ParseError> {

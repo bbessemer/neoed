@@ -87,10 +87,17 @@ impl Parser<'_> {
 
     fn command_kind(&mut self, verb: &Token, word: &str) -> Result<CommandKind, ParseError> {
         Ok(match word {
-            "show" => CommandKind::Show {
-                target: self.optional_target()?,
-                context: 0,
-            },
+            "show" => {
+                let target = self.optional_target()?;
+                let context = match self.peek()?.kind {
+                    TokenKind::Context(n) if target.is_some() => {
+                        self.bump()?;
+                        n
+                    }
+                    _ => 0,
+                };
+                CommandKind::Show { target, context }
+            }
             "outline" => CommandKind::Outline(self.optional_target()?),
             "replace" => {
                 let target = self.target()?;
@@ -369,7 +376,7 @@ const KEYWORDS: [&str; 8] = [
 /// The syntax of the command `verb`, as `ned help VERB` starts.
 pub fn usage(verb: &str) -> Option<&'static str> {
     Some(match verb {
-        "show" => "show [SEL]",
+        "show" => "show [SEL [+N]]",
         "outline" => "outline [SEL]",
         "replace" => "replace [all] SEL with TEXT",
         "insert" => "insert before|after|start|end [all] SEL TEXT",

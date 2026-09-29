@@ -5,7 +5,7 @@ applies, or none does. Output is a per-file summary plus diff hunks.
   ned help [TOPIC]
 
 Commands, separated by newlines or `;`:
-  show [SEL]                    print the lines of SEL, numbered
+  show [SEL [+N]]               print the lines of SEL, numbered, N around
   outline [SEL]                 list syntax items as pasteable selectors
   replace SEL with TEXT
   insert before|after|start|end SEL TEXT
