@@ -253,4 +253,16 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn severities_order_and_parse() {
+        assert!(Severity::Error < Severity::Warning && Severity::Info < Severity::Hint);
+        for severity in Severity::ALL {
+            assert_eq!(severity.name().parse(), Ok(severity));
+            assert_eq!(severity.to_string(), severity.name());
+        }
+        let names: Vec<_> = Severity::ALL.iter().map(|s| s.name()).collect();
+        assert_eq!(names, ["error", "warning", "info", "hint"]);
+        assert_eq!("warnings".parse::<Severity>(), Err(()));
+    }
 }

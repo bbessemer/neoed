@@ -290,4 +290,31 @@ pub(crate) mod tests {
         assert!(err.location.ends_with(".ned.toml:2:8"), "{err}");
         assert!(err.message.contains("must be a command"), "{err}");
     }
+
+    #[test]
+    fn check_settings_nearest_wins() {
+        let root = tree(&[
+            ("config.toml", "[check]\nshow = \"hint\"\ntimeout = 5\n"),
+            ("ws/.ned.toml", "[check]\nshow = \"error\"\n"),
+        ]);
+        let mut config = Config::new(Some(&root.path().join("config.toml"))).unwrap();
+        let ws = root.path().join("ws");
+        assert_eq!(config.check_show(&ws), Ok(Some(Severity::Error)));
+        assert_eq!(config.check_timeout(&ws), Ok(Some(5)));
+        assert_eq!(config.check_show(root.path()), Ok(Some(Severity::Hint)));
+        let mut none = Config::new(None).unwrap();
+        assert_eq!(none.check_show(&ws), Ok(Some(Severity::Error)));
+        assert_eq!(none.check_timeout(&ws), Ok(None));
+    }
+
+    #[test]
+    fn bad_check_levels_are_errors() {
+        let root = tree(&[(".ned.toml", "[check]\nshow = \"warnings\"\n")]);
+        let err = Config::new(None)
+            .unwrap()
+            .check_show(root.path())
+            .unwrap_err();
+        assert!(err.location.ends_with(".ned.toml:2:8"), "{err}");
+        assert!(err.message.contains("warning"), "{err}");
+    }
 }

@@ -52,17 +52,18 @@ pub struct Options {
 
 /// Runs `script` (parsed from `src`) with `files` as the initial file set.
 /// Nothing is written.
-pub fn run<'s>(
+pub fn run<'s, 'l: 's>(
     script: &Script,
     src: &'s str,
     files: &[String],
     options: &'s Options,
-    lsp: Option<&'s mut dyn Lsp>,
+    lsp: Option<&'s mut (dyn Lsp + 'l)>,
 ) -> Run {
     let mut executor = Executor {
         src,
         options,
-        lsp,
+        lsp: lsp.map(|lsp| -> &'s mut dyn Lsp { lsp }),
+
         files: Vec::new(),
         set: Vec::new(),
         output: String::new(),
@@ -1011,9 +1012,11 @@ impl ExecError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::fs;
 
     use super::*;
+    use crate::lsp::{Diagnosis, Diagnostic, Document, LspFailure, Position};
     use crate::script::parse;
 
     const TEXT: &str =
@@ -1062,6 +1065,17 @@ mod tests {
         script: &str,
         options: &Options,
     ) -> Outcome {
+        exec_with_lsp(files, initial, script, options, None)
+    }
+
+    /// `exec_with_options`, with `lsp` for the language servers.
+    fn exec_with_lsp(
+        files: &[(&str, &str)],
+        initial: usize,
+        script: &str,
+        options: &Options,
+        lsp: Option<&mut dyn Lsp>,
+    ) -> Outcome {
         let dir = tempfile::tempdir().unwrap();
         let root = format!("{}/", dir.path().display());
         for (name, text) in files {
@@ -1075,7 +1089,7 @@ mod tests {
             .collect();
         let src = script.replace("{dir}/", &root);
         let parsed = parse(&src).unwrap();
-        let run = run(&parsed, &src, &paths, options, None);
+        let run = run(&parsed, &src, &paths, options, lsp);
         let strip = |s: &str| s.replace(&root, "");
         Outcome {
             output: strip(&run.output),
@@ -2002,5 +2016,217 @@ fn main() {}
             out.error(),
             "error: script:1:1: outline needs a language, but a.txt has none; use --lang"
         );
+    }
+
+    /// Language servers with canned diagnostics, by file name; files not
+    /// listed have a server and no diagnostics.
+    #[derive(Default)]
+    struct FakeLsp {
+        show: Option<Severity>,
+        files: HashMap<&'static str, Option<Vec<Diagnostic>>>,
+        failure: Option<&'static str>,
+        asked: Vec<Document>,
+    }
+
+    impl Lsp for FakeLsp {
+        fn diagnose(&mut self, documents: &[Document]) -> Result<Diagnosis, LspFailure> {
+            self.asked.extend_from_slice(documents);
+            if let Some(failure) = self.failure {
+                return Err(LspFailure(failure.into()));
+            }
+            let files = documents
+                .iter()
+                .map(|d| {
+                    let name = d.path.file_name().unwrap().to_str().unwrap();
+                    self.files.get(name).cloned().unwrap_or(Some(Vec::new()))
+                })
+                .collect();
+            Ok(Diagnosis {
+                show: self.show.unwrap_or(Severity::Warning),
+                files,
+            })
+        }
+    }
+
+    fn diag(line: u32, character: u32, severity: Severity, message: &str) -> Diagnostic {
+        Diagnostic {
+            start: Position { line, character },
+            end: Position {
+                line,
+                character: character + 1,
+            },
+            severity,
+            message: message.into(),
+            source: Some("rust-analyzer".into()),
+            code: None,
+        }
+    }
+
+    const CHECKED: &str = "fn a() {\n    let x = 1;\n}\n\nfn b() {\n    oops();\n}\n";
+
+    fn checked(files: &[(&str, &str)], script: &str, lsp: &mut FakeLsp) -> Outcome {
+        exec_with_lsp(files, files.len(), script, &Options::default(), Some(lsp))
+    }
+
+    #[test]
+    fn check_prints_diagnostics_by_file_then_position() {
+        let mut oops = diag(5, 4, Severity::Error, "cannot find function `oops`");
+        oops.source = Some("rustc".into());
+        oops.code = Some("E0425".into());
+        let mut lsp = FakeLsp::default();
+        lsp.files.insert(
+            "a.rs",
+            Some(vec![
+                oops,
+                diag(1, 8, Severity::Warning, "unused variable: `x`"),
+            ]),
+        );
+        lsp.files.insert(
+            "b.rs",
+            Some(vec![diag(0, 0, Severity::Error, "expected item")]),
+        );
+        let out = checked(&[("a.rs", CHECKED), ("b.rs", "}\n")], "check", &mut lsp);
+        assert_eq!(
+            out.output,
+            "a.rs:2:9: warning: unused variable: `x` [rust-analyzer]\n\
+         a.rs:6:5: error: cannot find function `oops` [rustc E0425]\n\
+         b.rs:1:1: error: expected item [rust-analyzer]\n"
+        );
+        assert_eq!(out.result, Ok(vec![]));
+        let asked: Vec<_> = lsp
+            .asked
+            .iter()
+            .map(|d| (d.lang, d.text.as_str()))
+            .collect();
+        assert_eq!(asked, [(Language::Rust, CHECKED), (Language::Rust, "}\n")]);
+        assert!(lsp.asked.iter().all(|d| d.path.is_absolute()));
+    }
+
+    #[test]
+    fn check_filters_by_level() {
+        let mut lsp = FakeLsp::default();
+        lsp.files.insert(
+            "a.rs",
+            Some(vec![
+                diag(1, 8, Severity::Warning, "unused"),
+                diag(5, 4, Severity::Hint, "consider"),
+                diag(0, 3, Severity::Info, "fyi"),
+            ]),
+        );
+        let files = [("a.rs", CHECKED)];
+        assert_eq!(
+            checked(&files, "check", &mut lsp).output,
+            "a.rs:2:9: warning: unused [rust-analyzer]\n"
+        );
+        assert_eq!(
+            checked(&files, "check error", &mut lsp).output,
+            "no diagnostics at error or above\n"
+        );
+        assert_eq!(
+            checked(&files, "check hint", &mut lsp)
+                .output
+                .lines()
+                .count(),
+            3
+        );
+        lsp.show = Some(Severity::Info);
+        assert_eq!(checked(&files, "check", &mut lsp).output.lines().count(), 2);
+    }
+
+    #[test]
+    fn check_with_a_selector_shows_overlapping_diagnostics() {
+        let mut lsp = FakeLsp::default();
+        lsp.files.insert(
+            "a.rs",
+            Some(vec![
+                diag(1, 8, Severity::Warning, "unused"),
+                diag(5, 4, Severity::Error, "oops"),
+            ]),
+        );
+        let out = checked(&[("a.rs", CHECKED)], "check fn:b", &mut lsp);
+        assert_eq!(out.output, "a.rs:6:5: error: oops [rust-analyzer]\n");
+    }
+
+    #[test]
+    fn check_columns_count_characters() {
+        let mut lsp = FakeLsp::default();
+        // `bad` starts at character 13, UTF-16 unit 14.
+        lsp.files
+            .insert("a.rs", Some(vec![diag(0, 14, Severity::Error, "bad")]));
+        let out = checked(&[("a.rs", "let s = \"😀\"; bad\n")], "check", &mut lsp);
+        assert_eq!(out.output, "a.rs:1:14: error: bad [rust-analyzer]\n");
+    }
+
+    #[test]
+    fn check_indents_further_lines_of_a_message() {
+        let mut lsp = FakeLsp::default();
+        let mut d = diag(
+            0,
+            0,
+            Severity::Error,
+            "mismatched types\nexpected u8\nfound &str",
+        );
+        d.source = None;
+        lsp.files.insert("a.rs", Some(vec![d]));
+        let out = checked(&[("a.rs", CHECKED)], "check", &mut lsp);
+        assert_eq!(
+            out.output,
+            "a.rs:1:1: error: mismatched types\n  expected u8\n  found &str\n"
+        );
+    }
+
+    #[test]
+    fn check_without_diagnostics_says_so() {
+        let out = checked(&[("a.rs", CHECKED)], "check", &mut FakeLsp::default());
+        assert_eq!(out.output, "no diagnostics at warning or above\n");
+    }
+
+    #[test]
+    fn check_skips_files_without_a_server() {
+        let mut lsp = FakeLsp::default();
+        lsp.files.insert("a.md", None);
+        lsp.files
+            .insert("a.rs", Some(vec![diag(1, 8, Severity::Warning, "unused")]));
+        let files = [("a.md", "# A\n"), ("a.rs", CHECKED), ("a.txt", "text\n")];
+        let out = checked(&files, "check", &mut lsp);
+        assert_eq!(out.output, "a.rs:2:9: warning: unused [rust-analyzer]\n");
+        let asked: Vec<_> = lsp.asked.iter().map(|d| d.lang).collect();
+        assert_eq!(asked, [Language::Markdown, Language::Rust]);
+    }
+
+    #[test]
+    fn check_needs_a_server() {
+        let mut lsp = FakeLsp::default();
+        lsp.files.insert("a.md", None);
+        let out = checked(&[("a.md", "# A\n")], "check", &mut lsp);
+        assert_eq!(
+            out.error(),
+            "error: script:1:1: no language server for markdown; set one with `[lsp] markdown = [\"PROGRAM\", ...]` in .ned.toml"
+        );
+        let out = checked(&[("a.txt", "text\n")], "check", &mut FakeLsp::default());
+        assert!(
+            out.error().contains("check needs a language"),
+            "{}",
+            out.error()
+        );
+    }
+
+    #[test]
+    fn check_reports_server_failures() {
+        let mut lsp = FakeLsp {
+            failure: Some("rust-analyzer didn't answer; rerun in a few seconds"),
+            ..FakeLsp::default()
+        };
+        let out = checked(&[("a.rs", CHECKED)], "check", &mut lsp);
+        assert_eq!(
+            out.error(),
+            "error: script:1:1: rust-analyzer didn't answer; rerun in a few seconds"
+        );
+    }
+
+    #[test]
+    fn check_without_language_servers_is_an_error() {
+        let out = exec(CHECKED, "check");
+        assert!(out.error().contains("Unix-only"), "{}", out.error());
     }
 }

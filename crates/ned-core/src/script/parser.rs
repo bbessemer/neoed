@@ -5,6 +5,7 @@ use std::ops::Range;
 use super::ast::*;
 use super::error::{COMMANDS, ParseError, ParseErrorKind as E};
 use super::lexer::{Lexer, Token, TokenKind};
+use crate::lsp::Severity;
 
 pub fn parse(src: &str) -> Result<Script, ParseError> {
     let mut parser = Parser {
@@ -969,7 +970,7 @@ mod tests {
         assert!(
             matches!(error("rename fn:x to y").kind, E::Reserved { what, .. } if what == "rename")
         );
-        assert!(matches!(error("check").kind, E::Reserved { what, .. } if what == "check"));
+
         assert!(matches!(error("show refs:foo").kind, E::Reserved { what, .. } if what == "refs:"));
         assert!(matches!(error("show def:foo").kind, E::Reserved { what, .. } if what == "def:"));
         assert!(matches!(
@@ -1126,10 +1127,7 @@ mod tests {
             message("rename fn:x to y"),
             r#"`rename` is not yet supported; use sub /\bOLD\b/ with "NEW" over the files"#
         );
-        assert_eq!(
-            message("check"),
-            "`check` is not yet supported; run the project's build or linter"
-        );
+
         assert_eq!(
             message("show refs:foo"),
             "`refs:` is not yet supported; select uses with a /regex/"
@@ -1138,5 +1136,53 @@ mod tests {
             message("show def:foo"),
             "`def:` is not yet supported; select the definition with kind:NAME, e.g. fn:NAME"
         );
+    }
+
+    #[test]
+    fn check_takes_an_optional_target_and_level() {
+        assert_eq!(
+            one("check"),
+            CommandKind::Check {
+                target: None,
+                level: None
+            }
+        );
+        assert_eq!(
+            one("check hint"),
+            CommandKind::Check {
+                target: None,
+                level: Some(Severity::Hint)
+            }
+        );
+        assert_eq!(
+            one("check fn:x"),
+            CommandKind::Check {
+                target: Some(target(vec![syntax("fn", "x")])),
+                level: None
+            }
+        );
+        assert_eq!(
+            one("check all fn:x error; check"),
+            CommandKind::Check {
+                target: Some(all(vec![syntax("fn", "x")])),
+                level: Some(Severity::Error)
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_check_levels_list_the_levels() {
+        assert_eq!(
+            message("check fn:x bogus"),
+            "unknown level `bogus`; levels are error warning info hint"
+        );
+        assert_eq!(
+            message("check warnings"),
+            "unknown level `warnings`; did you mean `warning`?"
+        );
+        assert!(matches!(
+            error("check fn:x hint more").kind,
+            E::Expected { .. }
+        ));
     }
 }

@@ -328,4 +328,25 @@ mod tests {
         assert_eq!(buf.text(), src);
         assert_eq!(buf.len_bytes(), src.len());
     }
+
+    #[test]
+    fn lsp_offsets_count_utf16_units() {
+        let buffer = Buffer::new("ab\né😀x\r\nlast");
+        assert_eq!(buffer.lsp_offset(0, 0), 0);
+        assert_eq!(buffer.lsp_offset(0, 2), 2);
+        // é is one unit and two bytes; 😀 is two units and four bytes.
+        assert_eq!(buffer.lsp_offset(1, 1), 5);
+        assert_eq!(buffer.lsp_offset(1, 3), 9);
+        assert_eq!(buffer.lsp_offset(2, 4), 16);
+    }
+
+    #[test]
+    fn lsp_offsets_clamp_to_the_line_and_the_file() {
+        let buffer = Buffer::new("ab\r\ncd\n");
+        assert_eq!(buffer.lsp_offset(0, 9), 2);
+        assert_eq!(buffer.lsp_offset(1, 9), 6);
+        assert_eq!(buffer.lsp_offset(5, 0), 7);
+        // Inside a surrogate pair: the character's start.
+        assert_eq!(Buffer::new("😀").lsp_offset(0, 1), 0);
+    }
 }
