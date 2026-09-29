@@ -462,6 +462,20 @@ async fn real_servers_report_errors() {
     servers.shutdown().await;
 }
 
+#[tokio::test]
+async fn diagnose_returns_the_configured_block_level() {
+    let ws = Workspace::with_config("\n[check]\nblock = false\n");
+    let mut servers = ws.servers();
+    let diagnosis = servers.diagnose(&[ws.rust("a.rs", "done")]).await.unwrap();
+    assert_eq!(diagnosis.block, None);
+    servers.shutdown().await;
+    let ws = Workspace::new();
+    let mut servers = ws.servers();
+    let diagnosis = servers.diagnose(&[ws.rust("a.rs", "done")]).await.unwrap();
+    assert_eq!(diagnosis.block, Some(Severity::Error));
+    servers.shutdown().await;
+}
+
 /// The default servers, which must be installed: `cargo test -- --ignored`.
 #[tokio::test]
 #[ignore]

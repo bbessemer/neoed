@@ -478,6 +478,7 @@ dependencies = [
  "insta",
  "ned-core",
  "ned-daemon",
+ "serde_json",
  "tempfile",
 ]
 

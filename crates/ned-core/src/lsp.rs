@@ -336,4 +336,222 @@ mod tests {
         assert_eq!(names, ["error", "warning", "info", "hint"]);
         assert_eq!("warnings".parse::<Severity>(), Err(()));
     }
+
+    fn d(line: u32, severity: Severity, message: &str) -> Diagnostic {
+        Diagnostic {
+            start: Position { line, character: 0 },
+            end: Position { line, character: 1 },
+            severity,
+            message: message.into(),
+            source: Some("fake".into()),
+            code: None,
+        }
+    }
+
+    #[test]
+    fn introduced_ignores_positions_and_counts_duplicates() {
+        let before = [d(0, Severity::Error, "a"), d(1, Severity::Warning, "b")];
+        let after = [
+            d(5, Severity::Error, "a"),
+            d(6, Severity::Error, "a"),
+            d(7, Severity::Error, "b"),
+            d(8, Severity::Warning, "b"),
+        ];
+        assert_eq!(
+            introduced(&before, &after),
+            [d(6, Severity::Error, "a"), d(7, Severity::Error, "b")]
+        );
+        assert_eq!(introduced(&[], &before), before);
+        let mut coded = d(0, Severity::Error, "a");
+        coded.code = Some("E1".into());
+        assert_eq!(introduced(&before, std::slice::from_ref(&coded)), [coded]);
+    }
+
+    /// Servers that report a diagnostic for each line containing ERROR, WARN or
+    /// HINT, for Rust files only.
+    #[derive(Default)]
+    struct TextLsp {
+        show: Option<Severity>,
+        block: Option<Option<Severity>>,
+        failure: Option<&'static str>,
+        asked: Vec<Vec<String>>,
+    }
+
+    impl Lsp for TextLsp {
+        fn diagnose(&mut self, documents: &[Document]) -> Result<Diagnosis, LspFailure> {
+            self.asked
+                .push(documents.iter().map(|d| d.text.clone()).collect());
+            if let Some(failure) = self.failure {
+                return Err(LspFailure(failure.into()));
+            }
+            let files = documents
+                .iter()
+                .map(|doc| {
+                    (doc.lang == Language::Rust).then(|| {
+                        let mut found = Vec::new();
+                        for (line, text) in doc.text.lines().enumerate() {
+                            for (word, severity) in [
+                                ("ERROR", Severity::Error),
+                                ("WARN", Severity::Warning),
+                                ("HINT", Severity::Hint),
+                            ] {
+                                if text.contains(word) {
+                                    found.push(d(line as u32, severity, word));
+                                }
+                            }
+                        }
+                        found
+                    })
+                })
+                .collect();
+            Ok(Diagnosis {
+                show: self.show.unwrap_or(Severity::Warning),
+                block: self.block.unwrap_or(Some(Severity::Error)),
+                files,
+            })
+        }
+
+        fn sync(&mut self, _: &[Document]) -> Result<(), LspFailure> {
+            unreachable!("check_changes doesn't sync")
+        }
+    }
+
+    fn change(path: &str, old: &str, new: &str) -> Change {
+        Change {
+            path: format!("/w/{path}"),
+            old: old.into(),
+            new: new.into(),
+            edits: 1,
+            lang: Language::detect(path, new),
+            created: old.is_empty(),
+        }
+    }
+
+    fn checked(
+        lsp: &mut TextLsp,
+        changes: &[Change],
+        allow: Option<Severity>,
+        force: bool,
+    ) -> Checked {
+        let finals: Vec<&str> = changes.iter().map(|c| c.new.as_str()).collect();
+        check_changes(lsp, changes, &finals, allow, force).unwrap()
+    }
+
+    #[test]
+    fn check_changes_diagnoses_originals_then_finals() {
+        let mut lsp = TextLsp::default();
+        let changes = [change("a.rs", "a\n", "a\nERROR\n")];
+        let out =
+            check_changes(&mut lsp, &changes, &["formatted ERROR WARN\n"], None, false).unwrap();
+        assert_eq!(lsp.asked, [vec!["a\n"], vec!["formatted ERROR WARN\n"]]);
+        let error = d(0, Severity::Error, "ERROR");
+        assert_eq!(
+            out.files,
+            [vec![error.clone(), d(0, Severity::Warning, "WARN")]]
+        );
+        assert_eq!(out.blocking, [(0, error)]);
+    }
+
+    #[test]
+    fn check_changes_reports_only_what_the_edit_introduced() {
+        let mut lsp = TextLsp::default();
+        let changes = [
+            change("a.rs", "ERROR\n", "x\nERROR\n"),
+            change("b.rs", "ERROR\n", "ERROR\nERROR\n"),
+            change("c.rs", "", "WARN\nHINT\n"),
+        ];
+        let out = checked(&mut lsp, &changes, None, false);
+        assert_eq!(
+            out.files,
+            [
+                vec![],
+                vec![d(1, Severity::Error, "ERROR")],
+                vec![d(0, Severity::Warning, "WARN")],
+            ]
+        );
+        assert_eq!(out.blocking, [(1, d(1, Severity::Error, "ERROR"))]);
+    }
+
+    #[test]
+    fn allow_force_and_block_levels_decide_what_blocks() {
+        let changes = [change("a.rs", "a\n", "ERROR\nWARN\n")];
+        let error = (0, d(0, Severity::Error, "ERROR"));
+        let warning = (0, d(1, Severity::Warning, "WARN"));
+        let mut lsp = TextLsp::default();
+        assert_eq!(
+            checked(&mut lsp, &changes, None, false).blocking,
+            [error.clone()]
+        );
+        assert!(
+            checked(&mut lsp, &changes, Some(Severity::Error), false)
+                .blocking
+                .is_empty()
+        );
+        assert!(checked(&mut lsp, &changes, None, true).blocking.is_empty());
+        assert_eq!(checked(&mut lsp, &changes, None, true).files[0].len(), 2);
+
+        let mut lsp = TextLsp {
+            block: Some(Some(Severity::Warning)),
+            ..TextLsp::default()
+        };
+        assert_eq!(
+            checked(&mut lsp, &changes, None, false).blocking,
+            [error.clone(), warning]
+        );
+        assert_eq!(
+            checked(&mut lsp, &changes, Some(Severity::Warning), false).blocking,
+            [error]
+        );
+
+        let mut lsp = TextLsp {
+            block: Some(None),
+            ..TextLsp::default()
+        };
+        assert!(checked(&mut lsp, &changes, None, false).blocking.is_empty());
+    }
+
+    #[test]
+    fn check_changes_skips_files_without_a_server_or_language() {
+        let mut lsp = TextLsp {
+            show: Some(Severity::Hint),
+            ..TextLsp::default()
+        };
+        let changes = [
+            change("a.md", "a\n", "ERROR\n"),
+            change("a.txt", "a\n", "ERROR\n"),
+            change("a.rs", "a\n", "HINT\n"),
+        ];
+        let out = checked(&mut lsp, &changes, None, false);
+        assert_eq!(
+            out.files,
+            [vec![], vec![], vec![d(0, Severity::Hint, "HINT")]]
+        );
+        assert!(out.blocking.is_empty());
+        assert_eq!(lsp.asked, [vec!["a\n", "a\n"], vec!["ERROR\n", "HINT\n"]]);
+    }
+
+    #[test]
+    fn check_changes_passes_failures_on() {
+        let mut lsp = TextLsp {
+            failure: Some("fake didn't answer"),
+            ..TextLsp::default()
+        };
+        let changes = [change("a.rs", "a\n", "ERROR\n")];
+        let err = check_changes(&mut lsp, &changes, &["ERROR\n"], None, false).unwrap_err();
+        assert_eq!(err, LspFailure("fake didn't answer".into()));
+    }
+
+    #[test]
+    fn check_changes_without_typed_files_asks_nothing() {
+        let mut lsp = TextLsp::default();
+        let changes = [change("a.txt", "a\n", "ERROR\n")];
+        assert_eq!(
+            checked(&mut lsp, &changes, None, false),
+            Checked {
+                files: vec![vec![]],
+                blocking: vec![]
+            }
+        );
+        assert!(lsp.asked.is_empty());
+    }
 }

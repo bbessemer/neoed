@@ -1212,4 +1212,15 @@ mod tests {
             E::Expected { .. }
         ));
     }
+
+    #[test]
+    fn allow_takes_errors_or_warnings() {
+        assert_eq!(one("allow errors"), CommandKind::Allow(Severity::Error));
+        assert_eq!(one("allow warnings"), CommandKind::Allow(Severity::Warning));
+        assert_eq!(
+            message("allow maybe"),
+            "expected `errors` or `warnings`, found `maybe`; usage: allow errors|warnings"
+        );
+        assert!(matches!(error("allow").kind, E::Expected { .. }));
+    }
 }

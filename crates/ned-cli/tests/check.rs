@@ -25,7 +25,9 @@ impl Workspace {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir(dir.path().join(".git")).unwrap();
         let log = dir.path().join("lsp.log");
-        let config = format!("[lsp]\nrust = [{FAKE:?}, {log:?}]\n{lsp}");
+        let config = format!(
+            "[format]\nrust = false\ngo = false\n\n[lsp]\nrust = [{FAKE:?}, {log:?}]\n{lsp}"
+        );
         fs::write(dir.path().join(".ned.toml"), config).unwrap();
         Workspace {
             dir,
@@ -47,6 +49,35 @@ impl Workspace {
             .write_stdin("")
             .output()
             .unwrap()
+    }
+
+    fn read(&self, name: &str) -> String {
+        fs::read_to_string(self.dir.path().join(name)).unwrap()
+    }
+
+    /// Starts the workspace's daemon, so edits are checked.
+    fn start(&self) {
+        let out = self.ned(&["daemon", "start"]);
+        assert!(out.status.success(), "{out:?}");
+    }
+
+    /// The texts the fake server was last sent for each document.
+    fn last_texts(&self) -> Vec<String> {
+        let log = fs::read_to_string(self.dir.path().join("lsp.log")).unwrap();
+        log.lines()
+            .filter_map(|line| {
+                let message: serde_json::Value = serde_json::from_str(line).unwrap();
+                match message["method"].as_str()? {
+                    "textDocument/didOpen" => message["params"]["textDocument"]["text"]
+                        .as_str()
+                        .map(String::from),
+                    "textDocument/didChange" => message["params"]["contentChanges"][0]["text"]
+                        .as_str()
+                        .map(String::from),
+                    _ => None,
+                }
+            })
+            .collect()
     }
 }
 
@@ -109,4 +140,138 @@ fn a_missing_server_exits_3() {
         stderr.contains("`no-such-server-for-ned` not found"),
         "{stderr}"
     );
+}
+
+const CLEAN: &str = "// done\nfn a() {}\n";
+
+#[test]
+fn an_edit_that_introduces_an_error_is_rejected() {
+    let ws = Workspace::new("");
+    ws.write("a.rs", CLEAN);
+    ws.start();
+    let out = ws.ned(&["a.rs", "-e", "insert after 2 \"// ERROR\""]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert_eq!(
+        text(&out.stderr),
+        "error: edit introduces 1 error; fix it, or add `allow errors` to the script to apply it anyway\n\
+         a.rs:3:4: error: error here [fake F1]\n"
+    );
+    assert_eq!(text(&out.stdout), "");
+    assert_eq!(ws.read("a.rs"), CLEAN);
+    let texts = ws.last_texts();
+    assert_eq!(
+        texts.last().unwrap(),
+        CLEAN,
+        "the original is sent back: {texts:?}"
+    );
+}
+
+#[test]
+fn allow_errors_applies_the_edit_and_shows_the_error() {
+    let ws = Workspace::new("");
+    ws.write("a.rs", CLEAN);
+    ws.start();
+    let out = ws.ned(&["a.rs", "-e", "allow errors\ninsert after 2 \"// ERROR\""]);
+    assert!(out.status.success(), "{out:?}");
+    let stdout = text(&out.stdout);
+    assert!(stdout.starts_with("a.rs: 1 edit, +1 -0\n"), "{stdout}");
+    assert!(
+        stdout.ends_with("+// ERROR\na.rs:3:4: error: error here [fake F1]\n"),
+        "{stdout}"
+    );
+    assert_eq!(ws.read("a.rs"), format!("{CLEAN}// ERROR\n"));
+}
+
+#[test]
+fn introduced_warnings_are_shown_even_quietly() {
+    let ws = Workspace::new("");
+    ws.write("a.rs", CLEAN);
+    ws.start();
+    let out = ws.ned(&["a.rs", "-q", "-e", "insert after 2 \"// WARN\""]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        text(&out.stdout),
+        "a.rs: 1 edit, +1 -0\na.rs:3:4: warning: warn here [fake]\n"
+    );
+}
+
+#[test]
+fn existing_errors_are_not_reported() {
+    let ws = Workspace::new("");
+    ws.write("a.rs", "// done\n// ERROR\n");
+    ws.start();
+    let out = ws.ned(&["a.rs", "-q", "-e", "insert before 2 \"// fine\""]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(text(&out.stdout), "a.rs: 1 edit, +1 -0\n");
+}
+
+#[test]
+fn without_a_daemon_edits_are_not_checked() {
+    let ws = Workspace::new("");
+    ws.write("a.rs", CLEAN);
+    let out = ws.ned(&["a.rs", "-q", "-e", "insert after 2 \"// ERROR\""]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(text(&out.stdout), "a.rs: 1 edit, +1 -0\n");
+    assert_eq!(
+        text(&ws.ned(&["daemon", "status"]).stdout)
+            .lines()
+            .next()
+            .unwrap()
+            .split(' ')
+            .next(),
+        Some("no")
+    );
+}
+
+#[test]
+fn no_check_and_force_skip_blocking() {
+    let ws = Workspace::new("");
+    ws.write("a.rs", CLEAN);
+    ws.start();
+    let out = ws.ned(&[
+        "a.rs",
+        "-q",
+        "--no-check",
+        "-e",
+        "insert after 2 \"// ERROR\"",
+    ]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(text(&out.stdout), "a.rs: 1 edit, +1 -0\n");
+    ws.write("a.rs", CLEAN);
+    let out = ws.ned(&["a.rs", "-q", "--force", "-e", "insert after 2 \"// ERROR\""]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        text(&out.stdout),
+        "a.rs: 1 edit, +1 -0\na.rs:3:4: error: error here [fake F1]\n"
+    );
+}
+
+#[test]
+fn a_blocked_dry_run_exits_1() {
+    let ws = Workspace::new("");
+    ws.write("a.rs", CLEAN);
+    ws.start();
+    let out = ws.ned(&["a.rs", "-n", "-e", "insert after 2 \"// ERROR\""]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert_eq!(ws.last_texts().last().unwrap(), CLEAN);
+}
+
+/// gopls blocks an edit that breaks the types: `cargo test -- --ignored`.
+#[test]
+#[ignore]
+fn a_real_server_blocks_a_breaking_edit() {
+    let ws = Workspace::new("");
+    ws.write("go.mod", "module a\n\ngo 1.21\n");
+    ws.write("a.go", "package a\n\nfunc A() int { return 1 }\n");
+    ws.start();
+    let out = ws.ned(&[
+        "a.go",
+        "-e",
+        "replace \"return 1\" with \"return \\\"x\\\"\"",
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(text(&out.stderr).contains("a.go:3:"), "{out:?}");
+    let out = ws.ned(&["a.go", "-q", "-e", "replace \"return 1\" with \"return 2\""]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(text(&out.stdout), "a.go: 1 edit, +1 -1\n");
 }

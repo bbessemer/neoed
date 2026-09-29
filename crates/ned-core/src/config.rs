@@ -351,4 +351,30 @@ pub(crate) mod tests {
         assert!(err.location.ends_with(".ned.toml:2:8"), "{err}");
         assert!(err.message.contains("warning"), "{err}");
     }
+
+    #[test]
+    fn block_is_a_level_or_false() {
+        let root = tree(&[
+            ("config.toml", "[check]\nblock = \"warning\"\n"),
+            ("ws/.ned.toml", "[check]\nblock = false\n"),
+        ]);
+        let mut config = Config::new(Some(&root.path().join("config.toml"))).unwrap();
+        assert_eq!(
+            config.check_block(root.path()),
+            Ok(Some(Some(Severity::Warning)))
+        );
+        assert_eq!(config.check_block(&root.path().join("ws")), Ok(Some(None)));
+        assert_eq!(
+            Config::new(None).unwrap().check_block(root.path()),
+            Ok(None)
+        );
+        for bad in ["true", "\"errors\""] {
+            let root = tree(&[(".ned.toml", &format!("[check]\nblock = {bad}\n"))]);
+            let err = Config::new(None)
+                .unwrap()
+                .check_block(root.path())
+                .unwrap_err();
+            assert!(err.message.contains("level"), "{bad}: {err}");
+        }
+    }
 }

@@ -2336,4 +2336,20 @@ fn main() {}
         let out = exec(CHECKED, "check");
         assert!(out.error().contains("Unix-only"), "{}", out.error());
     }
+
+    #[test]
+    fn allow_records_the_most_permissive_level() {
+        let src = "allow warnings\nallow errors\nallow warnings";
+        let out = run(&parse(src).unwrap(), src, &[], &Options::default(), None);
+        assert_eq!(out.result.unwrap(), vec![]);
+        assert_eq!(out.allow, Some(Severity::Error));
+        let out = run(
+            &parse("show 1").unwrap(),
+            "show 1",
+            &[],
+            &Options::default(),
+            None,
+        );
+        assert_eq!(out.allow, None);
+    }
 }
