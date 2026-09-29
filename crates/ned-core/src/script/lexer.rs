@@ -48,6 +48,8 @@ pub enum TokenKind {
     /// A `file` command argument, from [`Lexer::path`].
     Path(String),
     Gt,
+    /// `..`, between the ends of a range.
+    DotDot,
     Semicolon,
     Newline,
     Eof,
@@ -102,6 +104,10 @@ impl<'a> Lexer<'a> {
             '/' => self.regex()?,
             '<' => self.heredoc()?,
             '$' | '0'..='9' => self.lines()?,
+            '.' if self.src[self.pos..].starts_with("..") => {
+                self.pos += 2;
+                TokenKind::DotDot
+            }
             '.' => TokenKind::Part(self.part()?),
             c if c.is_ascii_alphabetic() || c == '_' => self.word()?,
             c => {

@@ -87,6 +87,12 @@ pub enum Primary {
     /// `file:PATH`
     File(String),
     Query(String),
+    /// `from..to`: from the start of a match of `from` to the end of the next
+    /// match of `to` (§3.8).
+    Range {
+        from: Box<Primary>,
+        to: Box<Primary>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

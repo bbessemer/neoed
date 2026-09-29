@@ -179,6 +179,7 @@ enum Matcher<'a> {
     },
     /// The query compiled for each searched language.
     Query(Vec<(Language, Query)>),
+    Range(Box<Matcher<'a>>, Box<Matcher<'a>>),
 }
 
 impl<'a> Matcher<'a> {
@@ -223,6 +224,10 @@ impl<'a> Matcher<'a> {
                 Matcher::Syntax { kind, name }
             }
             Primary::Query(source) => Matcher::Query(compile_query(source, files, parents)?),
+            Primary::Range { from, to } => Matcher::Range(
+                Box::new(Matcher::new(from, files, parents)?),
+                Box::new(Matcher::new(to, files, parents)?),
+            ),
         })
     }
 
@@ -290,6 +295,7 @@ impl<'a> Matcher<'a> {
                     Vec::new()
                 }
             }
+            Matcher::Range(..) => Vec::new(),
             Matcher::Query(queries) => {
                 let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
                     return Vec::new();

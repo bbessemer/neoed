@@ -161,7 +161,7 @@ impl Parser<'_> {
         let first = self.bump()?;
         let start = first.span.start;
         let mut steps = vec![Step {
-            primary: primary(first)?,
+            primary: self.range(first)?,
             parts: Vec::new(),
         }];
         loop {
@@ -183,7 +183,7 @@ impl Parser<'_> {
                         return Err(ParseError::new(E::SpaceInSelector, token.span));
                     }
                     steps.push(Step {
-                        primary: primary(token)?,
+                        primary: self.range(token)?,
                         parts: Vec::new(),
                     });
                 }
@@ -194,6 +194,13 @@ impl Parser<'_> {
             steps,
             span: start..self.last_end,
         })
+    }
+
+    /// The primary `first` starts, which may be a range, `first..TO`.
+    fn range(&mut self, first: Token) -> Result<Primary, ParseError> {
+        let from = primary(first)?;
+        let _ = &mut self.peeked;
+        Ok(from)
     }
 
     fn position(&mut self) -> Result<Position, ParseError> {
@@ -369,6 +376,7 @@ fn expected(what: &'static str, token: &Token) -> ParseError {
         TokenKind::Part(_) => "a part".into(),
         TokenKind::Path(_) => "a path".into(),
         TokenKind::Gt => "`>`".into(),
+        TokenKind::DotDot => "`..`".into(),
         TokenKind::Semicolon => "`;`".into(),
         TokenKind::Newline => "end of line".into(),
         TokenKind::Eof => "end of script".into(),
