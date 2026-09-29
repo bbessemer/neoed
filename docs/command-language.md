@@ -130,9 +130,19 @@ same script inserts. Use a second `ned` invocation for that.
 ### 2.4 File set
 
 Commands apply to the **current file set**. It starts as the `FILE` arguments.
-`file PATH...` replaces it for the commands that follow. `ned` expands globs in
-`PATH` itself, relative to the working directory. `file` can't create files; a
-path that matches nothing is an error.
+`file PATH...` replaces it for the commands that follow. `file` can't create
+files.
+
+`ned` expands globs in `FILE` arguments and `file` paths itself, relative to the
+working directory, so a quoted glob works too:
+
+- `*`, `?`, `[...]` and `**` (any number of directories) are supported. A
+  leading `.` in a name must be matched literally, and only files match.
+- Each glob's matches are sorted. A file named twice is in the set once, at its
+  first position.
+- A glob that matches nothing is an error (exit 3):
+  `` error: glob `src/*.rx` matched nothing ``. So is a plain path that doesn't
+  exist.
 
 A selector resolves against every file in the current set, and the ambiguity
 rules (§3.5) count matches across all of them. Use a `file:` step to narrow a
@@ -294,10 +304,16 @@ Notes:
   rules of §5.1 don't apply.
 - The `all` prefix belongs to the target: `delete all fn:test_*`. In `sub`, the
   pattern already matches everywhere; `all` applies only to the scope selector.
+- `move` removes each span as `delete` does, and inserts its text as `insert`
+  does: whole lines if the span is whole-line, re-based to the destination; a
+  syntax destination of `start`/`end` implies `.body`. With `all`, the spans
+  arrive in source order. When the destination item ends with `,` (a field or
+  variant) and the moved text doesn't, one is appended, as for `replace`. A
+  destination inside a moved span is an error.
 - **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
   lines in a row, or leaves a blank line right after an opening delimiter or
   right before a closing one, one blank line is removed.
-- Text that `replace` or `insert` puts into an empty `.body` is always
+- Text that `replace`, `insert` or `move` puts into an empty `.body` is always
   line-oriented, re-based to the enclosing item's indentation plus one indent
   unit (§5.2). An empty single-line body such as `fn f() {}` is opened onto
   separate lines.
@@ -496,12 +512,12 @@ error: script:2:28: unterminated heredoc <<END (started here)
                              ^
 ```
 
-| Code | Meaning                                                                                                 |
-| ---- | ------------------------------------------------------------------------------------------------------- |
-| 0    | Success, including dry runs and skipped formatters                                                      |
-| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unsupported kind, parse-error guard    |
-| 2    | Usage error (bad flags or arguments), script syntax error, invalid query or config, or reserved feature |
-| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, or write failure                         |
+| Code | Meaning                                                                                                                        |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------ |
+| 0    | Success, including dry runs and skipped formatters                                                                             |
+| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unsupported kind, parse-error guard, move into its own source |
+| 2    | Usage error (bad flags or arguments), script syntax error, invalid query or config, or reserved feature                        |
+| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, or write failure                                                |
 
 On any non-zero exit, no file is modified. Reads that ran before the failure
 still print their output.
