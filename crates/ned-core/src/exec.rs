@@ -1454,6 +1454,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn insert_next_to_a_separated_item_adds_a_blank_line() {
+        assert_eq!(
+            edited(MOVE, r#"insert after fn:helper_y "fn z() {}""#),
+            MOVE.replace("fn helper_y() {}\n", "fn helper_y() {}\n\nfn z() {}\n")
+        );
+        assert_eq!(
+            edited(MOVE, r#"insert before fn:main "fn z() {}""#),
+            MOVE.replace("fn main", "fn z() {}\n\nfn main")
+        );
+        assert_eq!(
+            edited(MOVE, r#"insert after impl:A>fn:b "fn c() {}""#),
+            MOVE.replace("    fn b() {}\n", "    fn b() {}\n\n    fn c() {}\n")
+        );
+    }
+
+    #[test]
+    fn insert_keeps_a_blank_line_the_text_already_has() {
+        assert_eq!(
+            edited(MOVE, "insert after fn:helper_y <<END\n\nfn z() {}\nEND\n"),
+            MOVE.replace("fn helper_y() {}\n", "fn helper_y() {}\n\nfn z() {}\n")
+        );
+        assert_eq!(
+            edited(MOVE, "insert before fn:main <<END\nfn z() {}\n\nEND\n"),
+            MOVE.replace("fn main", "fn z() {}\n\nfn main")
+        );
+    }
+
+    #[test]
+    fn insert_adds_no_blank_line_next_to_unseparated_items_or_imports() {
+        assert_eq!(
+            edited(
+                "struct S {\n    a: u8,\n    b: u8,\n}\n",
+                r#"insert after field:a "c: u8,""#
+            ),
+            "struct S {\n    a: u8,\n    c: u8,\n    b: u8,\n}\n"
+        );
+        assert_eq!(
+            edited("use a;\n\nfn f() {}\n", r#"insert after import:a "use b;""#),
+            "use a;\nuse b;\n\nfn f() {}\n"
+        );
+        assert_eq!(
+            edited(MOVE, r#"insert after 13 "fn z() {}""#),
+            MOVE.replace("fn helper_y() {}\n", "fn helper_y() {}\nfn z() {}\n")
+        );
+    }
+
     const MOVE: &str = "\
 impl A {
     fn a() {
