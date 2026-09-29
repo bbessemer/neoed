@@ -78,6 +78,14 @@ in this section unless explicitly told to.
 
 ## Development Workflow
 
+**Use `ned` for all work on this project.** Read code with `ned outline` and
+`ned show`, and make every edit to an existing file with the installed `ned`
+(usage: the project skill, `.claude/skills/ned`, and `ned help`), not the Edit
+tool, sed or inline Python. Create new files with Write. If `ned` can't make an
+edit, makes it wrongly, or gives an unhelpful error, fall back for that edit
+only and report the gap to the engineer. After changing `ned`, reinstall it:
+`cargo install --path crates/ned-cli`.
+
 Non-trivial implementation work follows a strict TDD cycle in small chunks. Each
 chunk is one cohesive unit (a module, a protocol message, a service behaviour).
 Finish each step before the next. Each step ends at a commit point: per rule 1,
