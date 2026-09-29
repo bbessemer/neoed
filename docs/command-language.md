@@ -508,6 +508,19 @@ Errors go to stderr, in the form `error: LOC: message`.
 - Every error ends with a concrete fix: candidate selectors, a nearby name, or
   the flag to use.
 
+| Error                                   | Fix it suggests                                                                                                                                          |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Script syntax                           | Quoting, for a bare word where text or a selector belongs; otherwise the command's usage, e.g. `usage: replace [all] SEL with TEXT`                      |
+| Selector matches nothing                | A close syntax name; a literal match that differs only in case or spacing; a regex that matches with `i`; the spans a nested step searched; or `outline` |
+| Ambiguous selector                      | Candidate selectors (§3.5)                                                                                                                               |
+| Missing part, part on a non-syntax step | The parts the item has, or an example                                                                                                                    |
+| Invalid query                           | The closest node type or field name in the grammar                                                                                                       |
+| Line past the end                       | `$` for the last line                                                                                                                                    |
+| File not in the set                     | The `file` command that adds it                                                                                                                          |
+| Unsupported in a language               | Selectors that work there                                                                                                                                |
+| Overlapping edits                       | Merging them, or a second invocation                                                                                                                     |
+| Missing file or empty glob              | The working directory paths are relative to                                                                                                              |
+
 ```
 error: script:1:8: fn:new matches 2 items; add `all` or use one of:
   impl:Parser>fn:new   src/parser.rs:10-12
