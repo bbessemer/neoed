@@ -18,6 +18,28 @@ use crate::text::{full_lines, strip_indent};
 
 const MAX_CANDIDATES: usize = 10;
 
+/// The most files an error lists by name.
+pub(crate) const MAX_LISTED_FILES: usize = 5;
+
+/// `paths` for an error message: at most `MAX_LISTED_FILES`, then a count.
+pub(crate) fn file_list(paths: &[&str]) -> String {
+    match paths.len().checked_sub(MAX_LISTED_FILES) {
+        Some(more) if more > 0 => {
+            format!("{} and {more} more", paths[..MAX_LISTED_FILES].join(", "))
+        }
+        _ => paths.join(", "),
+    }
+}
+
+/// The fix for `path` not being in the set `paths`.
+pub(crate) fn add_to_set(paths: &[&str], path: &str) -> String {
+    if paths.len() <= MAX_LISTED_FILES {
+        format!("add it with `file {} {path}`", paths.join(" "))
+    } else {
+        "add it with `file`, which replaces the set".into()
+    }
+}
+
 /// A file in the file set, with its path as the user wrote it.
 #[derive(Debug, Clone)]
 pub struct SourceFile {
@@ -90,11 +112,7 @@ pub fn resolve(target: &Target, files: &[&SourceFile], src: &str) -> Result<Vec<
     match matches.len() {
         0 => Err(error(E::NoMatch {
             selector: selector.into(),
-            files: files
-                .iter()
-                .map(|f| f.path.as_str())
-                .collect::<Vec<_>>()
-                .join(", "),
+            files: file_list(&files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>()),
             hint: target
                 .selector
                 .steps
@@ -208,13 +226,11 @@ impl<'a> Matcher<'a> {
             },
             Primary::File(path) => {
                 if !files.iter().any(|f| same_path(&f.path, path)) {
+                    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
                     return Err(E::NotInFileSet {
                         path: path.clone(),
-                        files: files
-                            .iter()
-                            .map(|f| f.path.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", "),
+                        files: file_list(&paths),
+                        add: add_to_set(&paths, path),
                     });
                 }
                 Matcher::File(path)
@@ -420,11 +436,12 @@ fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]
     }
     Err(E::NoLanguage {
         selector: syntax::selector(kind, name),
-        files: searched
-            .iter()
-            .map(|&i| files[i].path.as_str())
-            .collect::<Vec<_>>()
-            .join(", "),
+        files: file_list(
+            &searched
+                .iter()
+                .map(|&i| files[i].path.as_str())
+                .collect::<Vec<_>>(),
+        ),
     })
 }
 

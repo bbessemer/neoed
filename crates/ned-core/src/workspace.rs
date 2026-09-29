@@ -22,8 +22,18 @@ pub fn root(dir: &Path) -> io::Result<PathBuf> {
 /// that ignore files and git's excludes leave in, outside hidden
 /// directories, in path order. Paths are relative to `cwd` when under it.
 pub fn files(root: &Path, cwd: &Path) -> Vec<String> {
-    let _ = (root, cwd);
-    todo!()
+    let mut paths: Vec<PathBuf> = ignore::WalkBuilder::new(root)
+        .require_git(false)
+        .build()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_some_and(|t| t.is_file()))
+        .map(ignore::DirEntry::into_path)
+        .collect();
+    paths.sort();
+    paths
+        .iter()
+        .map(|path| path.strip_prefix(cwd).unwrap_or(path).display().to_string())
+        .collect()
 }
 
 #[cfg(test)]
