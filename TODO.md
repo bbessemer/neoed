@@ -115,7 +115,10 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [x] `ned-daemon` crate: per-workspace socket, lazy spawn, idle timeout
 - [x] LSP client (`lsp-types`, `tokio`): initialize, didOpen/didChange, shutdown
 - [x] Server configuration per language (rust-analyzer, gopls, pyright, tsserver)
-- [ ] `check` verb: diagnostics for edited files
+- [x] `check` verb: diagnostics for edited files (and automatic checking of
+      edits while a daemon runs)
+- [ ] Diagnostics that only `cargo check` reports (rust-analyzer flycheck on
+      save), e.g. unresolved names, for automatic checking and `check`
 - [ ] `rename` verb (workspace-wide) and `refs:` / `def:` selectors
 - [ ] LSP formatting fallback when no external formatter is configured
 
