@@ -168,9 +168,10 @@ END
   `.body` instead. A `#[test]` dropped this way fails nothing: the test just
   stops running.
 - **Re-basing follows the target line.** `<<END` text takes the indentation of
-  the line it's inserted next to, so after a wrapped list item's continuation
-  line it gets the hanging indent. For code, use `<<END` (a quoted `<<'END'`
-  inside the script, a shell habit, leaves code at column 0); for Markdown or
-  prose inserted after a line, use `<<'END'`, or target the `item:`.
+  the line it's inserted next to, or of the first line it replaces, so next to
+  (or starting at) a wrapped list item's continuation line it gets the hanging
+  indent. For code, use `<<END` (a quoted `<<'END'` inside the script, a shell
+  habit, leaves code at column 0); for Markdown or prose, use `<<'END'`, target
+  the `item:`, or start a replaced range at the item's first line.
 - **Always give a script.** Without `-e` or a heredoc, `ned` reads the script
   from stdin, and hangs in a shell that has none to give.
