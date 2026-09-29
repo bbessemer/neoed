@@ -1,7 +1,10 @@
 //! Where a workspace's daemon listens, locks and logs.
 
-use std::io;
+use std::fs::{self, DirBuilder};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
+use std::{env, io};
 
 use thiserror::Error;
 
@@ -31,33 +34,87 @@ impl Paths {
     /// The paths of the daemon for `root` (canonical) and `ned` build
     /// `version`, in `runtime_dir`.
     pub fn new(runtime_dir: &Path, root: &Path, version: &str) -> Paths {
-        let _ = (runtime_dir, root, version);
-        todo!()
+        let name = name(root, version);
+        let path = |ext: &str| runtime_dir.join(format!("{name}.{ext}"));
+        Paths {
+            version: version.to_string(),
+            socket: path("sock"),
+            lock: path("lock"),
+            log: path("log"),
+        }
     }
 }
 
 /// The directory for daemon files, `$XDG_RUNTIME_DIR/ned` or `$TMPDIR/ned-UID`:
 /// created private if missing, and rejected if others own or can access it.
 pub fn runtime_dir() -> Result<PathBuf, PathsError> {
-    todo!()
+    let dir = match env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
+        Some(base) => PathBuf::from(base).join("ned"),
+        None => env::temp_dir().join(format!("ned-{}", uid())),
+    };
+    private_dir(&dir)?;
+    Ok(dir)
 }
 
 /// The file name stem for `root`'s daemon under `version` of `ned`.
 fn name(root: &Path, version: &str) -> String {
-    let _ = (root, version);
-    todo!()
+    // FNV-1a: stable across Rust releases, unlike `DefaultHasher`.
+    let bytes = root
+        .as_os_str()
+        .as_bytes()
+        .iter()
+        .chain(&[0])
+        .chain(version.as_bytes());
+    let hash = bytes.fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("{hash:016x}")
 }
 
 fn private_dir(dir: &Path) -> Result<(), PathsError> {
-    let _ = dir;
-    todo!()
+    let io_error = |source| PathsError::Io {
+        path: dir.to_path_buf(),
+        source,
+    };
+    match DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => return Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(io_error(err)),
+    }
+    let meta = fs::symlink_metadata(dir).map_err(io_error)?;
+    let why = if !meta.is_dir() {
+        "not a directory"
+    } else if meta.uid() != uid() {
+        "owned by another user"
+    } else if meta.mode() & 0o077 != 0 {
+        "accessible to other users"
+    } else {
+        return Ok(());
+    };
+    Err(PathsError::UnsafeDir {
+        dir: dir.to_path_buf(),
+        why,
+    })
+}
+
+fn uid() -> u32 {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    unsafe { libc::getuid() }
 }
 
 /// The workspace containing `dir`: the nearest directory from `dir` up that
 /// holds `.git`, `.hg` or `.jj`, or else `dir`; canonical.
 pub fn workspace_root(dir: &Path) -> io::Result<PathBuf> {
-    let _ = dir;
-    todo!()
+    let dir = dir.canonicalize()?;
+    let root = dir
+        .ancestors()
+        .find(|d| {
+            [".git", ".hg", ".jj"]
+                .iter()
+                .any(|vcs| d.join(vcs).exists())
+        })
+        .unwrap_or(&dir);
+    Ok(root.to_path_buf())
 }
 
 #[cfg(test)]
