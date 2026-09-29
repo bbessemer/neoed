@@ -12,6 +12,7 @@ Sections marked _(reserved)_ define syntax that parses but is rejected with a
 ```
 ned [FLAGS] [FILE...] [-e SCRIPT]...
 ned help [TOPIC]
+ned daemon start|status|stop [DIR]
 ```
 
 `ned help` prints a summary of the language, sized to fit in an agent's
@@ -39,6 +40,34 @@ first argument; write a file named `help` as `./help`.
 Otherwise, a file's language is detected from its extension, then from its
 shebang. Line, regex and literal selectors work on any file; syntax selectors
 need a language.
+
+### 1.1 Daemon
+
+Language-server features run through a daemon, one per workspace, that keeps
+the servers warm between invocations. A workspace is the nearest directory,
+from the working directory up, that holds `.git`, `.hg` or `.jj`; without one,
+it's the working directory. Features that need the daemon spawn it on demand,
+and it exits after 10 minutes without a request. Everything else works without
+it.
+
+`ned daemon start`, `status` and `stop` manage the daemon for the workspace
+containing `DIR` (default: the working directory). `start` spawns it if it isn't
+running; `status` and `stop` never do.
+
+```
+$ ned daemon status
+daemon for /home/me/proj: pid 4121, up 3m
+$ ned daemon stop
+stopped the daemon for /home/me/proj
+$ ned daemon status
+no daemon for /home/me/proj
+```
+
+The daemon listens on a Unix socket in `$XDG_RUNTIME_DIR/ned/`, or
+`$TMPDIR/ned-UID/` without it; `ned` refuses a directory that isn't owned by the
+user or that others can access. Its log is next to the socket. A daemon serves
+only the `ned` version that started it. The daemon is Unix-only for now; on
+other platforms, features that need it are errors.
 
 ## 2. Scripts
 
@@ -150,7 +179,7 @@ working directory, so a quoted glob works too:
 - Each glob's matches are sorted. A file named twice is in the set once, at its
   first position.
 - A glob that matches nothing is an error (exit 3):
-  `` error: glob `src/*.rx` matched nothing ``. So is a plain path that doesn't
+  ``error: glob `src/*.rx` matched nothing``. So is a plain path that doesn't
   exist.
 
 A selector resolves against every file in the current set, and the ambiguity
@@ -198,26 +227,26 @@ characters, such as `.` or `-`, must be quoted: `import:"os.path"`.
 
 Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 
-| Kind        | Items                                                                  |
-| ----------- | ---------------------------------------------------------------------- |
-| `fn`        | functions and methods                                                  |
-| `class`     | classes                                                                |
-| `struct`    | structs                                                                |
-| `enum`      | enums                                                                  |
-| `variant`   | enum variants                                                          |
-| `trait`     | traits                                                                 |
-| `interface` | interfaces                                                             |
-| `impl`      | impl blocks (name = self type, e.g. `impl:Parser`)                     |
-| `type`      | type aliases and declarations                                          |
-| `const`     | constants and statics                                                  |
-| `var`       | module-level variables and `let`/`var` bindings                        |
-| `field`     | struct and class fields                                                |
-| `mod`       | modules and namespaces                                                 |
-| `import`    | imports (name = the path as written, e.g. `import:std::fmt`)           |
-| `section`   | Markdown sections: a `#` heading and its content (name = its text)     |
-| `item`      | Markdown list items (name = the first line of the item's text)         |
-| `table`     | Markdown tables (name = the first header cell)                         |
-| `code`      | Markdown code blocks (name = the info string, or `""` if none)         |
+| Kind        | Items                                                              |
+| ----------- | ------------------------------------------------------------------ |
+| `fn`        | functions and methods                                              |
+| `class`     | classes                                                            |
+| `struct`    | structs                                                            |
+| `enum`      | enums                                                              |
+| `variant`   | enum variants                                                      |
+| `trait`     | traits                                                             |
+| `interface` | interfaces                                                         |
+| `impl`      | impl blocks (name = self type, e.g. `impl:Parser`)                 |
+| `type`      | type aliases and declarations                                      |
+| `const`     | constants and statics                                              |
+| `var`       | module-level variables and `let`/`var` bindings                    |
+| `field`     | struct and class fields                                            |
+| `mod`       | modules and namespaces                                             |
+| `import`    | imports (name = the path as written, e.g. `import:std::fmt`)       |
+| `section`   | Markdown sections: a `#` heading and its content (name = its text) |
+| `item`      | Markdown list items (name = the first line of the item's text)     |
+| `table`     | Markdown tables (name = the first header cell)                     |
+| `code`      | Markdown code blocks (name = the info string, or `""` if none)     |
 
 - Using a kind the file's language doesn't support is an error that lists the
   kinds it does support.

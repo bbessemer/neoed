@@ -164,9 +164,10 @@ Bugs, then the LSP daemon (§9).
 | `serde` + `toml`                  | Config (`.ned.toml`)                         |
 | `thiserror` / `anyhow`            | Errors in core / CLI                         |
 | `clap` (derive)                   | CLI arguments                                |
+| `tokio`, `serde_json`, `libc`     | Daemon: event loop, protocol, `getuid`       |
 | `insta`, `assert_cmd`, `tempfile` | Snapshot, CLI, and fs tests                  |
 
-Deferred: `lsp-types`, `tokio` (LSP daemon milestone).
+Deferred: `lsp-types` (LSP client, TODO.md §9).
 
 ## Repository Structure
 
@@ -174,12 +175,13 @@ Deferred: `lsp-types`, `tokio` (LSP daemon milestone).
 Cargo.toml         workspace; shared version, edition, lints
 crates/ned-core/   library: buffer, script parser, selectors, languages, exec, formatting
 crates/ned-cli/    `ned` binary: args, I/O, output rendering only
+crates/ned-daemon/ per-workspace daemon (Unix socket) and its sync client; LSP later
 queries/<lang>/    tree-sitter selector queries (.scm), one dir per language
 docs/              specs, agent guide, Claude Code skill
 bench/             token-cost benchmark (uv project; cases/ back spec §8's table)
 ```
 
-Planned crates: `ned-daemon` (LSP), `ned-repl`, `ned-mcp`. All logic lives in
+Planned crates: `ned-repl`, `ned-mcp`. All logic lives in
 `ned-core` so frontends stay thin.
 
 ## Design Decisions
