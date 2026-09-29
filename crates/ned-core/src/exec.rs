@@ -36,6 +36,8 @@ pub struct Change {
     pub new: String,
     pub edits: usize,
     pub lang: Option<Language>,
+    /// Made by `create`; `old` is empty.
+    pub created: bool,
 }
 
 /// Settings from the command line that affect a run.
@@ -67,6 +69,8 @@ pub fn run(script: &Script, src: &str, files: &[String], options: &Options) -> R
 struct Loaded {
     file: SourceFile,
     edits: EditSet,
+    /// Made by `create`: its original text is what `create` gave it.
+    created: bool,
 }
 
 struct Executor<'s> {
@@ -88,26 +92,62 @@ impl Executor<'_> {
         let changes: Vec<Change> = self
             .files
             .iter()
-            .filter(|l| !l.edits.is_empty())
+            .filter(|l| l.created || !l.edits.is_empty())
             .map(|l| Change {
                 path: l.file.path.clone(),
-                old: l.file.text.clone(),
+                old: if l.created {
+                    String::new()
+                } else {
+                    l.file.text.clone()
+                },
                 new: l.edits.apply(),
                 edits: l.edits.len(),
                 lang: l.file.lang,
+                created: l.created,
             })
             .collect();
         if !self.options.force {
             for (l, change) in self
                 .files
                 .iter()
-                .filter(|l| !l.edits.is_empty())
+                .filter(|l| l.created || !l.edits.is_empty())
                 .zip(&changes)
             {
-                guard(&l.file, &change.new)?;
+                if l.created {
+                    let empty = SourceFile::new(&l.file.path, String::new(), l.file.lang);
+                    guard(&empty, &change.new)?;
+                } else {
+                    guard(&l.file, &change.new)?;
+                }
             }
         }
         Ok(changes)
+    }
+
+    /// Adds a file made by `create` to the file set, holding `new` (§4.2).
+    fn create(&mut self, path: &str, new: &Text) -> Result<(), ExecErrorKind> {
+        let loaded = self.files.iter().any(|l| same_path(&l.file.path, path));
+        if loaded || std::path::Path::new(path).exists() {
+            return Err(ExecErrorKind::FileExists { path: path.into() });
+        }
+        let lang = self
+            .options
+            .lang
+            .or_else(|| Language::detect(path, &new.value));
+        let text = if new.value.is_empty() {
+            String::new()
+        } else {
+            line_oriented(new, "", lang.map_or("    ", |l| l.default_indent()))
+        };
+        let file = SourceFile::new(path, text, lang);
+        let edits = EditSet::new(&file.buffer);
+        self.files.push(Loaded {
+            file,
+            edits,
+            created: true,
+        });
+        self.set.push(self.files.len() - 1);
+        Ok(())
     }
 
     /// Loads the files `paths` name, expanding globs (§2.4), as indices into
@@ -154,7 +194,11 @@ impl Executor<'_> {
         let lang = self.options.lang.or_else(|| Language::detect(path, &text));
         let file = SourceFile::new(path, text, lang);
         let edits = EditSet::new(&file.buffer);
-        self.files.push(Loaded { file, edits });
+        self.files.push(Loaded {
+            file,
+            edits,
+            created: false,
+        });
         Ok(self.files.len() - 1)
     }
 
@@ -162,6 +206,7 @@ impl Executor<'_> {
         let span = &command.span;
         let error = |kind| ExecError::new(kind, Some(span.clone()));
         match &command.kind {
+            CommandKind::Create { path, text } => return self.create(path, text).map_err(error),
             CommandKind::File(paths) => {
                 self.set = self.open(paths, Some(span))?;
                 return Ok(());
@@ -170,7 +215,7 @@ impl Executor<'_> {
             _ => {}
         }
         match &command.kind {
-            CommandKind::Show(target) => self.show(target.as_ref())?,
+            CommandKind::Show { target, context } => self.show(target.as_ref(), *context)?,
             CommandKind::Outline(target) => self.outline(span, target.as_ref())?,
             CommandKind::Replace { target, text } => {
                 for m in self.resolve(target)? {
@@ -184,7 +229,9 @@ impl Executor<'_> {
                 text,
             } => {
                 for m in self.resolve(&implied_body(target, *position))? {
-                    let (range, new) = insert(&self.files[m.file].file, m.range, *position, text);
+                    let f = &self.files[m.file].file;
+                    let text = separated(f, target, *position, &m.range, text);
+                    let (range, new) = insert(f, m.range, *position, &text);
                     self.push(index, span, m.file, range, new)?;
                 }
             }
@@ -204,7 +251,7 @@ impl Executor<'_> {
                 position,
                 dest,
             } => self.move_to(index, span, target, *position, dest)?,
-            CommandKind::File(_) => unreachable!("handled above"),
+            CommandKind::File(_) | CommandKind::Create { .. } => unreachable!("handled above"),
         }
         Ok(())
     }
@@ -298,7 +345,7 @@ impl Executor<'_> {
         Ok(())
     }
 
-    fn show(&mut self, target: Option<&Target>) -> Result<(), ExecError> {
+    fn show(&mut self, target: Option<&Target>, context: usize) -> Result<(), ExecError> {
         // (file, first line, last line), 0-based.
         let mut spans: Vec<(usize, usize, usize)> = Vec::new();
         match target {
@@ -321,7 +368,11 @@ impl Executor<'_> {
                     } else {
                         line(m.range.end - 1)
                     };
-                    spans.push((m.file, first, last));
+                    spans.push((
+                        m.file,
+                        first.saturating_sub(context),
+                        (last + context).min(max),
+                    ));
                 }
             }
         }
@@ -675,6 +726,39 @@ fn with_trailing_comma<'t>(f: &SourceFile, range: &Range<usize>, new: &'t Text) 
     })
 }
 
+/// `new`, with a blank line separating it from the syntax item at `range`
+/// when inserting before or after an item that has one (§4.2).
+fn separated<'t>(
+    f: &SourceFile,
+    target: &Target,
+    position: Position,
+    range: &Range<usize>,
+    new: &'t Text,
+) -> Cow<'t, Text> {
+    let item = matches!(
+        target.selector.steps.last(),
+        Some(Step { primary: Primary::Syntax { kind, .. }, parts }) if parts.is_empty() && kind != "import" && kind != "item"
+    );
+    let t = &f.text;
+    if !item
+        || !text::is_whole_line(t, range)
+        || !text::blank_separated(t, text::full_lines(t, range.clone()))
+    {
+        return Cow::Borrowed(new);
+    }
+    let blank = |line: Option<&str>| line.is_some_and(|l| l.trim().is_empty());
+    let mut value = new.value.clone();
+    match position {
+        Position::After if !blank(new.value.split('\n').next()) => value.insert(0, '\n'),
+        Position::Before if !blank(new.value.split('\n').next_back()) => value.push('\n'),
+        _ => return Cow::Borrowed(new),
+    }
+    Cow::Owned(Text {
+        value,
+        kind: new.kind,
+    })
+}
+
 /// The text `move` carries from `range`: its full lines, to be re-based, if
 /// it's whole-line, else the span verbatim. The flag says whether a blank line
 /// was directly above or below those full lines.
@@ -695,16 +779,12 @@ fn moved_text(f: &SourceFile, range: &Range<usize>) -> (Text, bool) {
     if value.ends_with('\n') {
         value.pop();
     }
-    let above = t[..full.start].strip_suffix('\n').and_then(|before| {
-        let line = &before[before.rfind('\n').map_or(0, |i| i + 1)..];
-        line.trim().is_empty().then_some(())
-    });
-    let below = t[full.end..].lines().next().filter(|l| l.trim().is_empty());
+
     let text = Text {
         value,
         kind: TextKind::Heredoc,
     };
-    (text, above.is_some() || below.is_some())
+    (text, text::blank_separated(t, full))
 }
 
 /// The span and text of an insertion at `position` of `range` (§4.2, §5):
@@ -842,6 +922,8 @@ pub enum ExecErrorKind {
         "move destination is inside the moved span at {location}; choose a destination outside it"
     )]
     MoveIntoSource { location: String },
+    #[error("{path} already exists; edit it with `file {path}`")]
+    FileExists { path: String },
     /// `note` is empty, or where relative paths start.
     #[error("glob `{glob}` matched nothing{note}")]
     NoGlobMatch { glob: String, note: String },
@@ -1003,6 +1085,32 @@ mod tests {
         assert_eq!(out.output, "a.rs:2-3\n2:    let x = 1;\n3:    let y = 2;\n");
         assert_eq!(out.result, Ok(vec![]));
         assert_eq!(exec("a\r\nb\r\n", "show $").output, "a.rs:2\n2:b\n");
+    }
+
+    #[test]
+    fn show_adds_context_lines() {
+        assert_eq!(
+            exec(TEXT, "show 3 +1").output,
+            "a.rs:2-4\n2:    let x = 1;\n3:    let y = 2;\n4:}\n"
+        );
+        assert_eq!(
+            exec(TEXT, "show 1 +2").output,
+            "a.rs:1-3\n1:fn a() {\n2:    let x = 1;\n3:    let y = 2;\n"
+        );
+        assert_eq!(
+            exec(TEXT, "show $ +1").output,
+            "a.rs:7-8\n7:    let x = 3;\n8:}\n"
+        );
+    }
+
+    #[test]
+    fn show_context_regions_merge() {
+        let two = exec(TEXT, "show all /let x/ +1").output;
+        assert!(two.starts_with("a.rs:1-3\n"), "{two}");
+        assert!(two.contains("\na.rs:6-8\n"), "{two}");
+        let one = exec(TEXT, "show all /let x/ +2").output;
+        assert!(one.starts_with("a.rs:1-8\n"), "{one}");
+        assert_eq!(one.lines().count(), 9);
     }
 
     #[test]
@@ -1424,6 +1532,108 @@ mod tests {
         );
     }
 
+    #[test]
+    fn insert_next_to_a_separated_item_adds_a_blank_line() {
+        assert_eq!(
+            edited(MOVE, r#"insert after fn:helper_y "fn z() {}""#),
+            MOVE.replace("fn helper_y() {}\n", "fn helper_y() {}\n\nfn z() {}\n")
+        );
+        assert_eq!(
+            edited(MOVE, r#"insert before fn:main "fn z() {}""#),
+            MOVE.replace("fn main", "fn z() {}\n\nfn main")
+        );
+        assert_eq!(
+            edited(MOVE, r#"insert after impl:A>fn:b "fn c() {}""#),
+            MOVE.replace("    fn b() {}\n", "    fn b() {}\n\n    fn c() {}\n")
+        );
+    }
+
+    #[test]
+    fn insert_keeps_a_blank_line_the_text_already_has() {
+        assert_eq!(
+            edited(MOVE, "insert after fn:helper_y <<END\n\nfn z() {}\nEND\n"),
+            MOVE.replace("fn helper_y() {}\n", "fn helper_y() {}\n\nfn z() {}\n")
+        );
+        assert_eq!(
+            edited(MOVE, "insert before fn:main <<END\nfn z() {}\n\nEND\n"),
+            MOVE.replace("fn main", "fn z() {}\n\nfn main")
+        );
+    }
+
+    #[test]
+    fn insert_adds_no_blank_line_next_to_unseparated_items_or_imports() {
+        assert_eq!(
+            edited(
+                "struct S {\n    a: u8,\n    b: u8,\n}\n",
+                r#"insert after field:a "c: u8,""#
+            ),
+            "struct S {\n    a: u8,\n    c: u8,\n    b: u8,\n}\n"
+        );
+        assert_eq!(
+            edited("use a;\n\nfn f() {}\n", r#"insert after import:a "use b;""#),
+            "use a;\nuse b;\n\nfn f() {}\n"
+        );
+        assert_eq!(
+            edited(MOVE, r#"insert after 13 "fn z() {}""#),
+            MOVE.replace("fn helper_y() {}\n", "fn helper_y() {}\nfn z() {}\n")
+        );
+    }
+
+    #[test]
+    fn create_makes_a_file_later_commands_can_edit() {
+        let out = exec_with(
+            &[("a.rs", "x\n")],
+            1,
+            "create {dir}/b.rs <<END\n    fn b() {}\nEND\ninsert end fn:b \"c();\"\nshow fn:b",
+        );
+        assert_eq!(out.output, "b.rs:1\n1:fn b() {}\n");
+        let changes = out.result.unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "b.rs");
+        assert!(changes[0].created);
+        assert_eq!(changes[0].old, "");
+        assert_eq!(changes[0].new, "fn b() {\n    c();\n}\n");
+    }
+
+    #[test]
+    fn created_files_join_the_file_set() {
+        let out = exec_with(
+            &[("a.rs", "x\n")],
+            1,
+            "create {dir}/b.rs \"y\"\nsub /x|y/ with \"z\"",
+        );
+        let news: Vec<_> = out.result.unwrap().into_iter().map(|c| c.new).collect();
+        assert_eq!(news, ["z\n", "z\n"]);
+    }
+
+    #[test]
+    fn create_needs_a_new_path() {
+        assert_eq!(
+            exec_with(&[("a.rs", "x\n")], 0, "create {dir}/a.rs \"y\"").error(),
+            "error: script:1:1: a.rs already exists; edit it with `file a.rs`"
+        );
+        let twice = exec_with(&[], 0, "create {dir}/b.rs \"x\"\ncreate {dir}/b.rs \"y\"");
+        assert!(
+            twice
+                .error()
+                .starts_with("error: script:2:1: b.rs already exists"),
+            "{}",
+            twice.error()
+        );
+    }
+
+    #[test]
+    fn created_files_pass_the_guard_and_may_be_empty() {
+        let out = exec_with_options(&[], 0, "create {dir}/b.rs \"fn (\"", &Options::default());
+        assert!(
+            out.error().contains("edit introduces a syntax error"),
+            "{}",
+            out.error()
+        );
+        let empty = exec_with(&[], 0, "create {dir}/e.txt \"\"");
+        assert_eq!(empty.result.unwrap()[0].new, "");
+    }
+
     const MOVE: &str = "\
 impl A {
     fn a() {
@@ -1692,7 +1902,7 @@ fn main() {}
         );
         assert_eq!(
             edited(ITEMS, "insert after fn:main \"fn b() {}\""),
-            format!("{ITEMS}fn b() {{}}\n")
+            format!("{ITEMS}\nfn b() {{}}\n")
         );
     }
 

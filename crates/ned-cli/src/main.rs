@@ -131,7 +131,11 @@ fn main() -> ExitCode {
         let stat = DiffStat::between(&change.old, &change.new);
         println!(
             "{}",
-            diff::summary(&change.path, change.edits, stat, cli.dry_run)
+            if change.created {
+                diff::created_summary(&change.path, stat, cli.dry_run)
+            } else {
+                diff::summary(&change.path, change.edits, stat, cli.dry_run)
+            }
         );
         if !cli.quiet {
             print!("{}", diff::hunks(&change.old, &change.new, cli.context));
@@ -163,7 +167,8 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::UnknownKind { .. }
         | ExecErrorKind::MissingPart { .. }
         | ExecErrorKind::PartNeedsItem { .. }
-        | ExecErrorKind::MoveIntoSource { .. } => 1,
+        | ExecErrorKind::MoveIntoSource { .. }
+        | ExecErrorKind::FileExists { .. } => 1,
         ExecErrorKind::Unsupported { .. }
         | ExecErrorKind::NoFiles
         | ExecErrorKind::InvalidQuery { .. } => 2,

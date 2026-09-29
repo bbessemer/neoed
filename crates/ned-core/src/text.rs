@@ -95,6 +95,20 @@ pub fn rebase_tail(text: &str, indent: &str, unit: &str) -> String {
     }
 }
 
+/// Whether a blank line lies directly above or below the whole lines `full`.
+pub fn blank_separated(text: &str, full: Range<usize>) -> bool {
+    let above = text[..full.start].strip_suffix('\n').is_some_and(|before| {
+        before[before.rfind('\n').map_or(0, |i| i + 1)..]
+            .trim()
+            .is_empty()
+    });
+    let below = text[full.end..]
+        .lines()
+        .next()
+        .is_some_and(|l| l.trim().is_empty());
+    above || below
+}
+
 /// Widens a whole-line deletion by one adjacent blank line when deleting
 /// `range` would leave two blank lines in a row, a blank line right after an
 /// opening delimiter or right before a closing one, or a blank line at the

@@ -1,0 +1,13 @@
+create PATH TEXT
+
+Creates the file PATH holding TEXT, as if it had existed when the script
+started: it joins the file set, and later commands in the script can show,
+outline and edit it. PATH must not exist; missing directories are created.
+TEXT is line-oriented: a <<END heredoc is re-based to column 0 and gets a
+final newline. The summary line reads `PATH: created, +N`.
+
+Examples:
+    create src/lexer.rs <<END
+    pub struct Lexer;
+    END
+    create tests/it.rs "#[test]\nfn it() {}"

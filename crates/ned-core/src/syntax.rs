@@ -15,8 +15,7 @@ use crate::script::ast::Part;
 use crate::text::full_lines;
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator, Tree};
 
-/// The core kinds a query may capture.
-pub const KINDS: [&str; 14] = [
+pub const KINDS: [&str; 18] = [
     "fn",
     "class",
     "struct",
@@ -31,6 +30,10 @@ pub const KINDS: [&str; 14] = [
     "field",
     "mod",
     "import",
+    "section",
+    "item",
+    "table",
+    "code",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +79,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                 }
             }
         }
-        if let (Some((kind, node)), Some(name)) = (item, name) {
+        if let Some((kind, node)) = item {
             found.push(Found {
                 kind,
                 node,
@@ -92,12 +95,23 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
     found.sort_by_key(|f| {
         (
             f.kind,
-            f.name.start_byte(),
+            f.name.map_or(f.node.start_byte(), |n| n.start_byte()),
             f.node.start_byte(),
             Reverse(f.node.end_byte()),
         )
     });
-    found.dedup_by(|b, a| a.kind == b.kind && a.name == b.name);
+    found.dedup_by(|b, a| a.kind == b.kind && a.name.is_some() && a.name == b.name);
+    // One item per node, under its first name if it has one.
+    found.sort_by_key(|f| {
+        (
+            f.kind,
+            f.node.start_byte(),
+            Reverse(f.node.end_byte()),
+            f.name.is_none(),
+            f.name.map(|n| n.start_byte()),
+        )
+    });
+    found.dedup_by(|b, a| a.kind == b.kind && a.node == b.node);
 
     let mut items: Vec<Item> =
         found
@@ -111,6 +125,8 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                      params,
                  }| {
                     let mut range = node.byte_range();
+                    // Some nodes (Markdown blocks) take the blank lines after them.
+                    range.end = range.start + text[range.clone()].trim_end().len();
                     let comma = node
                         .next_sibling()
                         .filter(|n| n.kind() == "," && !n.is_named())
@@ -133,11 +149,15 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                     }
                     Item {
                         kind,
-                        name: text[name.byte_range()].to_string(),
+                        name: name.map_or(String::new(), |n| {
+                            let text = &text[n.byte_range()];
+                            text.lines().next().unwrap_or_default().trim().to_string()
+                        }),
                         range,
                         trailing_comma: comma.is_some(),
                         node: node.byte_range(),
-                        name_range: name.byte_range(),
+                        name_range: name
+                            .map_or(node.start_byte()..node.start_byte(), |n| n.byte_range()),
                         body,
                         params,
                         doc,
@@ -153,7 +173,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
 struct Found<'t> {
     kind: &'static str,
     node: Node<'t>,
-    name: Node<'t>,
+    name: Option<Node<'t>>,
     body: Option<Range<usize>>,
     params: Option<Range<usize>>,
 }
@@ -437,6 +457,61 @@ mod tests {}
             "import:\"std::{io, fs}\""
         );
         assert_eq!(selector("import", "a\"b\\"), "import:\"a\\\"b\\\\\"");
+    }
+
+    fn markdown_items(text: &str) -> Vec<Item> {
+        let lang = Language::Markdown;
+        items(lang.selectors().unwrap(), &lang.parse(text), text)
+    }
+
+    const MARKDOWN: &str = "# Title\n\nIntro.\n\n## 6.4 Formatting\n\n- [ ] item one\n      continued\n- item two\n\n  second para\n\n| Code | Meaning |\n| ---- | ------- |\n| 0    | Success |\n\n```rust\nfn x() {}\n```\n\n```\nplain\n```\n\n    indented\n\n### Deep\n\ntext\n";
+
+    #[test]
+    fn markdown_items_of_every_kind() {
+        let found: Vec<(&str, String)> = markdown_items(MARKDOWN)
+            .into_iter()
+            .map(|i| (i.kind, i.name))
+            .collect();
+        let expected = [
+            ("section", "Title"),
+            ("section", "6.4 Formatting"),
+            ("item", "item one"),
+            ("item", "item two"),
+            ("table", "Code"),
+            ("code", "rust"),
+            ("code", ""),
+            ("code", ""),
+            ("section", "Deep"),
+        ];
+        let expected: Vec<(&str, String)> =
+            expected.iter().map(|(k, n)| (*k, n.to_string())).collect();
+        assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn markdown_spans_end_at_their_last_text() {
+        let items = markdown_items(MARKDOWN);
+        let span = |kind: &str, name: &str| {
+            let item = items
+                .iter()
+                .find(|i| i.kind == kind && i.name == name)
+                .unwrap();
+            &MARKDOWN[item.range.clone()]
+        };
+        assert_eq!(span("section", "Deep"), "### Deep\n\ntext");
+        assert_eq!(span("item", "item one"), "- [ ] item one\n      continued");
+        assert_eq!(span("item", "item two"), "- item two\n\n  second para");
+        assert_eq!(
+            span("table", "Code"),
+            "| Code | Meaning |\n| ---- | ------- |\n| 0    | Success |"
+        );
+        let indented = items.iter().filter(|i| i.kind == "code").nth(2).unwrap();
+        assert_eq!(&MARKDOWN[indented.range.clone()], "    indented");
+    }
+
+    #[test]
+    fn empty_names_are_quoted() {
+        assert_eq!(selector("code", ""), "code:\"\"");
     }
 
     #[test]

@@ -27,14 +27,14 @@ first argument; write a file named `help` as `./help`.
 - Files must be UTF-8. Line endings are detected per file (LF or CRLF), and
   inserted text is converted to match.
 
-| Flag              | Effect                                                                                       |
-| ----------------- | -------------------------------------------------------------------------------------------- |
-| `-n`, `--dry-run` | Resolve and apply edits in memory, print the output, write nothing.                          |
-| `-q`, `--quiet`   | Print only the per-file summary lines on success (§6.3).                                     |
-| `--force`         | Skip the parse-error guard (§4.3).                                                           |
-| `--no-fmt`        | Don't run formatters (§6.4).                                                                 |
-| `--lang LANG`     | Use this language for every file: `rust`, `python`, `typescript`, `tsx`, `javascript`, `go`. |
-| `--context N`     | Context lines around diff hunks (default 1).                                                 |
+| Flag              | Effect                                                                                                   |
+| ----------------- | -------------------------------------------------------------------------------------------------------- |
+| `-n`, `--dry-run` | Resolve and apply edits in memory, print the output, write nothing.                                      |
+| `-q`, `--quiet`   | Print only the per-file summary lines on success (§6.3).                                                 |
+| `--force`         | Skip the parse-error guard (§4.3).                                                                       |
+| `--no-fmt`        | Don't run formatters (§6.4).                                                                             |
+| `--lang LANG`     | Use this language for every file: `rust`, `python`, `typescript`, `tsx`, `javascript`, `go`, `markdown`. |
+| `--context N`     | Context lines around diff hunks (default 1).                                                             |
 
 Otherwise, a file's language is detected from its extension, then from its
 shebang. Line, regex and literal selectors work on any file; syntax selectors
@@ -72,10 +72,10 @@ need a language.
 ```ebnf
 script     = { line } ;
 line       = [ command { ";" command } ] [ comment ] NEWLINE { heredoc-body } ;
-command    = show | outline | replace | insert | delete | sub | move
+command    = show | outline | replace | insert | delete | sub | move | create
            | file | rename | check ;
 
-show       = "show" [ target ] ;
+show       = "show" [ target [ context ] ] ;
 outline    = "outline" [ target ] ;
 replace    = "replace" target "with" text ;
 insert     = "insert" position target text ;
@@ -83,13 +83,15 @@ delete     = "delete" target ;
 sub        = "sub" [ target ] regex "with" text ;
 move       = "move" target position selector ;
 file       = "file" path { path } ;
+create     = "create" path text ;
 rename     = "rename" target "to" name ;            (* reserved *)
 check      = "check" ;                              (* reserved *)
 
 position   = "before" | "after" | "start" | "end" ;
 target     = [ "all" ] selector ;
 selector   = step { ">" step } ;
-step       = primary { part } ;
+step       = primary [ ".." primary ] { part } ;
+context    = "+" digit { digit } ;
 part       = ".body" | ".sig" | ".params" | ".name" | ".doc" | ".lines" ;
 primary    = lines | regex | literal | syntax | query ;
 
@@ -196,22 +198,26 @@ characters, such as `.` or `-`, must be quoted: `import:"os.path"`.
 
 Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 
-| Kind        | Items                                                        |
-| ----------- | ------------------------------------------------------------ |
-| `fn`        | functions and methods                                        |
-| `class`     | classes                                                      |
-| `struct`    | structs                                                      |
-| `enum`      | enums                                                        |
-| `variant`   | enum variants                                                |
-| `trait`     | traits                                                       |
-| `interface` | interfaces                                                   |
-| `impl`      | impl blocks (name = self type, e.g. `impl:Parser`)           |
-| `type`      | type aliases and declarations                                |
-| `const`     | constants and statics                                        |
-| `var`       | module-level variables and `let`/`var` bindings              |
-| `field`     | struct and class fields                                      |
-| `mod`       | modules and namespaces                                       |
-| `import`    | imports (name = the path as written, e.g. `import:std::fmt`) |
+| Kind        | Items                                                                  |
+| ----------- | ---------------------------------------------------------------------- |
+| `fn`        | functions and methods                                                  |
+| `class`     | classes                                                                |
+| `struct`    | structs                                                                |
+| `enum`      | enums                                                                  |
+| `variant`   | enum variants                                                          |
+| `trait`     | traits                                                                 |
+| `interface` | interfaces                                                             |
+| `impl`      | impl blocks (name = self type, e.g. `impl:Parser`)                     |
+| `type`      | type aliases and declarations                                          |
+| `const`     | constants and statics                                                  |
+| `var`       | module-level variables and `let`/`var` bindings                        |
+| `field`     | struct and class fields                                                |
+| `mod`       | modules and namespaces                                                 |
+| `import`    | imports (name = the path as written, e.g. `import:std::fmt`)           |
+| `section`   | Markdown sections: a `#` heading and its content (name = its text)     |
+| `item`      | Markdown list items (name = the first line of the item's text)         |
+| `table`     | Markdown tables (name = the first header cell)                         |
+| `code`      | Markdown code blocks (name = the info string, or `""` if none)         |
 
 - Using a kind the file's language doesn't support is an error that lists the
   kinds it does support.
@@ -290,12 +296,26 @@ delete all query{(call_expression function: (identifier) @f (#eq? @f "dbg")) @se
 `refs:NAME` (references to a symbol) and `def:NAME` (its definition) are
 reserved for the LSP milestone.
 
+### 3.8 Ranges
+
+`A..B` selects from the start of a match of `A` to the end of the first match of
+`B` that starts after it: `/^## 6/../^## 7/`, `fn:a..fn:c`, `"BEGIN"..$`.
+
+- Both ends are primaries, without parts. `..` binds tighter than `>`, and
+  parts apply to the whole range: `impl:Parser>fn:new..fn:parse`,
+  `/^## 6/../^## 7/.lines`.
+- The range is whole-line when both ends are, as with lines and syntax items.
+  Add `.lines` to widen a range with regex or literal ends to whole lines.
+- Matches of `A` inside an earlier range are skipped. A match of `A` with no
+  `B` after it ends the search.
+
 ## 4. Verbs
 
 ### 4.1 Reads
 
-- **`show [SEL]`** prints the lines containing each selected span, numbered
-  (§6.1). Without a selector, it prints each whole file in the set.
+- **`show [SEL [+N]]`** prints the lines containing each selected span,
+  numbered (§6.1), with `N` lines of context around each. Without a selector,
+  it prints each whole file in the set.
 - **`outline [SEL]`** prints the symbol tree (§6.2) of each file, or of the
   items inside `SEL`.
 
@@ -309,6 +329,7 @@ reserved for the LSP milestone.
 | `delete SEL`                              | Removes each span.                                                                                                                                                                                   |
 | `sub [SEL] /re/ with TEXT`                | Replaces every match of `re` inside each span of `SEL` (default: each whole file in the set). `$1`, `${name}` and `$0` expand to captures; `$$` is a literal `$`. Zero matches in total is an error. |
 | `move SEL before\|after\|start\|end DEST` | Deletes each span of `SEL` and inserts its text at `DEST`, which must resolve to one span. The destination may be in another file in the set. Moved text is re-based.                                |
+| `create PATH TEXT`                        | Creates `PATH` holding `TEXT` (line-oriented, re-based to column 0) as if it had existed when the script started: it joins the file set and later commands can edit it. `PATH` must not exist.       |
 
 Notes:
 
@@ -326,6 +347,10 @@ Notes:
 - If a moved whole-line span had a blank line directly above or below it, and
   it moves `before` or `after` a whole-line destination, one blank line
   separates it from the destination.
+- `insert before|after` on a syntax item other than an import or a Markdown
+  list item, when the item has a blank line directly above or below it,
+  separates the new text from it with one blank line, unless the text already
+  starts (for `after`) or ends (for `before`) with a blank line.
 - **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
   lines in a row, a blank line right after an opening delimiter or right before
   a closing one, or a blank line at the start or end of the file, one blank
@@ -396,8 +421,9 @@ all commands, once per modified file, in the order the files first appear.
 ### 6.1 `show`
 
 Each selected region is headed `PATH:START-END`, or `PATH:N` for a single line.
-Its lines follow as `N:text`, with no padding. If spans are within one line of
-each other, their regions merge.
+Its lines follow as `N:text`, with no padding. `show SEL +N` adds up to `N`
+lines of context before and after each span. If regions are within one line of
+each other, they merge.
 
 ```
 src/parser.rs:14-17
@@ -415,8 +441,9 @@ straight back. The line range covers the item's default span.
 
 - Imports collapse into one line: `1-3 import (3)`.
 - Items inside function bodies are omitted.
-- `field` and `variant` items are listed only when `outline SEL` targets their
-  parent.
+- `field` and `variant` items, and Markdown `item`, `table` and `code` items,
+  are listed only when `outline SEL` targets their parent. In Markdown, the
+  outline is the tree of sections.
 - `outline SEL` lists the items strictly inside each span of `SEL`, starting
   at the left margin, under one header per file.
 - Like syntax steps, `outline` skips files without a language, and is an error
@@ -450,6 +477,8 @@ src/parser.rs: 1 edit, +1 -1
 - The edit count is the number of spans edited.
 - `--dry-run` prefixes each summary line with `(dry run) `.
 - `--quiet` prints only the summary lines.
+- A file made by `create` is summarized as `PATH: created, +N`, and its hunks
+  show its whole contents. Missing parent directories are created.
 
 ### 6.4 Formatting
 
@@ -500,6 +529,7 @@ python = false
 | go                          | `gofmt`                                                                                                   |
 | python                      | `ruff format --stdin-filename {path} -`, or if ruff isn't installed, `black -q --stdin-filename {path} -` |
 | typescript, tsx, javascript | `prettier --stdin-filepath {path}`                                                                        |
+| markdown                    | `prettier --stdin-filepath {path}`                                                                        |
 
 ## 7. Errors and exit codes
 

@@ -79,12 +79,12 @@ in this section unless explicitly told to.
 ## Development Workflow
 
 **Use `ned` for all work on this project.** Read code with `ned outline` and
-`ned show`, and make every edit to an existing file with the installed `ned`
+`ned show`, make every edit to an existing file with the installed `ned`
 (usage: the project skill, `.claude/skills/ned`, and `ned help`), not the Edit
-tool, sed or inline Python. Create new files with Write. If `ned` can't make an
-edit, makes it wrongly, or gives an unhelpful error, fall back for that edit
-only and report the gap to the engineer. After changing `ned`, reinstall it:
-`cargo install --path crates/ned-cli`.
+tool, sed or inline Python, and create new files with `ned`'s `create`. If
+`ned` can't make an edit, makes it wrongly, or gives an unhelpful error, fall
+back for that edit only and report the gap to the engineer. After changing
+`ned`, reinstall it: `cargo install --path crates/ned-cli`.
 
 Non-trivial implementation work follows a strict TDD cycle in small chunks. Each
 chunk is one cohesive unit (a module, a protocol message, a service behaviour).
@@ -111,6 +111,15 @@ pause and ask for approval, then commit when permitted.
 5. **Green** — run the full test suite, linter, and static analysis. All must
    pass cleanly. Commit any remaining changes when permitted.
 
+Other commit prefixes: `docs:` (documentation), `todo:` (TODO.md only), and
+`format:` (formatting only).
+
+**At the end of every session**, review the traps and bugs you hit while using
+`ned`. Add every bug to TODO.md (Bugs). For a trap a new feature would
+prevent, propose the feature to the engineer and add it to TODO.md once
+approved; otherwise add guidance to `docs/skills/ned/SKILL.md`. Commit these
+to the current feature branch (prefix `todo:`), not a new branch.
+
 ## Project Overview
 
 Neoed (`ned`) is a line editor for AI coding agents, replacing `sed`/ad-hoc
@@ -126,11 +135,12 @@ atomic multi-file write (`fs`), diff rendering (`diff`), the script lexer,
 parser, and error rendering (`script::parse`), selector resolution (`select`),
 whole-line/re-basing text helpers (`text`), the executor (`exec::run`),
 language detection and parsing (`lang`), syntax items and parts from
-`queries/<lang>/selectors.scm` (`syntax`; Rust only until TODO.md §12),
+`queries/<lang>/selectors.scm` (`syntax`; Rust and Markdown until TODO.md §12),
 `outline`, and external formatters with `.ned.toml` config (`format`). The CLI
-supports every selector and verb, globbed file sets, the parse-error guard,
-formatting, and `ned help`. Every error ends with a fix. Next: the language
-additions in TODO.md §8.
+supports every selector (including `A..B` ranges) and verb (including
+`create`), `show +N`, globbed file sets, the parse-error guard, formatting, and
+`ned help`. Every error ends with a fix. Next: the open TODO.md §8 items and
+Bugs, then the LSP daemon (§9).
 
 ## Key Documentation
 

@@ -48,6 +48,10 @@ pub enum TokenKind {
     /// A `file` command argument, from [`Lexer::path`].
     Path(String),
     Gt,
+    /// `..`, between the ends of a range.
+    DotDot,
+    /// `+N`: lines of context for `show`.
+    Context(usize),
     Semicolon,
     Newline,
     Eof,
@@ -102,6 +106,11 @@ impl<'a> Lexer<'a> {
             '/' => self.regex()?,
             '<' => self.heredoc()?,
             '$' | '0'..='9' => self.lines()?,
+            '+' => TokenKind::Context(self.context()?),
+            '.' if self.src[self.pos..].starts_with("..") => {
+                self.pos += 2;
+                TokenKind::DotDot
+            }
             '.' => TokenKind::Part(self.part()?),
             c if c.is_ascii_alphabetic() || c == '_' => self.word()?,
             c => {
@@ -269,6 +278,18 @@ impl<'a> Lexer<'a> {
             start,
             end: Some(end),
         })
+    }
+
+    fn context(&mut self) -> Result<usize, ParseError> {
+        let start = self.pos;
+        self.pos += 1;
+        let digits = self.take_while(|c| c.is_ascii_digit());
+        match digits {
+            "" => Err(ParseError::new(E::MissingContext, start..self.pos)),
+            _ => digits
+                .parse()
+                .map_err(|_| ParseError::new(E::LineOverflow, start..self.pos)),
+        }
     }
 
     fn line_no(&mut self) -> Result<LineNo, ParseError> {

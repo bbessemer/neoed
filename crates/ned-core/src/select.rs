@@ -179,6 +179,7 @@ enum Matcher<'a> {
     },
     /// The query compiled for each searched language.
     Query(Vec<(Language, Query)>),
+    Range(Box<Matcher<'a>>, Box<Matcher<'a>>),
 }
 
 impl<'a> Matcher<'a> {
@@ -223,6 +224,10 @@ impl<'a> Matcher<'a> {
                 Matcher::Syntax { kind, name }
             }
             Primary::Query(source) => Matcher::Query(compile_query(source, files, parents)?),
+            Primary::Range { from, to } => Matcher::Range(
+                Box::new(Matcher::new(from, files, parents)?),
+                Box::new(Matcher::new(to, files, parents)?),
+            ),
         })
     }
 
@@ -289,6 +294,22 @@ impl<'a> Matcher<'a> {
                 } else {
                     Vec::new()
                 }
+            }
+            Matcher::Range(from, to) => {
+                let ends = to.find(f, parent.clone());
+                let mut ranges = Vec::new();
+                let mut searched_to = parent.start;
+                for start in from.find(f, parent.clone()) {
+                    if start.start < searched_to {
+                        continue;
+                    }
+                    let Some(end) = ends.iter().find(|e| e.start >= start.end) else {
+                        break;
+                    };
+                    searched_to = end.end;
+                    ranges.push(start.start..end.end);
+                }
+                ranges
             }
             Matcher::Query(queries) => {
                 let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
@@ -949,6 +970,36 @@ mod tests {
         assert_eq!(select("delete all \"let x\"", TEXT), ["let x", "let x"]);
         assert_eq!(select("delete \"1;\\n    let y\"", TEXT), ["1;\n    let y"]);
         assert_eq!(select("delete all \"aa\"", "aaaaa"), ["aa", "aa"]);
+    }
+
+    #[test]
+    fn ranges_run_from_one_match_to_the_next_match_of_the_end() {
+        assert_eq!(select("delete fn:a..fn:b", TEXT), [TEXT.trim_end()]);
+        assert_eq!(
+            select("delete all /let x/../let y/", TEXT),
+            ["let x = 1;\n    let y"]
+        );
+        assert_eq!(
+            select("delete /let x/../let y/.lines", TEXT),
+            ["    let x = 1;\n    let y = 2;\n"]
+        );
+        assert_eq!(select(r#"delete fn:b>/let/.."}""#, TEXT), ["let x = 3;\n}"]);
+    }
+
+    #[test]
+    fn ranges_skip_starts_inside_an_earlier_range() {
+        assert_eq!(select("delete all /a/../b/", "a b a b\n"), ["a b", "a b"]);
+        assert_eq!(select("delete all /a/../b/", "a a b\n"), ["a a b"]);
+    }
+
+    #[test]
+    fn ambiguous_ranges_list_candidates() {
+        assert_eq!(
+            error("delete /a/../b/", &[("a.rs", "a b\na b\n")]),
+            "error: script:1:8: /a/../b/ matches 2 items; add `all` or use one of:\n  \
+             1>/a/../b/   a.rs:1\n  \
+             2>/a/../b/   a.rs:2"
+        );
     }
 
     #[test]

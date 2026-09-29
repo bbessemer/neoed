@@ -17,7 +17,11 @@ pub struct Command {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandKind {
-    Show(Option<Target>),
+    /// `show [SEL [+CONTEXT]]`
+    Show {
+        target: Option<Target>,
+        context: usize,
+    },
     Outline(Option<Target>),
     Replace {
         target: Target,
@@ -43,6 +47,11 @@ pub enum CommandKind {
     },
     /// Replaces the file set; paths may be globs.
     File(Vec<String>),
+    /// Creates a file holding the text, as if it had existed from the start.
+    Create {
+        path: String,
+        text: Text,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +96,12 @@ pub enum Primary {
     /// `file:PATH`
     File(String),
     Query(String),
+    /// `from..to`: from the start of a match of `from` to the end of the next
+    /// match of `to` (§3.8).
+    Range {
+        from: Box<Primary>,
+        to: Box<Primary>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

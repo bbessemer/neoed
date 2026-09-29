@@ -32,6 +32,8 @@ pub enum ParseErrorKind {
     ZeroLine,
     #[error("expected a line number or `$` after `-`, e.g. 12-20 or 12-$")]
     MissingRangeEnd,
+    #[error("expected a line count after `+`, e.g. show fn:parse +3")]
+    MissingContext,
     #[error("line range {start}-{end} is reversed; write {end}-{start}")]
     ReversedLines { start: usize, end: usize },
     #[error("line number is too large; use `$` for the last line")]
@@ -66,13 +68,13 @@ pub enum ParseErrorKind {
 }
 
 /// Every command, as error messages list them.
-pub const COMMANDS: &str = "show outline replace insert delete sub move file";
+pub const COMMANDS: &str = "show outline replace insert delete sub move file create";
 
 fn quote_hint(c: char) -> &'static str {
-    if c == '\'' {
-        "strings use double quotes: \"...\""
-    } else {
-        "quote literal text: \"...\""
+    match c {
+        '\'' => "strings use double quotes: \"...\"",
+        '-' => "ranges between selectors are written SEL..SEL, e.g. /a/../b/",
+        _ => "quote literal text: \"...\"",
     }
 }
 

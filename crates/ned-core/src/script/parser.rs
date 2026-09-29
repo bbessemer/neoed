@@ -87,7 +87,17 @@ impl Parser<'_> {
 
     fn command_kind(&mut self, verb: &Token, word: &str) -> Result<CommandKind, ParseError> {
         Ok(match word {
-            "show" => CommandKind::Show(self.optional_target()?),
+            "show" => {
+                let target = self.optional_target()?;
+                let context = match self.peek()?.kind {
+                    TokenKind::Context(n) if target.is_some() => {
+                        self.bump()?;
+                        n
+                    }
+                    _ => 0,
+                };
+                CommandKind::Show { target, context }
+            }
             "outline" => CommandKind::Outline(self.optional_target()?),
             "replace" => {
                 let target = self.target()?;
@@ -110,6 +120,10 @@ impl Parser<'_> {
                 dest: self.dest()?,
             },
             "file" => CommandKind::File(self.paths()?),
+            "create" => CommandKind::Create {
+                path: self.path()?,
+                text: self.text()?,
+            },
             "rename" | "check" => {
                 let instead = if word == "rename" {
                     r#"use sub /\bOLD\b/ with "NEW" over the files"#
@@ -161,7 +175,7 @@ impl Parser<'_> {
         let first = self.bump()?;
         let start = first.span.start;
         let mut steps = vec![Step {
-            primary: primary(first)?,
+            primary: self.range(first)?,
             parts: Vec::new(),
         }];
         loop {
@@ -183,7 +197,7 @@ impl Parser<'_> {
                         return Err(ParseError::new(E::SpaceInSelector, token.span));
                     }
                     steps.push(Step {
-                        primary: primary(token)?,
+                        primary: self.range(token)?,
                         parts: Vec::new(),
                     });
                 }
@@ -193,6 +207,27 @@ impl Parser<'_> {
         Ok(Selector {
             steps,
             span: start..self.last_end,
+        })
+    }
+
+    /// The primary `first` starts, which may be a range, `first..TO`.
+    fn range(&mut self, first: Token) -> Result<Primary, ParseError> {
+        let from = primary(first)?;
+        let next = self.peek()?;
+        if next.kind != TokenKind::DotDot {
+            return Ok(from);
+        }
+        if next.space_before {
+            return Err(ParseError::new(E::SpaceInSelector, next.span.clone()));
+        }
+        self.bump()?;
+        let token = self.bump()?;
+        if token.space_before {
+            return Err(ParseError::new(E::SpaceInSelector, token.span));
+        }
+        Ok(Primary::Range {
+            from: Box::new(from),
+            to: Box::new(primary(token)?),
         })
     }
 
@@ -266,6 +301,20 @@ impl Parser<'_> {
             return Err(expected("a path", self.peek()?));
         }
         Ok(paths)
+    }
+
+    fn path(&mut self) -> Result<String, ParseError> {
+        match self.lexer.path()? {
+            Some(Token {
+                kind: TokenKind::Path(path),
+                span,
+                ..
+            }) => {
+                self.last_end = span.end;
+                Ok(path)
+            }
+            _ => Err(expected("a path", self.peek()?)),
+        }
     }
 }
 
@@ -345,7 +394,7 @@ const KEYWORDS: [&str; 8] = [
 /// The syntax of the command `verb`, as `ned help VERB` starts.
 pub fn usage(verb: &str) -> Option<&'static str> {
     Some(match verb {
-        "show" => "show [SEL]",
+        "show" => "show [SEL [+N]]",
         "outline" => "outline [SEL]",
         "replace" => "replace [all] SEL with TEXT",
         "insert" => "insert before|after|start|end [all] SEL TEXT",
@@ -353,6 +402,7 @@ pub fn usage(verb: &str) -> Option<&'static str> {
         "sub" => "sub [[all] SEL] /re/ with TEXT",
         "move" => "move [all] SEL before|after|start|end DEST",
         "file" => "file PATH...",
+        "create" => "create PATH TEXT",
         _ => return None,
     })
 }
@@ -369,6 +419,8 @@ fn expected(what: &'static str, token: &Token) -> ParseError {
         TokenKind::Part(_) => "a part".into(),
         TokenKind::Path(_) => "a path".into(),
         TokenKind::Gt => "`>`".into(),
+        TokenKind::DotDot => "`..`".into(),
+        TokenKind::Context(_) => "a context count".into(),
         TokenKind::Semicolon => "`;`".into(),
         TokenKind::Newline => "end of line".into(),
         TokenKind::Eof => "end of script".into(),
@@ -439,7 +491,10 @@ mod tests {
     fn unspan(kind: CommandKind) -> CommandKind {
         use CommandKind::*;
         match kind {
-            Show(t) => Show(t.map(unspan_target)),
+            Show { target, context } => Show {
+                target: target.map(unspan_target),
+                context,
+            },
             Outline(t) => Outline(t.map(unspan_target)),
             Replace { target, text } => Replace {
                 target: unspan_target(target),
@@ -474,6 +529,7 @@ mod tests {
                 dest: unspan_selector(dest),
             },
             File(paths) => File(paths),
+            Create { path, text } => Create { path, text },
         }
     }
 
@@ -550,11 +606,20 @@ mod tests {
 
     #[test]
     fn show_and_outline() {
-        assert_eq!(one("show"), CommandKind::Show(None));
+        assert_eq!(
+            one("show"),
+            CommandKind::Show {
+                target: None,
+                context: 0
+            }
+        );
         assert_eq!(one("outline"), CommandKind::Outline(None));
         assert_eq!(
             one("show 12-20"),
-            CommandKind::Show(Some(target(vec![lines(N(12), Some(N(20)))])))
+            CommandKind::Show {
+                target: Some(target(vec![lines(N(12), Some(N(20)))])),
+                context: 0,
+            }
         );
         assert_eq!(
             one("outline impl:Parser"),
@@ -702,8 +767,33 @@ mod tests {
     }
 
     #[test]
+    fn create_command() {
+        assert_eq!(
+            one(r#"create src/a.rs "x""#),
+            CommandKind::Create {
+                path: "src/a.rs".into(),
+                text: string("x"),
+            }
+        );
+        assert_eq!(
+            one("create \"my file.rs\" <<END\nx\nEND\n"),
+            CommandKind::Create {
+                path: "my file.rs".into(),
+                text: text("x", TextKind::Heredoc),
+            }
+        );
+        assert_eq!(
+            message("create"),
+            "expected a path, found end of script; usage: create PATH TEXT"
+        );
+    }
+
+    #[test]
     fn nested_selectors_and_parts() {
-        let show = |steps| CommandKind::Show(Some(target(steps)));
+        let show = |steps| CommandKind::Show {
+            target: Some(target(steps)),
+            context: 0,
+        };
         assert_eq!(
             one("show impl:Parser.body>fn:new.sig"),
             show(vec![
@@ -732,6 +822,62 @@ mod tests {
         assert_eq!(
             one("show query{(x) @sel}"),
             show(vec![step(Primary::Query("(x) @sel".into()))])
+        );
+    }
+
+    #[test]
+    fn ranges() {
+        let show = |steps| CommandKind::Show {
+            target: Some(target(steps)),
+            context: 0,
+        };
+        let range = |from: Step, to: Step| {
+            step(Primary::Range {
+                from: Box::new(from.primary),
+                to: Box::new(to.primary),
+            })
+        };
+        assert_eq!(
+            one("show /^## 6/../^## 7/"),
+            show(vec![range(
+                step(Primary::Regex(pattern("^## 6"))),
+                step(Primary::Regex(pattern("^## 7")))
+            )])
+        );
+        assert_eq!(
+            one("show impl:P>fn:a..fn:c.lines"),
+            show(vec![
+                syntax("impl", "P"),
+                parts(range(syntax("fn", "a"), syntax("fn", "c")), &[Part::Lines]),
+            ])
+        );
+        assert_eq!(
+            one(r#"show "BEGIN"..$"#),
+            show(vec![range(literal("BEGIN"), lines(Last, None))])
+        );
+        assert_eq!(error("show /a/ ../b/").kind, E::SpaceInSelector);
+        assert_eq!(error("show /a/.. /b/").kind, E::SpaceInSelector);
+        assert_eq!(
+            message("show /a/-/b/"),
+            "unexpected character `-`; ranges between selectors are written SEL..SEL, e.g. /a/../b/"
+        );
+    }
+
+    #[test]
+    fn show_context() {
+        let show = |context| CommandKind::Show {
+            target: Some(target(vec![syntax("fn", "x")])),
+            context,
+        };
+        assert_eq!(one("show fn:x +3"), show(3));
+        assert_eq!(one("show fn:x+3"), show(3));
+        assert_eq!(
+            message("show fn:x +"),
+            "expected a line count after `+`, e.g. show fn:parse +3"
+        );
+        assert_eq!(
+            message("show +3"),
+            "expected a selector, found a context count; usage: show [SEL [+N]]"
         );
     }
 
@@ -923,7 +1069,7 @@ mod tests {
         assert_eq!(
             message(r#""x""#),
             "expected a command, found a string; \
-             commands are show outline replace insert delete sub move file"
+             commands are show outline replace insert delete sub move file create"
         );
     }
 
@@ -936,6 +1082,7 @@ mod tests {
             assert!(usage.starts_with(verb), "{usage}");
         }
         assert_eq!(usage("frobnicate"), None);
+        assert_eq!(usage("show"), Some("show [SEL [+N]]"));
     }
 
     #[test]

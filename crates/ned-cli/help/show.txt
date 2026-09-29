@@ -1,10 +1,12 @@
-show [SEL]
+show [SEL [+N]]
 
 Prints the lines holding each span of SEL, headed PATH:START-END, as N:text.
-Without SEL, prints every file in the set. Nearby spans merge. Output always
-shows the original text, even after edits earlier in the script.
+Without SEL, prints every file in the set. +N adds N lines of context before
+and after each span. Nearby regions merge. Output always shows the original
+text, even after edits earlier in the script.
 
 Examples:
     show fn:parse
+    show /TODO/ +3
     show all /TODO/
     show 10-30

@@ -4,7 +4,8 @@ Inserts TEXT next to each span of SEL (before, after) or inside it, at its
 start or end. On a syntax item, start and end mean its .body. Text for a
 whole-line span is line-oriented and re-indented; text for a partial span is
 inserted verbatim. An empty body like `fn f() {}` is opened onto new lines.
-Leading or trailing blank lines in TEXT are kept, to separate items.
+Before or after a syntax item with a blank line beside it (not an import), a
+blank line separates TEXT from it. Blank lines in TEXT itself are kept.
 
 Examples:
     insert after import:std::fmt "use std::io;"

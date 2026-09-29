@@ -5,7 +5,7 @@ applies, or none does. Output is a per-file summary plus diff hunks.
   ned help [TOPIC]
 
 Commands, separated by newlines or `;`:
-  show [SEL]                    print the lines of SEL, numbered
+  show [SEL [+N]]               print the lines of SEL, numbered, N around
   outline [SEL]                 list syntax items as pasteable selectors
   replace SEL with TEXT
   insert before|after|start|end SEL TEXT
@@ -13,6 +13,7 @@ Commands, separated by newlines or `;`:
   sub [SEL] /re/ with TEXT      regex replace inside SEL; $1 ${name} $0
   move SEL before|after|start|end DEST
   file PATH...                  set the files later commands act on; globs ok
+  create PATH TEXT              make a new file; later commands can edit it
 
 Selectors (a selector must match exactly one span unless prefixed with `all`):
   12  12-20  12-$  $            lines
@@ -22,6 +23,7 @@ Selectors (a selector must match exactly one span unless prefixed with `all`):
   fn:parse.body                 parts: .body .sig .params .name .doc .lines
   file:src/a.rs>fn:new          scope to one file
   query{(call_expression) @sel} raw tree-sitter query
+  /^## 6/../^## 7/  fn:a..fn:c  range: a match to the end of the next
 
 TEXT is "a string" or a heredoc: <<END ... END is re-indented to fit its
 target; <<'END' is inserted verbatim. Selectors resolve against the original
@@ -39,4 +41,5 @@ Examples:
     }
     END
 
-Topics: show outline replace insert delete sub move file selectors text config
+Topics: show outline replace insert delete sub move file create selectors text
+config

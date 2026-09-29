@@ -41,6 +41,12 @@ pub fn summary(path: &str, edits: usize, stat: DiffStat, dry_run: bool) -> Strin
     format!("{prefix}{path}: {edits} edit{plural}, {stat}")
 }
 
+/// The summary line of a file made by `create`: `PATH: created, +A`.
+pub fn created_summary(path: &str, stat: DiffStat, dry_run: bool) -> String {
+    let prefix = if dry_run { "(dry run) " } else { "" };
+    format!("{prefix}{path}: created, +{}", stat.added)
+}
+
 /// Unified-diff hunks with `@@ -a,b +c,d @@` headers and no file headers,
 /// rendered with `\n` line endings.
 pub fn hunks(old: &str, new: &str, context: usize) -> String {
@@ -152,6 +158,19 @@ impl Parser {
         assert_eq!(
             summary("a.py", 2, stat, true),
             "(dry run) a.py: 2 edits, +1 -1"
+        );
+    }
+
+    #[test]
+    fn created_summary_line() {
+        let stat = DiffStat {
+            added: 3,
+            removed: 0,
+        };
+        assert_eq!(created_summary("a.rs", stat, false), "a.rs: created, +3");
+        assert_eq!(
+            created_summary("a.rs", stat, true),
+            "(dry run) a.rs: created, +3"
         );
     }
 

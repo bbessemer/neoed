@@ -78,21 +78,29 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [x] Agent usage guide (skill/system-prompt snippet) in `docs/`
 - [x] Token-cost benchmark suite vs `sed`/Python on representative edits
 - [x] Error-message review: every error suggests a corrected command
-- [ ] Range selectors `SEL..SEL` (`/^## 6/../^## 7/`, `fn:a..fn:c`): from the
+- [x] Range selectors `SEL..SEL` (`/^## 6/../^## 7/`, `fn:a..fn:c`): from the
       start of the first match to the end of the second, searched after it;
       whole lines if both ends are whole-line. The error for `/a/-/b/` suggests
       `..`
-- [ ] `show SEL +N`: N lines of context around each span; regions merge as now
-- [ ] Markdown as a language: tree-sitter-md grammar; kinds `section` (a
+- [x] `show SEL +N`: N lines of context around each span; regions merge as now
+- [x] Markdown as a language: tree-sitter-md grammar; kinds `section` (a
       heading and its content, named by the heading text), `item`, `table`,
       `code`; `outline` as the heading tree; prettier as the default formatter
       (realigns tables)
-- [ ] `create PATH TEXT`: creates a file (an error if it exists) as part of the
+- [x] `create PATH TEXT`: creates a file (an error if it exists) as part of the
       transaction, with its language detected from the path, and adds it to
       the file set
-- [ ] `insert before|after` a syntax item that is blank-separated from its
+- [x] `insert before|after` a syntax item that is blank-separated from its
       neighbours adds one separating blank line, as `move` does, unless the
       text already starts or ends with one
+- [ ] `insert before|after` with heredoc TEXT widens a partial-line target to
+      its whole lines, as if `.lines` were given (string TEXT stays verbatim),
+      so `insert after /re/ <<END` can't land mid-line
+- [ ] Name trait impls `TRAIT for TYPE` too: `impl:"Display for Language"`
+      picks one impl, while `impl:Language` still matches every impl of the
+      type
+- [ ] Markdown sections get a `.body`: the content after the heading line, so
+      `insert start|end section:X` and `replace section:X.body` work
 
 ## 9. LSP daemon _(split)_
 
@@ -122,6 +130,20 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] CI (build, test, clippy, fmt) on Linux and macOS
 - [ ] Release binaries and install instructions
 - [ ] Choose a license
+
+## Bugs
+
+- [ ] Ambiguity candidates for nested selectors put the scope before the
+      whole selector (`64>fn:items>/name/`, `var:comma>fn:items>/name/`,
+      `fn:x>file:a.rs>/re/`), so they select nothing; put `file:` first and
+      the line or enclosing-item scope just before the last step
+- [ ] A syntax step fails when the file set includes a file in a language
+      without selector queries yet (e.g. a `.py` file next to `.rs` files),
+      even if other files match; skip such files as files without a language
+      are skipped, and fail only if no searched file supports the kind
+- [ ] A line selector nested in a syntax item can't select the item's last
+      line (`fn:b>$`, `fn:b>8`): the line's newline lies outside the item's
+      span, which ends at `}`
 
 ## Future improvements
 
