@@ -106,6 +106,9 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       function can't silently drop `#[test]`
 - [ ] `insert before ITEM` with TEXT that is only attributes or doc comments
       adds no separating blank line: the text attaches to the item
+- [ ] A syntax step that matches nothing suggests the same name under another
+      kind first (`struct:LspError` → "did you mean enum:LspError?"), before
+      the close-name hint
 
 ## 9. LSP daemon _(split)_
 

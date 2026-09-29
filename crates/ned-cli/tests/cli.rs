@@ -387,15 +387,19 @@ fn syntax_error_exits_2_with_caret() {
 #[test]
 fn unsupported_feature_exits_2() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
-    let out = ned(dir.path(), &["parser.rs", "-e", "check"], "");
-    assert_snapshot!(out, @r"
+    let out = ned(
+        dir.path(),
+        &["parser.rs", "-e", "rename fn:parse to go"],
+        "",
+    );
+    assert_snapshot!(out, @r#"
     exit: 2
     --- stdout
     --- stderr
-    error: script:1:1: `check` is not yet supported; run the project's build or linter
-    1:check
+    error: script:1:1: `rename` is not yet supported; use sub /\bOLD\b/ with "NEW" over the files
+    1:rename fn:parse to go
       ^
-    ");
+    "#);
 }
 
 #[test]

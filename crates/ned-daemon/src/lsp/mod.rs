@@ -9,21 +9,28 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use lsp_types::{DiagnosticSeverity, NumberOrString};
+
 use ned_core::lang::Language;
-use ned_core::lsp::language_id;
+use ned_core::lsp::{Diagnostic, Position, Severity, language_id};
 use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tokio::time;
+use tokio::time::{self, Instant};
 
 use crate::protocol::{ServerState, ServerStatus};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long pushed diagnostics must stay unchanged to count as final.
+const SETTLE: Duration = Duration::from_millis(100);
+/// Errors that ask for a request to be sent again: ServerCancelled and
+/// ContentModified.
+const RETRY: [i64; 2] = [-32802, -32801];
 
 /// A running language server, initialized.
 pub struct Server {
@@ -32,20 +39,45 @@ pub struct Server {
     outgoing: mpsc::UnboundedSender<Vec<u8>>,
     shared: Arc<Mutex<Shared>>,
     next_id: i64,
-    /// Open documents: their version and text.
-    documents: HashMap<PathBuf, (i32, String)>,
+    documents: HashMap<PathBuf, OpenDocument>,
+    /// Whether the server answers `textDocument/diagnostic`; otherwise it
+    /// publishes diagnostics.
+    pulls: bool,
+    /// Signalled whenever the server sends a notification or exits.
+    changed: Arc<Notify>,
     /// Forwards the server's stderr to the daemon's.
     stderr: Option<JoinHandle<()>>,
 }
 
+struct OpenDocument {
+    version: i32,
+    text: String,
+    /// `Shared::generation` when the text was last sent.
+    synced: u64,
+}
+
+/// A response: its result, or an error's code and message.
+type Reply = Result<Value, (i64, String)>;
+
 /// What the server's reader task updates.
 #[derive(Default)]
 struct Shared {
-    pending: HashMap<i64, oneshot::Sender<Result<Value, String>>>,
+    /// Error responses are a code and a message.
+    pending: HashMap<i64, oneshot::Sender<Reply>>,
+    /// Diagnostics published for each URI.
+    published: HashMap<String, Published>,
+    /// Counts publications.
+    generation: u64,
     state: State,
     exited: bool,
     /// The server's last non-blank line on stderr.
     last_error: Option<String>,
+}
+
+struct Published {
+    version: Option<i64>,
+    generation: u64,
+    diagnostics: Value,
 }
 
 /// What a server has told us about its work.
@@ -81,6 +113,7 @@ pub enum LspError {
         name: String,
         method: String,
         message: String,
+        code: i64,
     },
 }
 
@@ -123,10 +156,13 @@ impl Server {
             }
         });
         let shared = Arc::new(Mutex::new(Shared::default()));
+        let changed = Arc::new(Notify::new());
+
         tokio::spawn(read_messages(
             BufReader::new(stdout),
             shared.clone(),
             outgoing.clone(),
+            changed.clone(),
         ));
         let name = Path::new(program)
             .file_name()
@@ -144,6 +180,8 @@ impl Server {
             shared,
             next_id: 0,
             documents: HashMap::new(),
+            pulls: false,
+            changed,
         };
         let root_uri = uri(root);
         let root_name = root.file_name().map(|n| n.to_string_lossy());
@@ -159,12 +197,23 @@ impl Server {
                 "textDocument": {
                     "synchronization": {"didSave": true},
                     "publishDiagnostics": {"versionSupport": true},
+                    "diagnostic": {"dynamicRegistration": false},
                 },
                 "experimental": {"serverStatusNotification": true},
             },
         });
-        server.request("initialize", params).await?;
+        let result = server.request("initialize", params).await?;
+        let provider = &result["capabilities"]["diagnosticProvider"];
+        server.pulls = !(provider.is_null() || *provider == Value::Bool(false));
+        // rust-analyzer's only sign of loading the project is
+        // `experimental/serverStatus`; until it's quiescent, it has nothing
+        // to report.
+        if result["serverInfo"]["name"] == "rust-analyzer" {
+            server.shared.lock().unwrap().state.quiescent = Some(false);
+        }
         server.notify("initialized", json!({}));
+        // pyright analyzes nothing until it has been sent settings.
+        server.notify("workspace/didChangeConfiguration", json!({"settings": {}}));
         Ok(server)
     }
 
@@ -185,6 +234,7 @@ impl Server {
         if self.exited() {
             return Err(self.exited_error());
         }
+        let generation = self.shared.lock().unwrap().generation;
         match self.documents.get_mut(path) {
             None => {
                 let document = json!({
@@ -194,20 +244,117 @@ impl Server {
                     "text": text,
                 });
                 self.notify("textDocument/didOpen", json!({"textDocument": document}));
-                self.documents.insert(path.to_path_buf(), (1, text.into()));
+                let open = OpenDocument {
+                    version: 1,
+                    text: text.into(),
+                    synced: generation,
+                };
+                self.documents.insert(path.to_path_buf(), open);
             }
-            Some((_, old)) if old == text => {}
-            Some((version, old)) => {
-                *version += 1;
-                *old = text.into();
+            Some(open) if open.text == text => {}
+            Some(open) => {
+                open.version += 1;
+                open.text = text.into();
+                open.synced = generation;
                 let params = json!({
-                    "textDocument": {"uri": uri(path), "version": *version},
+                    "textDocument": {"uri": uri(path), "version": open.version},
                     "contentChanges": [{"text": text}],
                 });
                 self.notify("textDocument/didChange", params);
             }
         }
         Ok(())
+    }
+
+    /// The server's diagnostics for `path`, once synced, waiting up to
+    /// `timeout` for it to finish indexing and report them.
+    pub async fn diagnostics(
+        &mut self,
+        path: &Path,
+        timeout: Duration,
+    ) -> Result<Vec<Diagnostic>, LspError> {
+        let deadline = Instant::now() + timeout;
+        let name = self.name.clone();
+        let timed_out = move || LspError::Timeout {
+            name: name.clone(),
+            method: "diagnostics".into(),
+            secs: timeout.as_secs(),
+        };
+        self.wait_until(deadline, &timed_out, |shared| !shared.state.busy())
+            .await?;
+        let uri = uri(path);
+        if self.pulls {
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let params = json!({"textDocument": {"uri": uri}});
+                match self
+                    .request_within(remaining, "textDocument/diagnostic", params)
+                    .await
+                {
+                    Ok(report) => return Ok(convert(&report["items"])),
+                    Err(LspError::Failed { code, .. }) if RETRY.contains(&code) => {
+                        if Instant::now() >= deadline {
+                            return Err(timed_out());
+                        }
+                        time::sleep(SETTLE).await;
+                    }
+                    Err(LspError::Timeout { .. }) => return Err(timed_out()),
+                    Err(err) => return Err(err),
+                }
+            }
+        }
+        let (version, synced) = self
+            .documents
+            .get(path)
+            .map_or((0, 0), |open| (open.version, open.synced));
+        // Settled: published for the synced text, idle, and unchanged for
+        // `SETTLE`.
+        let settled = |shared: &Shared| {
+            !shared.state.busy()
+                && shared.published.get(&uri).is_some_and(|p| match p.version {
+                    Some(published) => published >= i64::from(version),
+                    None => p.generation > synced,
+                })
+        };
+        loop {
+            self.wait_until(deadline, &timed_out, settled).await?;
+            let seen = self.shared.lock().unwrap().generation;
+            time::sleep(SETTLE).await;
+            let shared = self.shared.lock().unwrap();
+            if shared.generation == seen && settled(&shared) {
+                break;
+            }
+        }
+        let shared = self.shared.lock().unwrap();
+        Ok(convert(&shared.published[&uri].diagnostics))
+    }
+
+    /// Waits until `done` holds, the server exits, or `deadline` passes.
+    async fn wait_until(
+        &self,
+        deadline: Instant,
+        timed_out: &dyn Fn() -> LspError,
+        done: impl Fn(&Shared) -> bool,
+    ) -> Result<(), LspError> {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            // Registered before checking, so no signal is missed.
+            changed.as_mut().enable();
+            let exited = {
+                let shared = self.shared.lock().unwrap();
+                if done(&shared) {
+                    return Ok(());
+                }
+                shared.exited
+            };
+            if exited {
+                return Err(self.exited_error());
+            }
+            if time::timeout_at(deadline, changed).await.is_err() {
+                return Err(timed_out());
+            }
+        }
     }
 
     pub async fn request(&mut self, method: &str, params: Value) -> Result<Value, LspError> {
@@ -230,10 +377,11 @@ impl Server {
         self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
         match time::timeout(limit, receiver).await {
             Ok(Ok(Ok(result))) => Ok(result),
-            Ok(Ok(Err(message))) => Err(LspError::Failed {
+            Ok(Ok(Err((code, message)))) => Err(LspError::Failed {
                 name: self.name.clone(),
                 method: method.into(),
                 message,
+                code,
             }),
             Ok(Err(_)) => {
                 // Its last words explain the exit, so wait for them.
@@ -300,6 +448,7 @@ async fn read_messages(
     mut stdout: BufReader<ChildStdout>,
     shared: Arc<Mutex<Shared>>,
     outgoing: mpsc::UnboundedSender<Vec<u8>>,
+    changed: Arc<Notify>,
 ) {
     loop {
         let message = match rpc::read(&mut stdout).await {
@@ -317,17 +466,33 @@ async fn read_messages(
                 let reply = json!({"jsonrpc": "2.0", "id": id, "result": result});
                 let _ = outgoing.send(rpc::frame(&reply));
             }
-            (Some(method), None) => shared
-                .lock()
-                .unwrap()
-                .state
-                .notify(method, &message["params"]),
+            (Some(method), None) => {
+                let params = &message["params"];
+                let mut shared = shared.lock().unwrap();
+                if method == "textDocument/publishDiagnostics"
+                    && let Some(uri) = params["uri"].as_str()
+                {
+                    shared.generation += 1;
+                    let published = Published {
+                        version: params["version"].as_i64(),
+                        generation: shared.generation,
+                        diagnostics: params["diagnostics"].clone(),
+                    };
+                    shared.published.insert(uri.into(), published);
+                }
+                shared.state.notify(method, params);
+                changed.notify_waiters();
+            }
             (None, Some(id)) => {
                 let sender = id
                     .as_i64()
                     .and_then(|id| shared.lock().unwrap().pending.remove(&id));
                 let result = match message.get("error") {
-                    Some(error) => Err(error["message"].as_str().unwrap_or("unknown error").into()),
+                    Some(error) => {
+                        let code = error["code"].as_i64().unwrap_or_default();
+                        let message = error["message"].as_str().unwrap_or("unknown error");
+                        Err((code, message.to_string()))
+                    }
                     None => Ok(message.get("result").cloned().unwrap_or_default()),
                 };
                 if let Some(sender) = sender {
@@ -340,6 +505,7 @@ async fn read_messages(
     let mut shared = shared.lock().unwrap();
     shared.exited = true;
     shared.pending.clear();
+    changed.notify_waiters();
 }
 
 /// Copies the server's stderr lines to the daemon's log, prefixed with
@@ -352,6 +518,35 @@ async fn forward_stderr(name: String, stderr: BufReader<ChildStderr>, shared: Ar
             shared.lock().unwrap().last_error = Some(line);
         }
     }
+}
+
+/// LSP diagnostics as `ned`'s; a missing severity counts as an error.
+fn convert(diagnostics: &Value) -> Vec<Diagnostic> {
+    let diagnostics: Vec<lsp_types::Diagnostic> =
+        serde_json::from_value(diagnostics.clone()).unwrap_or_default();
+    let position = |p: lsp_types::Position| Position {
+        line: p.line,
+        character: p.character,
+    };
+    diagnostics
+        .into_iter()
+        .map(|d| Diagnostic {
+            start: position(d.range.start),
+            end: position(d.range.end),
+            severity: match d.severity {
+                Some(DiagnosticSeverity::WARNING) => Severity::Warning,
+                Some(DiagnosticSeverity::INFORMATION) => Severity::Info,
+                Some(DiagnosticSeverity::HINT) => Severity::Hint,
+                _ => Severity::Error,
+            },
+            message: d.message,
+            source: d.source,
+            code: d.code.map(|code| match code {
+                NumberOrString::Number(n) => n.to_string(),
+                NumberOrString::String(s) => s,
+            }),
+        })
+        .collect()
 }
 
 /// The result for a request from the server: no settings for

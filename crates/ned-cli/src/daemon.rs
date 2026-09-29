@@ -94,7 +94,9 @@ fn daemon(action: Action) -> anyhow::Result<()> {
     };
     match client.request(&request)? {
         Response::Status(status) => print!("{}", status_text(&status)),
-        Response::Opened | Response::Stopped => println!("stopped the daemon for {shown}"),
+        Response::Opened | Response::Diagnosis(_) | Response::Stopped => {
+            println!("stopped the daemon for {shown}")
+        }
         Response::Error(err) => {
             bail!("the daemon refused the request: {err}; run `ned daemon stop`, then retry")
         }
@@ -105,6 +107,14 @@ fn daemon(action: Action) -> anyhow::Result<()> {
 #[cfg(not(unix))]
 fn daemon(_: Action) -> anyhow::Result<()> {
     anyhow::bail!("the daemon is Unix-only for now")
+}
+
+/// The daemon for the working directory's workspace, for `check`.
+#[cfg(unix)]
+pub fn workspace() -> ned_daemon::client::Workspace {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ned"));
+    let dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    ned_daemon::client::Workspace::new(exe, dir, VERSION)
 }
 
 /// A status line for the daemon, then one per server.

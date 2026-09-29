@@ -3,7 +3,8 @@
 
 use std::path::PathBuf;
 
-use ned_core::lang::Language;
+use ned_core::lsp::Diagnosis;
+pub use ned_core::lsp::Document;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,15 +16,10 @@ pub enum Request {
     Open {
         documents: Vec<Document>,
     },
-}
-
-/// A file's current text, as `ned` sees it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Document {
-    /// Absolute.
-    pub path: PathBuf,
-    pub lang: Language,
-    pub text: String,
+    /// `Open`, then the documents' diagnostics.
+    Diagnose {
+        documents: Vec<Document>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +28,7 @@ pub enum Response {
     Status(Status),
     Stopped,
     Opened,
+    Diagnosis(Diagnosis),
     Error(String),
 }
 

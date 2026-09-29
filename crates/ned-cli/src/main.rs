@@ -11,6 +11,8 @@ use ned_core::diff::{self, DiffStat};
 use ned_core::exec::{self, ExecErrorKind, Options};
 use ned_core::format::{self, Outcome};
 use ned_core::lang::Language;
+#[cfg(unix)]
+use ned_core::lsp::Lsp;
 use ned_core::{fs, script};
 
 /// Token-economical, syntax-aware line editor for AI agents.
@@ -97,7 +99,13 @@ fn main() -> ExitCode {
         lang: cli.lang,
         force: cli.force,
     };
-    let run = exec::run(&parsed, &src, &cli.files, &options);
+    #[cfg(unix)]
+    let mut workspace = daemon::workspace();
+    #[cfg(unix)]
+    let lsp: Option<&mut dyn Lsp> = Some(&mut workspace);
+    #[cfg(not(unix))]
+    let lsp = None;
+    let run = exec::run(&parsed, &src, &cli.files, &options, lsp);
     print!("{}", run.output);
     let changes = match run.result {
         Ok(changes) => changes,
@@ -182,7 +190,8 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::FileExists { .. } => 1,
         ExecErrorKind::Unsupported { .. }
         | ExecErrorKind::NoFiles
-        | ExecErrorKind::InvalidQuery { .. } => 2,
-        ExecErrorKind::Io { .. } | ExecErrorKind::NoGlobMatch { .. } => 3,
+        | ExecErrorKind::InvalidQuery { .. }
+        | ExecErrorKind::NoServer { .. } => 2,
+        ExecErrorKind::Io { .. } | ExecErrorKind::NoGlobMatch { .. } | ExecErrorKind::Lsp(_) => 3,
     }
 }

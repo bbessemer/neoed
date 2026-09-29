@@ -9,13 +9,16 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use ned_core::lsp::{Diagnosis, Document, Lsp, LspFailure};
 use thiserror::Error;
 
-use crate::paths::Paths;
+use crate::paths::{Paths, runtime_dir, workspace_root};
 use crate::protocol::{Request, Response};
 
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
+/// For requests that wait on language servers, which time out themselves.
+const SERVER_REPLY_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// A connection point to a running daemon.
 #[derive(Debug, Clone)]
@@ -82,12 +85,67 @@ impl Client {
 
     pub fn request(&self, request: &Request) -> Result<Response, ClientError> {
         let mut stream = UnixStream::connect(&self.paths.socket)?;
-        stream.set_read_timeout(Some(REPLY_TIMEOUT))?;
+        let timeout = match request {
+            Request::Status | Request::Stop => REPLY_TIMEOUT,
+            Request::Open { .. } | Request::Diagnose { .. } => SERVER_REPLY_TIMEOUT,
+        };
+        stream.set_read_timeout(Some(timeout))?;
         let mut line = serde_json::to_string(request).expect("requests serialize");
         line.push('\n');
         stream.write_all(line.as_bytes())?;
         let mut reply = String::new();
         BufReader::new(stream).read_line(&mut reply)?;
         serde_json::from_str(&reply).map_err(|err| ClientError::Protocol(err.to_string()))
+    }
+}
+
+/// The daemon for the workspace containing a directory, reached (and
+/// spawned if need be) on first use.
+pub struct Workspace {
+    exe: PathBuf,
+    dir: PathBuf,
+    version: String,
+    client: Option<Client>,
+}
+
+impl Workspace {
+    /// Spawns the daemon as `exe daemon run`, for `ned` build `version`.
+    pub fn new(exe: PathBuf, dir: PathBuf, version: &str) -> Workspace {
+        Workspace {
+            exe,
+            dir,
+            version: version.into(),
+            client: None,
+        }
+    }
+}
+
+impl Lsp for Workspace {
+    fn diagnose(&mut self, documents: &[Document]) -> Result<Diagnosis, LspFailure> {
+        let failure = |err: &dyn std::fmt::Display| LspFailure(err.to_string());
+        let client = match &self.client {
+            Some(client) => client.clone(),
+            None => {
+                let root = workspace_root(&self.dir).map_err(|err| {
+                    LspFailure(format!("cannot read {}: {err}", self.dir.display()))
+                })?;
+                let paths = Paths::new(
+                    &runtime_dir().map_err(|e| failure(&e))?,
+                    &root,
+                    &self.version,
+                );
+                let client =
+                    Client::connect_or_spawn(&paths, &self.exe, &root).map_err(|e| failure(&e))?;
+                self.client.insert(client).clone()
+            }
+        };
+        let request = Request::Diagnose {
+            documents: documents.to_vec(),
+        };
+        match client.request(&request).map_err(|e| failure(&e))? {
+            Response::Diagnosis(diagnosis) => Ok(diagnosis),
+            Response::Error(message) => Err(LspFailure(message)),
+            other => Err(failure(&ClientError::Protocol(format!("{other:?}")))),
+        }
     }
 }

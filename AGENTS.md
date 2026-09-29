@@ -142,8 +142,10 @@ supports every selector (including `A..B` ranges) and verb (including
 `ned help`. Every error ends with a fix. `ned-daemon` has the per-workspace
 daemon (socket, lock, lazy spawn, idle exit) behind `ned daemon`, and starts
 language servers (`lsp`, `servers`; `[lsp]` config in `ned-core`) for `open`
-requests; the version names the build commit, and a daemon serves only its own
-build. Next (§9): `check`, `rename`/`refs:`/`def:`, the formatting fallback.
+requests and diagnostics (`check [SEL] [LEVEL]`, through the `Lsp` trait in
+`ned-core`); the version names the build commit, and a daemon serves only its
+own build. Next (§9): automatic checking of edits (9c-2), `rename`/`refs:`/
+`def:`, the formatting fallback.
 
 ## Key Documentation
 
@@ -168,10 +170,8 @@ build. Next (§9): `check`, `rename`/`refs:`/`def:`, the formatting fallback.
 | `thiserror` / `anyhow`            | Errors in core / CLI                         |
 | `clap` (derive)                   | CLI arguments                                |
 | `tokio`, `serde_json`, `libc`     | Daemon: event loop, protocol, `getuid`       |
-| `url`                             | File URIs for LSP                            |
+| `lsp-types`, `url`                | LSP messages and file URIs                   |
 | `insta`, `assert_cmd`, `tempfile` | Snapshot, CLI, and fs tests                  |
-
-Deferred: `lsp-types` (diagnostics and edits, TODO.md §9).
 
 ## Repository Structure
 

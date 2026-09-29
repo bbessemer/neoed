@@ -4,6 +4,8 @@ use std::ops::Range;
 
 use regex::{Regex, RegexBuilder};
 
+use crate::lsp::Severity;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Script {
     pub commands: Vec<Command>,
@@ -51,6 +53,11 @@ pub enum CommandKind {
     Create {
         path: String,
         text: Text,
+    },
+    /// `check [SEL] [LEVEL]`; `None` for the configured level.
+    Check {
+        target: Option<Target>,
+        level: Option<Severity>,
     },
 }
 

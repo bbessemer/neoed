@@ -4,9 +4,15 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use ned_core::config::Config;
+use std::time::Duration;
+
+use ned_core::lsp::{Diagnosis, Severity};
 
 use crate::lsp::{LspError, Server};
 use crate::protocol::{Document, ServerStatus};
+
+/// `[check] timeout`, in seconds, unless configured.
+const DEFAULT_TIMEOUT: u64 = 30;
 
 pub struct Servers {
     root: PathBuf,
@@ -52,6 +58,28 @@ impl Servers {
             server.sync(&document.path, document.lang, &document.text)?;
         }
         Ok(())
+    }
+
+    /// `open`, then each document's diagnostics, with the workspace's
+    /// `[check] show`.
+    pub async fn diagnose(&mut self, documents: &[Document]) -> Result<Diagnosis, ServersError> {
+        self.open(documents).await?;
+        let mut config = Config::new(self.user_config.as_deref())?;
+        let show = config.check_show(&self.root)?.unwrap_or(Severity::Warning);
+        let timeout = config.check_timeout(&self.root)?.unwrap_or(DEFAULT_TIMEOUT);
+        let mut files = Vec::new();
+        for document in documents {
+            let Some(command) = config.server(&self.root, document.lang)? else {
+                files.push(None);
+                continue;
+            };
+            let server = self.servers.get_mut(&command).expect("opened above");
+            let diagnostics = server
+                .diagnostics(&document.path, Duration::from_secs(timeout))
+                .await?;
+            files.push(Some(diagnostics));
+        }
+        Ok(Diagnosis { show, files })
     }
 
     pub fn status(&self) -> Vec<ServerStatus> {

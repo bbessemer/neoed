@@ -6,6 +6,8 @@ use clap::ValueEnum;
 pub enum Topic {
     Show,
     Outline,
+    Check,
+
     Replace,
     Insert,
     Delete,
@@ -24,6 +26,8 @@ pub fn text(topic: Option<Topic>) -> &'static str {
         None => include_str!("../help/summary.txt"),
         Some(Topic::Show) => include_str!("../help/show.txt"),
         Some(Topic::Outline) => include_str!("../help/outline.txt"),
+        Some(Topic::Check) => include_str!("../help/check.txt"),
+
         Some(Topic::Replace) => include_str!("../help/replace.txt"),
         Some(Topic::Insert) => include_str!("../help/insert.txt"),
         Some(Topic::Delete) => include_str!("../help/delete.txt"),

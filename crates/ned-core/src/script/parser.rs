@@ -5,6 +5,7 @@ use std::ops::Range;
 use super::ast::*;
 use super::error::{COMMANDS, ParseError, ParseErrorKind as E};
 use super::lexer::{Lexer, Token, TokenKind};
+use crate::lsp::Severity;
 
 pub fn parse(src: &str) -> Result<Script, ParseError> {
     let mut parser = Parser {
@@ -124,12 +125,9 @@ impl Parser<'_> {
                 path: self.path()?,
                 text: self.text()?,
             },
-            "rename" | "check" => {
-                let instead = if word == "rename" {
-                    r#"use sub /\bOLD\b/ with "NEW" over the files"#
-                } else {
-                    "run the project's build or linter"
-                };
+            "check" => self.check()?,
+            "rename" => {
+                let instead = r#"use sub /\bOLD\b/ with "NEW" over the files"#;
                 let reserved = E::Reserved {
                     what: word.into(),
                     instead,
@@ -150,6 +148,30 @@ impl Parser<'_> {
             TokenKind::Newline | TokenKind::Semicolon | TokenKind::Eof => Ok(None),
             _ => self.target().map(Some),
         }
+    }
+
+    /// After `check`: an optional target, then an optional level.
+    fn check(&mut self) -> Result<CommandKind, ParseError> {
+        let target = match &self.peek()?.kind {
+            TokenKind::Word(word) if word != "all" => None,
+            _ => self.optional_target()?,
+        };
+        let level = match &self.peek()?.kind {
+            TokenKind::Word(word) => {
+                let word = word.clone();
+                let token = self.bump()?;
+                let level = word.parse().map_err(|()| {
+                    let fix = match word.strip_suffix('s').map(str::parse::<Severity>) {
+                        Some(Ok(level)) => format!("did you mean `{level}`?"),
+                        _ => "levels are error warning info hint".into(),
+                    };
+                    ParseError::new(E::UnknownLevel { word, fix }, token.span)
+                })?;
+                Some(level)
+            }
+            _ => None,
+        };
+        Ok(CommandKind::Check { target, level })
     }
 
     fn target(&mut self) -> Result<Target, ParseError> {
@@ -403,6 +425,7 @@ pub fn usage(verb: &str) -> Option<&'static str> {
         "move" => "move [all] SEL before|after|start|end DEST",
         "file" => "file PATH...",
         "create" => "create PATH TEXT",
+        "check" => "check [SEL] [LEVEL]",
         _ => return None,
     })
 }
@@ -530,6 +553,10 @@ mod tests {
             },
             File(paths) => File(paths),
             Create { path, text } => Create { path, text },
+            Check { target, level } => Check {
+                target: target.map(unspan_target),
+                level,
+            },
         }
     }
 
@@ -962,7 +989,7 @@ mod tests {
         assert!(
             matches!(error("rename fn:x to y").kind, E::Reserved { what, .. } if what == "rename")
         );
-        assert!(matches!(error("check").kind, E::Reserved { what, .. } if what == "check"));
+
         assert!(matches!(error("show refs:foo").kind, E::Reserved { what, .. } if what == "refs:"));
         assert!(matches!(error("show def:foo").kind, E::Reserved { what, .. } if what == "def:"));
         assert!(matches!(
@@ -1069,7 +1096,7 @@ mod tests {
         assert_eq!(
             message(r#""x""#),
             "expected a command, found a string; \
-             commands are show outline replace insert delete sub move file create"
+             commands are show outline check replace insert delete sub move file create"
         );
     }
 
@@ -1119,10 +1146,7 @@ mod tests {
             message("rename fn:x to y"),
             r#"`rename` is not yet supported; use sub /\bOLD\b/ with "NEW" over the files"#
         );
-        assert_eq!(
-            message("check"),
-            "`check` is not yet supported; run the project's build or linter"
-        );
+
         assert_eq!(
             message("show refs:foo"),
             "`refs:` is not yet supported; select uses with a /regex/"
@@ -1131,5 +1155,53 @@ mod tests {
             message("show def:foo"),
             "`def:` is not yet supported; select the definition with kind:NAME, e.g. fn:NAME"
         );
+    }
+
+    #[test]
+    fn check_takes_an_optional_target_and_level() {
+        assert_eq!(
+            one("check"),
+            CommandKind::Check {
+                target: None,
+                level: None
+            }
+        );
+        assert_eq!(
+            one("check hint"),
+            CommandKind::Check {
+                target: None,
+                level: Some(Severity::Hint)
+            }
+        );
+        assert_eq!(
+            one("check fn:x"),
+            CommandKind::Check {
+                target: Some(target(vec![syntax("fn", "x")])),
+                level: None
+            }
+        );
+        assert_eq!(
+            commands("check all fn:x error; check")[0],
+            CommandKind::Check {
+                target: Some(all(vec![syntax("fn", "x")])),
+                level: Some(Severity::Error)
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_check_levels_list_the_levels() {
+        assert_eq!(
+            message("check fn:x bogus"),
+            "unknown level `bogus`; levels are error warning info hint"
+        );
+        assert_eq!(
+            message("check warnings"),
+            "unknown level `warnings`; did you mean `warning`?"
+        );
+        assert!(matches!(
+            error("check fn:x hint more").kind,
+            E::Expected { .. }
+        ));
     }
 }

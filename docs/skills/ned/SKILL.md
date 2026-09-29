@@ -31,6 +31,8 @@ Add `-n` to preview without writing.
 1. `outline` to find the item. Each line is a selector you can paste back.
 2. `show SEL` to read only what you need, with line numbers.
 3. Edit in one script, then read the diff that ned prints.
+4. `check` (or `check SEL`, `check SEL hint`) to see the language server's
+   errors and warnings, instead of running the build.
 
 ```ned
 outline
@@ -141,6 +143,10 @@ END
 - **Literals match the file's characters.** In a ned string, `\n` is a
   newline, so matching Rust source that contains the two characters `\n` needs
   `\\n`. A shorter literal, or `sub` with a regex, is easier.
+- **Replacing an item replaces its attributes.** `replace fn:x with ...` covers
+  `#[test]` and `///` lines too, so repeat them in TEXT, or replace `.sig` or
+  `.body` instead. A `#[test]` dropped this way fails nothing: the test just
+  stops running.
 - **Re-basing follows the target line.** `<<END` text takes the indentation of
   the line it's inserted next to, so after a wrapped list item's continuation
   line it gets the hanging indent. For code, use `<<END` (a quoted `<<'END'`

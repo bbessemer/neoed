@@ -127,6 +127,25 @@ impl Buffer {
         Ok(start + column)
     }
 
+    /// The byte offset of an LSP position: `character` counts UTF-16 code
+    /// units. Positions past the end of a line or the file are clamped to it.
+    pub fn lsp_offset(&self, line: u32, character: u32) -> usize {
+        let Ok(range) = self.line_range(line as usize) else {
+            return self.len_bytes();
+        };
+        let mut offset = range.start;
+        let mut units = 0;
+        for c in self.rope.byte_slice(range).chars() {
+            let width = c.len_utf16() as u32;
+            if c == '\n' || c == '\r' || units + width > character {
+                break;
+            }
+            units += width;
+            offset += c.len_utf8();
+        }
+        offset
+    }
+
     pub fn slice(&self, range: Range<usize>) -> Result<String, BufferError> {
         self.check_range(&range)?;
         Ok(self.rope.byte_slice(range).to_string())
@@ -320,5 +339,26 @@ mod tests {
         let buf = Buffer::new(src);
         assert_eq!(buf.text(), src);
         assert_eq!(buf.len_bytes(), src.len());
+    }
+
+    #[test]
+    fn lsp_offsets_count_utf16_units() {
+        let buffer = Buffer::new("ab\né😀x\r\nlast");
+        assert_eq!(buffer.lsp_offset(0, 0), 0);
+        assert_eq!(buffer.lsp_offset(0, 2), 2);
+        // é is one unit and two bytes; 😀 is two units and four bytes.
+        assert_eq!(buffer.lsp_offset(1, 1), 5);
+        assert_eq!(buffer.lsp_offset(1, 3), 9);
+        assert_eq!(buffer.lsp_offset(2, 4), 16);
+    }
+
+    #[test]
+    fn lsp_offsets_clamp_to_the_line_and_the_file() {
+        let buffer = Buffer::new("ab\r\ncd\n");
+        assert_eq!(buffer.lsp_offset(0, 9), 2);
+        assert_eq!(buffer.lsp_offset(1, 9), 6);
+        assert_eq!(buffer.lsp_offset(5, 0), 7);
+        // Inside a surrogate pair: the character's start.
+        assert_eq!(Buffer::new("😀").lsp_offset(0, 1), 0);
     }
 }

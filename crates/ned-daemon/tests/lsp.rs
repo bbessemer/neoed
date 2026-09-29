@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ned_core::lang::Language;
+use ned_core::lsp::{Diagnostic, Position, Severity};
 use ned_daemon::protocol::{Document, ServerState, ServerStatus};
 use ned_daemon::servers::Servers;
 use serde_json::{Value, json};
@@ -108,7 +109,12 @@ async fn opening_starts_and_initializes_a_server() {
         .collect();
     assert_eq!(
         methods,
-        ["initialize", "initialized", "textDocument/didOpen"]
+        [
+            "initialize",
+            "initialized",
+            "workspace/didChangeConfiguration",
+            "textDocument/didOpen"
+        ]
     );
 
     let init = &messages[0]["params"];
@@ -118,7 +124,7 @@ async fn opening_starts_and_initializes_a_server() {
     assert_eq!(init["capabilities"]["window"]["workDoneProgress"], true);
     assert_eq!(init["capabilities"]["workspace"]["configuration"], true);
 
-    let open = &messages[2]["params"]["textDocument"];
+    let open = &messages[3]["params"]["textDocument"];
     assert_eq!(open["uri"], uri(&ws.root().join("a.rs")));
     assert_eq!(open["languageId"], "rust");
     assert_eq!(open["version"], 1);
@@ -275,6 +281,185 @@ async fn config_errors_are_reported() {
     fs::write(ws.dir.path().join(".ned.toml"), "[lsp]\nrust = 1\n").unwrap();
     let err = ws.servers().open(&[ws.rust("a.rs", "")]).await.unwrap_err();
     assert!(err.to_string().contains("invalid config"), "{err}");
+}
+
+fn fake(line: u32, character: u32, word: &str, severity: Severity) -> Diagnostic {
+    Diagnostic {
+        start: Position { line, character },
+        end: Position {
+            line,
+            character: character + word.len() as u32,
+        },
+        severity,
+        message: format!("{} here", word.to_lowercase()),
+        source: Some("fake".into()),
+        code: (word == "ERROR").then(|| "F1".into()),
+    }
+}
+
+#[tokio::test]
+async fn diagnose_reports_published_diagnostics() {
+    let ws = Workspace::new();
+    let mut servers = ws.servers();
+    let diagnosis = servers
+        .diagnose(&[ws.rust("a.rs", "done\nlet x; // ERROR\n  WARN\n")])
+        .await
+        .unwrap();
+    assert_eq!(diagnosis.show, Severity::Warning);
+    assert_eq!(
+        diagnosis.files,
+        [Some(vec![
+            fake(1, 10, "ERROR", Severity::Error),
+            fake(2, 2, "WARN", Severity::Warning),
+        ])]
+    );
+    servers.shutdown().await;
+}
+
+#[tokio::test]
+async fn diagnostics_follow_the_text() {
+    let ws = Workspace::new();
+    let mut servers = ws.servers();
+    servers
+        .diagnose(&[ws.rust("a.rs", "done ERROR")])
+        .await
+        .unwrap();
+    let diagnosis = servers
+        .diagnose(&[ws.rust("a.rs", "done HINT")])
+        .await
+        .unwrap();
+    assert_eq!(
+        diagnosis.files,
+        [Some(vec![fake(0, 5, "HINT", Severity::Hint)])]
+    );
+    let again = servers
+        .diagnose(&[ws.rust("a.rs", "done HINT")])
+        .await
+        .unwrap();
+    assert_eq!(again, diagnosis);
+    servers.shutdown().await;
+}
+
+#[tokio::test]
+async fn diagnose_pulls_from_servers_that_offer_it() {
+    let ws = Workspace::new();
+    let config = format!(
+        "[lsp]\nrust = [{FAKE:?}, {:?}, \"pull\", \"cancel-once\"]\n",
+        ws.log
+    );
+    fs::write(ws.dir.path().join(".ned.toml"), config).unwrap();
+    let mut servers = ws.servers();
+    let diagnosis = servers
+        .diagnose(&[ws.rust("a.rs", "done ERROR")])
+        .await
+        .unwrap();
+    assert_eq!(
+        diagnosis.files,
+        [Some(vec![fake(0, 5, "ERROR", Severity::Error)])]
+    );
+    let pulls = with_method(&ws.messages(), "textDocument/diagnostic").len();
+    assert_eq!(pulls, 2, "one cancelled, one answered");
+    servers.shutdown().await;
+}
+
+#[tokio::test]
+async fn diagnose_waits_for_indexing_up_to_the_timeout() {
+    let ws = Workspace::with_config("\n[check]\ntimeout = 1\n");
+    let mut servers = ws.servers();
+    let started = Instant::now();
+    let err = servers
+        .diagnose(&[ws.rust("a.rs", "still indexing ERROR")])
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(err.contains("fake_lsp.py"), "{err}");
+    assert!(err.contains("rerun"), "{err}");
+    servers.shutdown().await;
+}
+
+#[tokio::test]
+async fn rust_analyzer_is_busy_until_it_says_it_is_quiescent() {
+    let ws = Workspace::new();
+    let config = format!(
+        "[lsp]\nrust = [{FAKE:?}, {:?}, \"ra\", \"pull\"]\n\n[check]\ntimeout = 1\n",
+        ws.log
+    );
+    fs::write(ws.dir.path().join(".ned.toml"), config).unwrap();
+    let mut servers = ws.servers();
+    let err = servers
+        .diagnose(&[ws.rust("a.rs", "ERROR")])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("rerun"), "{err}");
+    let diagnosis = servers
+        .diagnose(&[ws.rust("a.rs", "done ERROR")])
+        .await
+        .unwrap();
+    assert_eq!(
+        diagnosis.files,
+        [Some(vec![fake(0, 5, "ERROR", Severity::Error)])]
+    );
+    servers.shutdown().await;
+}
+
+#[tokio::test]
+async fn diagnose_returns_the_configured_level_and_skips_serverless_files() {
+    let ws = Workspace::with_config("\n[check]\nshow = \"hint\"\n");
+    let mut servers = ws.servers();
+    let diagnosis = servers
+        .diagnose(&[
+            ws.doc("a.md", Language::Markdown, "# ERROR"),
+            ws.rust("a.rs", "done"),
+        ])
+        .await
+        .unwrap();
+    assert_eq!(diagnosis.show, Severity::Hint);
+    assert_eq!(diagnosis.files, [None, Some(vec![])]);
+    servers.shutdown().await;
+}
+
+/// The default servers report errors: `cargo test -- --ignored`.
+#[tokio::test]
+#[ignore]
+async fn real_servers_report_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let files = [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        ),
+        ("src/lib.rs", "pub fn a( {\n"),
+        ("go.mod", "module a\n\ngo 1.21\n"),
+        ("a.go", "package a\n\nfunc A() int { return \"x\" }\n"),
+        ("a.py", "def a():\n    return undefined_name\n"),
+        ("a.ts", "export const a: number = \"x\";\n"),
+    ];
+    let mut documents = Vec::new();
+    for (name, text) in files {
+        let path = root.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, text).unwrap();
+        if let Some(lang) = Language::detect(name, text) {
+            documents.push(Document {
+                path,
+                lang,
+                text: text.into(),
+            });
+        }
+    }
+    let mut servers = Servers::new(root, None);
+    let diagnosis = servers.diagnose(&documents).await.unwrap();
+    for (document, diagnostics) in documents.iter().zip(&diagnosis.files) {
+        let diagnostics = diagnostics.as_ref().expect("a server");
+        assert!(
+            diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "{}: {diagnostics:?}",
+            document.path.display()
+        );
+    }
+    servers.shutdown().await;
 }
 
 /// The default servers, which must be installed: `cargo test -- --ignored`.

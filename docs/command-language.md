@@ -73,7 +73,10 @@ next needed. Servers are shut down with the daemon.
 Servers are configured per language under `[lsp]`, like formatters (§6.4): the
 same files, merging and program lookup, read from the workspace root up. A value
 is a command as an argv array, or `false` for none. `[daemon]` sets
-`idle_timeout`, in seconds.
+`idle_timeout`, in seconds. `[check]` sets `show`, the lowest severity `check`
+prints by default (`error`, `warning`, `info` or `hint`; default `warning`),
+and `timeout`, how long `check` waits for a server's diagnostics, in seconds
+(default 30).
 
 ```toml
 [lsp]
@@ -82,6 +85,10 @@ markdown = false
 
 [daemon]
 idle_timeout = 1800
+
+[check]
+show = "hint"
+
 ```
 
 | Language                    | Default server                       |
@@ -134,7 +141,7 @@ other platforms, features that need it are errors.
 script     = { line } ;
 line       = [ command { ";" command } ] [ comment ] NEWLINE { heredoc-body } ;
 command    = show | outline | replace | insert | delete | sub | move | create
-           | file | rename | check ;
+           | file | check | rename ;
 
 show       = "show" [ target [ context ] ] ;
 outline    = "outline" [ target ] ;
@@ -146,7 +153,8 @@ move       = "move" target position selector ;
 file       = "file" path { path } ;
 create     = "create" path text ;
 rename     = "rename" target "to" name ;            (* reserved *)
-check      = "check" ;                              (* reserved *)
+check      = "check" [ target ] [ level ] ;
+level      = "error" | "warning" | "info" | "hint" ;
 
 position   = "before" | "after" | "start" | "end" ;
 target     = [ "all" ] selector ;
@@ -379,6 +387,22 @@ reserved for the LSP milestone.
   it prints each whole file in the set.
 - **`outline [SEL]`** prints the symbol tree (§6.2) of each file, or of the
   items inside `SEL`.
+- **`check [SEL] [LEVEL]`** prints the language server's diagnostics for each
+  file in the set, or those overlapping `SEL`'s spans, at `LEVEL` or above
+  (`error`, `warning`, `info` or `hint`; default `[check] show`, §1.1). Like
+  every read, it sees the original text (§2.3). It starts the daemon and the
+  servers if needed and waits for them to finish indexing, up to
+  `[check] timeout`. Files without a server are skipped; if no file in the set
+  has one, it's an error naming the `[lsp]` setting.
+
+  ```
+  src/parser.rs:15:9: error: mismatched types [rust-analyzer E0308]
+  src/parser.rs:21:5: warning: unused variable: `tok` [rust-analyzer]
+  ```
+
+  Lines are in file order, then by position; the column counts characters from
+  1. Further lines of a message are indented by two spaces. With nothing to
+     print, the output is `no diagnostics at warning or above`.
 
 ### 4.2 Edits
 
@@ -421,8 +445,7 @@ Notes:
   unit (§5.2). An empty single-line body such as `fn f() {}` is opened onto
   separate lines.
 
-_(reserved)_ `rename SEL to NAME` does a workspace-wide rename via LSP. `check`
-reports diagnostics for the edited files.
+_(reserved)_ `rename SEL to NAME` does a workspace-wide rename via LSP.
 
 ### 4.3 Parse-error guard
 
@@ -610,6 +633,8 @@ Errors go to stderr, in the form `error: LOC: message`.
 | Missing part, part on a non-syntax step | The parts the item has, or an example                                                                                                                    |
 | Invalid query                           | The closest node type or field name in the grammar                                                                                                       |
 | Line past the end                       | `$` for the last line                                                                                                                                    |
+| No language server for the files        | The `[lsp]` setting for their language                                                                                                                   |
+| Language server failure                 | Installing the server or fixing its `[lsp]` setting, or rerunning once it has indexed                                                                    |
 | File not in the set                     | The `file` command that adds it                                                                                                                          |
 | Unsupported in a language               | Selectors that work there                                                                                                                                |
 | Overlapping edits                       | Merging them, or a second invocation                                                                                                                     |
@@ -637,8 +662,8 @@ error: script:2:28: unterminated heredoc <<END (started here); end it with a lin
 | ---- | ------------------------------------------------------------------------------------------------------------------------------ |
 | 0    | Success, including dry runs and skipped formatters                                                                             |
 | 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unsupported kind, parse-error guard, move into its own source |
-| 2    | Usage error (bad flags or arguments), script syntax error, invalid query or config, or reserved feature                        |
-| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, or write failure                                                |
+| 2    | Usage error (bad flags or arguments), script syntax error, invalid query or config, reserved feature, or no language server    |
+| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, write failure, or language server failure                       |
 
 On any non-zero exit, no file is modified. Reads that ran before the failure
 still print their output.

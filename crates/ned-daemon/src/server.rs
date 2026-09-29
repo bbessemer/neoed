@@ -104,6 +104,12 @@ impl Daemon<'_> {
                     Ok(()) => Response::Opened,
                     Err(err) => Response::Error(err.to_string()),
                 },
+                Ok(Request::Diagnose { documents }) => {
+                    match self.servers.diagnose(&documents).await {
+                        Ok(diagnosis) => Response::Diagnosis(diagnosis),
+                        Err(err) => Response::Error(err.to_string()),
+                    }
+                }
                 Err(err) => Response::Error(format!("invalid request: {err}")),
             };
             reply(&mut write, &response).await;

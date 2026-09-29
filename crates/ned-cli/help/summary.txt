@@ -7,6 +7,7 @@ applies, or none does. Output is a per-file summary plus diff hunks.
 Commands, separated by newlines or `;`:
   show [SEL [+N]]               print the lines of SEL, numbered, N around
   outline [SEL]                 list syntax items as pasteable selectors
+  check [SEL] [LEVEL]           language-server diagnostics; LEVEL error..hint
   replace SEL with TEXT
   insert before|after|start|end SEL TEXT
   delete SEL
@@ -41,5 +42,5 @@ Examples:
     }
     END
 
-Topics: show outline replace insert delete sub move file create selectors text
-config
+Topics: show outline check replace insert delete sub move file create selectors
+text config
