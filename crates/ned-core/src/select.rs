@@ -1,6 +1,7 @@
 //! Resolving selectors to spans of files (command-language spec, §3).
 
 use std::cell::OnceCell;
+use std::collections::HashMap;
 use std::ops::Range;
 
 use regex::Regex;
@@ -741,8 +742,7 @@ fn candidates(
         .iter()
         .map(|m| enclosing(files[m.file], &m.range))
         .collect();
-    let listed = (0..matches.len())
-        .take(MAX_CANDIDATES)
+    let all: Vec<(String, String)> = (0..matches.len())
         .map(|i| {
             let (m, selector) = (&matches[i], &named[i]);
             let f = &files[m.file];
@@ -769,10 +769,21 @@ fn candidates(
             (format!("{scope}{selector}"), format!("{}:{lines}", f.path))
         })
         .collect();
+    // Matches on one line get the same line-scoped selector, which picks none
+    // of them alone.
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for (selector, _) in &all {
+        *counts.entry(selector).or_default() += 1;
+    }
+    let unique: Vec<(String, String)> = all
+        .iter()
+        .filter(|(selector, _)| counts[selector.as_str()] == 1)
+        .cloned()
+        .collect();
     Candidates {
-        listed,
+        shared: all.len() - unique.len(),
+        listed: unique.into_iter().take(MAX_CANDIDATES).collect(),
         total: matches.len(),
-        shared: 0,
     }
 }
 
