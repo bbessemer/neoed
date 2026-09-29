@@ -86,7 +86,14 @@ END
 insert after struct:Lexer "impl Lexer {}"
 ```
 
-Rename across files with a word-bounded regex:
+Rename a symbol everywhere it's used with `rename`, which asks the language
+server. Pass `-w` so it can reach every file in the workspace:
+
+```ned
+rename impl:Parser>fn:new to create
+```
+
+Without a language server, rename with a word-bounded regex:
 
 ```ned
 file src/**/*.rs
