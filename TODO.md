@@ -126,7 +126,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       save), e.g. unresolved names, for automatic checking and `check`
 - [x] `rename` verb (within the file set, or the workspace with `-w`)
 - [x] `.refs` / `.def` parts (replacing the reserved `refs:` / `def:`)
-- [ ] LSP formatting fallback when no external formatter is configured
+- [x] LSP formatting fallback when no external formatter is installed
 
 ## 10. REPL
 
