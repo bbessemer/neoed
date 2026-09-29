@@ -4,13 +4,13 @@ use std::borrow::Cow;
 use std::fmt;
 use std::fs;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tree_sitter::Node;
 
 use crate::edit::{Edit, EditError, EditSet};
 use crate::lang::Language;
-use crate::lsp::{Document, Lsp, LspFailure, Severity, render};
+use crate::lsp::{self, Document, Lsp, LspFailure, Renamed, Severity, render};
 use crate::outline;
 use crate::script::Script;
 use crate::script::ast::{
@@ -721,7 +721,123 @@ impl Executor<'_> {
         selector: &Selector,
         name: &str,
     ) -> Result<(), ExecError> {
-        todo!("{index} {span:?} {selector:?} {name}")
+        let error = |kind| ExecError::new(kind, Some(span.clone()));
+        // A syntax item is renamed at its name.
+        let mut target = Target {
+            all: false,
+            selector: selector.clone(),
+        };
+        if let Some(step) = target.selector.steps.last_mut()
+            && matches!(step.primary, Primary::Syntax { .. })
+            && step.parts.is_empty()
+        {
+            step.parts.push(Part::Name);
+        }
+        let m = self.resolve(&target)?.remove(0);
+        let file = &self.files[m.file].file;
+        let Some(lang) = file.lang else {
+            return Err(error(ExecErrorKind::NoLanguage {
+                selector: "rename".into(),
+                files: file.path.clone(),
+            }));
+        };
+        let (line, character) = file.buffer.lsp_position(m.range.start);
+        let line_start = file.buffer.line_range(line as usize).map_or(0, |r| r.start);
+        let location = format!(
+            "{}:{}:{}",
+            file.path,
+            line + 1,
+            file.text[line_start..m.range.start].chars().count() + 1
+        );
+        let document = Document {
+            path: std::path::absolute(&file.path).map_err(|err| {
+                error(ExecErrorKind::Io {
+                    path: file.path.clone(),
+                    message: err.to_string(),
+                })
+            })?,
+            lang,
+            text: file.text.clone(),
+        };
+        let Some(lsp) = self.lsp.as_deref_mut() else {
+            let message = r#"`rename` needs the language-server daemon, which is Unix-only for now; use sub /\bOLD\b/ with "NEW" over the files"#;
+            return Err(error(ExecErrorKind::Lsp(message.into())));
+        };
+        let position = lsp::Position { line, character };
+        let files = match lsp.rename(&document, position, name) {
+            Ok(Renamed::Edits(files)) => files,
+            Ok(Renamed::Refused(message)) => {
+                return Err(error(ExecErrorKind::RenameRefused { location, message }));
+            }
+            Ok(Renamed::NoServer) => {
+                return Err(error(ExecErrorKind::NoServer {
+                    langs: lang.name().into(),
+                }));
+            }
+            Err(LspFailure(message)) => return Err(error(ExecErrorKind::Lsp(message))),
+        };
+        let mut targets = Vec::new();
+        let mut outside = Vec::new();
+        for f in files {
+            match self.rename_target(&f.path) {
+                Ok(path) => targets.push((path, f.edits)),
+                Err(shown) => outside.push(shown),
+            }
+        }
+        if !outside.is_empty() {
+            let shown: Vec<&str> = outside.iter().map(String::as_str).collect();
+            return Err(error(ExecErrorKind::RenameOutside {
+                files: select::file_list(&shown),
+                workspace: self.workspace.is_some(),
+            }));
+        }
+        for (path, edits) in targets {
+            let file = self.load(&path, Some(span.clone()))?;
+            if !self.named.iter().any(|n| same_path(n, &path)) {
+                self.named.push(path);
+            }
+            for edit in edits {
+                let buffer = &self.files[file].file.buffer;
+                let start = buffer.lsp_offset(edit.start.line, edit.start.character);
+                let end = buffer.lsp_offset(edit.end.line, edit.end.character);
+                self.push(index, span, file, start..end, edit.text)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The path by which `rename` may edit the file a server named: a set
+    /// member's or, under `-w`, a workspace file's. Otherwise, the path to show
+    /// in the error.
+    fn rename_target(&self, path: &Path) -> Result<String, String> {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let shown = |path: &Path| {
+            path.strip_prefix(&cwd)
+                .unwrap_or(path)
+                .display()
+                .to_string()
+        };
+        let Ok(canonical) = fs::canonicalize(path) else {
+            return Err(shown(path));
+        };
+        let key = shown(&canonical);
+        let workspace = self.workspace.iter().flatten();
+        if let Some(found) = self
+            .set
+            .iter()
+            .map(|m| &m.path)
+            .chain(workspace)
+            .find(|p| **p == key)
+        {
+            return Ok(found.clone());
+        }
+        // FILE arguments may name it by another path.
+        self.set
+            .iter()
+            .filter(|m| !m.workspace)
+            .find(|m| fs::canonicalize(&m.path).is_ok_and(|c| c == canonical))
+            .map(|m| m.path.clone())
+            .ok_or(key)
     }
 
     fn sub(
