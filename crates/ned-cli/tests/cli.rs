@@ -384,12 +384,14 @@ fn syntax_error_exits_2_with_caret() {
 #[test]
 fn unsupported_feature_exits_2() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
-    let out = ned(dir.path(), &["parser.rs", "-e", "move 1 after 2"], "");
+    let out = ned(dir.path(), &["parser.rs", "-e", "check"], "");
     assert_snapshot!(out, @r"
     exit: 2
     --- stdout
     --- stderr
-    error: script:1:1: `move` is not yet supported
+    error: script:1:1: `check` is not yet supported
+    1:check
+      ^
     ");
 }
 
@@ -421,6 +423,59 @@ fn missing_file_exits_3() {
     --- stderr
     error: cannot read nope.rs: No such file or directory (os error 2)
     ");
+}
+
+#[test]
+fn quoted_glob_arguments_are_expanded() {
+    let dir = dir_with(&[
+        ("b.rs", "let x = 1;\n"),
+        ("a.rs", "let x = 2;\n"),
+        ("c.py", "x = 3\n"),
+    ]);
+    let out = ned(dir.path(), &["-q", "*.rs", "-e", "sub /x/ with \"y\""], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs: 1 edit, +1 -1
+    b.rs: 1 edit, +1 -1
+    --- stderr
+    ");
+    assert_eq!(read(&dir, "c.py"), "x = 3\n");
+}
+
+#[test]
+fn file_command_expands_globs() {
+    let dir = dir_with(&[("a.rs", "let x = 1;\n"), ("b.rs", "let x = 2;\n")]);
+    let out = ned(
+        dir.path(),
+        &["-q", "-e", "file *.rs; sub /x/ with \"y\""],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs: 1 edit, +1 -1
+    b.rs: 1 edit, +1 -1
+    --- stderr
+    ");
+    assert_eq!(read(&dir, "b.rs"), "let y = 2;\n");
+}
+
+#[test]
+fn glob_matching_nothing_exits_3() {
+    let dir = dir_with(&[("a.rs", "let x = 1;\n")]);
+    let out = ned(
+        dir.path(),
+        &["a.rs", "*.rx", "-e", "sub /x/ with \"y\""],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 3
+    --- stdout
+    --- stderr
+    error: glob `*.rx` matched nothing
+    ");
+    assert_eq!(read(&dir, "a.rs"), "let x = 1;\n");
 }
 
 #[cfg(unix)]
@@ -894,4 +949,59 @@ fn rustfmt_formats_rust() {
         read(&dir, "a.rs"),
         "struct S {\n    a: u8,\n    b: u8,\n}\n"
     );
+}
+
+#[test]
+fn move_across_files() {
+    let dir = dir_with(&[
+        ("parser.rs", PARSER),
+        ("debug.rs", "impl Parser {\n    fn trace(&self) {}\n}\n"),
+    ]);
+    let out = ned(
+        dir.path(),
+        &[
+            "parser.rs",
+            "debug.rs",
+            "-e",
+            "move fn:debug_dump end file:debug.rs>impl:Parser",
+        ],
+        "",
+    );
+    assert_snapshot!(out, @r#"
+    exit: 0
+    --- stdout
+    parser.rs: 1 edit, +0 -4
+    @@ -17,6 +17,2 @@
+         }
+    -
+    -    fn debug_dump(&self) {
+    -        eprintln!("{}", self.src);
+    -    }
+     }
+    debug.rs: 1 edit, +3 -0
+    @@ -2,2 +2,5 @@
+         fn trace(&self) {}
+    +    fn debug_dump(&self) {
+    +        eprintln!("{}", self.src);
+    +    }
+     }
+    --- stderr
+    "#);
+}
+
+#[test]
+fn move_into_its_own_source_exits_1() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let out = ned(
+        dir.path(),
+        &["parser.rs", "-e", "move impl:Parser after fn:new"],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: script:1:1: move destination is inside the moved span at parser.rs:9-22
+    ");
+    assert_eq!(read(&dir, "parser.rs"), PARSER);
 }

@@ -12,7 +12,7 @@ use crate::lang::Language;
 use crate::outline;
 use crate::script::Script;
 use crate::script::ast::{
-    Command, CommandKind, Part, Pattern, Position, Primary, Target, Text, TextKind,
+    Command, CommandKind, Part, Pattern, Position, Primary, Selector, Target, Text, TextKind,
 };
 use crate::script::error::{excerpt, location};
 use crate::select::{self, Match, SourceFile, line_numbers, same_path};
@@ -81,10 +81,7 @@ struct Executor<'s> {
 
 impl Executor<'_> {
     fn run(&mut self, script: &Script, initial: &[String]) -> Result<Vec<Change>, ExecError> {
-        self.set = initial
-            .iter()
-            .map(|path| self.load(path, None))
-            .collect::<Result<_, _>>()?;
+        self.set = self.open(initial, None)?;
         for (index, command) in script.commands.iter().enumerate() {
             self.command(index, command)?;
         }
@@ -111,6 +108,25 @@ impl Executor<'_> {
             }
         }
         Ok(changes)
+    }
+
+    /// Loads the files `paths` name, expanding globs (§2.4), as indices into
+    /// `self.files` without duplicates.
+    fn open(
+        &mut self,
+        paths: &[String],
+        span: Option<&Range<usize>>,
+    ) -> Result<Vec<usize>, ExecError> {
+        let mut set = Vec::new();
+        for path in paths {
+            for path in expand(path, span)? {
+                let i = self.load(&path, span.cloned())?;
+                if !set.contains(&i) {
+                    set.push(i);
+                }
+            }
+        }
+        Ok(set)
     }
 
     fn load(&mut self, path: &str, span: Option<Range<usize>>) -> Result<usize, ExecError> {
@@ -144,14 +160,8 @@ impl Executor<'_> {
         let error = |kind| ExecError::new(kind, Some(span.clone()));
         match &command.kind {
             CommandKind::File(paths) => {
-                self.set = paths
-                    .iter()
-                    .map(|path| self.load(path, Some(span.clone())))
-                    .collect::<Result<_, _>>()?;
+                self.set = self.open(paths, Some(span))?;
                 return Ok(());
-            }
-            CommandKind::Move { .. } => {
-                return Err(error(ExecErrorKind::Unsupported("`move`".into())));
             }
             _ if self.set.is_empty() => return Err(error(ExecErrorKind::NoFiles)),
             _ => {}
@@ -186,9 +196,12 @@ impl Executor<'_> {
                 pattern,
                 text,
             } => self.sub(index, span, scope.as_ref(), pattern, text)?,
-            CommandKind::File(_) | CommandKind::Move { .. } => {
-                unreachable!("handled above")
-            }
+            CommandKind::Move {
+                target,
+                position,
+                dest,
+            } => self.move_to(index, span, target, *position, dest)?,
+            CommandKind::File(_) => unreachable!("handled above"),
         }
         Ok(())
     }
@@ -235,6 +248,51 @@ impl Executor<'_> {
             ),
             EditError::Buffer(err) => unreachable!("edits come from resolved spans: {err}"),
         })
+    }
+
+    /// Moves each span of `target` to `position` of `dest` (§4.2).
+    fn move_to(
+        &mut self,
+        index: usize,
+        span: &Range<usize>,
+        target: &Target,
+        position: Position,
+        dest: &Selector,
+    ) -> Result<(), ExecError> {
+        let dest = Target {
+            all: false,
+            selector: dest.clone(),
+        };
+        let to = self.resolve(&implied_body(&dest, position))?.remove(0);
+        for from in self.resolve(target)? {
+            let source = &self.files[from.file].file;
+            let removal = delete(source, from.range.clone());
+            let (mut moved, separated) = moved_text(source, &from.range);
+            let target = &self.files[to.file].file;
+            if separated && text::is_whole_line(&target.text, &to.range) {
+                match position {
+                    Position::Before => moved.value.push('\n'),
+                    Position::After => moved.value.insert(0, '\n'),
+                    Position::Start | Position::End => {}
+                }
+            }
+            let moved = with_trailing_comma(target, &to.range, &moved);
+            let (range, new) = insert(target, to.range.clone(), position, &moved);
+            if from.file == to.file && removal.start < range.start && range.end < removal.end {
+                let location = format!(
+                    "{}:{}",
+                    source.path,
+                    line_numbers(&source.buffer, &from.range)
+                );
+                return Err(ExecError::new(
+                    ExecErrorKind::MoveIntoSource { location },
+                    Some(span.clone()),
+                ));
+            }
+            self.push(index, span, from.file, removal, String::new())?;
+            self.push(index, span, to.file, range, new)?;
+        }
+        Ok(())
     }
 
     fn show(&mut self, target: Option<&Target>) -> Result<(), ExecError> {
@@ -405,6 +463,32 @@ impl Executor<'_> {
 
 /// `target`, with `.body` added when `insert start|end` targets a syntax
 /// step with no parts (§4.2).
+/// The files `path` names: itself, or a glob's sorted matches.
+fn expand(path: &str, span: Option<&Range<usize>>) -> Result<Vec<String>, ExecError> {
+    let options = glob::MatchOptions {
+        require_literal_leading_dot: true,
+        ..glob::MatchOptions::new()
+    };
+    let paths = match glob::glob_with(path, options) {
+        Ok(paths) if path.contains(['*', '?', '[']) => paths,
+        // Not a glob, or not a valid one, such as `a[.rs`: a plain path.
+        _ => return Ok(vec![path.to_string()]),
+    };
+    let mut files: Vec<String> = paths
+        .filter_map(Result::ok)
+        .filter(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    if files.is_empty() {
+        return Err(ExecError::new(
+            ExecErrorKind::NoGlobMatch(path.into()),
+            span.cloned(),
+        ));
+    }
+    files.sort();
+    Ok(files)
+}
+
 fn implied_body(target: &Target, position: Position) -> Cow<'_, Target> {
     let last = target.selector.steps.last();
     let syntax =
@@ -515,23 +599,7 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, St
         return fill_body(f, item, range, new);
     }
     let t = &f.text;
-    let trailing_comma = f
-        .items()
-        .unwrap_or_default()
-        .iter()
-        .any(|i| i.range == range && i.trailing_comma);
-    let with_comma;
-    let new = if trailing_comma && !new.value.trim_end().ends_with(',') {
-        let mut value = new.value.clone();
-        value.insert(value.trim_end().len(), ',');
-        with_comma = Text {
-            value,
-            kind: new.kind,
-        };
-        &with_comma
-    } else {
-        new
-    };
+    let new = &*with_trailing_comma(f, &range, new);
     let unit = indent_unit(f);
     if text::is_whole_line(t, &range) {
         let full = text::full_lines(t, range);
@@ -544,6 +612,57 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, St
         let indent = text::indent_at(t, range.start);
         (range, verbatim(new, indent, &unit))
     }
+}
+
+/// `new`, with a `,` appended if the item at `range` ends with one and `new`
+/// doesn't (§3.3).
+fn with_trailing_comma<'t>(f: &SourceFile, range: &Range<usize>, new: &'t Text) -> Cow<'t, Text> {
+    let trailing_comma = f
+        .items()
+        .unwrap_or_default()
+        .iter()
+        .any(|i| i.range == *range && i.trailing_comma);
+    if !trailing_comma || new.value.trim_end().ends_with(',') {
+        return Cow::Borrowed(new);
+    }
+    let mut value = new.value.clone();
+    value.insert(value.trim_end().len(), ',');
+    Cow::Owned(Text {
+        value,
+        kind: new.kind,
+    })
+}
+
+/// The text `move` carries from `range`: its full lines, to be re-based, if
+/// it's whole-line, else the span verbatim. The flag says whether a blank line
+/// was directly above or below those full lines.
+fn moved_text(f: &SourceFile, range: &Range<usize>) -> (Text, bool) {
+    let t = &f.text;
+    if !text::is_whole_line(t, range) {
+        let value = t[range.clone()].replace("\r\n", "\n");
+        return (
+            Text {
+                value,
+                kind: TextKind::Str,
+            },
+            false,
+        );
+    }
+    let full = text::full_lines(t, range.clone());
+    let mut value = t[full.clone()].replace("\r\n", "\n");
+    if value.ends_with('\n') {
+        value.pop();
+    }
+    let above = t[..full.start].strip_suffix('\n').and_then(|before| {
+        let line = &before[before.rfind('\n').map_or(0, |i| i + 1)..];
+        line.trim().is_empty().then_some(())
+    });
+    let below = t[full.end..].lines().next().filter(|l| l.trim().is_empty());
+    let text = Text {
+        value,
+        kind: TextKind::Heredoc,
+    };
+    (text, above.is_some() || below.is_some())
 }
 
 /// The span and text of an insertion at `position` of `range` (§4.2, §5):
@@ -667,6 +786,10 @@ pub enum ExecErrorKind {
     NoFiles,
     #[error("cannot read {path}: {message}")]
     Io { path: String, message: String },
+    #[error("move destination is inside the moved span at {location}")]
+    MoveIntoSource { location: String },
+    #[error("glob `{0}` matched nothing")]
+    NoGlobMatch(String),
     /// `location` is `PATH:LINE:COL`; `excerpt` is empty, or a newline and
     /// the offending line with a caret.
     #[error("{location}: edit introduces a syntax error (use --force to apply anyway){excerpt}")]
@@ -769,7 +892,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = format!("{}/", dir.path().display());
         for (name, text) in files {
-            fs::write(dir.path().join(name), text).unwrap();
+            let path = dir.path().join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
         }
         let paths: Vec<String> = files[..initial]
             .iter()
@@ -965,7 +1090,7 @@ mod tests {
         assert_eq!(edited("a\n\nb\n\nc\n", "delete 3"), "a\n\nc\n");
         assert_eq!(
             edited(TEXT, "delete 6-8"),
-            "fn a() {\n    let x = 1;\n    let y = 2;\n}\n\n"
+            "fn a() {\n    let x = 1;\n    let y = 2;\n}\n"
         );
         assert_eq!(
             edited(TEXT, "delete \"let y = 2;\""),
@@ -1120,6 +1245,56 @@ mod tests {
         assert_eq!(paths, ["b.rs", "a.rs"]);
     }
 
+    /// The files `script`'s last `file` command selects, by running `show`.
+    fn globbed(files: &[&str], script: &str) -> Vec<String> {
+        let files: Vec<(&str, &str)> = files.iter().map(|f| (*f, "x\n")).collect();
+        let out = exec_with(&files, 0, &format!("{script}; show"));
+        assert!(out.result.is_ok(), "{:?}", out.result);
+        out.output
+            .lines()
+            .filter_map(|l| l.strip_suffix(":1"))
+            .map(String::from)
+            .collect()
+    }
+
+    #[test]
+    fn file_expands_globs_in_sorted_order() {
+        let files = ["b.rs", "a.rs", "c.txt", ".hidden.rs", "sub/d.rs"];
+        assert_eq!(globbed(&files, "file {dir}/*.rs"), ["a.rs", "b.rs"]);
+        assert_eq!(globbed(&files, "file {dir}/[ab].r?"), ["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn double_star_recurses() {
+        let files = ["sub/deep/c.rs", "a.rs", "sub/b.rs", "sub/b.txt"];
+        assert_eq!(
+            globbed(&files, "file {dir}/**/*.rs"),
+            ["a.rs", "sub/b.rs", "sub/deep/c.rs"]
+        );
+    }
+
+    #[test]
+    fn globs_match_only_files() {
+        assert_eq!(globbed(&["a.rs", "d.rs/x"], "file {dir}/*.rs"), ["a.rs"]);
+    }
+
+    #[test]
+    fn files_named_twice_are_in_the_set_once() {
+        let files = ["a.rs", "b.rs"];
+        assert_eq!(
+            globbed(&files, "file {dir}/b.rs {dir}/*.rs {dir}/b.rs"),
+            ["b.rs", "a.rs"]
+        );
+    }
+
+    #[test]
+    fn a_glob_matching_nothing_is_an_error() {
+        assert_eq!(
+            exec_with(&[("a.rs", "x\n")], 0, "file {dir}/*.rx").error(),
+            "error: script:1:1: glob `*.rx` matched nothing"
+        );
+    }
+
     #[test]
     fn missing_files_are_io_errors() {
         let out = exec_with(&[("a.rs", "x\n")], 1, "file {dir}/nope.rs");
@@ -1179,12 +1354,141 @@ mod tests {
         );
     }
 
+    const MOVE: &str = "\
+impl A {
+    fn a() {
+        one();
+    }
+
+    fn b() {}
+}
+
+fn helper_x() {
+    x();
+}
+
+fn helper_y() {}
+
+fn main() {}
+";
+
     #[test]
-    fn move_is_not_yet_supported() {
+    fn move_after_keeps_blank_separation() {
         assert_eq!(
-            exec(TEXT, "move 2 after 3").error(),
-            "error: script:1:1: `move` is not yet supported"
+            edited(MOVE, "move fn:helper_x after fn:main"),
+            MOVE.replace("fn helper_x() {\n    x();\n}\n\n", "")
+                + "\nfn helper_x() {\n    x();\n}\n"
         );
+    }
+
+    #[test]
+    fn move_before_keeps_blank_separation() {
+        assert_eq!(
+            edited(MOVE, "move fn:helper_y before fn:helper_x"),
+            MOVE.replace("fn helper_y() {}\n\n", "")
+                .replace("fn helper_x", "fn helper_y() {}\n\nfn helper_x")
+        );
+    }
+
+    #[test]
+    fn move_all_keeps_source_order() {
+        assert_eq!(edited(MOVE, "move all fn:helper_* before fn:main"), MOVE);
+    }
+
+    #[test]
+    fn move_to_the_end_of_a_body_is_rebased() {
+        assert_eq!(
+            edited(MOVE, "move fn:helper_y end impl:A"),
+            MOVE.replace("fn helper_y() {}\n\n", "")
+                .replace("    fn b() {}\n", "    fn b() {}\n    fn helper_y() {}\n")
+        );
+    }
+
+    #[test]
+    fn move_to_the_start_of_a_body() {
+        assert_eq!(
+            edited(MOVE, "move fn:b start fn:helper_x"),
+            MOVE.replace("\n    fn b() {}\n", "")
+                .replace("{\n    x();", "{\n    fn b() {}\n    x();")
+        );
+    }
+
+    #[test]
+    fn move_into_an_empty_body_opens_it() {
+        assert_eq!(
+            edited(MOVE, "move fn:helper_x end fn:main"),
+            MOVE.replace("fn helper_x() {\n    x();\n}\n\n", "")
+                .replace(
+                    "fn main() {}\n",
+                    "fn main() {\n    fn helper_x() {\n        x();\n    }\n}\n"
+                )
+        );
+    }
+
+    #[test]
+    fn move_across_files() {
+        let b = "impl B {\n    fn c() {}\n}\n";
+        let out = exec_with(
+            &[("a.rs", MOVE), ("b.rs", b)],
+            2,
+            "move fn:helper_y end file:{dir}/b.rs>impl:B",
+        );
+        let changes = out.result.unwrap();
+        assert_eq!(changes[0].path, "a.rs");
+        assert_eq!(changes[0].new, MOVE.replace("fn helper_y() {}\n\n", ""));
+        assert_eq!(changes[1].path, "b.rs");
+        assert_eq!(
+            changes[1].new,
+            "impl B {\n    fn c() {}\n    fn helper_y() {}\n}\n"
+        );
+    }
+
+    #[test]
+    fn move_of_a_partial_span_is_verbatim() {
+        assert_eq!(edited("(a)(b)\n", r#"move "a" before "b""#), "()(ab)\n");
+    }
+
+    #[test]
+    fn move_before_a_field_adds_its_comma() {
+        assert_eq!(
+            edited(
+                "struct S {\n    a: u8,\n    b: u8\n}\n",
+                "move field:b before field:a"
+            ),
+            "struct S {\n    b: u8,\n    a: u8,\n}\n"
+        );
+    }
+
+    #[test]
+    fn move_into_its_own_source_is_an_error() {
+        assert_eq!(
+            exec(MOVE, "move impl:A before fn:b").error(),
+            "error: script:1:1: move destination is inside the moved span at a.rs:1-7"
+        );
+    }
+
+    #[test]
+    fn move_destination_must_be_one_span() {
+        let err = exec(MOVE, "move fn:main after fn:helper_*")
+            .error()
+            .to_string();
+        assert!(err.starts_with("error: script:1:"), "{err}");
+        assert!(err.contains("fn:helper_* matches 2 items"), "{err}");
+    }
+
+    #[test]
+    fn move_from_crlf_to_lf() {
+        let out = exec_with(
+            &[
+                ("a.rs", "use x;\r\n\r\nfn a() {}\r\n\r\nfn b() {}\r\n"),
+                ("b.rs", "fn c() {}\n"),
+            ],
+            2,
+            "move fn:a after file:{dir}/b.rs>fn:c",
+        );
+        let changes = out.result.unwrap();
+        assert_eq!(changes[0].new, "use x;\r\n\r\nfn b() {}\r\n");
+        assert_eq!(changes[1].new, "fn c() {}\n\nfn a() {}\n");
     }
 
     const GUARD_ERROR: &str = "edit introduces a syntax error (use --force to apply anyway)";

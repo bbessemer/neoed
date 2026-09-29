@@ -105,7 +105,7 @@ pub fn resolve(target: &Target, files: &[&SourceFile], src: &str) -> Result<Vec<
         _ if target.all => Ok(matches),
         _ => Err(error(E::Ambiguous {
             selector: selector.into(),
-            candidates: candidates(&matches, files, selector),
+            candidates: candidates(&matches, files, selector, target.selector.steps.last()),
         })),
     }
 }
@@ -549,32 +549,49 @@ fn part_name(part: Part) -> &'static str {
     }
 }
 
-/// A selector for each match (§3.5): nested in the match's nearest
-/// enclosing item if no other match shares it, otherwise scoped to its file
-/// if no other match shares that, otherwise to its lines.
-fn candidates(matches: &[Match], files: &[&SourceFile], selector: &str) -> Candidates {
+/// A selector for each match (§3.5): `selector`, with a wildcard name in
+/// its `last` step replaced by the match's item name. Among the matches with
+/// the same selector, it's nested in the match's nearest enclosing item if no
+/// other match shares it, otherwise scoped to its file if no other match
+/// shares that, otherwise to its lines.
+fn candidates(
+    matches: &[Match],
+    files: &[&SourceFile],
+    selector: &str,
+    last: Option<&Step>,
+) -> Candidates {
+    let named: Vec<String> = matches
+        .iter()
+        .map(|m| {
+            last.and_then(|step| named(selector, step, files[m.file], &m.range))
+                .unwrap_or_else(|| selector.to_string())
+        })
+        .collect();
     let enclosing: Vec<Option<String>> = matches
         .iter()
         .map(|m| enclosing(files[m.file], &m.range))
         .collect();
-    let listed = matches
-        .iter()
-        .zip(&enclosing)
+    let listed = (0..matches.len())
         .take(MAX_CANDIDATES)
-        .map(|(m, item)| {
+        .map(|i| {
+            let (m, selector) = (&matches[i], &named[i]);
             let f = &files[m.file];
             let lines = line_numbers(&f.buffer, &m.range);
-            let unique_item = item.as_ref().filter(|&item| {
-                enclosing
+            let peers: Vec<usize> = (0..matches.len())
+                .filter(|&j| named[j] == *selector)
+                .collect();
+            let unique_item = enclosing[i].as_ref().filter(|&item| {
+                peers
                     .iter()
-                    .filter(|e| e.as_ref() == Some(item))
+                    .filter(|&&j| enclosing[j].as_ref() == Some(item))
                     .count()
                     == 1
             });
             let scope = match unique_item {
+                _ if peers.len() == 1 => String::new(),
                 Some(item) => format!("{item}>"),
                 None if files.len() == 1 => format!("{lines}>"),
-                None if matches.iter().filter(|o| o.file == m.file).count() == 1 => {
+                None if peers.iter().filter(|&&j| matches[j].file == m.file).count() == 1 => {
                     format!("file:{}>", f.path)
                 }
                 None => format!("file:{}>{lines}>", f.path),
@@ -586,6 +603,32 @@ fn candidates(matches: &[Match], files: &[&SourceFile], selector: &str) -> Candi
         listed,
         total: matches.len(),
     }
+}
+
+/// `selector` with the wildcard name of its `last` step replaced by the name
+/// of the innermost item of that kind holding `range`, if it has one.
+fn named(selector: &str, last: &Step, f: &SourceFile, range: &Range<usize>) -> Option<String> {
+    let Primary::Syntax { kind, name } = &last.primary else {
+        return None;
+    };
+    if !name.contains('*') {
+        return None;
+    }
+    let item = f
+        .items()?
+        .iter()
+        .rev()
+        .find(|i| i.kind == kind && i.range.start <= range.start && range.end <= i.range.end)?;
+    let prefix = &selector[..selector.rfind(&format!("{kind}:"))?];
+    let parts: String = last
+        .parts
+        .iter()
+        .map(|&p| format!(".{}", part_name(p)))
+        .collect();
+    Some(format!(
+        "{prefix}{}{parts}",
+        syntax::selector(kind, &item.name)
+    ))
 }
 
 /// The selector of the innermost item that strictly contains `range`.
@@ -1157,6 +1200,50 @@ fn main() {
             "error: script:1:8: fn:f matches 2 items; add `all` or use one of:\n  \
              2>fn:f   a.rs:2\n  \
              5>fn:f   a.rs:5"
+        );
+    }
+
+    #[test]
+    fn wildcard_candidates_name_their_items() {
+        assert_eq!(
+            error("delete fn:*", &[("a.rs", "fn a() {}\n\nfn b() {}\n")]),
+            "error: script:1:8: fn:* matches 2 items; add `all` or use one of:\n  \
+             fn:a   a.rs:1\n  \
+             fn:b   a.rs:3"
+        );
+        assert_eq!(
+            error(
+                "delete impl:A>fn:*.body",
+                &[("a.rs", "impl A {\n    fn f() {}\n    fn g() {}\n}\n")]
+            ),
+            "error: script:1:8: impl:A>fn:*.body matches 2 items; add `all` or use one of:\n  \
+             impl:A>fn:f.body   a.rs:2\n  \
+             impl:A>fn:g.body   a.rs:3"
+        );
+    }
+
+    #[test]
+    fn wildcard_candidates_sharing_a_name_are_scoped() {
+        let text = "impl A {\n    fn f() {}\n}\nimpl B {\n    fn f() {}\n}\nfn g() {}\n";
+        assert_eq!(
+            error("delete fn:*", &[("a.rs", text)]),
+            "error: script:1:8: fn:* matches 3 items; add `all` or use one of:\n  \
+             impl:A>fn:f   a.rs:2\n  \
+             impl:B>fn:f   a.rs:5\n  \
+             fn:g          a.rs:7"
+        );
+        assert_eq!(
+            error(
+                "delete fn:*",
+                &[
+                    ("a.rs", "fn new() {}\n"),
+                    ("b.rs", "fn new() {}\nfn old() {}\n")
+                ]
+            ),
+            "error: script:1:8: fn:* matches 3 items; add `all` or use one of:\n  \
+             file:a.rs>fn:new   a.rs:1\n  \
+             file:b.rs>fn:new   b.rs:1\n  \
+             fn:old             b.rs:2"
         );
     }
 

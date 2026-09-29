@@ -141,10 +141,11 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::NoLanguage { .. }
         | ExecErrorKind::UnknownKind { .. }
         | ExecErrorKind::MissingPart { .. }
-        | ExecErrorKind::PartNeedsItem { .. } => 1,
+        | ExecErrorKind::PartNeedsItem { .. }
+        | ExecErrorKind::MoveIntoSource { .. } => 1,
         ExecErrorKind::Unsupported(_)
         | ExecErrorKind::NoFiles
         | ExecErrorKind::InvalidQuery { .. } => 2,
-        ExecErrorKind::Io { .. } => 3,
+        ExecErrorKind::Io { .. } | ExecErrorKind::NoGlobMatch(_) => 3,
     }
 }
