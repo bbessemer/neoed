@@ -126,6 +126,7 @@ impl Parser<'_> {
                 text: self.text()?,
             },
             "check" => self.check()?,
+            "allow" => self.allow()?,
             "rename" => {
                 let instead = r#"use sub /\bOLD\b/ with "NEW" over the files"#;
                 let reserved = E::Reserved {
@@ -172,6 +173,16 @@ impl Parser<'_> {
             _ => None,
         };
         Ok(CommandKind::Check { target, level })
+    }
+
+    /// After `allow`: `errors` or `warnings`.
+    fn allow(&mut self) -> Result<CommandKind, ParseError> {
+        let token = self.bump()?;
+        match &token.kind {
+            TokenKind::Word(w) if w == "errors" => Ok(CommandKind::Allow(Severity::Error)),
+            TokenKind::Word(w) if w == "warnings" => Ok(CommandKind::Allow(Severity::Warning)),
+            _ => Err(expected("`errors` or `warnings`", &token)),
+        }
     }
 
     fn target(&mut self) -> Result<Target, ParseError> {
@@ -426,6 +437,7 @@ pub fn usage(verb: &str) -> Option<&'static str> {
         "file" => "file PATH...",
         "create" => "create PATH TEXT",
         "check" => "check [SEL] [LEVEL]",
+        "allow" => "allow errors|warnings",
         _ => return None,
     })
 }
@@ -553,6 +565,7 @@ mod tests {
             },
             File(paths) => File(paths),
             Create { path, text } => Create { path, text },
+            Allow(level) => Allow(level),
             Check { target, level } => Check {
                 target: target.map(unspan_target),
                 level,
@@ -1096,7 +1109,7 @@ mod tests {
         assert_eq!(
             message(r#""x""#),
             "expected a command, found a string; \
-             commands are show outline check replace insert delete sub move file create"
+             commands are show outline check replace insert delete sub move file create allow"
         );
     }
 
@@ -1203,5 +1216,16 @@ mod tests {
             error("check fn:x hint more").kind,
             E::Expected { .. }
         ));
+    }
+
+    #[test]
+    fn allow_takes_errors_or_warnings() {
+        assert_eq!(one("allow errors"), CommandKind::Allow(Severity::Error));
+        assert_eq!(one("allow warnings"), CommandKind::Allow(Severity::Warning));
+        assert_eq!(
+            message("allow maybe"),
+            "expected `errors` or `warnings`, found `maybe`; usage: allow errors|warnings"
+        );
+        assert!(matches!(error("allow").kind, E::Expected { .. }));
     }
 }

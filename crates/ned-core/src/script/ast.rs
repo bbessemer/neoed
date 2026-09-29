@@ -59,6 +59,10 @@ pub enum CommandKind {
         target: Option<Target>,
         level: Option<Severity>,
     },
+    /// `allow errors` (`Error`) or `allow warnings` (`Warning`): the most
+    /// severe level an introduced diagnostic may have without rejecting the
+    /// edits.
+    Allow(Severity),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

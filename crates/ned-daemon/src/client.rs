@@ -118,34 +118,59 @@ impl Workspace {
             client: None,
         }
     }
+
+    /// Whether a daemon is running for the workspace; never spawns one.
+    pub fn running(&mut self) -> bool {
+        if self.client.is_none()
+            && let Ok(root) = workspace_root(&self.dir)
+            && let Ok(runtime) = runtime_dir()
+        {
+            self.client = Client::connect(&Paths::new(&runtime, &root, &self.version));
+        }
+        self.client.is_some()
+    }
+
+    /// The daemon, spawned if it isn't running.
+    fn client(&mut self) -> Result<Client, LspFailure> {
+        if let Some(client) = &self.client {
+            return Ok(client.clone());
+        }
+        let root = workspace_root(&self.dir)
+            .map_err(|err| LspFailure(format!("cannot read {}: {err}", self.dir.display())))?;
+        let runtime = runtime_dir().map_err(|err| LspFailure(err.to_string()))?;
+        let paths = Paths::new(&runtime, &root, &self.version);
+        let client = Client::connect_or_spawn(&paths, &self.exe, &root)
+            .map_err(|err| LspFailure(err.to_string()))?;
+        Ok(self.client.insert(client).clone())
+    }
+
+    fn request(&mut self, request: &Request) -> Result<Response, LspFailure> {
+        match self.client()?.request(request) {
+            Ok(Response::Error(message)) => Err(LspFailure(message)),
+            Ok(response) => Ok(response),
+            Err(err) => Err(LspFailure(err.to_string())),
+        }
+    }
 }
 
 impl Lsp for Workspace {
     fn diagnose(&mut self, documents: &[Document]) -> Result<Diagnosis, LspFailure> {
-        let failure = |err: &dyn std::fmt::Display| LspFailure(err.to_string());
-        let client = match &self.client {
-            Some(client) => client.clone(),
-            None => {
-                let root = workspace_root(&self.dir).map_err(|err| {
-                    LspFailure(format!("cannot read {}: {err}", self.dir.display()))
-                })?;
-                let paths = Paths::new(
-                    &runtime_dir().map_err(|e| failure(&e))?,
-                    &root,
-                    &self.version,
-                );
-                let client =
-                    Client::connect_or_spawn(&paths, &self.exe, &root).map_err(|e| failure(&e))?;
-                self.client.insert(client).clone()
-            }
-        };
-        let request = Request::Diagnose {
-            documents: documents.to_vec(),
-        };
-        match client.request(&request).map_err(|e| failure(&e))? {
+        let documents = documents.to_vec();
+        match self.request(&Request::Diagnose { documents })? {
             Response::Diagnosis(diagnosis) => Ok(diagnosis),
-            Response::Error(message) => Err(LspFailure(message)),
-            other => Err(failure(&ClientError::Protocol(format!("{other:?}")))),
+            other => Err(LspFailure(
+                ClientError::Protocol(format!("{other:?}")).to_string(),
+            )),
+        }
+    }
+
+    fn sync(&mut self, documents: &[Document]) -> Result<(), LspFailure> {
+        let documents = documents.to_vec();
+        match self.request(&Request::Open { documents })? {
+            Response::Opened => Ok(()),
+            other => Err(LspFailure(
+                ClientError::Protocol(format!("{other:?}")).to_string(),
+            )),
         }
     }
 }

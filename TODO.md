@@ -115,7 +115,10 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [x] `ned-daemon` crate: per-workspace socket, lazy spawn, idle timeout
 - [x] LSP client (`lsp-types`, `tokio`): initialize, didOpen/didChange, shutdown
 - [x] Server configuration per language (rust-analyzer, gopls, pyright, tsserver)
-- [ ] `check` verb: diagnostics for edited files
+- [x] `check` verb: diagnostics for edited files (and automatic checking of
+      edits while a daemon runs)
+- [ ] Diagnostics that only `cargo check` reports (rust-analyzer flycheck on
+      save), e.g. unresolved names, for automatic checking and `check`
 - [ ] `rename` verb (workspace-wide) and `refs:` / `def:` selectors
 - [ ] LSP formatting fallback when no external formatter is configured
 
@@ -144,7 +147,10 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] Ambiguity candidates for nested selectors put the scope before the
       whole selector (`64>fn:items>/name/`, `var:comma>fn:items>/name/`,
       `fn:x>file:a.rs>/re/`), so they select nothing; put `file:` first and
-      the line or enclosing-item scope just before the last step
+      the line or enclosing-item scope just before the last step. The line
+      scope is also wrong for items: two `impl:Workspace` candidates were
+      given as `112-120>…` and `124-150>…`, the impls' bodies, but a line
+      scope must cover the whole item (`111-121>impl:Workspace`) to match it
 - [ ] A syntax step fails when the file set includes a file in a language
       without selector queries yet (e.g. a `.py` file next to `.rs` files),
       even if other files match; skip such files as files without a language

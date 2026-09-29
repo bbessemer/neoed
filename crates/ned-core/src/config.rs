@@ -31,6 +31,8 @@ pub(crate) struct Layer {
     pub(crate) idle_timeout: Option<u64>,
     pub(crate) check_show: Option<Severity>,
     pub(crate) check_timeout: Option<u64>,
+    /// `Some(None)` for `block = false`.
+    pub(crate) check_block: Option<Option<Severity>>,
 }
 
 /// A tool setting for one language.
@@ -64,6 +66,18 @@ struct RawDaemon {
 struct RawCheck {
     show: Option<Severity>,
     timeout: Option<u64>,
+    block: Option<RawBlock>,
+}
+
+/// `[check] block`: a level, or `false`.
+#[derive(Deserialize)]
+#[serde(
+    untagged,
+    expecting = "a level (\"error\", \"warning\", \"info\" or \"hint\") or false"
+)]
+enum RawBlock {
+    Level(Severity),
+    Off(bool),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +146,15 @@ impl Config {
             .into_iter()
             .find_map(|layer| layer.check_timeout))
     }
+
+    /// `[check] block` for `dir`: `Some(None)` if it's `false`.
+    pub fn check_block(&mut self, dir: &Path) -> Result<Option<Option<Severity>>, ConfigError> {
+        let dir = std::path::absolute(dir).map_err(|err| io_error(dir, &err))?;
+        Ok(self
+            .layers(&dir)?
+            .into_iter()
+            .find_map(|layer| layer.check_block))
+    }
 }
 
 /// The user config file: `$XDG_CONFIG_HOME/ned/config.toml`, else
@@ -197,6 +220,14 @@ fn load(path: &Path) -> Result<Option<Layer>, ConfigError> {
         idle_timeout: raw.daemon.idle_timeout,
         check_show: raw.check.show,
         check_timeout: raw.check.timeout,
+        check_block: match raw.check.block {
+            None => None,
+            Some(RawBlock::Level(level)) => Some(Some(level)),
+            Some(RawBlock::Off(false)) => Some(None),
+            Some(RawBlock::Off(true)) => {
+                return Err(error(None, "`block` must be a level or false".into()));
+            }
+        },
     }))
 }
 
@@ -322,5 +353,31 @@ pub(crate) mod tests {
             .unwrap_err();
         assert!(err.location.ends_with(".ned.toml:2:8"), "{err}");
         assert!(err.message.contains("warning"), "{err}");
+    }
+
+    #[test]
+    fn block_is_a_level_or_false() {
+        let root = tree(&[
+            ("config.toml", "[check]\nblock = \"warning\"\n"),
+            ("ws/.ned.toml", "[check]\nblock = false\n"),
+        ]);
+        let mut config = Config::new(Some(&root.path().join("config.toml"))).unwrap();
+        assert_eq!(
+            config.check_block(root.path()),
+            Ok(Some(Some(Severity::Warning)))
+        );
+        assert_eq!(config.check_block(&root.path().join("ws")), Ok(Some(None)));
+        assert_eq!(
+            Config::new(None).unwrap().check_block(root.path()),
+            Ok(None)
+        );
+        for bad in ["true", "\"errors\""] {
+            let root = tree(&[(".ned.toml", &format!("[check]\nblock = {bad}\n"))]);
+            let err = Config::new(None)
+                .unwrap()
+                .check_block(root.path())
+                .unwrap_err();
+            assert!(err.message.contains("level"), "{bad}: {err}");
+        }
     }
 }

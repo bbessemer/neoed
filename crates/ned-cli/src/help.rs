@@ -7,6 +7,7 @@ pub enum Topic {
     Show,
     Outline,
     Check,
+    Allow,
 
     Replace,
     Insert,
@@ -27,6 +28,7 @@ pub fn text(topic: Option<Topic>) -> &'static str {
         Some(Topic::Show) => include_str!("../help/show.txt"),
         Some(Topic::Outline) => include_str!("../help/outline.txt"),
         Some(Topic::Check) => include_str!("../help/check.txt"),
+        Some(Topic::Allow) => include_str!("../help/allow.txt"),
 
         Some(Topic::Replace) => include_str!("../help/replace.txt"),
         Some(Topic::Insert) => include_str!("../help/insert.txt"),

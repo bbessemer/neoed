@@ -142,10 +142,11 @@ supports every selector (including `A..B` ranges) and verb (including
 `ned help`. Every error ends with a fix. `ned-daemon` has the per-workspace
 daemon (socket, lock, lazy spawn, idle exit) behind `ned daemon`, and starts
 language servers (`lsp`, `servers`; `[lsp]` config in `ned-core`) for `open`
-requests and diagnostics (`check [SEL] [LEVEL]`, through the `Lsp` trait in
-`ned-core`); the version names the build commit, and a daemon serves only its
-own build. Next (§9): automatic checking of edits (9c-2), `rename`/`refs:`/
-`def:`, the formatting fallback.
+requests and diagnostics, through the `Lsp` trait in `ned-core`: `check [SEL]
+[LEVEL]`, and edits checked while a daemon runs (introduced errors block
+unless `allow errors`); the version names the build commit, and a daemon serves
+only its own build. Next (§9): `rename`/`refs:`/`def:`, the formatting
+fallback.
 
 ## Key Documentation
 

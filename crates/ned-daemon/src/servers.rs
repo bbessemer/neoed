@@ -79,7 +79,13 @@ impl Servers {
                 .await?;
             files.push(Some(diagnostics));
         }
-        Ok(Diagnosis { show, files })
+        Ok(Diagnosis {
+            show,
+            block: config
+                .check_block(&self.root)?
+                .unwrap_or(Some(Severity::Error)),
+            files,
+        })
     }
 
     pub fn status(&self) -> Vec<ServerStatus> {

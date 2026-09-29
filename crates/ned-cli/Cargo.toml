@@ -19,4 +19,5 @@ ned-daemon = { version = "0.1.0", path = "../ned-daemon" }
 [dev-dependencies]
 assert_cmd = "2.2.2"
 insta = "1.48.0"
+serde_json = "1.0.151"
 tempfile = "3.27.0"
