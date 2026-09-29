@@ -198,3 +198,67 @@ fn display(path: &Path) -> String {
         .display()
         .to_string()
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    pub(crate) fn tree(files: &[(&str, &str)]) -> TempDir {
+        let root = TempDir::new().unwrap();
+        for (path, text) in files {
+            let path = root.path().join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn idle_timeout_nearest_wins() {
+        let root = tree(&[
+            ("config.toml", "[daemon]\nidle_timeout = 60\n"),
+            ("ws/.ned.toml", "[daemon]\nidle_timeout = 1800\n"),
+            ("ws/sub/.ned.toml", "[format]\nrust = false\n"),
+        ]);
+        let mut config = Config::new(Some(&root.path().join("config.toml"))).unwrap();
+        assert_eq!(
+            config.idle_timeout(&root.path().join("ws/sub")),
+            Ok(Some(1800))
+        );
+        assert_eq!(config.idle_timeout(root.path()), Ok(Some(60)));
+    }
+
+    #[test]
+    fn no_idle_timeout_without_a_setting() {
+        let root = tree(&[(".ned.toml", "[daemon]\n")]);
+        assert_eq!(
+            Config::new(None).unwrap().idle_timeout(root.path()),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn unknown_daemon_settings_are_errors() {
+        let root = tree(&[(".ned.toml", "[daemon]\nidle = 3\n")]);
+        let err = Config::new(None)
+            .unwrap()
+            .idle_timeout(root.path())
+            .unwrap_err();
+        assert!(err.location.ends_with(".ned.toml:2:1"), "{err}");
+        assert!(err.message.contains("unknown field `idle`"), "{err}");
+    }
+
+    #[test]
+    fn lsp_values_must_be_commands() {
+        let root = tree(&[(".ned.toml", "[lsp]\nrust = \"rust-analyzer\"\n")]);
+        let err = Config::new(None)
+            .unwrap()
+            .layers(root.path())
+            .map(|_| ())
+            .unwrap_err();
+        assert!(err.location.ends_with(".ned.toml:2:8"), "{err}");
+        assert!(err.message.contains("must be a command"), "{err}");
+    }
+}

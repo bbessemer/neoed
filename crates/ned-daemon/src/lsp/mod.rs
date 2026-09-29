@@ -112,3 +112,51 @@ impl State {
         todo!()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn progress(token: Value, kind: &str) -> Value {
+        json!({"token": token, "value": {"kind": kind, "title": "Indexing"}})
+    }
+
+    #[test]
+    fn work_done_progress_makes_a_server_busy() {
+        let mut state = State::default();
+        assert!(!state.busy());
+        state.notify("$/progress", &progress(json!("a"), "begin"));
+        assert!(state.busy());
+        state.notify("$/progress", &progress(json!(7), "begin"));
+        state.notify("$/progress", &progress(json!("a"), "report"));
+        state.notify("$/progress", &progress(json!("a"), "end"));
+        assert!(state.busy());
+        state.notify("$/progress", &progress(json!(7), "end"));
+        assert!(!state.busy());
+    }
+
+    #[test]
+    fn rust_analyzer_is_busy_until_quiescent() {
+        let mut state = State::default();
+        state.notify(
+            "experimental/serverStatus",
+            &json!({"health": "ok", "quiescent": false}),
+        );
+        assert!(state.busy());
+        state.notify(
+            "experimental/serverStatus",
+            &json!({"health": "ok", "quiescent": true}),
+        );
+        assert!(!state.busy());
+    }
+
+    #[test]
+    fn other_notifications_are_ignored() {
+        let mut state = State::default();
+        state.notify("window/logMessage", &json!({"type": 3, "message": "hi"}));
+        state.notify("$/progress", &json!({"token": "a"}));
+        assert!(!state.busy());
+    }
+}

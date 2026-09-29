@@ -66,9 +66,9 @@ no daemon for /home/me/proj
 
 The daemon starts a language's server the first time a feature needs it, and
 keeps each server's view of the files in sync with the text `ned` sends it.
-`status` lists each server with its state (`starting`, `indexing`, `ready` or
-`exited`) and the number of files it has open. A server that exits is started
-again when next needed. Servers are shut down with the daemon.
+`status` lists each server with its state (`indexing`, `ready` or `exited`)
+and the number of files it has open. A server that exits is started again when
+next needed. Servers are shut down with the daemon.
 
 Servers are configured per language under `[lsp]`, like formatters (§6.4): the
 same files, merging and program lookup, read from the workspace root up. A value

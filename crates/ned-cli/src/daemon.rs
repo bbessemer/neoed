@@ -136,4 +136,30 @@ mod tests {
         assert_eq!(uptime(3600), "1h0m");
         assert_eq!(uptime(7500), "2h5m");
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_lists_servers() {
+        use ned_daemon::protocol::{ServerState, ServerStatus, Status};
+        let server = |name: &str, state, documents| ServerStatus {
+            name: name.into(),
+            state,
+            documents,
+        };
+        let status = Status {
+            version: "0.1.0+abc".into(),
+            root: PathBuf::from("/w"),
+            pid: 7,
+            uptime_secs: 180,
+            servers: vec![
+                server("rust-analyzer", ServerState::Ready, 12),
+                server("gopls", ServerState::Indexing, 1),
+                server("pyright-langserver", ServerState::Exited, 0),
+            ],
+        };
+        assert_eq!(
+            status_text(&status),
+            "daemon for /w: pid 7, up 3m\n  rust-analyzer: ready, 12 files\n  gopls: indexing, 1 file\n  pyright-langserver: exited, 0 files\n"
+        );
+    }
 }
