@@ -231,6 +231,9 @@ fn rust_edition(dir: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lsp::{
+        Diagnosis, Document, Formatting, Locate, Located, LspFailure, Position, Renamed, TextEdit,
+    };
     use std::fs;
     use tempfile::TempDir;
 
@@ -686,5 +689,144 @@ mod tests {
         let outcomes = run(&changes, &mut Config::new(None).unwrap()).unwrap();
         let dir = fs::canonicalize(root.path().join("sub")).unwrap();
         assert_eq!(outcomes, [formatted("sh", &format!("{}\n", dir.display()))]);
+    }
+
+    /// A server that answers every formatting request with `answer`.
+    struct FormatLsp {
+        answer: Result<Formatting, LspFailure>,
+        asked: Vec<Document>,
+    }
+
+    impl Lsp for FormatLsp {
+        fn diagnose(&mut self, _: &[Document]) -> Result<Diagnosis, LspFailure> {
+            unreachable!("formatting doesn't diagnose")
+        }
+
+        fn sync(&mut self, _: &[Document]) -> Result<(), LspFailure> {
+            unreachable!("formatting doesn't sync")
+        }
+
+        fn rename(&mut self, _: &Document, _: Position, _: &str) -> Result<Renamed, LspFailure> {
+            unreachable!("formatting doesn't rename")
+        }
+
+        fn locate(&mut self, _: Locate, _: &Document, _: Position) -> Result<Located, LspFailure> {
+            unreachable!("formatting doesn't locate")
+        }
+
+        fn format(&mut self, document: &Document) -> Result<Formatting, LspFailure> {
+            self.asked.push(document.clone());
+            self.answer.clone()
+        }
+    }
+
+    fn serve(answer: Result<Formatting, LspFailure>) -> FormatLsp {
+        FormatLsp {
+            answer,
+            asked: Vec::new(),
+        }
+    }
+
+    fn edits(edits: &[(u32, u32, u32, u32, &str)]) -> Result<Formatting, LspFailure> {
+        Ok(Formatting::Edits {
+            server: "rust-analyzer".into(),
+            edits: edits
+                .iter()
+                .map(|&(line, start, end_line, end, text)| TextEdit {
+                    start: Position {
+                        line,
+                        character: start,
+                    },
+                    end: Position {
+                        line: end_line,
+                        character: end,
+                    },
+                    text: text.into(),
+                })
+                .collect(),
+        })
+    }
+
+    const NOT_FOUND: &str = "rustfmt not found; skipped formatting src/a.rs";
+
+    /// `fallback` on one change to src/a.rs whose formatter wasn't found.
+    fn fall_back(new: &str, lsp: &mut FormatLsp) -> Outcome {
+        let changes = [change(Path::new("src/a.rs"), Some(Language::Rust), new)];
+        let mut outcomes = [Outcome::NotFound(NOT_FOUND.into())];
+        fallback(&changes, &mut outcomes, lsp);
+        outcomes[0].clone()
+    }
+
+    #[test]
+    fn the_language_server_formats_changes_without_a_formatter() {
+        let changes = [
+            change(
+                Path::new("src/a.rs"),
+                Some(Language::Rust),
+                "fn a( ) {}\nx\n",
+            ),
+            change(Path::new("src/b.rs"), Some(Language::Rust), "b\n"),
+            change(Path::new("src/c.rs"), Some(Language::Rust), "c\n"),
+            change(Path::new("src/d.rs"), Some(Language::Rust), "d\n"),
+        ];
+        let mut outcomes = [
+            Outcome::NotFound(NOT_FOUND.into()),
+            Outcome::Unchanged,
+            Outcome::Failed("rustfmt failed: bad; skipped formatting src/c.rs".into()),
+            formatted("rustfmt", "D\n"),
+        ];
+        let expected_rest = outcomes[1..].to_vec();
+        let mut lsp = serve(edits(&[(0, 5, 0, 6, ""), (1, 0, 1, 0, "// y\n")]));
+        fallback(&changes, &mut outcomes, &mut lsp);
+        assert_eq!(
+            outcomes[0],
+            formatted("rust-analyzer", "fn a() {}\n// y\nx\n")
+        );
+        assert_eq!(outcomes[1..], expected_rest);
+        assert_eq!(lsp.asked.len(), 1);
+        assert_eq!(lsp.asked[0].path, std::path::absolute("src/a.rs").unwrap());
+        assert_eq!(lsp.asked[0].lang, Language::Rust);
+        assert_eq!(lsp.asked[0].text, "fn a( ) {}\nx\n");
+    }
+
+    #[test]
+    fn server_edits_count_utf16_units() {
+        let mut lsp = serve(edits(&[(0, 3, 0, 4, "b")]));
+        assert_eq!(
+            fall_back("é😀a\n", &mut lsp),
+            formatted("rust-analyzer", "é😀b\n")
+        );
+    }
+
+    #[test]
+    fn no_server_edits_leave_the_change_unformatted() {
+        assert_eq!(fall_back("a\n", &mut serve(edits(&[]))), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn without_a_server_the_note_stays() {
+        let mut lsp = serve(Ok(Formatting::NoServer));
+        assert_eq!(
+            fall_back("a\n", &mut lsp),
+            Outcome::NotFound(NOT_FOUND.into())
+        );
+    }
+
+    #[test]
+    fn a_server_failure_is_added_to_the_note() {
+        let mut lsp = serve(Err(LspFailure("rust-analyzer exited; retry".into())));
+        assert_eq!(
+            fall_back("a\n", &mut lsp),
+            Outcome::NotFound(format!("{NOT_FOUND}; rust-analyzer exited; retry"))
+        );
+    }
+
+    #[test]
+    fn overlapping_server_edits_are_a_failure() {
+        let mut lsp = serve(edits(&[(0, 0, 0, 2, "x"), (0, 1, 0, 2, "y")]));
+        assert_eq!(
+            fall_back("abc\n", &mut lsp),
+            Outcome::NotFound(format!("{NOT_FOUND}; rust-analyzer sent overlapping edits"))
+        );
     }
 }
