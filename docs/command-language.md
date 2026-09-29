@@ -32,7 +32,8 @@ first argument; write a file named `help` as `./help`.
 | ----------------- | -------------------------------------------------------------------------------------------------------- |
 | `-n`, `--dry-run` | Resolve and apply edits in memory, print the output, write nothing.                                      |
 | `-q`, `--quiet`   | Print only the per-file summary lines on success (§6.3).                                                 |
-| `--force`         | Skip the parse-error guard (§4.3).                                                                       |
+| `--force`         | Skip the parse-error guard (§4.3) and blocking on introduced diagnostics (§6.5).                         |
+| `--no-check`      | Don't check edits with language servers (§6.5).                                                          |
 | `--no-fmt`        | Don't run formatters (§6.4).                                                                             |
 | `--lang LANG`     | Use this language for every file: `rust`, `python`, `typescript`, `tsx`, `javascript`, `go`, `markdown`. |
 | `--context N`     | Context lines around diff hunks (default 1).                                                             |
@@ -76,7 +77,8 @@ is a command as an argv array, or `false` for none. `[daemon]` sets
 `idle_timeout`, in seconds. `[check]` sets `show`, the lowest severity `check`
 prints by default (`error`, `warning`, `info` or `hint`; default `warning`),
 and `timeout`, how long `check` waits for a server's diagnostics, in seconds
-(default 30).
+(default 30). `block` is the lowest severity of an introduced diagnostic that
+rejects an edit (§6.5; default `error`), or `false` for none.
 
 ```toml
 [lsp]
@@ -141,7 +143,7 @@ other platforms, features that need it are errors.
 script     = { line } ;
 line       = [ command { ";" command } ] [ comment ] NEWLINE { heredoc-body } ;
 command    = show | outline | replace | insert | delete | sub | move | create
-           | file | check | rename ;
+           | file | check | allow | rename ;
 
 show       = "show" [ target [ context ] ] ;
 outline    = "outline" [ target ] ;
@@ -155,6 +157,7 @@ create     = "create" path text ;
 rename     = "rename" target "to" name ;            (* reserved *)
 check      = "check" [ target ] [ level ] ;
 level      = "error" | "warning" | "info" | "hint" ;
+allow      = "allow" ( "errors" | "warnings" ) ;
 
 position   = "before" | "after" | "start" | "end" ;
 target     = [ "all" ] selector ;
@@ -454,6 +457,15 @@ and `MISSING` nodes before and after the edit. If the count rises, the script is
 rejected (exit 1) and the error shows the first new error node. `--force` skips
 this check.
 
+### 4.4 Directives
+
+`allow errors` lets the script's edits apply even if they introduce errors
+(§6.5), as for an unfinished change with missing symbols; the errors are still
+shown. `allow warnings` lets introduced warnings (and less severe diagnostics)
+through but still blocks errors, which matters only when `[check] block` is
+`warning` or lower. A directive applies to the whole script, wherever it
+appears; with several, the most permissive wins.
+
 ## 5. Text and indentation
 
 ### 5.1 Line-oriented and verbatim text
@@ -615,6 +627,34 @@ python = false
 | typescript, tsx, javascript | `prettier --stdin-filepath {path}`                                                                        |
 | markdown                    | `prettier --stdin-filepath {path}`                                                                        |
 
+### 6.5 Checking
+
+After formatting, if a daemon is running for the workspace (§1.1), each
+modified file whose language has a server is checked: the server diagnoses the
+original text (empty for a created file) and the final text. Edits never start
+a daemon; `ned daemon start` or a `check` does. `--no-check` skips checking.
+
+A diagnostic in the final text is **introduced** unless the original has an
+identical one left to match it: the same severity, source, code and message.
+Positions don't count, since edits move them.
+
+- Introduced diagnostics at `[check] show` or above are printed after the
+  file's hunks and `fmt` lines, in `check`'s format (§4.1), with positions in
+  the final text. `--quiet` keeps them.
+- Introduced diagnostics at `[check] block` or above (default `error`) reject
+  the script (exit 1), and nothing is written, even with `--dry-run`. `allow`
+  (§4.4) and `--force` let them through.
+
+  ```
+  error: edit introduces 1 error; fix it, or add `allow errors` to the script to apply it anyway
+  src/parser.rs:15:9: error: mismatched types [rust-analyzer E0308]
+  ```
+
+- A server that fails or doesn't report in time (`[check] timeout`) skips
+  checking with a note, and the edit applies:
+  `note: rust-analyzer didn't answer diagnostics within 30s; skipped checking src/parser.rs`.
+- If the edit isn't written, the servers are sent the original text again.
+
 ## 7. Errors and exit codes
 
 Errors go to stderr, in the form `error: LOC: message`.
@@ -658,12 +698,12 @@ error: script:2:28: unterminated heredoc <<END (started here); end it with a lin
                              ^
 ```
 
-| Code | Meaning                                                                                                                        |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------ |
-| 0    | Success, including dry runs and skipped formatters                                                                             |
-| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unsupported kind, parse-error guard, move into its own source |
-| 2    | Usage error (bad flags or arguments), script syntax error, invalid query or config, reserved feature, or no language server    |
-| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, write failure, or language server failure                       |
+| Code | Meaning                                                                                                                                                |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0    | Success, including dry runs and skipped formatters                                                                                                     |
+| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unsupported kind, parse-error guard, introduced diagnostics, move into its own source |
+| 2    | Usage error (bad flags or arguments), script syntax error, invalid query or config, reserved feature, or no language server                            |
+| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, write failure, or language server failure                                               |
 
 On any non-zero exit, no file is modified. Reads that ran before the failure
 still print their output.

@@ -8,6 +8,7 @@ Commands, separated by newlines or `;`:
   show [SEL [+N]]               print the lines of SEL, numbered, N around
   outline [SEL]                 list syntax items as pasteable selectors
   check [SEL] [LEVEL]           language-server diagnostics; LEVEL error..hint
+  allow errors|warnings         apply edits even if they introduce errors
   replace SEL with TEXT
   insert before|after|start|end SEL TEXT
   delete SEL
@@ -31,7 +32,7 @@ target; <<'END' is inserted verbatim. Selectors resolve against the original
 text, so line numbers from `show` stay valid for the whole script.
 
 Flags: -n dry run   -q summaries only   --force skip the syntax-error guard
-       --no-fmt   --lang LANG   --context N
+       --no-fmt   --no-check   --lang LANG   --context N
 
 Examples:
     replace fn:parse>"unexpected end" with "end of input"
