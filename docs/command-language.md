@@ -256,7 +256,9 @@ A selector resolves to a set of **spans** (byte ranges) in one or more files.
 
 Line numbers are 1-based. A line selector covers whole lines, including their
 line endings. A range whose start is after its end, or a line past the end of
-the file, is an error.
+the file, is an error. Numbers count from the top of the file even in a nested
+step, but there `$` is the last line of the enclosing span: `fn:parse>$` is the
+function's closing line.
 
 ### 3.2 Regex and literal
 
@@ -323,7 +325,9 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 ### 3.4 Nesting and parts
 
 - `A>B` resolves `B` within each span of `A`. That is, `B`'s matches must lie
-  inside `A`, at any depth. Any kinds of primaries can be mixed:
+  inside `A`, at any depth. A line lies inside a span that covers whole lines
+  (such as a syntax item) if its text does, so `fn:new>12` can select the
+  item's first or last line. Any kinds of primaries can be mixed:
   `impl:Parser>fn:new`, `fn:main>/unwrap\(\)/`, `100-200>fn:new`.
 - A **part** narrows each span of its step:
 
@@ -367,8 +371,11 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 - There is no nth-match syntax. To disambiguate, nest (`impl:Lexer>fn:new`),
   scope by lines (`40-80>fn:new`), or scope by file (`file:src/a.rs>fn:new`).
   Error messages list the candidates in exactly these forms (§7): nested in the
-  match's nearest enclosing item if that's unique among the matches, otherwise
-  scoped by file if that's unique, otherwise by lines.
+  match's nearest enclosing item (within the previous step's span) if that's
+  unique among the matches, otherwise scoped by file if that's unique,
+  otherwise by lines. A `file:` scope goes first; an item or line scope goes
+  just before the selector's last step (`impl:Lexer>fn:new>40-44>/x/`), and a
+  line scope covers the whole matched item, even when a part follows it.
 - Every listed candidate picks exactly one match. Matches that share a line
   with another match can't be picked by scope, so they aren't listed; the error
   counts them and suggests selecting longer text, or `all`.
