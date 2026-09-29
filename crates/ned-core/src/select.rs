@@ -764,7 +764,7 @@ pub(crate) fn same_path(a: &str, b: &str) -> bool {
     a.strip_prefix("./").unwrap_or(a) == b.strip_prefix("./").unwrap_or(b)
 }
 
-fn part_name(part: Part) -> &'static str {
+pub(crate) fn part_name(part: Part) -> &'static str {
     match part {
         Part::Body => "body",
         Part::Sig => "sig",

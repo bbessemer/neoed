@@ -10,7 +10,7 @@ use tree_sitter::Node;
 
 use crate::edit::{Edit, EditError, EditSet};
 use crate::lang::Language;
-use crate::lsp::{self, Document, Lsp, LspFailure, Renamed, Severity, render};
+use crate::lsp::{self, Document, Locate, Located, Lsp, LspFailure, Renamed, Severity, render};
 use crate::outline;
 use crate::script::Script;
 use crate::script::ast::{
@@ -431,7 +431,226 @@ impl Executor<'_> {
     /// `resolve` for a selector with `.refs` or `.def`, which the language
     /// server resolves (§3.4).
     fn resolve_located(&mut self, target: &Target) -> Result<Vec<Match>, ExecError> {
-        todo!("{target:?}")
+        let span = target.selector.span.clone();
+        let what = &self.src[span.clone()];
+        let located = |p: &Part| matches!(p, Part::Refs | Part::Def);
+        let mut rest = target.selector.steps.as_slice();
+        let mut matches: Option<Vec<Match>> = None;
+        while !rest.is_empty() {
+            // The steps up to the next `.refs` or `.def`, resolved first.
+            let split = rest
+                .iter()
+                .enumerate()
+                .find_map(|(i, s)| s.parts.iter().position(located).map(|j| (i, j)));
+            let (mut steps, parts) = match split {
+                Some((i, j)) => {
+                    let mut steps = rest[..i].to_vec();
+                    steps.push(Step {
+                        primary: rest[i].primary.clone(),
+                        parts: rest[i].parts[..j].to_vec(),
+                    });
+                    (steps, &rest[i].parts[j..])
+                }
+                None => (rest.to_vec(), &[][..]),
+            };
+            if !parts.is_empty() {
+                at_name(&mut steps);
+            }
+            let segment = Target {
+                all: true,
+                selector: Selector {
+                    steps,
+                    span: span.clone(),
+                },
+            };
+            let mut found = match matches {
+                None => self.resolve(&segment)?,
+                Some(start) => {
+                    let files: Vec<&SourceFile> = self.files.iter().map(|l| &l.file).collect();
+                    select::resolve_within(&segment, &files, start, self.src)?
+                }
+            };
+            for part in parts {
+                found = match part {
+                    Part::Refs => self.locate(Locate::References, &found, what, &span)?,
+                    Part::Def => self.locate(Locate::Definition, &found, what, &span)?,
+                    Part::Lines => found
+                        .into_iter()
+                        .map(|m| Match {
+                            range: text::full_lines(&self.files[m.file].file.text, m.range),
+                            ..m
+                        })
+                        .collect(),
+                    part => {
+                        return Err(ExecError::new(
+                            ExecErrorKind::PartNeedsItem {
+                                part: select::part_name(*part).into(),
+                            },
+                            Some(span.clone()),
+                        ));
+                    }
+                };
+            }
+            matches = Some(found);
+            rest = match split {
+                Some((i, _)) => &rest[i + 1..],
+                None => &[],
+            };
+        }
+        let matches = matches.unwrap_or_default();
+        let error = |kind| ExecError::new(kind, Some(span.clone()));
+        match matches.len() {
+            0 => {
+                let paths: Vec<&str> = self.set.iter().map(|m| m.path.as_str()).collect();
+                Err(error(ExecErrorKind::NoMatch {
+                    selector: what.into(),
+                    files: select::file_list(&paths),
+                    hint: String::new(),
+                }))
+            }
+            1 => Ok(matches),
+            _ if target.all => Ok(matches),
+            total => {
+                let locations: Vec<String> = matches
+                    .iter()
+                    .map(|m| {
+                        let f = &self.files[m.file].file;
+                        format!("{}:{}", f.path, line_numbers(&f.buffer, &m.range))
+                    })
+                    .collect();
+                let locations: Vec<&str> = locations.iter().map(String::as_str).collect();
+                Err(error(ExecErrorKind::AmbiguousLocated {
+                    selector: what.into(),
+                    total,
+                    locations: select::file_list(&locations),
+                }))
+            }
+        }
+    }
+
+    /// The references to, or definitions of, the symbols at `matches` (§3.4),
+    /// in order; `what` is the selector, for errors.
+    fn locate(
+        &mut self,
+        kind: Locate,
+        matches: &[Match],
+        what: &str,
+        span: &Range<usize>,
+    ) -> Result<Vec<Match>, ExecError> {
+        let error = |kind| ExecError::new(kind, Some(span.clone()));
+        let mut locations = Vec::new();
+        for m in matches {
+            let (document, position) = self.symbol(m, what, span)?;
+            let Some(lsp) = self.lsp.as_deref_mut() else {
+                let message = "`.refs` and `.def` need the language-server daemon, which is Unix-only for now; select with a /regex/ or kind:NAME instead";
+                return Err(error(ExecErrorKind::Lsp(message.into())));
+            };
+            match lsp.locate(kind, &document, position) {
+                Ok(Located::Locations(found)) => locations.extend(found),
+                Ok(Located::NoServer) => {
+                    return Err(error(ExecErrorKind::NoServer {
+                        langs: document.lang.name().into(),
+                    }));
+                }
+                Err(LspFailure(message)) => return Err(error(ExecErrorKind::Lsp(message))),
+            }
+        }
+        let paths: Vec<&Path> = locations.iter().map(|l| l.path.as_path()).collect();
+        let files = self.reach(&paths, what, span)?;
+        let mut found: Vec<Match> = locations
+            .iter()
+            .zip(files)
+            .map(|(l, file)| {
+                let f = &self.files[file].file;
+                let start = f.buffer.lsp_offset(l.start.line, l.start.character);
+                let end = f.buffer.lsp_offset(l.end.line, l.end.character);
+                let range = match kind {
+                    Locate::References => start..end,
+                    Locate::Definition => defining_item(f, start).unwrap_or(start..end),
+                };
+                Match { file, range }
+            })
+            .collect();
+        let rank = |m: &Match| {
+            let path = &self.files[m.file].file.path;
+            (
+                self.named.iter().position(|n| same_path(n, path)),
+                m.range.start,
+            )
+        };
+        found.sort_by_key(rank);
+        found.dedup();
+        Ok(found)
+    }
+
+    /// The document holding `m` and the LSP position of its start, for asking
+    /// about the symbol there; `what` names the feature, for errors.
+    fn symbol(
+        &self,
+        m: &Match,
+        what: &str,
+        span: &Range<usize>,
+    ) -> Result<(Document, lsp::Position), ExecError> {
+        let error = |kind| ExecError::new(kind, Some(span.clone()));
+        let file = &self.files[m.file].file;
+        let Some(lang) = file.lang else {
+            return Err(error(ExecErrorKind::NoLanguage {
+                selector: what.into(),
+                files: file.path.clone(),
+            }));
+        };
+        let path = std::path::absolute(&file.path).map_err(|err| {
+            error(ExecErrorKind::Io {
+                path: file.path.clone(),
+                message: err.to_string(),
+            })
+        })?;
+        let (line, character) = file.buffer.lsp_position(m.range.start);
+        let document = Document {
+            path,
+            lang,
+            text: file.text.clone(),
+        };
+        Ok((document, lsp::Position { line, character }))
+    }
+
+    /// Loads the files a server named, each by the path the script knows it
+    /// by, which must be in the file set or, under `-w`, the workspace (§3.4);
+    /// `what` names the feature, for errors.
+    fn reach(
+        &mut self,
+        paths: &[&Path],
+        what: &str,
+        span: &Range<usize>,
+    ) -> Result<Vec<usize>, ExecError> {
+        let mut reached = Vec::new();
+        let mut outside = Vec::new();
+        for path in paths {
+            match self.reachable(path) {
+                Ok(path) => reached.push(path),
+                Err(shown) => outside.push(shown),
+            }
+        }
+        if !outside.is_empty() {
+            outside.dedup();
+            let shown: Vec<&str> = outside.iter().map(String::as_str).collect();
+            return Err(ExecError::new(
+                ExecErrorKind::Outside {
+                    what: what.into(),
+                    files: select::file_list(&shown),
+                    workspace: self.workspace.is_some(),
+                },
+                Some(span.clone()),
+            ));
+        }
+        let mut files = Vec::new();
+        for path in reached {
+            files.push(self.load(&path, Some(span.clone()))?);
+            if !self.named.iter().any(|n| same_path(n, &path)) {
+                self.named.push(path);
+            }
+        }
+        Ok(files)
     }
 
     fn push(
@@ -732,48 +951,32 @@ impl Executor<'_> {
         name: &str,
     ) -> Result<(), ExecError> {
         let error = |kind| ExecError::new(kind, Some(span.clone()));
-        // A syntax item is renamed at its name.
-        let mut target = Target {
+        let mut steps = selector.steps.clone();
+        at_name(&mut steps);
+        let target = Target {
             all: false,
-            selector: selector.clone(),
+            selector: Selector {
+                steps,
+                span: selector.span.clone(),
+            },
         };
-        if let Some(step) = target.selector.steps.last_mut()
-            && matches!(step.primary, Primary::Syntax { .. })
-            && step.parts.is_empty()
-        {
-            step.parts.push(Part::Name);
-        }
         let m = self.resolve(&target)?.remove(0);
+        let (document, position) = self.symbol(&m, "rename", span)?;
         let file = &self.files[m.file].file;
-        let Some(lang) = file.lang else {
-            return Err(error(ExecErrorKind::NoLanguage {
-                selector: "rename".into(),
-                files: file.path.clone(),
-            }));
-        };
-        let (line, character) = file.buffer.lsp_position(m.range.start);
-        let line_start = file.buffer.line_range(line as usize).map_or(0, |r| r.start);
+        let line_start = file
+            .buffer
+            .line_range(position.line as usize)
+            .map_or(0, |r| r.start);
         let location = format!(
             "{}:{}:{}",
             file.path,
-            line + 1,
+            position.line + 1,
             file.text[line_start..m.range.start].chars().count() + 1
         );
-        let document = Document {
-            path: std::path::absolute(&file.path).map_err(|err| {
-                error(ExecErrorKind::Io {
-                    path: file.path.clone(),
-                    message: err.to_string(),
-                })
-            })?,
-            lang,
-            text: file.text.clone(),
-        };
         let Some(lsp) = self.lsp.as_deref_mut() else {
             let message = r#"`rename` needs the language-server daemon, which is Unix-only for now; use sub /\bOLD\b/ with "NEW" over the files"#;
             return Err(error(ExecErrorKind::Lsp(message.into())));
         };
-        let position = lsp::Position { line, character };
         let files = match lsp.rename(&document, position, name) {
             Ok(Renamed::Edits(files)) => files,
             Ok(Renamed::Refused(message)) => {
@@ -781,33 +984,15 @@ impl Executor<'_> {
             }
             Ok(Renamed::NoServer) => {
                 return Err(error(ExecErrorKind::NoServer {
-                    langs: lang.name().into(),
+                    langs: document.lang.name().into(),
                 }));
             }
             Err(LspFailure(message)) => return Err(error(ExecErrorKind::Lsp(message))),
         };
-        let mut targets = Vec::new();
-        let mut outside = Vec::new();
-        for f in files {
-            match self.rename_target(&f.path) {
-                Ok(path) => targets.push((path, f.edits)),
-                Err(shown) => outside.push(shown),
-            }
-        }
-        if !outside.is_empty() {
-            let shown: Vec<&str> = outside.iter().map(String::as_str).collect();
-            return Err(error(ExecErrorKind::Outside {
-                what: "rename".into(),
-                files: select::file_list(&shown),
-                workspace: self.workspace.is_some(),
-            }));
-        }
-        for (path, edits) in targets {
-            let file = self.load(&path, Some(span.clone()))?;
-            if !self.named.iter().any(|n| same_path(n, &path)) {
-                self.named.push(path);
-            }
-            for edit in edits {
+        let paths: Vec<&Path> = files.iter().map(|f| f.path.as_path()).collect();
+        let reached = self.reach(&paths, "rename", span)?;
+        for (file, f) in reached.into_iter().zip(files) {
+            for edit in f.edits {
                 let buffer = &self.files[file].file.buffer;
                 let start = buffer.lsp_offset(edit.start.line, edit.start.character);
                 let end = buffer.lsp_offset(edit.end.line, edit.end.character);
@@ -817,10 +1002,10 @@ impl Executor<'_> {
         Ok(())
     }
 
-    /// The path by which `rename` may edit the file a server named: a set
+    /// The path by which the script knows a file a server named: a set
     /// member's or, under `-w`, a workspace file's. Otherwise, the path to show
     /// in the error.
-    fn rename_target(&self, path: &Path) -> Result<String, String> {
+    fn reachable(&self, path: &Path) -> Result<String, String> {
         let cwd = std::env::current_dir().unwrap_or_default();
         let shown = |path: &Path| {
             path.strip_prefix(&cwd)
@@ -931,6 +1116,26 @@ impl Executor<'_> {
         }
         Ok(())
     }
+}
+
+/// Makes a syntax step with no parts, at the end of `steps`, select its
+/// item's name, where language servers look for the symbol.
+fn at_name(steps: &mut [Step]) {
+    if let Some(step) = steps.last_mut()
+        && matches!(step.primary, Primary::Syntax { .. })
+        && step.parts.is_empty()
+    {
+        step.parts.push(Part::Name);
+    }
+}
+
+/// The span of the innermost item in `f` whose name holds `offset`.
+fn defining_item(f: &SourceFile, offset: usize) -> Option<Range<usize>> {
+    f.items()?
+        .iter()
+        .filter(|i| i.name_range.contains(&offset))
+        .map(|i| i.range.clone())
+        .min_by_key(|r| r.len())
 }
 
 /// `target`, with `.body` added when `insert start|end` targets a syntax
@@ -3286,10 +3491,10 @@ fn main() {}
             )]
         );
         let mut lsp = ServerLsp::new(vec![]);
-        lsp.def = vec![("c.rs", edit(1, 8, 9, ""))];
-        let files = [("c.rs", "fn m() {\n    let x = 1;\n    x;\n}\n")];
-        let out = served(&files, Some(1), r#"replace 3>"x".def with "y""#, &mut lsp);
-        assert_eq!(out.new_text(), "fn m() {\n    let y = 1;\n    x;\n}\n");
+        lsp.def = vec![("c.rs", edit(0, 5, 6, ""))];
+        let files = [("c.rs", "fn m(x: u8) -> u8 {\n    x\n}\n")];
+        let out = served(&files, Some(1), r#"replace 2>"x".def with "y""#, &mut lsp);
+        assert_eq!(out.new_text(), "fn m(y: u8) -> u8 {\n    x\n}\n");
     }
 
     #[test]
