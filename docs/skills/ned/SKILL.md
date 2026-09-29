@@ -175,5 +175,10 @@ END
   indent. For code, use `<<END` (a quoted `<<'END'` inside the script, a shell
   habit, leaves code at column 0); for Markdown or prose, use `<<'END'`, target
   the `item:`, or start a replaced range at the item's first line.
+- **Whole-line string TEXT gets its own newline.** A literal that runs from a
+  line's indentation to its end (`"    x,\n"`, or `"    s\n}"`) is a whole-line
+  target: string TEXT for it is re-based like a heredoc, and a final newline
+  is added, so a trailing `\n` in the string adds a blank line. Leave the
+  `\n` off, or use a line number or a heredoc.
 - **Always give a script.** Without `-e` or a heredoc, `ned` reads the script
   from stdin, and hangs in a shell that has none to give.
