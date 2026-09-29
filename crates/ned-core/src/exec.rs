@@ -98,8 +98,17 @@ pub fn run<'s, 'l: 's>(
 struct Loaded {
     file: SourceFile,
     edits: EditSet,
+    /// The whole-line deletions among `edits`, for merging neighbours.
+    deletions: Vec<Deletion>,
     /// Made by `create`: its original text is what `create` gave it.
     created: bool,
+}
+
+/// A whole-line deletion: its `lines`, and the span it `removed` once tidied.
+struct Deletion {
+    lines: Range<usize>,
+    removed: Range<usize>,
+    command: usize,
 }
 
 /// A file in the set: loaded into `files`, or only named so far (§2.4).
@@ -210,6 +219,7 @@ impl Executor<'_> {
         self.files.push(Loaded {
             file,
             edits,
+            deletions: Vec::new(),
             created: true,
         });
         self.named.push(path.into());
@@ -324,6 +334,7 @@ impl Executor<'_> {
         self.files.push(Loaded {
             file,
             edits,
+            deletions: Vec::new(),
             created: false,
         });
         Ok(self.files.len() - 1)
@@ -373,8 +384,7 @@ impl Executor<'_> {
             }
             CommandKind::Delete(target) => {
                 for m in self.resolve(target)? {
-                    let range = delete(&self.files[m.file].file, m.range);
-                    self.push(index, span, m.file, range, String::new())?;
+                    self.delete(index, span, m.file, m.range)?;
                 }
             }
             CommandKind::Sub {
@@ -689,6 +699,51 @@ impl Executor<'_> {
         })
     }
 
+    /// Deletes `range`. Whole lines are tidied (§4.2) after merging them with
+    /// earlier whole-line deletions that only blank lines separate from them
+    /// (§2.3), so neighbours don't both claim the blank line between them.
+    fn delete(
+        &mut self,
+        index: usize,
+        span: &Range<usize>,
+        file: usize,
+        range: Range<usize>,
+    ) -> Result<(), ExecError> {
+        let Loaded {
+            file: f,
+            edits,
+            deletions,
+            ..
+        } = &mut self.files[file];
+        if !text::is_whole_line(&f.text, &range) {
+            return self.push(index, span, file, range, String::new());
+        }
+        let (mut lines, mut command) = (text::full_lines(&f.text, range), index);
+        let beside = |lines: &Range<usize>, d: &Deletion| {
+            let gap = if d.lines.end <= lines.start {
+                d.lines.end..lines.start
+            } else if lines.end <= d.lines.start {
+                lines.end..d.lines.start
+            } else {
+                return false;
+            };
+            f.text[gap].trim().is_empty()
+        };
+        while let Some(i) = deletions.iter().position(|d| beside(&lines, d)) {
+            let d = deletions.remove(i);
+            edits.remove(&d.removed, d.command);
+            lines = lines.start.min(d.lines.start)..lines.end.max(d.lines.end);
+            command = command.min(d.command);
+        }
+        let removed = text::tidy_delete(&f.text, lines.clone());
+        deletions.push(Deletion {
+            lines,
+            removed: removed.clone(),
+            command,
+        });
+        self.push(command, span, file, removed, String::new())
+    }
+
     /// Moves each span of `target` to `position` of `dest` (§4.2).
     fn move_to(
         &mut self,
@@ -705,7 +760,7 @@ impl Executor<'_> {
         let to = self.resolve(&implied_body(&dest, position))?.remove(0);
         for from in self.resolve(target)? {
             let source = &self.files[from.file].file;
-            let removal = delete(source, from.range.clone());
+            let removal = removal(source, from.range.clone());
             let (mut moved, separated) = moved_text(source, &from.range);
             let target = &self.files[to.file].file;
             if separated && text::is_whole_line(&target.text, &to.range) {
@@ -728,7 +783,7 @@ impl Executor<'_> {
                     Some(span.clone()),
                 ));
             }
-            self.push(index, span, from.file, removal, String::new())?;
+            self.delete(index, span, from.file, from.range.clone())?;
             self.push(index, span, to.file, range, new)?;
         }
         Ok(())
@@ -1443,7 +1498,7 @@ fn insert(
 
 /// The span removed by deleting `range`: whole lines, tidied, or the span
 /// itself.
-fn delete(f: &SourceFile, range: Range<usize>) -> Range<usize> {
+fn removal(f: &SourceFile, range: Range<usize>) -> Range<usize> {
     if text::is_whole_line(&f.text, &range) {
         text::tidy_delete(&f.text, text::full_lines(&f.text, range))
     } else {

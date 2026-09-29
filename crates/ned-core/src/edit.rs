@@ -58,7 +58,8 @@ impl EditSet {
 
     /// Removes the edit that `command` made at `range`.
     pub fn remove(&mut self, range: &Range<usize>, command: usize) {
-        unimplemented!("{range:?} {command}")
+        self.edits
+            .retain(|e| !(e.range == *range && e.command == command));
     }
 
     pub fn is_empty(&self) -> bool {
