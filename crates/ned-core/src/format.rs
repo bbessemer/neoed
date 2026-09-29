@@ -1,18 +1,16 @@
 //! External formatters and their configuration (command-language spec, §6.4).
 
-use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::{env, fmt, fs, io, thread};
+use std::{fs, io, thread};
 
-use serde::Deserialize;
-use toml::{Spanned, Value};
+use toml::Value;
 
+use crate::config::{Config, ConfigError, Entry, program};
 use crate::exec::Change;
 use crate::lang::Language;
 
-const CONFIG_FILE: &str = ".ned.toml";
 const DEFAULT_EDITION: &str = "2015";
 
 /// A file's formatter, ready to run.
@@ -23,35 +21,6 @@ pub struct Formatter {
     pub commands: Vec<Vec<String>>,
     /// The directory to run in: the file's.
     pub dir: PathBuf,
-}
-
-/// The formatter settings from every config file read so far.
-#[derive(Debug)]
-pub struct Formatters {
-    user: Option<Layer>,
-    /// Parsed `.ned.toml` files by directory; `None` where there is none.
-    layers: HashMap<PathBuf, Option<Layer>>,
-}
-
-/// The settings from one config file.
-#[derive(Debug)]
-struct Layer {
-    /// The directory holding the config file.
-    dir: PathBuf,
-    format: HashMap<Language, Entry>,
-}
-
-#[derive(Debug)]
-enum Entry {
-    Command(Vec<String>),
-    Off,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawConfig {
-    #[serde(default)]
-    format: BTreeMap<Spanned<String>, Spanned<Value>>,
 }
 
 /// What formatting did to a changed file.
@@ -65,39 +34,12 @@ pub enum Outcome {
     Skipped(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigError {
-    /// The config file, with the line and column when known.
-    pub location: String,
-    pub message: String,
-}
-
-impl fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: invalid config: {}", self.location, self.message)
-    }
-}
-
-impl std::error::Error for ConfigError {}
-
-/// The user config file: `$XDG_CONFIG_HOME/ned/config.toml`, else
-/// `~/.config/ned/config.toml`.
-pub fn user_config() -> Option<PathBuf> {
-    let absolute = |var| {
-        env::var_os(var)
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-    };
-    let config = absolute("XDG_CONFIG_HOME").or_else(|| Some(absolute("HOME")?.join(".config")))?;
-    Some(config.join("ned/config.toml"))
-}
-
 /// Formats the new text of each of `changes`, in parallel.
-pub fn run(changes: &[Change], formatters: &mut Formatters) -> Result<Vec<Outcome>, ConfigError> {
+pub fn run(changes: &[Change], config: &mut Config) -> Result<Vec<Outcome>, ConfigError> {
     let found = changes
         .iter()
         .map(|c| match c.lang {
-            Some(lang) => formatters.get(Path::new(&c.path), lang),
+            Some(lang) => config.formatter(Path::new(&c.path), lang),
             None => Ok(None),
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -119,33 +61,24 @@ pub fn run(changes: &[Change], formatters: &mut Formatters) -> Result<Vec<Outcom
     }))
 }
 
-impl Formatters {
-    /// Reads the user config at `user`, if it exists.
-    pub fn new(user: Option<&Path>) -> Result<Self, ConfigError> {
-        Ok(Formatters {
-            user: user.map(load).transpose()?.flatten(),
-            layers: HashMap::new(),
-        })
-    }
-
+impl Config {
     /// The formatter for `path` in `lang`, or `None` if it has none.
-    pub fn get(&mut self, path: &Path, lang: Language) -> Result<Option<Formatter>, ConfigError> {
-        let path = std::path::absolute(path).map_err(|err| io_error(path, &err))?;
+    pub fn formatter(
+        &mut self,
+        path: &Path,
+        lang: Language,
+    ) -> Result<Option<Formatter>, ConfigError> {
+        let path = std::path::absolute(path).map_err(|err| crate::config::io_error(path, &err))?;
         let dir = path.parent().unwrap_or(&path).to_path_buf();
-        for ancestor in dir.ancestors() {
-            if !self.layers.contains_key(ancestor) {
-                let layer = load(&ancestor.join(CONFIG_FILE))?;
-                self.layers.insert(ancestor.to_path_buf(), layer);
-            }
-        }
-        let configured = dir
-            .ancestors()
-            .filter_map(|a| self.layers[a].as_ref())
-            .chain(&self.user)
+        let configured = self
+            .layers(&dir)?
+            .into_iter()
             .find_map(|layer| Some((layer.format.get(&lang)?, layer.dir.as_path())));
         let (commands, base) = match configured {
             Some((Entry::Off, _)) => return Ok(None),
-            Some((Entry::Command(command), base)) => (vec![command.clone()], Some(base)),
+            Some((Entry::Command(command), base)) => {
+                (vec![command.clone()], Some(base.to_path_buf()))
+            }
             None => (defaults(lang), None),
         };
         let mut edition = None;
@@ -164,7 +97,7 @@ impl Formatters {
             .iter()
             .map(|command| {
                 let mut command: Vec<String> = command.iter().map(|arg| fill(arg)).collect();
-                command[0] = program(&command[0], base, &dir);
+                command[0] = program(&command[0], base.as_deref(), &dir);
                 command
             })
             .collect();
@@ -252,20 +185,6 @@ fn name(program: &str) -> String {
         .map_or(program.into(), |n| n.to_string_lossy().into_owned())
 }
 
-/// Where to run `program`: relative to `base`, the directory of the config
-/// that named it, if it's a path; else from the nearest `node_modules/.bin`
-/// above `dir`, or as is, for a `PATH` lookup.
-fn program(program: &str, base: Option<&Path>, dir: &Path) -> String {
-    let found = if program.contains('/') {
-        base.map(|b| b.join(program))
-    } else {
-        dir.ancestors()
-            .map(|a| a.join("node_modules/.bin").join(program))
-            .find(|p| p.is_file())
-    };
-    found.map_or(program.into(), |p| p.to_string_lossy().into_owned())
-}
-
 /// The Rust edition of the package holding `dir`, from its `Cargo.toml` or,
 /// for `edition.workspace = true`, its workspace's.
 fn rust_edition(dir: &Path) -> String {
@@ -300,73 +219,6 @@ fn rust_edition(dir: &Path) -> String {
     DEFAULT_EDITION.into()
 }
 
-/// The config file at `path`, or `None` if there is none.
-fn load(path: &Path) -> Result<Option<Layer>, ConfigError> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(io_error(path, &err)),
-    };
-    let error = |span: Option<std::ops::Range<usize>>, message: String| {
-        let mut location = display(path);
-        if let Some(span) = span {
-            let (line, col) = crate::script::error::location(&text, span.start);
-            location = format!("{location}:{line}:{col}");
-        }
-        ConfigError { location, message }
-    };
-    let raw: RawConfig =
-        toml::from_str(&text).map_err(|err| error(err.span(), err.message().trim().into()))?;
-    let mut format = HashMap::new();
-    for (key, value) in raw.format {
-        let lang: Language = key
-            .get_ref()
-            .parse()
-            .map_err(|message| error(Some(key.span()), message))?;
-        let entry = match value.get_ref() {
-            Value::Boolean(false) => Entry::Off,
-            Value::Array(words) if words.is_empty() => {
-                return Err(error(
-                    Some(value.span()),
-                    format!("`{lang}` has an empty command"),
-                ));
-            }
-            Value::Array(words) => {
-                match words.iter().map(|w| w.as_str().map(String::from)).collect() {
-                    Some(command) => Entry::Command(command),
-                    None => return Err(error(Some(value.span()), not_a_command(lang))),
-                }
-            }
-            _ => return Err(error(Some(value.span()), not_a_command(lang))),
-        };
-        format.insert(lang, entry);
-    }
-    Ok(Some(Layer {
-        dir: path.parent().unwrap_or(path).to_path_buf(),
-        format,
-    }))
-}
-
-fn not_a_command(lang: Language) -> String {
-    format!("`{lang}` must be a command (an array of strings) or false")
-}
-
-fn io_error(path: &Path, err: &io::Error) -> ConfigError {
-    ConfigError {
-        location: display(path),
-        message: err.to_string(),
-    }
-}
-
-/// `path`, relative to the working directory if it's inside it.
-fn display(path: &Path) -> String {
-    let cwd = env::current_dir().unwrap_or_default();
-    path.strip_prefix(&cwd)
-        .unwrap_or(path)
-        .display()
-        .to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,7 +247,7 @@ mod tests {
             fs::write(&path, text).unwrap();
             path
         });
-        Formatters::new(user.as_deref())?.get(&root.path().join(file), lang)
+        Config::new(user.as_deref())?.formatter(&root.path().join(file), lang)
     }
 
     fn commands(
@@ -465,9 +317,9 @@ mod tests {
     fn a_missing_user_config_is_no_config() {
         let root = tree(&[]);
         let missing = root.path().join("nope/config.toml");
-        let found = Formatters::new(Some(&missing))
+        let found = Config::new(Some(&missing))
             .unwrap()
-            .get(&root.path().join("a.go"), Language::Go)
+            .formatter(&root.path().join("a.go"), Language::Go)
             .unwrap();
         assert_eq!(found.unwrap().commands, [argv(&["gofmt"])]);
     }
@@ -541,14 +393,14 @@ mod tests {
 
     #[test]
     fn unknown_table() {
-        let root = tree(&[(".ned.toml", "[lsp]\nrust = [\"rust-analyzer\"]\n")]);
+        let root = tree(&[(".ned.toml", "[lint]\nrust = [\"clippy\"]\n")]);
         let err = error(&root, None, "a.rs");
         assert!(
             err.location
                 .starts_with(&format!("{}:1:", at(&root, ".ned.toml"))),
             "{err}"
         );
-        assert!(err.message.contains("unknown field `lsp`"), "{err}");
+        assert!(err.message.contains("unknown field `lint`"), "{err}");
     }
 
     #[test]
@@ -702,7 +554,7 @@ mod tests {
     fn format_with(commands: &[&[&str]], text: &str) -> Outcome {
         let formatter = Formatter {
             commands: commands.iter().map(|c| argv(c)).collect(),
-            dir: env::temp_dir(),
+            dir: std::env::temp_dir(),
         };
         formatter.format("src/a.rs", text)
     }
@@ -728,7 +580,7 @@ mod tests {
                 "struct S;\n",
             ),
         ];
-        let outcomes = run(&changes, &mut Formatters::new(None).unwrap()).unwrap();
+        let outcomes = run(&changes, &mut Config::new(None).unwrap()).unwrap();
         assert_eq!(
             outcomes,
             [
@@ -745,7 +597,7 @@ mod tests {
     fn run_reports_config_errors() {
         let root = tree(&[(".ned.toml", "[format]\nrust = 1\n")]);
         let changes = [change(&root.path().join("a.rs"), Some(Language::Rust), "")];
-        let err = run(&changes, &mut Formatters::new(None).unwrap()).unwrap_err();
+        let err = run(&changes, &mut Config::new(None).unwrap()).unwrap_err();
         assert_eq!(
             err.message,
             "`rust` must be a command (an array of strings) or false"
@@ -820,7 +672,7 @@ mod tests {
             Some(Language::Go),
             "",
         )];
-        let outcomes = run(&changes, &mut Formatters::new(None).unwrap()).unwrap();
+        let outcomes = run(&changes, &mut Config::new(None).unwrap()).unwrap();
         let dir = fs::canonicalize(root.path().join("sub")).unwrap();
         assert_eq!(outcomes, [formatted("sh", &format!("{}\n", dir.display()))]);
     }
