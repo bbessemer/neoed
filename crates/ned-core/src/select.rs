@@ -575,16 +575,19 @@ fn parts_of(item: &Item) -> String {
     .join(" ")
 }
 
-/// The fix for a `step` that matched nothing within `parents` (§7): a close
-/// syntax name, a literal match ignoring case and spacing, a case-insensitive
-/// regex match, the spans a nested step searched, or where to look.
+/// The fix for a `step` that matched nothing within `parents` (§7): its name
+/// under another kind, a close syntax name, a literal match ignoring case and
+/// spacing, a case-insensitive regex match, the spans a nested step searched,
+/// or where to look.
 pub(crate) fn hint(
     step: &Step,
     files: &[&SourceFile],
     parents: &[Match],
     selector: &str,
 ) -> String {
-    if let Some(hint) = close_name(step, files, parents, selector) {
+    if let Some(hint) = other_kind(step, files, parents, selector)
+        .or_else(|| close_name(step, files, parents, selector))
+    {
         return hint;
     }
     let location = |m: &Match| {
@@ -733,15 +736,67 @@ fn close_name(
         .filter(|(d, ..)| *d <= limit)
         .min_by_key(|(d, ..)| *d);
     let (_, file, closest, item) = best?;
-    let written = syntax::selector(kind, name);
-    let fixed = syntax::selector(kind, closest);
-    let suggestion = match selector.rfind(&written) {
+    Some(did_you_mean(
+        selector,
+        &syntax::selector(kind, name),
+        &syntax::selector(kind, closest),
+        files,
+        file,
+        item,
+    ))
+}
+
+/// `; did you mean SEL (LINES)?`, naming an item of another kind with the name
+/// of a syntax `step` that matched nothing within `parents`, taking kinds in
+/// their order in `KINDS`.
+fn other_kind(
+    step: &Step,
+    files: &[&SourceFile],
+    parents: &[Match],
+    selector: &str,
+) -> Option<String> {
+    let Primary::Syntax { kind, name } = &step.primary else {
+        return None;
+    };
+    let (file, item) = parents
+        .iter()
+        .flat_map(|p| {
+            files[p.file]
+                .items()
+                .unwrap_or_default()
+                .iter()
+                .filter(|i| i.kind != kind && syntax::item_matches(name, i))
+                .filter(|i| p.range.start <= i.range.start && i.range.end <= p.range.end)
+                .map(|i| (p.file, i))
+        })
+        .min_by_key(|(_, i)| syntax::KINDS.iter().position(|k| *k == i.kind))?;
+    Some(did_you_mean(
+        selector,
+        &syntax::selector(kind, name),
+        &syntax::selector(item.kind, name),
+        files,
+        file,
+        item,
+    ))
+}
+
+/// `; did you mean SEL (LINES)?`: `selector` with its last `written` step
+/// replaced by `fixed`, which selects `item` in `files[file]`.
+fn did_you_mean(
+    selector: &str,
+    written: &str,
+    fixed: &str,
+    files: &[&SourceFile],
+    file: usize,
+    item: &Item,
+) -> String {
+    let suggestion = match selector.rfind(written) {
         Some(i) => format!(
             "{}{fixed}{}",
             &selector[..i],
             &selector[i + written.len()..]
         ),
-        None => fixed,
+        None => fixed.to_string(),
     };
     let f = files[file];
     let lines = line_numbers(&f.buffer, &item.range);
@@ -750,7 +805,7 @@ fn close_name(
     } else {
         lines
     };
-    Some(format!("; did you mean {suggestion} ({location})?"))
+    format!("; did you mean {suggestion} ({location})?")
 }
 
 /// The index of line `n` in a file of `count` lines whose `$` is `last`.
@@ -1770,6 +1825,22 @@ fn main() {
                 "impl:\"Display for S\"",
                 "impl:\"Debug for S\""
             ]
+        );
+    }
+
+    #[test]
+    fn a_name_under_another_kind_is_suggested_first() {
+        let text = "enum E {\n    A,\n}\nstruct S;\n";
+        assert_eq!(
+            error("delete struct:E", &[("a.rs", text)]),
+            "error: script:1:8: struct:E matches nothing in a.rs; did you mean enum:E (1-3)?"
+        );
+        assert!(
+            error(
+                "delete mod:m>fn:S",
+                &[("a.rs", "mod m {\n    struct S;\n}\n")]
+            )
+            .ends_with("did you mean mod:m>struct:S (2)?")
         );
     }
 
