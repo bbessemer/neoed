@@ -118,11 +118,19 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       `ned outline src/a.rs`, is an error suggesting
       `ned src/a.rs -e outline`, instead of waiting for a script on stdin
 - [ ] Searching with `show all /re/` over a glob or `-w`: no match is a normal
-      answer, so say `no matches` (exit 1, as grep does) instead of an error
+      answer, so say `no matches` (exit 0) instead of an error
       listing the files searched with a hint to `show` them
 - [ ] A `replace` whose TEXT starts with a copy of the line just above its
       span, or ends with a copy of the line just below, prints a note naming
       the duplicated line (the range was probably off by one)
+- [ ] A regex, literal or heredoc lies inside a whole-line parent (a syntax
+      item) if it lies within its lines, as nested line selectors do, so
+      `fn:x>"    let a"` matches and `^` means a real line start (also in `sub`)
+- [ ] No-match hints for `P>"a"..P>"b"` (suggest `P>"a".."b"`) and for a string
+      literal that matches as escaped source text (suggest `"\\n"` for `"\n"`)
+- [ ] Markdown list re-basing: list-item TEXT inserted, replaced or moved next
+      to any line of a list item anchors to the item: re-based to its marker
+      column, inserted after the whole item (children included)
 
 ## 9. LSP daemon _(split)_
 
@@ -190,9 +198,13 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [x] `a_stale_socket_is_replaced` (ned-daemon `tests/daemon.rs`) is flaky:
       about 1 run in 5 fails `Client::connect(..).is_none()` just after
       binding and dropping a listener
+- [ ] `create a.rs "fn a() {}\n"` followed by `insert after fn:a ...` in the
+      same script leaves a trailing blank line (rustfmt removes it)
 
 ## Future improvements
 
 - [ ] Smarter indent conversion in re-basing: normalize space widths (e.g.
       2-space text into a 4-space file), detect alignment (continuation lines
       aligned to a delimiter rather than indented by levels) and preserve it
+- [ ] Re-basing keeps block-quote prefixes (`> `): inserted lines take the
+      target line's `>` markers, not just its whitespace
