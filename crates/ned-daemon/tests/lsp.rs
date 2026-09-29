@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ned_core::lang::Language;
-use ned_core::lsp::{Diagnostic, FileEdits, Position, Renamed, Severity, TextEdit};
+use ned_core::lsp::{
+    Diagnostic, FileEdits, Locate, Located, Location, Position, Renamed, Severity, TextEdit,
+};
 use ned_daemon::protocol::{Document, ServerState, ServerStatus};
 use ned_daemon::servers::Servers;
 use serde_json::{Value, json};
@@ -364,7 +366,7 @@ async fn diagnose_pulls_from_servers_that_offer_it() {
 
 #[tokio::test]
 async fn diagnose_waits_for_indexing_up_to_the_timeout() {
-    let ws = Workspace::with_config("\n[check]\ntimeout = 1\n");
+    let ws = Workspace::with_config("timeout = 1\n");
     let mut servers = ws.servers();
     let started = Instant::now();
     let err = servers
@@ -382,7 +384,7 @@ async fn diagnose_waits_for_indexing_up_to_the_timeout() {
 async fn rust_analyzer_is_busy_until_it_says_it_is_quiescent() {
     let ws = Workspace::new();
     let config = format!(
-        "[lsp]\nrust = [{FAKE:?}, {:?}, \"ra\", \"pull\"]\n\n[check]\ntimeout = 1\n",
+        "[lsp]\nrust = [{FAKE:?}, {:?}, \"ra\", \"pull\"]\ntimeout = 1\n",
         ws.log
     );
     fs::write(ws.dir.path().join(".ned.toml"), config).unwrap();
@@ -663,6 +665,137 @@ async fn rename_first_brings_open_documents_up_to_date_with_the_disk() {
     assert_eq!(files[1].path, b.path);
     assert_eq!(files[1].edits, [edit(1, 9, 12, "bar")]);
     servers.shutdown().await;
+}
+
+fn location(path: PathBuf, line: u32, start: u32, end: u32) -> Location {
+    let e = edit(line, start, end, "");
+    Location {
+        path,
+        start: e.start,
+        end: e.end,
+    }
+}
+
+/// The fake locating `foo` in `a.rs`, open, and `b.rs`, on disk.
+async fn locate_foo(ws: &Workspace, kind: Locate) -> Located {
+    fs::write(ws.root().join("b.rs"), "fn g() { foo(); }\n").unwrap();
+    let mut servers = ws.servers();
+    let a = ws.rust("a.rs", "// done\nfn foo() {}\n");
+    let position = Position {
+        line: 1,
+        character: 4,
+    };
+    let located = servers.locate(kind, &a, position).await.unwrap();
+    servers.shutdown().await;
+    located
+}
+
+#[tokio::test]
+async fn locate_finds_references_and_definitions() {
+    let ws = Workspace::new();
+    assert_eq!(
+        locate_foo(&ws, Locate::References).await,
+        Located::Locations(vec![location(ws.root().join("b.rs"), 0, 9, 12)])
+    );
+    let ws = Workspace::new();
+    let def = Located::Locations(vec![location(ws.root().join("a.rs"), 1, 3, 6)]);
+    assert_eq!(locate_foo(&ws, Locate::Definition).await, def);
+    let links = Workspace::new();
+    let config = format!("[lsp]\nrust = [{FAKE:?}, {:?}, \"links\"]\n", links.log);
+    fs::write(links.dir.path().join(".ned.toml"), config).unwrap();
+    let def = Located::Locations(vec![location(links.root().join("a.rs"), 1, 3, 6)]);
+    assert_eq!(locate_foo(&links, Locate::Definition).await, def);
+}
+
+#[tokio::test]
+async fn locate_without_a_server_says_so() {
+    let ws = Workspace::new();
+    let mut servers = ws.servers();
+    let md = ws.doc("a.md", Language::Markdown, "# A\n");
+    let position = Position {
+        line: 0,
+        character: 2,
+    };
+    let located = servers.locate(Locate::References, &md, position).await;
+    assert_eq!(located.unwrap(), Located::NoServer);
+}
+
+/// The default servers find references and definitions across files: `cargo
+/// test -- --ignored`.
+#[tokio::test]
+#[ignore]
+async fn real_servers_locate_across_files() {
+    let cases: [RenameCase; 3] = [
+        (
+            &[
+                (
+                    "Cargo.toml",
+                    "[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+                ),
+                ("src/lib.rs", "pub mod b;\npub fn helper() {}\n"),
+                ("src/b.rs", "pub fn g() {\n    crate::helper();\n}\n"),
+            ],
+            "src/b.rs",
+            Position {
+                line: 1,
+                character: 11,
+            },
+        ),
+        (
+            &[
+                ("go.mod", "module a\n\ngo 1.21\n"),
+                ("a.go", "package a\n\nfunc Helper() {}\n"),
+                ("b.go", "package a\n\nfunc G() { Helper() }\n"),
+            ],
+            "b.go",
+            Position {
+                line: 2,
+                character: 11,
+            },
+        ),
+        (
+            &[
+                ("a.py", "def helper():\n    pass\n"),
+                ("b.py", "from a import helper\n\nhelper()\n"),
+            ],
+            "b.py",
+            Position {
+                line: 2,
+                character: 0,
+            },
+        ),
+    ];
+    for (files, name, position) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for (file, text) in files {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, text).unwrap();
+        }
+        let text = fs::read_to_string(root.join(name)).unwrap();
+        let document = Document {
+            path: root.join(name),
+            lang: Language::detect(name, &text).unwrap(),
+            text,
+        };
+        let mut servers = Servers::new(root.clone(), None);
+        let refs = servers
+            .locate(Locate::References, &document, position)
+            .await;
+        let def = servers
+            .locate(Locate::Definition, &document, position)
+            .await;
+        match (refs.unwrap(), def.unwrap()) {
+            (Located::Locations(refs), Located::Locations(def)) => {
+                assert!(!refs.is_empty(), "{name}: no references");
+                assert_eq!(def.len(), 1, "{name}: {def:?}");
+                assert_ne!(def[0].path, root.join(name), "{name}: {def:?}");
+            }
+            other => panic!("{name}: {other:?}"),
+        }
+        servers.shutdown().await;
+    }
 }
 
 /// Files, the one to rename in, and the position of the name.

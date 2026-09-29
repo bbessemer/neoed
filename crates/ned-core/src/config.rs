@@ -331,17 +331,50 @@ pub(crate) mod tests {
     #[test]
     fn check_settings_nearest_wins() {
         let root = tree(&[
-            ("config.toml", "[check]\nshow = \"hint\"\ntimeout = 5\n"),
+            ("config.toml", "[check]\nshow = \"hint\"\n"),
             ("ws/.ned.toml", "[check]\nshow = \"error\"\n"),
         ]);
         let mut config = Config::new(Some(&root.path().join("config.toml"))).unwrap();
         let ws = root.path().join("ws");
         assert_eq!(config.check_show(&ws), Ok(Some(Severity::Error)));
-        assert_eq!(config.lsp_timeout(&ws), Ok(Some(5)));
         assert_eq!(config.check_show(root.path()), Ok(Some(Severity::Hint)));
         let mut none = Config::new(None).unwrap();
         assert_eq!(none.check_show(&ws), Ok(Some(Severity::Error)));
-        assert_eq!(none.lsp_timeout(&ws), Ok(None));
+    }
+
+    #[test]
+    fn the_lsp_timeout_sits_beside_the_servers_and_nearest_wins() {
+        let root = tree(&[
+            ("config.toml", "[lsp]\ntimeout = 5\n"),
+            ("ws/.ned.toml", "[lsp]\nrust = [\"ra\"]\ntimeout = 9\n"),
+        ]);
+        let mut config = Config::new(Some(&root.path().join("config.toml"))).unwrap();
+        let ws = root.path().join("ws");
+        assert_eq!(config.lsp_timeout(&ws), Ok(Some(9)));
+        assert_eq!(config.lsp_timeout(root.path()), Ok(Some(5)));
+        assert_eq!(
+            config.layers(&ws).unwrap()[0].lsp.len(),
+            1,
+            "rust, not timeout"
+        );
+        assert_eq!(Config::new(None).unwrap().lsp_timeout(&ws), Ok(Some(9)));
+    }
+
+    #[test]
+    fn bad_timeouts_are_errors() {
+        let root = tree(&[(".ned.toml", "[check]\ntimeout = 5\n")]);
+        let err = Config::new(None)
+            .unwrap()
+            .lsp_timeout(root.path())
+            .unwrap_err();
+        assert!(err.message.contains("unknown field `timeout`"), "{err}");
+        let root = tree(&[(".ned.toml", "[lsp]\ntimeout = \"soon\"\n")]);
+        let err = Config::new(None)
+            .unwrap()
+            .lsp_timeout(root.path())
+            .unwrap_err();
+        assert!(err.location.ends_with(".ned.toml:2:11"), "{err}");
+        assert!(err.message.contains("seconds"), "{err}");
     }
 
     #[test]

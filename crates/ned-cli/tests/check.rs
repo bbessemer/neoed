@@ -321,7 +321,7 @@ fn rename_spawns_the_daemon_and_stays_inside_the_file_set_or_workspace() {
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     assert_eq!(
         text(&out.stderr),
-        "error: script:1:1: rename edits files outside the file set: c.rs; add them to the file set, or use -w\n"
+        "error: script:1:1: rename reaches files outside the file set: c.rs; add them to the file set, or use -w\n"
     );
     let out = ws.ned(&["-w", "-e", "rename fn:foo to bar"]);
     assert!(out.status.success(), "{out:?}");
@@ -331,4 +331,17 @@ fn rename_spawns_the_daemon_and_stays_inside_the_file_set_or_workspace() {
     }
     assert_eq!(ws.read("a.rs"), "// done\nfn bar() {}\n");
     assert_eq!(ws.read("c.rs"), "fn h() { bar(); }\n");
+}
+
+#[test]
+fn refs_and_def_read_through_the_daemon() {
+    let ws = Workspace::new("");
+    ws.write("a.rs", "// done\nfn foo() {}\n");
+    ws.write("b.rs", "fn g() {\n    foo();\n}\n");
+    let out = ws.ned(&["-w", "-e", "show all fn:foo.refs"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(text(&out.stdout), "b.rs:2\n2:    foo();\n");
+    let out = ws.ned(&["b.rs", "a.rs", "-e", r#"show "foo(".def"#]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(text(&out.stdout), "a.rs:2\n2:fn foo() {}\n");
 }

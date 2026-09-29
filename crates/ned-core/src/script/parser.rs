@@ -1039,8 +1039,6 @@ mod tests {
             (e.kind, e.span),
             (E::UnknownCommand("frobnicate".into()), 0..10)
         );
-        assert!(matches!(error("show refs:foo").kind, E::Reserved { what, .. } if what == "refs:"));
-        assert!(matches!(error("show def:foo").kind, E::Reserved { what, .. } if what == "def:"));
         assert!(matches!(
             error("12").kind,
             E::Expected {
@@ -1190,14 +1188,31 @@ mod tests {
     }
 
     #[test]
-    fn reserved_features_name_what_to_use_instead() {
+    fn refs_and_def_are_parts_not_kinds() {
+        assert_eq!(
+            one("show all fn:parse.refs"),
+            CommandKind::Show {
+                target: Some(all(vec![parts(syntax("fn", "parse"), &[Part::Refs])])),
+                context: 0,
+            }
+        );
+        assert_eq!(
+            one(r#"show "f(".def.lines"#),
+            CommandKind::Show {
+                target: Some(target(vec![parts(
+                    literal("f("),
+                    &[Part::Def, Part::Lines]
+                )])),
+                context: 0,
+            }
+        );
         assert_eq!(
             message("show refs:foo"),
-            "`refs:` is not yet supported; select uses with a /regex/"
+            "`refs:` is a part, not a kind; select the symbol and add .refs, e.g. fn:NAME.refs"
         );
         assert_eq!(
             message("show def:foo"),
-            "`def:` is not yet supported; select the definition with kind:NAME, e.g. fn:NAME"
+            "`def:` is a part, not a kind; select the symbol and add .def, e.g. fn:NAME.def"
         );
     }
 

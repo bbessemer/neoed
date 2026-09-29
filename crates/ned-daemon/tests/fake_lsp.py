@@ -15,11 +15,15 @@ version. Further arguments are flags:
   quiescent once given a document containing "done";
 - `document-changes`: answer renames with `documentChanges`;
 - `rename-file`: answer renames with a file rename;
-- `rename-error`: refuse renames with an error.
+- `rename-error`: refuse renames with an error;
+- `links`: answer definitions with `LocationLink`s.
+
 
 It renames the word at the position wherever it occurs as a whole word, in
 open documents and in files under the root with the same extension, and
-answers null where there's no word.
+answers null where there's no word. The first occurrence right after `fn `,
+or else in the requested document, is the definition; the others are the
+references.
 
 """
 
@@ -78,7 +82,10 @@ def diagnostics(text):
     return found
 
 
-def rename(params):
+def occurrences(params):
+    """The (uri, range) of each whole-word occurrence of the word at the
+    position, the declaration first: the first right after `fn `, else the
+    requested document's first. None if there's no word there."""
     uri = params["textDocument"]["uri"]
     position = params["position"]
     line = documents[uri].split("\n")[position["line"]]
@@ -89,25 +96,35 @@ def rename(params):
     ]
     if not words:
         return None
-    if "rename-file" in flags:
-        return {
-            "documentChanges": [{"kind": "rename", "oldUri": uri, "newUri": uri + "x"}]
-        }
     suffix = Path(unquote(urlparse(uri).path)).suffix
     texts = {p.as_uri(): p.read_text() for p in sorted(root.rglob("*" + suffix))}
     texts.update(documents)
-    changes = {}
-    for file, text in texts.items():
+    found = []
+    for file, text in sorted(texts.items(), key=lambda item: item[0] != uri):
         for number, content in enumerate(text.split("\n")):
             for m in re.finditer(rf"\b{re.escape(words[0].group())}\b", content):
-                edit = {
-                    "range": {
-                        "start": {"line": number, "character": m.start()},
-                        "end": {"line": number, "character": m.end()},
-                    },
-                    "newText": params["newName"],
-                }
-                changes.setdefault(file, []).append(edit)
+                start = {"line": number, "character": m.start()}
+                end = {"line": number, "character": m.end()}
+                declares = content[: m.start()].endswith("fn ")
+                found.append((not declares, file, {"start": start, "end": end}))
+    found.sort(key=lambda occurrence: occurrence[0])
+    return [(file, range_) for _, file, range_ in found]
+
+
+def rename(params):
+    found = occurrences(params)
+    if found is None:
+        return None
+    if "rename-file" in flags:
+        uri = params["textDocument"]["uri"]
+        return {
+            "documentChanges": [{"kind": "rename", "oldUri": uri, "newUri": uri + "x"}]
+        }
+    changes = {}
+    for file, range_ in found:
+        changes.setdefault(file, []).append(
+            {"range": range_, "newText": params["newName"]}
+        )
     if "document-changes" in flags:
         edits = [
             {"textDocument": {"uri": file, "version": None}, "edits": edits}
@@ -115,6 +132,26 @@ def rename(params):
         ]
         return {"documentChanges": edits}
     return {"changes": changes}
+
+
+def references(params):
+    found = occurrences(params) or [None]
+    return [{"uri": file, "range": range_} for file, range_ in found[1:]]
+
+
+def definition(params):
+    found = occurrences(params)
+    if not found:
+        return None
+    file, range_ = found[0]
+    if "links" in flags:
+        whole = {
+            "start": {"line": range_["start"]["line"], "character": 0},
+            "end": range_["end"],
+        }
+        link = {"targetUri": file, "targetRange": whole, "targetSelectionRange": range_}
+        return [link]
+    return {"uri": file, "range": range_}
 
 
 def read():
@@ -193,6 +230,10 @@ while (message := read()) is not None:
         send({"id": message["id"], "error": error})
     elif method == "textDocument/rename":
         send({"id": message["id"], "result": rename(params)})
+    elif method == "textDocument/references":
+        send({"id": message["id"], "result": references(params)})
+    elif method == "textDocument/definition":
+        send({"id": message["id"], "result": definition(params)})
     elif method == "shutdown":
         send({"id": message["id"], "result": None})
     elif method == "exit":
