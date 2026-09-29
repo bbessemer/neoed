@@ -110,8 +110,33 @@ fn daemon(_: Action) -> anyhow::Result<()> {
 /// A status line for the daemon, then one per server.
 #[cfg(unix)]
 fn status_text(status: &ned_daemon::protocol::Status) -> String {
-    let _ = status;
-    todo!()
+    use ned_daemon::protocol::ServerState;
+    use std::fmt::Write;
+
+    let mut text = format!(
+        "daemon for {}: pid {}, up {}\n",
+        status.root.display(),
+        status.pid,
+        uptime(status.uptime_secs)
+    );
+    for server in &status.servers {
+        let state = match server.state {
+            ServerState::Indexing => "indexing",
+            ServerState::Ready => "ready",
+            ServerState::Exited => "exited",
+        };
+        let files = if server.documents == 1 {
+            "file"
+        } else {
+            "files"
+        };
+        let _ = writeln!(
+            text,
+            "  {}: {state}, {} {files}",
+            server.name, server.documents
+        );
+    }
+    text
 }
 
 /// `uptime_secs` as `42s`, `3m` or `2h5m`.

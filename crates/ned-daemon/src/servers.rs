@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use ned_core::config::Config;
+
 use crate::lsp::{LspError, Server};
 use crate::protocol::{Document, ServerStatus};
 
@@ -34,15 +36,33 @@ impl Servers {
     /// Starts the servers `documents` need, restarting any that exited, and
     /// syncs the documents; skips documents whose language has no server.
     pub async fn open(&mut self, documents: &[Document]) -> Result<(), ServersError> {
-        let _ = documents;
-        todo!()
+        let mut config = Config::new(self.user_config.as_deref())?;
+        for document in documents {
+            let Some(command) = config.server(&self.root, document.lang)? else {
+                continue;
+            };
+            if self.servers.get(&command).is_none_or(Server::exited) {
+                if let Some(exited) = self.servers.remove(&command) {
+                    exited.shutdown().await;
+                }
+                let server = Server::start(&command, document.lang, &self.root).await?;
+                self.servers.insert(command.clone(), server);
+            }
+            let server = self.servers.get_mut(&command).expect("started above");
+            server.sync(&document.path, document.lang, &document.text)?;
+        }
+        Ok(())
     }
 
     pub fn status(&self) -> Vec<ServerStatus> {
-        todo!()
+        let mut status: Vec<ServerStatus> = self.servers.values().map(Server::status).collect();
+        status.sort_by(|a, b| a.name.cmp(&b.name));
+        status
     }
 
     pub async fn shutdown(&mut self) {
-        todo!()
+        for (_, server) in self.servers.drain() {
+            server.shutdown().await;
+        }
     }
 }

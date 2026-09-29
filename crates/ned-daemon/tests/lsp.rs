@@ -59,8 +59,8 @@ impl Workspace {
             .collect()
     }
 
-    /// The messages with `method`, once `done` holds for the log.
-    fn wait(&self, done: impl Fn(&[Value]) -> bool) -> Vec<Value> {
+    /// The log, once `done` holds for it.
+    async fn wait(&self, done: impl Fn(&[Value]) -> bool) -> Vec<Value> {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let messages = self.messages();
@@ -68,7 +68,7 @@ impl Workspace {
                 return messages;
             }
             assert!(Instant::now() < deadline, "timed out; log: {messages:#?}");
-            std::thread::sleep(Duration::from_millis(10));
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 }
@@ -101,7 +101,7 @@ async fn opening_starts_and_initializes_a_server() {
         .open(&[ws.rust("a.rs", "fn a() {}\n")])
         .await
         .unwrap();
-    let messages = ws.wait(has("textDocument/didOpen", 1));
+    let messages = ws.wait(has("textDocument/didOpen", 1)).await;
     let methods: Vec<_> = messages
         .iter()
         .filter_map(|m| m["method"].as_str())
@@ -141,7 +141,7 @@ async fn only_changed_documents_are_sent_again() {
         .open(&[ws.rust("a.rs", "two\n"), ws.rust("b.rs", "b\n")])
         .await
         .unwrap();
-    let messages = ws.wait(has("textDocument/didOpen", 2));
+    let messages = ws.wait(has("textDocument/didOpen", 2)).await;
     let changes = with_method(&messages, "textDocument/didChange");
     assert_eq!(changes.len(), 1, "{messages:#?}");
     let change = &changes[0]["params"];
@@ -157,7 +157,9 @@ async fn server_requests_are_answered() {
     let mut servers = ws.servers();
     servers.open(&[ws.rust("a.rs", "")]).await.unwrap();
     let answered = |id: &'static str| move |m: &Value| m["id"] == id && m.get("result").is_some();
-    let messages = ws.wait(|ms| ms.iter().any(answered("s1")) && ms.iter().any(answered("s2")));
+    let messages = ws
+        .wait(|ms| ms.iter().any(answered("s1")) && ms.iter().any(answered("s2")))
+        .await;
     let answer = |id| messages.iter().find(|m| answered(id)(m)).unwrap()["result"].clone();
     assert_eq!(answer("s1"), json!([null, null]));
     assert_eq!(answer("s2"), Value::Null);
@@ -182,7 +184,7 @@ async fn an_exited_server_is_restarted() {
     servers.open(&[ws.rust("a.rs", "crash")]).await.unwrap();
     wait_for_state(&servers, ServerState::Exited).await;
     servers.open(&[ws.rust("b.rs", "b")]).await.unwrap();
-    ws.wait(has("initialize", 2));
+    ws.wait(has("initialize", 2)).await;
     let status = servers.status();
     assert_eq!(status.len(), 1);
     assert_ne!(status[0].state, ServerState::Exited);
@@ -224,14 +226,14 @@ async fn languages_without_a_server_are_skipped() {
 async fn languages_with_the_same_server_share_it() {
     let ws = Workspace::new();
     let config = fs::read_to_string(ws.dir.path().join(".ned.toml")).unwrap();
-    let go = config.replace("rust =", "go =");
-    fs::write(ws.dir.path().join(".ned.toml"), format!("{config}{go}")).unwrap();
+    let go = config.lines().nth(1).unwrap().replace("rust =", "go =");
+    fs::write(ws.dir.path().join(".ned.toml"), format!("{config}{go}\n")).unwrap();
     let mut servers = ws.servers();
     servers
         .open(&[ws.rust("a.rs", ""), ws.doc("a.go", Language::Go, "")])
         .await
         .unwrap();
-    let messages = ws.wait(has("textDocument/didOpen", 2));
+    let messages = ws.wait(has("textDocument/didOpen", 2)).await;
     assert_eq!(with_method(&messages, "initialize").len(), 1);
     let languages: Vec<_> = with_method(&messages, "textDocument/didOpen")
         .iter()
@@ -256,9 +258,75 @@ async fn a_missing_server_names_the_setting() {
 }
 
 #[tokio::test]
+async fn a_server_that_fails_to_start_says_why() {
+    let ws = Workspace::new();
+    let config = format!("[lsp]\nrust = [{FAKE:?}, {:?}, \"fail\"]\n", ws.log);
+    fs::write(ws.dir.path().join(".ned.toml"), config).unwrap();
+    let err = ws.servers().open(&[ws.rust("a.rs", "")]).await.unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "fake_lsp.py exited: fake: cannot start: broken on purpose; check that it runs, then rerun"
+    );
+}
+
+#[tokio::test]
 async fn config_errors_are_reported() {
     let ws = Workspace::new();
     fs::write(ws.dir.path().join(".ned.toml"), "[lsp]\nrust = 1\n").unwrap();
     let err = ws.servers().open(&[ws.rust("a.rs", "")]).await.unwrap_err();
     assert!(err.to_string().contains("invalid config"), "{err}");
+}
+
+/// The default servers, which must be installed: `cargo test -- --ignored`.
+#[tokio::test]
+#[ignore]
+async fn real_servers_start_index_and_shut_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let files = [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        ),
+        ("src/lib.rs", "pub fn a() -> u8 {\n    1\n}\n"),
+        ("go.mod", "module a\n\ngo 1.21\n"),
+        ("a.go", "package a\n\nfunc A() int { return 1 }\n"),
+        ("a.py", "def a():\n    return 1\n"),
+        ("a.ts", "export const a = (): number => 1;\n"),
+    ];
+    let mut documents = Vec::new();
+    for (name, text) in files {
+        let path = root.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, text).unwrap();
+        if let Some(lang) = Language::detect(name, text) {
+            documents.push(Document {
+                path,
+                lang,
+                text: text.into(),
+            });
+        }
+    }
+    let mut servers = Servers::new(root, None);
+    servers.open(&documents).await.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while servers
+        .status()
+        .iter()
+        .any(|s| s.state != ServerState::Ready)
+    {
+        assert!(Instant::now() < deadline, "{:?}", servers.status());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let names: Vec<_> = servers.status().into_iter().map(|s| s.name).collect();
+    assert_eq!(
+        names,
+        [
+            "gopls",
+            "pyright-langserver",
+            "rust-analyzer",
+            "typescript-language-server"
+        ]
+    );
+    servers.shutdown().await;
 }

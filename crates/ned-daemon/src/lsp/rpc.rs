@@ -2,18 +2,48 @@
 //! header, a blank line, then the JSON body.
 
 use serde_json::Value;
-use tokio::io::{self, AsyncBufRead};
+use tokio::io::{self, AsyncBufRead, AsyncBufReadExt, AsyncReadExt};
 
 /// The next message from `reader`, or `None` at the end of the stream.
 pub async fn read(reader: &mut (impl AsyncBufRead + Unpin)) -> io::Result<Option<Value>> {
-    let _ = reader;
-    todo!()
+    let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidData, message);
+    let mut length = None;
+    let mut header = String::new();
+    loop {
+        header.clear();
+        if reader.read_line(&mut header).await? == 0 {
+            return match length {
+                None => Ok(None),
+                Some(_) => Err(io::ErrorKind::UnexpectedEof.into()),
+            };
+        }
+        let header = header.trim_end();
+        if header.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = header.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            let value = value.trim();
+            length = Some(
+                value
+                    .parse()
+                    .map_err(|_| invalid(format!("bad Content-Length `{value}`")))?,
+            );
+        }
+    }
+    let length = length.ok_or_else(|| invalid("a message without Content-Length".into()))?;
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).await?;
+    serde_json::from_slice(&body)
+        .map(Some)
+        .map_err(|err| invalid(err.to_string()))
 }
 
 /// `message`, framed for writing.
 pub fn frame(message: &Value) -> Vec<u8> {
-    let _ = message;
-    todo!()
+    let body = message.to_string();
+    format!("Content-Length: {}\r\n\r\n{body}", body.len()).into_bytes()
 }
 
 #[cfg(test)]

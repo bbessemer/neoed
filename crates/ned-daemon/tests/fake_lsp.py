@@ -4,7 +4,8 @@
 Logs every message it receives as a JSON line to the file named by its first
 argument. On `initialized`, it asks for configuration and begins indexing
 progress. It ends the progress when a document it's given contains "done",
-and exits at once when one contains "crash".
+and exits at once when one contains "crash". With a second argument,
+`fail`, it prints an error and exits instead of initializing.
 """
 
 import json
@@ -49,6 +50,9 @@ while (message := read()) is not None:
     log.write(json.dumps(message) + "\n")
     method = message.get("method")
     params = message.get("params") or {}
+    if method == "initialize" and sys.argv[2:] == ["fail"]:
+        print("fake: cannot start: broken on purpose", file=sys.stderr)
+        sys.exit(2)
     if method == "initialize":
         send({"id": message["id"], "result": {"capabilities": {"textDocumentSync": 1}}})
     elif method == "initialized":
