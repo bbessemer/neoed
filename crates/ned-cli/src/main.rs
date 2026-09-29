@@ -6,11 +6,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use ned_core::buffer::Buffer;
 use ned_core::config::{self, Config};
 use ned_core::diff::{self, DiffStat};
 use ned_core::exec::{self, ExecErrorKind, Options};
 use ned_core::format::{self, Outcome};
 use ned_core::lang::Language;
+use ned_core::lsp;
 #[cfg(unix)]
 use ned_core::lsp::Lsp;
 use ned_core::{fs, script};
@@ -132,24 +134,42 @@ fn main() -> ExitCode {
         }
     };
 
+    let finals: Vec<&str> = changes
+        .iter()
+        .zip(&outcomes)
+        .map(|(change, outcome)| match outcome {
+            Outcome::Formatted { text, .. } => text.as_str(),
+            _ => change.new.as_str(),
+        })
+        .collect();
+    #[cfg(unix)]
+    let checked = match cli.no_check {
+        true => None,
+        false => daemon::check(&mut workspace, &changes, &finals, run.allow, cli.force),
+    };
+    #[cfg(not(unix))]
+    let checked: Option<ned_core::lsp::Checked> = None;
+    if let Some(checked) = &checked
+        && !checked.blocking.is_empty()
+    {
+        eprint!("{}", daemon::blocked(&changes, &finals, checked));
+        #[cfg(unix)]
+        daemon::restore(&mut workspace, &changes);
+        return ExitCode::from(1);
+    }
+
     if !cli.dry_run {
         let writes: Vec<(PathBuf, String)> = changes
             .iter()
-            .zip(&outcomes)
-            .map(|(change, outcome)| {
-                let text = match outcome {
-                    Outcome::Formatted { text, .. } => text,
-                    _ => &change.new,
-                };
-                (PathBuf::from(&change.path), text.clone())
-            })
+            .zip(&finals)
+            .map(|(change, text)| (PathBuf::from(&change.path), text.to_string()))
             .collect();
         if let Err(err) = fs::write_atomic(&writes) {
             eprintln!("error: cannot write files: {err}; no file was changed");
             return ExitCode::from(3);
         }
     }
-    for (change, outcome) in changes.iter().zip(&outcomes) {
+    for (i, (change, outcome)) in changes.iter().zip(&outcomes).enumerate() {
         let stat = DiffStat::between(&change.old, &change.new);
         println!(
             "{}",
@@ -172,6 +192,16 @@ fn main() -> ExitCode {
             Outcome::Skipped(note) => eprintln!("note: {note}"),
             Outcome::Unchanged => {}
         }
+        if let Some(checked) = &checked {
+            let buffer = Buffer::new(finals[i]);
+            for d in &checked.files[i] {
+                print!("{}", lsp::render(&change.path, &buffer, d));
+            }
+        }
+    }
+    #[cfg(unix)]
+    if checked.is_some() && cli.dry_run {
+        daemon::restore(&mut workspace, &changes);
     }
     ExitCode::SUCCESS
 }

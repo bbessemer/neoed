@@ -123,22 +123,8 @@ pub fn check_changes(
     if typed.is_empty() {
         return Ok(checked);
     }
-    let documents = |text: &dyn Fn(usize) -> String| {
-        typed
-            .iter()
-            .map(|&i| {
-                let path = &changes[i].path;
-                Ok(Document {
-                    path: std::path::absolute(path)
-                        .map_err(|err| LspFailure(format!("cannot read {path}: {err}")))?,
-                    lang: changes[i].lang.expect("typed"),
-                    text: text(i),
-                })
-            })
-            .collect::<Result<Vec<_>, LspFailure>>()
-    };
-    let before = lsp.diagnose(&documents(&|i| changes[i].old.clone())?)?;
-    let after = lsp.diagnose(&documents(&|i| finals[i].to_string())?)?;
+    let before = lsp.diagnose(&documents(changes, &typed, |i| changes[i].old.clone())?)?;
+    let after = lsp.diagnose(&documents(changes, &typed, |i| finals[i].to_string())?)?;
     let blocks = |severity: Severity| {
         !force
             && after.block.is_some_and(|block| severity <= block)
@@ -162,6 +148,38 @@ pub fn check_changes(
             .collect();
     }
     Ok(checked)
+}
+
+/// Sends the servers the original text of each of `changes`, after an edit
+/// that wasn't written, so their view matches the files again.
+pub fn restore(lsp: &mut dyn Lsp, changes: &[Change]) -> Result<(), LspFailure> {
+    let typed: Vec<usize> = (0..changes.len())
+        .filter(|&i| changes[i].lang.is_some())
+        .collect();
+    if typed.is_empty() {
+        return Ok(());
+    }
+    lsp.sync(&documents(changes, &typed, |i| changes[i].old.clone())?)
+}
+
+/// The `typed` changes as documents holding `text(i)`.
+fn documents(
+    changes: &[Change],
+    typed: &[usize],
+    text: impl Fn(usize) -> String,
+) -> Result<Vec<Document>, LspFailure> {
+    typed
+        .iter()
+        .map(|&i| {
+            let path = &changes[i].path;
+            Ok(Document {
+                path: std::path::absolute(path)
+                    .map_err(|err| LspFailure(format!("cannot read {path}: {err}")))?,
+                lang: changes[i].lang.expect("typed"),
+                text: text(i),
+            })
+        })
+        .collect()
 }
 
 /// `d` as a line of `check` output (spec §4.1), for the file at `path`
@@ -540,7 +558,7 @@ mod tests {
         let mut lsp = TextLsp::default();
         assert_eq!(
             checked(&mut lsp, &changes, None, false).blocking,
-            [error.clone()]
+            std::slice::from_ref(&error)
         );
         assert!(
             checked(&mut lsp, &changes, Some(Severity::Error), false)

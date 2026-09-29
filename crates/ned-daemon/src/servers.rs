@@ -81,7 +81,9 @@ impl Servers {
         }
         Ok(Diagnosis {
             show,
-            block: Some(Severity::Error),
+            block: config
+                .check_block(&self.root)?
+                .unwrap_or(Some(Severity::Error)),
             files,
         })
     }
