@@ -180,7 +180,17 @@ impl Parser<'_> {
 
     /// After `rename`: `SEL to NAME`.
     fn rename(&mut self) -> Result<CommandKind, ParseError> {
-        todo!()
+        let selector = self.dest()?;
+        let to = self.bump()?;
+        if !matches!(&to.kind, TokenKind::Word(w) if w == "to") {
+            return Err(expected("`to`", &to));
+        }
+        let token = self.bump()?;
+        let name = match token.kind {
+            TokenKind::Word(name) | TokenKind::Str(name) => name,
+            _ => return Err(expected("a name", &token)),
+        };
+        Ok(CommandKind::Rename { selector, name })
     }
 
     fn target(&mut self) -> Result<Target, ParseError> {
@@ -1135,7 +1145,7 @@ mod tests {
         assert_eq!(
             message(r#""x""#),
             "expected a command, found a string; \
-             commands are show outline check replace insert delete sub move file create allow"
+             commands are show outline check replace insert delete sub move rename file create allow"
         );
     }
 

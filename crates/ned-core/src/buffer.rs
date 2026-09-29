@@ -149,7 +149,16 @@ impl Buffer {
     /// The LSP position of a byte offset: a 0-based line, and UTF-16 code units
     /// into it.
     pub fn lsp_position(&self, offset: usize) -> (u32, u32) {
-        todo!("{offset}")
+        let offset = offset.min(self.len_bytes());
+        let line = self.rope.byte_to_line(offset);
+        let start = self.rope.line_to_byte(line);
+        let units: usize = self
+            .rope
+            .byte_slice(start..offset)
+            .chars()
+            .map(char::len_utf16)
+            .sum();
+        (line as u32, units as u32)
     }
 
     pub fn slice(&self, range: Range<usize>) -> Result<String, BufferError> {
