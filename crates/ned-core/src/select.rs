@@ -640,6 +640,15 @@ pub(crate) fn hint(
         .collect();
     match &step.primary {
         Primary::Literal(text) => {
+            if text.kind == TextKind::Str
+                && let Some((escaped, m)) = escaped_literal(&text.value, files, &scopes)
+            {
+                let quoted = escaped.replace('\\', "\\\\").replace('"', "\\\"");
+                return format!(
+                    "; as source text it matches at {}: \"{quoted}\"",
+                    location(&m)
+                );
+            }
             if let Some(m) = near_literal(&text.value, files, &scopes) {
                 return format!(
                     "; ignoring case and spacing, it matches at {}",
@@ -691,6 +700,33 @@ fn near_literal(needle: &str, files: &[&SourceFile], parents: &[Match]) -> Optio
             range: start..end,
         })
     })
+}
+
+/// `needle` as source code writes it, with its newlines, tabs, backslashes
+/// and quotes escaped, and where that first occurs within `parents`, if it
+/// differs from `needle`.
+fn escaped_literal(
+    needle: &str,
+    files: &[&SourceFile],
+    parents: &[Match],
+) -> Option<(String, Match)> {
+    let escaped = needle
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\t', "\\t")
+        .replace('"', "\\\"");
+    if escaped == needle {
+        return None;
+    }
+    let found = parents.iter().find_map(|p| {
+        let at = files[p.file].text[p.range.clone()].find(&escaped)?;
+        let start = p.range.start + at;
+        Some(Match {
+            file: p.file,
+            range: start..start + escaped.len(),
+        })
+    })?;
+    Some((escaped, found))
 }
 
 /// The first match of `pattern` within `parents` when case is ignored.
@@ -1928,6 +1964,16 @@ fn main() {
                 &[("a.rs", text)]
             )
             .ends_with("did you mean mod:m>fn:a>\"x\"..\"y\"?")
+        );
+    }
+
+    #[test]
+    fn a_literal_matching_as_escaped_source_text_is_suggested() {
+        let text = "let s = \"a\\nb\\t\";\n";
+        assert_eq!(
+            error("delete \"a\\nb\\t\"", &[("a.rs", text)]),
+            "error: script:1:8: \"a\\nb\\t\" matches nothing in a.rs; \
+             as source text it matches at 1: \"a\\\\nb\\\\t\""
         );
     }
 
