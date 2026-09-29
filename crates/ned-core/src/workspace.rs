@@ -49,4 +49,46 @@ mod tests {
         fs::create_dir(&dir).unwrap();
         assert_eq!(super::root(&dir).unwrap(), dir.canonicalize().unwrap());
     }
+
+    fn tree(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for (path, text) in files {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        (dir, root)
+    }
+
+    #[test]
+    fn files_respect_ignore_files_and_skip_hidden_ones() {
+        let (_dir, root) = tree(&[
+            (".gitignore", "target/\n*.log\n"),
+            ("src/b/c.rs", ""),
+            ("src/a.rs", ""),
+            ("target/x.rs", ""),
+            ("a.log", ""),
+            (".hidden/d.rs", ""),
+            (".env", ""),
+            ("README.md", ""),
+            ("src/.ignore", "gen.rs\n"),
+            ("src/gen.rs", ""),
+        ]);
+        assert_eq!(files(&root, &root), ["README.md", "src/a.rs", "src/b/c.rs"]);
+    }
+
+    #[test]
+    fn files_outside_the_working_directory_are_absolute() {
+        let (_dir, root) = tree(&[("src/a.rs", ""), ("README.md", "")]);
+        let readme = root.join("README.md").display().to_string();
+        assert_eq!(files(&root, &root.join("src")), [readme.as_str(), "a.rs"]);
+    }
+
+    #[test]
+    fn files_skip_symlinked_directories() {
+        let (_dir, root) = tree(&[("src/a.rs", "")]);
+        std::os::unix::fs::symlink(root.join("src"), root.join("link")).unwrap();
+        assert_eq!(files(&root, &root), ["src/a.rs"]);
+    }
 }

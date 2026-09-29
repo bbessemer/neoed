@@ -79,6 +79,22 @@ impl Workspace {
             })
             .collect()
     }
+
+    fn root(&self) -> std::path::PathBuf {
+        self.dir.path().canonicalize().unwrap()
+    }
+
+    /// Runs `ned ARGS` in `cwd`, with the workspace's runtime and config dirs.
+    fn ned_in(&self, cwd: &std::path::Path, args: &[&str]) -> Output {
+        cargo_bin_cmd!("ned")
+            .args(args)
+            .current_dir(cwd)
+            .env("XDG_RUNTIME_DIR", self.runtime.path())
+            .env("XDG_CONFIG_HOME", self.config.path())
+            .write_stdin("")
+            .output()
+            .unwrap()
+    }
 }
 
 impl Drop for Workspace {
@@ -274,4 +290,23 @@ fn a_real_server_blocks_a_breaking_edit() {
     let out = ws.ned(&["a.go", "-q", "-e", "replace \"return 1\" with \"return 2\""]);
     assert!(out.status.success(), "{out:?}");
     assert_eq!(text(&out.stdout), "a.go: 1 edit, +1 -1\n");
+}
+
+#[test]
+fn workspace_mode_is_checked_by_the_workspace_daemon() {
+    let ws = Workspace::new("");
+    ws.write("a.rs", CLEAN);
+    ws.start();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let root = ws.root().display().to_string();
+    let out = ws.ned_in(
+        elsewhere.path(),
+        &["-w", &root, "-e", "insert after fn:a \"// ERROR\""],
+    );
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        text(&out.stderr).contains("error here [fake F1]"),
+        "{out:?}"
+    );
+    assert_eq!(ws.read("a.rs"), CLEAN);
 }

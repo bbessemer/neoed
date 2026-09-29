@@ -2380,4 +2380,133 @@ fn main() {}
         );
         assert_eq!(out.allow, None);
     }
+
+    /// Runs `script` on the workspace at `root`, with `root/` removed from
+    /// every path.
+    fn in_workspace(root: &std::path::Path, script: &str) -> Outcome {
+        let prefix = format!("{}/", root.display());
+        let src = script.replace("{dir}/", &prefix);
+        let parsed = parse(&src).unwrap();
+        let run = run(
+            &parsed,
+            &src,
+            Initial::Workspace(root.to_path_buf()),
+            &Options::default(),
+            None,
+        );
+        let strip = |s: &str| s.replace(&prefix, "");
+        Outcome {
+            output: strip(&run.output),
+            result: match run.result {
+                Ok(changes) => Ok(changes
+                    .into_iter()
+                    .map(|c| Change {
+                        path: strip(&c.path),
+                        ..c
+                    })
+                    .collect()),
+                Err(err) => Err(strip(&err.render(&src))),
+            },
+        }
+    }
+
+    fn workspace_tree() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::write(root.join("sub/b.rs"), "fn b() {}\n").unwrap();
+        fs::write(root.join("bin.dat"), [0xff, 0xfe, b'\n']).unwrap();
+        fs::write(root.join(".gitignore"), "ignored.rs\n").unwrap();
+        fs::write(root.join("ignored.rs"), "fn a() {}\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_workspace_set_holds_every_workspace_file() {
+        let dir = workspace_tree();
+        let root = dir.path().canonicalize().unwrap();
+        let out = in_workspace(&root, "show fn:a\nshow all /fn /");
+        assert_eq!(
+            out.output,
+            "a.rs:1\n1:fn a() {}\na.rs:1\n1:fn a() {}\nsub/b.rs:1\n1:fn b() {}\n"
+        );
+        assert_eq!(out.result, Ok(vec![]));
+    }
+
+    #[test]
+    fn file_narrows_a_workspace_set() {
+        let dir = workspace_tree();
+        let root = dir.path().canonicalize().unwrap();
+        let out = in_workspace(&root, "file {dir}/sub/b.rs\nshow all /fn /");
+        assert_eq!(out.output, "sub/b.rs:1\n1:fn b() {}\n");
+    }
+
+    #[test]
+    fn edits_in_a_workspace_change_only_their_files() {
+        let dir = workspace_tree();
+        let root = dir.path().canonicalize().unwrap();
+        let out = in_workspace(&root, "replace fn:b.name with \"c\"");
+        let changes = out.result.unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(
+            (changes[0].path.as_str(), changes[0].new.as_str()),
+            ("sub/b.rs", "fn c() {}\n")
+        );
+    }
+
+    #[test]
+    fn an_empty_workspace_has_no_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = in_workspace(&dir.path().canonicalize().unwrap(), "show 1");
+        assert!(out.error().contains("no files to edit"), "{}", out.error());
+    }
+
+    #[test]
+    fn files_are_read_only_when_a_command_needs_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("good.rs");
+        let bad = dir.path().join("bad.rs");
+        fs::write(&good, "fn a() {}\n").unwrap();
+        fs::write(&bad, [0xff, 0xfe, b'\n']).unwrap();
+        let paths = [good.display().to_string(), bad.display().to_string()];
+        let src = format!("show file:{}>1", paths[0]);
+        let out = run(
+            &parse(&src).unwrap(),
+            &src,
+            Initial::Files(&paths),
+            &Options::default(),
+            None,
+        );
+        assert!(out.result.is_ok(), "{:?}", out.result);
+        assert!(out.output.ends_with("1:fn a() {}\n"), "{}", out.output);
+        let out = run(
+            &parse("show 1").unwrap(),
+            "show 1",
+            Initial::Files(&paths),
+            &Options::default(),
+            None,
+        );
+        let err = out.result.unwrap_err().render("show 1");
+        assert!(err.contains("not valid UTF-8"), "{err}");
+    }
+
+    #[test]
+    fn errors_list_at_most_five_files() {
+        let names = ["a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs"];
+        let files: Vec<(&str, &str)> = names.iter().map(|n| (*n, "x\n")).collect();
+        let out = exec_with(&files, files.len(), "show fn:missing");
+        assert!(
+            out.error()
+                .contains("matches nothing in a.rs, b.rs, c.rs, d.rs, e.rs and 2 more"),
+            "{}",
+            out.error()
+        );
+        let out = exec_with(&files, files.len(), "show file:z.rs>1");
+        assert!(
+        out.error().contains("is not in the file set: a.rs, b.rs, c.rs, d.rs, e.rs and 2 more; add it with `file`"),
+        "{}",
+        out.error()
+    );
+    }
 }
