@@ -236,7 +236,7 @@ fn defaults(lang: Language) -> Vec<Vec<String>> {
             &["ruff", "format", "--stdin-filename", "{path}", "-"],
             &["black", "-q", "--stdin-filename", "{path}", "-"],
         ],
-        Language::TypeScript | Language::Tsx | Language::JavaScript => {
+        Language::TypeScript | Language::Tsx | Language::JavaScript | Language::Markdown => {
             &[&["prettier", "--stdin-filepath", "{path}"]]
         }
     };

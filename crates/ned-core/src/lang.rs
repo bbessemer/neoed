@@ -16,16 +16,18 @@ pub enum Language {
     Tsx,
     JavaScript,
     Go,
+    Markdown,
 }
 
 impl Language {
-    pub const ALL: [Language; 6] = [
+    pub const ALL: [Language; 7] = [
         Language::Rust,
         Language::Python,
         Language::TypeScript,
         Language::Tsx,
         Language::JavaScript,
         Language::Go,
+        Language::Markdown,
     ];
 
     /// The name `--lang` takes.
@@ -37,6 +39,7 @@ impl Language {
             Language::Tsx => "tsx",
             Language::JavaScript => "javascript",
             Language::Go => "go",
+            Language::Markdown => "markdown",
         }
     }
 
@@ -50,6 +53,7 @@ impl Language {
             "tsx" => Some(Language::Tsx),
             "js" | "mjs" | "cjs" | "jsx" => Some(Language::JavaScript),
             "go" => Some(Language::Go),
+            "md" | "markdown" => Some(Language::Markdown),
             _ => None,
         };
         by_extension.or_else(|| from_shebang(text))
@@ -63,6 +67,7 @@ impl Language {
             Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
             Language::Go => tree_sitter_go::LANGUAGE.into(),
+            Language::Markdown => tree_sitter_md::LANGUAGE.into(),
         }
     }
 
@@ -77,9 +82,10 @@ impl Language {
     /// The compiled selector query, `queries/<lang>/selectors.scm`; `None`
     /// until the language has one.
     pub fn selectors(self) -> Option<&'static Query> {
-        static QUERIES: [OnceLock<Query>; 6] = [const { OnceLock::new() }; 6];
+        static QUERIES: [OnceLock<Query>; 7] = [const { OnceLock::new() }; 7];
         let source = match self {
             Language::Rust => include_str!("../../../queries/rust/selectors.scm"),
+            Language::Markdown => include_str!("../../../queries/markdown/selectors.scm"),
             _ => return None,
         };
         Some(QUERIES[self as usize].get_or_init(|| {

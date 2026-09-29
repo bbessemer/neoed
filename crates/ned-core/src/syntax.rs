@@ -15,8 +15,7 @@ use crate::script::ast::Part;
 use crate::text::full_lines;
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator, Tree};
 
-/// The core kinds a query may capture.
-pub const KINDS: [&str; 14] = [
+pub const KINDS: [&str; 18] = [
     "fn",
     "class",
     "struct",
@@ -31,6 +30,10 @@ pub const KINDS: [&str; 14] = [
     "field",
     "mod",
     "import",
+    "section",
+    "item",
+    "table",
+    "code",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
