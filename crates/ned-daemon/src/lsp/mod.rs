@@ -199,7 +199,15 @@ impl Server {
             "workspaceFolders": [{"uri": root_uri, "name": root_name}],
             "capabilities": {
                 "window": {"workDoneProgress": true},
-                "workspace": {"configuration": true, "workspaceFolders": true},
+                "workspace": {
+                    "configuration": true,
+                    "workspaceFolders": true,
+                    // So servers say when a rename moves files, which ned refuses.
+                    "workspaceEdit": {
+                        "documentChanges": true,
+                        "resourceOperations": ["create", "rename", "delete"],
+                    },
+                },
                 "textDocument": {
                     "synchronization": {"didSave": true},
                     "publishDiagnostics": {"versionSupport": true},
