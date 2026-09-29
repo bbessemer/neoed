@@ -129,6 +129,8 @@ formatting. Next: agent ergonomics (TODO.md §8).
 - `docs/command-language.md` — authoritative spec for syntax,
   selectors, verbs, output, and exit codes. Tests are written against it;
   update it _before_ changing behaviour.
+- `docs/agent-guide.md`, `docs/skills/ned/SKILL.md` — how agents use `ned`;
+  keep in step with behaviour (every ```ned block is parsed by a test).
 
 ## Tech Stack / Dependencies
 
