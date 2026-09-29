@@ -9,7 +9,9 @@ description: Read, search, create and edit source files with ned, a syntax-aware
 script applies, or none do. It prints a summary and diff hunks for each file,
 so you don't need to read the file back to check the edit.
 
-Syntax selectors (`fn:parse`, `impl:Parser`) work in Rust files. In other
+Syntax selectors work in Rust (`fn:parse`, `impl:Parser`,
+`impl:"Display for Parser"`) and Markdown (`section:"Install"`, `item:`,
+`table:`, `code:`); `insert end section:X` appends to a section. In other
 files, use lines, regexes, literals or `query{}`. Run `ned help` for the whole
 language in one screen, and `ned help TOPIC` for one verb.
 
