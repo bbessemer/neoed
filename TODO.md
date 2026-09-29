@@ -174,7 +174,8 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] Syntax selectors are slow on large files: any `fn:` selector on the
       3,500-line `crates/ned-core/src/exec.rs` takes 1.2 s (a 400-line file:
       0.01 s), even when it matches nothing, so the cost grows faster than the
-      file; profile items/query resolution - [ ] A string TEXT ending in a newline, for a whole-line target, gains a
+      file; profile items/query resolution
+- [ ] A string TEXT ending in a newline, for a whole-line target, gains a
       second one: in a file `a\nb\nc\n`, `replace "b\n" with "x\ny\n"` gives
       `a\nx\ny\n\nc\n`, and `insert after S>"    x,\n" "    y,\n"` leaves a
       blank line after `y`; a final newline in TEXT should count as the
