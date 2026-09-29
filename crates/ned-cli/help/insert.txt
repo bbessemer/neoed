@@ -1,0 +1,16 @@
+insert before|after|start|end [all] SEL TEXT
+
+Inserts TEXT next to each span of SEL (before, after) or inside it, at its
+start or end. On a syntax item, start and end mean its .body. Text for a
+whole-line span is line-oriented and re-indented; text for a partial span is
+inserted verbatim. An empty body like `fn f() {}` is opened onto new lines.
+Leading or trailing blank lines in TEXT are kept, to separate items.
+
+Examples:
+    insert after import:std::fmt "use std::io;"
+    insert end impl:Parser <<END
+
+    fn reset(&mut self) {
+        self.pos = 0;
+    }
+    END

@@ -17,7 +17,9 @@ use ned_core::{fs, script};
     name = "ned",
     version,
     args_conflicts_with_subcommands = true,
-    disable_help_subcommand = true
+    disable_help_subcommand = true,
+    // clap leaves a user-defined `help` subcommand out of the usage.
+    override_usage = "ned [OPTIONS] [FILES]... [-e SCRIPT]...\n       ned help [TOPIC]    (the command language)"
 )]
 struct Cli {
     #[command(subcommand)]

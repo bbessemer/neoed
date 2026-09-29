@@ -1,0 +1,11 @@
+file PATH...
+
+Sets the file set for the commands that follow; it starts as the FILE
+arguments. Globs (* ? [..] **) are expanded by ned, relative to the working
+directory, so quote them on the command line. A glob matching nothing, or a
+missing file, is an error. Selectors search every file in the set; use a
+file:PATH step to narrow one to a single file.
+
+Examples:
+    file src/*.rs
+    file src/lexer.rs src/parser.rs; show file:src/lexer.rs>fn:new
