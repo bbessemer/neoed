@@ -181,6 +181,16 @@ impl Lsp for Workspace {
         position: Position,
         name: &str,
     ) -> Result<Renamed, LspFailure> {
-        todo!("{document:?} {position:?} {name}")
+        let request = Request::Rename {
+            document: document.clone(),
+            position,
+            name: name.into(),
+        };
+        match self.request(&request)? {
+            Response::Renamed(renamed) => Ok(renamed),
+            other => Err(LspFailure(
+                ClientError::Protocol(format!("{other:?}")).to_string(),
+            )),
+        }
     }
 }

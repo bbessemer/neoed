@@ -2,7 +2,7 @@
 
 mod rpc;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -12,7 +12,7 @@ use std::time::Duration;
 use lsp_types::{DiagnosticSeverity, NumberOrString};
 
 use ned_core::lang::Language;
-use ned_core::lsp::{Diagnostic, Position, Severity, language_id};
+use ned_core::lsp::{Diagnostic, FileEdits, Position, Renamed, Severity, TextEdit, language_id};
 use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::io::AsyncBufReadExt;
@@ -114,6 +114,12 @@ pub enum LspError {
         method: String,
         message: String,
         code: i64,
+    },
+    #[error("{name} sent an invalid {method} reply ({message}); check that it's up to date")]
+    Invalid {
+        name: String,
+        method: String,
+        message: String,
     },
 }
 
@@ -235,7 +241,7 @@ impl Server {
             return Err(self.exited_error());
         }
         let generation = self.shared.lock().unwrap().generation;
-        match self.documents.get_mut(path) {
+        match self.documents.get(path) {
             None => {
                 let document = json!({
                     "uri": uri(path),
@@ -252,18 +258,40 @@ impl Server {
                 self.documents.insert(path.to_path_buf(), open);
             }
             Some(open) if open.text == text => {}
-            Some(open) => {
-                open.version += 1;
-                open.text = text.into();
-                open.synced = generation;
-                let params = json!({
-                    "textDocument": {"uri": uri(path), "version": open.version},
-                    "contentChanges": [{"text": text}],
-                });
-                self.notify("textDocument/didChange", params);
-            }
+            Some(_) => self.change(path, text.into()),
         }
         Ok(())
+    }
+
+    /// Sends `text` as the new text of the open document `path`.
+    fn change(&mut self, path: &Path, text: String) {
+        let generation = self.shared.lock().unwrap().generation;
+        let open = self.documents.get_mut(path).expect("open");
+        open.version += 1;
+        open.synced = generation;
+        let params = json!({
+            "textDocument": {"uri": uri(path), "version": open.version},
+            "contentChanges": [{"text": text}],
+        });
+        open.text = text;
+        self.notify("textDocument/didChange", params);
+    }
+
+    /// Brings the open documents other than `except` up to date with their
+    /// files, which may have changed since they were sent.
+    pub fn refresh(&mut self, except: &Path) {
+        let stale: Vec<(PathBuf, String)> = self
+            .documents
+            .iter()
+            .filter(|(path, _)| path.as_path() != except)
+            .filter_map(|(path, open)| {
+                let text = std::fs::read_to_string(path).ok()?;
+                (text != open.text).then(|| (path.clone(), text))
+            })
+            .collect();
+        for (path, text) in stale {
+            self.change(&path, text);
+        }
     }
 
     /// The server's diagnostics for `path`, once synced, waiting up to
@@ -327,6 +355,48 @@ impl Server {
         }
         let shared = self.shared.lock().unwrap();
         Ok(convert(&shared.published[&uri].diagnostics))
+    }
+
+    /// The edits that rename the symbol at `position` in `path` to `name`,
+    /// waiting up to `timeout` for the server to finish indexing.
+    pub async fn rename(
+        &mut self,
+        path: &Path,
+        position: Position,
+        name: &str,
+        timeout: Duration,
+    ) -> Result<Renamed, LspError> {
+        let deadline = Instant::now() + timeout;
+        let server = self.name.clone();
+        let timed_out = move || LspError::Timeout {
+            name: server.clone(),
+            method: "rename".into(),
+            secs: timeout.as_secs(),
+        };
+        self.wait_until(deadline, &timed_out, |shared| !shared.state.busy())
+            .await?;
+        let params = json!({
+            "textDocument": {"uri": uri(path)},
+            "position": {"line": position.line, "character": position.character},
+            "newName": name,
+        });
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match self
+            .request_within(remaining, "textDocument/rename", params)
+            .await
+        {
+            Ok(edit) => renamed(&self.name, &edit).map_err(|message| LspError::Invalid {
+                name: self.name.clone(),
+                method: "textDocument/rename".into(),
+                message,
+            }),
+            Err(LspError::Failed { message, .. }) => Ok(Renamed::Refused(format!(
+                "{} can't rename there: {message}; select the name itself",
+                self.name
+            ))),
+            Err(LspError::Timeout { .. }) => Err(timed_out()),
+            Err(err) => Err(err),
+        }
     }
 
     /// Waits until `done` holds, the server exits, or `deadline` passes.
@@ -547,6 +617,58 @@ fn convert(diagnostics: &Value) -> Vec<Diagnostic> {
             }),
         })
         .collect()
+}
+
+/// A rename's `WorkspaceEdit` as edits by file, in path order; `Err` says
+/// what's wrong with it.
+fn renamed(server: &str, edit: &Value) -> Result<Renamed, String> {
+    if edit.is_null() {
+        return Ok(Renamed::Refused(format!(
+            "{server} found nothing to rename there; select the name itself"
+        )));
+    }
+    let mut files: BTreeMap<PathBuf, Vec<TextEdit>> = BTreeMap::new();
+    let mut add = |uri: &str, edits: &Value| -> Result<(), String> {
+        let path = url::Url::parse(uri)
+            .ok()
+            .and_then(|url| url.to_file_path().ok())
+            .ok_or_else(|| format!("{uri} is not a file"))?;
+        let edits: Vec<lsp_types::TextEdit> =
+            serde_json::from_value(edits.clone()).map_err(|err| err.to_string())?;
+        let position = |p: lsp_types::Position| Position {
+            line: p.line,
+            character: p.character,
+        };
+        files
+            .entry(path)
+            .or_default()
+            .extend(edits.into_iter().map(|e| TextEdit {
+                start: position(e.range.start),
+                end: position(e.range.end),
+                text: e.new_text,
+            }));
+        Ok(())
+    };
+    if let Some(changes) = edit["documentChanges"].as_array() {
+        for change in changes {
+            if change.get("kind").is_some() {
+                return Ok(Renamed::Refused(format!(
+                    "{server} would create, rename or delete files, which ned can't do; rename or move the file yourself, then rerun"
+                )));
+            }
+            let uri = change["textDocument"]["uri"].as_str().unwrap_or_default();
+            add(uri, &change["edits"])?;
+        }
+    } else if let Some(changes) = edit["changes"].as_object() {
+        for (uri, edits) in changes {
+            add(uri, edits)?;
+        }
+    }
+    let files = files
+        .into_iter()
+        .map(|(path, edits)| FileEdits { path, edits })
+        .collect();
+    Ok(Renamed::Edits(files))
 }
 
 /// The result for a request from the server: no settings for

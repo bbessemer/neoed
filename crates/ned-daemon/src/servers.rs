@@ -96,7 +96,21 @@ impl Servers {
         position: Position,
         name: &str,
     ) -> Result<Renamed, ServersError> {
-        todo!("{document:?} {position:?} {name}")
+        self.open(std::slice::from_ref(document)).await?;
+        let mut config = Config::new(self.user_config.as_deref())?;
+        let Some(command) = config.server(&self.root, document.lang)? else {
+            return Ok(Renamed::NoServer);
+        };
+        let timeout = config.check_timeout(&self.root)?.unwrap_or(DEFAULT_TIMEOUT);
+        let server = self.servers.get_mut(&command).expect("opened above");
+        server.refresh(&document.path);
+        let timeout = Duration::from_secs(timeout);
+        // Servers such as pyright give no sign of loading the workspace, but
+        // diagnose a document only once they have.
+        server.diagnostics(&document.path, timeout).await?;
+        Ok(server
+            .rename(&document.path, position, name, timeout)
+            .await?)
     }
 
     pub fn status(&self) -> Vec<ServerStatus> {
