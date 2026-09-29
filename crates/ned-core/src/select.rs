@@ -1597,6 +1597,74 @@ fn main() {
         );
     }
 
+    /// The candidates an ambiguous `script` lists, each checked to pick
+    /// exactly one match.
+    fn listed(script: &str, texts: &[(&str, &str)]) -> Vec<String> {
+        let set = files(texts);
+        let err = resolve_in(script, &set).unwrap_err();
+        let ExecErrorKind::Ambiguous { candidates, .. } = err.kind else {
+            panic!("not ambiguous: {}", err.render(script));
+        };
+        let listed: Vec<String> = candidates.listed.into_iter().map(|(c, _)| c).collect();
+        for c in &listed {
+            let picked = resolve_in(&format!("delete {c}"), &set);
+            assert!(matches!(&picked, Ok(m) if m.len() == 1), "{c}: {picked:?}");
+        }
+        listed
+    }
+
+    #[test]
+    fn nested_candidates_scope_the_last_step() {
+        let m = "mod m {\n    fn a() {}\n    fn b() {}\n}\n";
+        assert_eq!(
+            listed("delete mod:m>/fn/", &[("a.rs", m)]),
+            ["mod:m>fn:a>/fn/", "mod:m>fn:b>/fn/"]
+        );
+        let twice = "impl A {\n    fn f() { x }\n}\nimpl A {\n    fn f() { x }\n}\n";
+        assert_eq!(
+            listed("delete impl:A>fn:f>\"x\"", &[("a.rs", twice)]),
+            ["impl:A>fn:f>2>\"x\"", "impl:A>fn:f>5>\"x\""]
+        );
+        assert_eq!(
+            listed("delete 1-4>/let/", &[("a.rs", TEXT)]),
+            ["1-4>2>/let/", "1-4>3>/let/"]
+        );
+    }
+
+    #[test]
+    fn nested_candidates_put_the_file_first() {
+        let one = "mod m {\n    fn a() {}\n}\n";
+        assert_eq!(
+            listed("delete mod:m>fn:a", &[("a.rs", one), ("b.rs", one)]),
+            ["file:a.rs>mod:m>fn:a", "file:b.rs>mod:m>fn:a"]
+        );
+        let two = "mod m {\n    fn a() {}\n}\nmod m {\n    fn a() {}\n}\n";
+        assert_eq!(
+            listed("delete mod:m>fn:a", &[("a.rs", two), ("b.rs", one)]),
+            [
+                "file:a.rs>mod:m>2>fn:a",
+                "file:a.rs>mod:m>5>fn:a",
+                "file:b.rs>mod:m>fn:a"
+            ]
+        );
+        assert_eq!(
+            listed(
+                "delete file:a.rs>/x/",
+                &[("a.rs", "x\nx\n"), ("b.rs", "x\n")]
+            ),
+            ["file:a.rs>1>/x/", "file:a.rs>2>/x/"]
+        );
+    }
+
+    #[test]
+    fn line_scopes_cover_the_whole_item() {
+        let text = "impl A {\n    fn f() {}\n}\nimpl A {\n    fn g() {}\n}\n";
+        assert_eq!(
+            listed("delete impl:A.body", &[("a.rs", text)]),
+            ["1-3>impl:A.body", "4-6>impl:A.body"]
+        );
+    }
+
     #[test]
     fn no_match_suggests_a_near_literal_or_regex() {
         assert_eq!(

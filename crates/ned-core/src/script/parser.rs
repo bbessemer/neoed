@@ -218,6 +218,7 @@ impl Parser<'_> {
         let mut steps = vec![Step {
             primary: self.range(first)?,
             parts: Vec::new(),
+            span: start..self.last_end,
         }];
         loop {
             let next = self.peek()?;
@@ -229,6 +230,7 @@ impl Parser<'_> {
                     self.bump()?;
                     if let Some(step) = steps.last_mut() {
                         step.parts.push(part);
+                        step.span.end = self.last_end;
                     }
                 }
                 TokenKind::Gt => {
@@ -237,9 +239,11 @@ impl Parser<'_> {
                     if token.space_before {
                         return Err(ParseError::new(E::SpaceInSelector, token.span));
                     }
+                    let step_start = token.span.start;
                     steps.push(Step {
                         primary: self.range(token)?,
                         parts: Vec::new(),
+                        span: step_start..self.last_end,
                     });
                 }
                 _ => break,
@@ -310,6 +314,7 @@ impl Parser<'_> {
                     Some(Step {
                         primary: Primary::Regex(pattern),
                         parts,
+                        ..
                     }),
                     true,
                 ) if parts.is_empty() => (None, pattern),
@@ -509,8 +514,12 @@ mod tests {
 
     fn unspan_selector(selector: Selector) -> Selector {
         Selector {
+            steps: selector
+                .steps
+                .into_iter()
+                .map(|step| Step { span: 0..0, ..step })
+                .collect(),
             span: 0..0,
-            ..selector
         }
     }
 
@@ -597,6 +606,7 @@ mod tests {
         Step {
             primary,
             parts: Vec::new(),
+            span: 0..0,
         }
     }
 

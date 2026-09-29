@@ -453,6 +453,7 @@ impl Executor<'_> {
                     steps.push(Step {
                         primary: rest[i].primary.clone(),
                         parts: rest[i].parts[..j].to_vec(),
+                        span: rest[i].span.clone(),
                     });
                     (steps, &rest[i].parts[j..])
                 }
@@ -1108,6 +1109,7 @@ impl Executor<'_> {
             let step = Step {
                 primary: Primary::Regex(pattern.clone()),
                 parts: Vec::new(),
+                span: span.clone(),
             };
             let hint = select::hint(&step, &set, &parents, &selector);
             return Err(ExecError::new(
@@ -1348,7 +1350,7 @@ fn separated<'t>(
 ) -> Cow<'t, Text> {
     let item = matches!(
         target.selector.steps.last(),
-        Some(Step { primary: Primary::Syntax { kind, .. }, parts }) if parts.is_empty() && kind != "import" && kind != "item"
+        Some(Step { primary: Primary::Syntax { kind, .. }, parts, .. }) if parts.is_empty() && kind != "import" && kind != "item"
     );
     let t = &f.text;
     if !item
