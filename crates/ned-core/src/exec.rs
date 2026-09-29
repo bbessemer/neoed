@@ -9,7 +9,7 @@ use tree_sitter::Node;
 
 use crate::edit::{Edit, EditError, EditSet};
 use crate::lang::Language;
-use crate::lsp::{Lsp, Severity};
+use crate::lsp::{Document, Lsp, LspFailure, Severity};
 use crate::outline;
 use crate::script::Script;
 use crate::script::ast::{
@@ -262,7 +262,7 @@ impl Executor<'_> {
                 position,
                 dest,
             } => self.move_to(index, span, target, *position, dest)?,
-            CommandKind::Check { target, level } => self.check(target.as_ref(), *level)?,
+            CommandKind::Check { target, level } => self.check(span, target.as_ref(), *level)?,
             CommandKind::File(_) | CommandKind::Create { .. } => unreachable!("handled above"),
         }
         Ok(())
@@ -462,9 +462,120 @@ impl Executor<'_> {
         Ok(())
     }
 
-    fn check(&mut self, target: Option<&Target>, level: Option<Severity>) -> Result<(), ExecError> {
-        let _ = (target, level);
-        todo!()
+    fn check(
+        &mut self,
+        span: &Range<usize>,
+        target: Option<&Target>,
+        level: Option<Severity>,
+    ) -> Result<(), ExecError> {
+        let error = |kind| ExecError::new(kind, Some(span.clone()));
+        let spans: Vec<(usize, Option<Range<usize>>)> = match target {
+            None => self.set.iter().map(|&i| (i, None)).collect(),
+            Some(target) => self
+                .resolve(target)?
+                .into_iter()
+                .map(|m| (m.file, Some(m.range)))
+                .collect(),
+        };
+        let mut files: Vec<usize> = spans.iter().map(|(i, _)| *i).collect();
+        files.dedup();
+        let typed: Vec<usize> = files
+            .iter()
+            .copied()
+            .filter(|&i| self.files[i].file.lang.is_some())
+            .collect();
+        if typed.is_empty() {
+            let names: Vec<&str> = files
+                .iter()
+                .map(|&i| self.files[i].file.path.as_str())
+                .collect();
+            return Err(error(ExecErrorKind::NoLanguage {
+                selector: "check".into(),
+                files: names.join(", "),
+            }));
+        }
+        let documents = typed
+            .iter()
+            .map(|&i| {
+                let f = &self.files[i].file;
+                let path = std::path::absolute(&f.path).map_err(|err| {
+                    error(ExecErrorKind::Io {
+                        path: f.path.clone(),
+                        message: err.to_string(),
+                    })
+                })?;
+                Ok(Document {
+                    path,
+                    lang: f.lang.expect("typed"),
+                    text: f.text.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, ExecError>>()?;
+        let Some(lsp) = self.lsp.as_deref_mut() else {
+            let message = "`check` needs the language-server daemon, which is Unix-only for now; run the project's build or linter";
+            return Err(error(ExecErrorKind::Lsp(message.into())));
+        };
+        let diagnosis = lsp
+            .diagnose(&documents)
+            .map_err(|LspFailure(message)| error(ExecErrorKind::Lsp(message)))?;
+        if diagnosis.files.iter().all(Option::is_none) {
+            let mut langs: Vec<&str> = documents.iter().map(|d| d.lang.name()).collect();
+            langs.dedup();
+            return Err(error(ExecErrorKind::NoServer {
+                langs: langs.join(", "),
+            }));
+        }
+        let level = level.unwrap_or(diagnosis.show);
+        let mut out = String::new();
+        for (&i, diagnostics) in typed.iter().zip(diagnosis.files) {
+            let Some(mut diagnostics) = diagnostics else {
+                continue;
+            };
+            diagnostics.sort_by_key(|d| d.start);
+            let f = &self.files[i].file;
+            let ranges: Vec<&Range<usize>> = spans
+                .iter()
+                .filter(|(file, _)| *file == i)
+                .filter_map(|(_, range)| range.as_ref())
+                .collect();
+            for d in diagnostics.iter().filter(|d| d.severity <= level) {
+                let start = f.buffer.lsp_offset(d.start.line, d.start.character);
+                let end = f
+                    .buffer
+                    .lsp_offset(d.end.line, d.end.character)
+                    .max(start + 1);
+                if !ranges.is_empty() && !ranges.iter().any(|r| start < r.end && end > r.start) {
+                    continue;
+                }
+                let line = f
+                    .buffer
+                    .byte_to_line(start)
+                    .unwrap_or(d.start.line as usize);
+                let line_start = f.buffer.line_range(line).map_or(start, |r| r.start);
+                let column = f.text[line_start..start].chars().count() + 1;
+                let tag = match (&d.source, &d.code) {
+                    (Some(source), Some(code)) => format!(" [{source} {code}]"),
+                    (Some(tag), None) | (None, Some(tag)) => format!(" [{tag}]"),
+                    (None, None) => String::new(),
+                };
+                let mut message = d.message.lines();
+                let first = message.next().unwrap_or_default();
+                out.push_str(&format!(
+                    "{}:{}:{column}: {}: {first}{tag}\n",
+                    f.path,
+                    line + 1,
+                    d.severity
+                ));
+                for rest in message {
+                    out.push_str(&format!("  {rest}\n"));
+                }
+            }
+        }
+        if out.is_empty() {
+            out = format!("no diagnostics at {level} or above\n");
+        }
+        self.output.push_str(&out);
+        Ok(())
     }
 
     fn sub(

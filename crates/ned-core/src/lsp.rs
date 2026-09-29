@@ -74,7 +74,12 @@ impl Severity {
     ];
 
     pub fn name(self) -> &'static str {
-        todo!()
+        match self {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+            Severity::Info => "info",
+            Severity::Hint => "hint",
+        }
     }
 }
 
@@ -88,8 +93,7 @@ impl FromStr for Severity {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, ()> {
-        let _ = s;
-        todo!()
+        Severity::ALL.into_iter().find(|l| l.name() == s).ok_or(())
     }
 }
 

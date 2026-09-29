@@ -152,7 +152,26 @@ impl Parser<'_> {
 
     /// After `check`: an optional target, then an optional level.
     fn check(&mut self) -> Result<CommandKind, ParseError> {
-        todo!()
+        let target = match &self.peek()?.kind {
+            TokenKind::Word(word) if word != "all" => None,
+            _ => self.optional_target()?,
+        };
+        let level = match &self.peek()?.kind {
+            TokenKind::Word(word) => {
+                let word = word.clone();
+                let token = self.bump()?;
+                let level = word.parse().map_err(|()| {
+                    let fix = match word.strip_suffix('s').map(str::parse::<Severity>) {
+                        Some(Ok(level)) => format!("did you mean `{level}`?"),
+                        _ => "levels are error warning info hint".into(),
+                    };
+                    ParseError::new(E::UnknownLevel { word, fix }, token.span)
+                })?;
+                Some(level)
+            }
+            _ => None,
+        };
+        Ok(CommandKind::Check { target, level })
     }
 
     fn target(&mut self) -> Result<Target, ParseError> {
@@ -1077,7 +1096,7 @@ mod tests {
         assert_eq!(
             message(r#""x""#),
             "expected a command, found a string; \
-             commands are show outline replace insert delete sub move file create"
+             commands are show outline check replace insert delete sub move file create"
         );
     }
 
@@ -1162,7 +1181,7 @@ mod tests {
             }
         );
         assert_eq!(
-            one("check all fn:x error; check"),
+            commands("check all fn:x error; check")[0],
             CommandKind::Check {
                 target: Some(all(vec![syntax("fn", "x")])),
                 level: Some(Severity::Error)

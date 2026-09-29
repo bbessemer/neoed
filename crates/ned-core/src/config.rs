@@ -117,14 +117,20 @@ impl Config {
 
     /// `[check] show` for `dir`.
     pub fn check_show(&mut self, dir: &Path) -> Result<Option<Severity>, ConfigError> {
-        let _ = dir;
-        todo!()
+        let dir = std::path::absolute(dir).map_err(|err| io_error(dir, &err))?;
+        Ok(self
+            .layers(&dir)?
+            .into_iter()
+            .find_map(|layer| layer.check_show))
     }
 
     /// `[check] timeout` for `dir`, in seconds.
     pub fn check_timeout(&mut self, dir: &Path) -> Result<Option<u64>, ConfigError> {
-        let _ = dir;
-        todo!()
+        let dir = std::path::absolute(dir).map_err(|err| io_error(dir, &err))?;
+        Ok(self
+            .layers(&dir)?
+            .into_iter()
+            .find_map(|layer| layer.check_timeout))
     }
 }
 
