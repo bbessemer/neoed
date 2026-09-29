@@ -1,7 +1,7 @@
 ned: a line editor for coding agents. A script is one transaction: every edit
 applies, or none does. Output is a per-file summary plus diff hunks.
 
-  ned [FLAGS] [FILE...] -e SCRIPT     (or the script on stdin)
+  ned [FLAGS] [FILE... | -w [DIR]] -e SCRIPT   (or the script on stdin)
   ned help [TOPIC]
 
 Commands, separated by newlines or `;`:
@@ -33,6 +33,7 @@ text, so line numbers from `show` stay valid for the whole script.
 
 Flags: -n dry run   -q summaries only   --force skip the syntax-error guard
        --no-fmt   --no-check   --lang LANG   --context N
+       -w [DIR] every file in the workspace (.gitignore respected)
 
 Examples:
     replace fn:parse>"unexpected end" with "end of input"

@@ -10,7 +10,7 @@ Sections marked _(reserved)_ define syntax that parses but is rejected with a
 ## 1. Invocation
 
 ```
-ned [FLAGS] [FILE...] [-e SCRIPT]...
+ned [FLAGS] [FILE... | -w [DIR]] [-e SCRIPT]...
 ned help [TOPIC]
 ned daemon start|status|stop [DIR]
 ```
@@ -24,19 +24,21 @@ first argument; write a file named `help` as `./help`.
 - `-e SCRIPT` may be repeated; the scripts are joined with newlines, in order.
 - Without `-e`, the script is read from stdin.
 - `FILE...` sets the initial **file set** (§2.4). A script may also name files
-  itself with `file`, so `FILE` arguments are optional.
+  itself with `file`, so `FILE` arguments are optional. `-w` starts with every
+  file in the workspace instead; giving both is a usage error.
 - Files must be UTF-8. Line endings are detected per file (LF or CRLF), and
   inserted text is converted to match.
 
-| Flag              | Effect                                                                                                   |
-| ----------------- | -------------------------------------------------------------------------------------------------------- |
-| `-n`, `--dry-run` | Resolve and apply edits in memory, print the output, write nothing.                                      |
-| `-q`, `--quiet`   | Print only the per-file summary lines on success (§6.3).                                                 |
-| `--force`         | Skip the parse-error guard (§4.3) and blocking on introduced diagnostics (§6.5).                         |
-| `--no-check`      | Don't check edits with language servers (§6.5).                                                          |
-| `--no-fmt`        | Don't run formatters (§6.4).                                                                             |
-| `--lang LANG`     | Use this language for every file: `rust`, `python`, `typescript`, `tsx`, `javascript`, `go`, `markdown`. |
-| `--context N`     | Context lines around diff hunks (default 1).                                                             |
+| Flag                      | Effect                                                                                                        |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `-n`, `--dry-run`         | Resolve and apply edits in memory, print the output, write nothing.                                           |
+| `-q`, `--quiet`           | Print only the per-file summary lines on success (§6.3).                                                      |
+| `--force`                 | Skip the parse-error guard (§4.3) and blocking on introduced diagnostics (§6.5).                              |
+| `--no-check`              | Don't check edits with language servers (§6.5).                                                               |
+| `-w`, `--workspace [DIR]` | Start with every file in the workspace, `DIR` or the one detected (§1.1), instead of `FILE` arguments (§2.4). |
+| `--no-fmt`                | Don't run formatters (§6.4).                                                                                  |
+| `--lang LANG`             | Use this language for every file: `rust`, `python`, `typescript`, `tsx`, `javascript`, `go`, `markdown`.      |
+| `--context N`             | Context lines around diff hunks (default 1).                                                                  |
 
 Otherwise, a file's language is detected from its extension, then from its
 shebang. Line, regex and literal selectors work on any file; syntax selectors
@@ -47,7 +49,8 @@ need a language.
 Language-server features run through a daemon, one per workspace, that keeps
 the servers warm between invocations. A workspace is the nearest directory,
 from the working directory up, that holds `.git`, `.hg` or `.jj`; without one,
-it's the working directory. Features that need the daemon spawn it on demand,
+it's the working directory. `-w DIR` makes `DIR` the workspace instead, for the
+file set and the daemon alike. Features that need the daemon spawn it on demand,
 and it exits after 10 minutes without a request (see `idle_timeout` below).
 Everything else works without it.
 
@@ -210,9 +213,20 @@ same script inserts. Use a second `ned` invocation for that.
 
 ### 2.4 File set
 
-Commands apply to the **current file set**. It starts as the `FILE` arguments.
-`file PATH...` replaces it for the commands that follow. `file` can't create
-files.
+Commands apply to the **current file set**. It starts as the `FILE` arguments,
+or with `-w`, every file in the workspace. `file PATH...` replaces it for the
+commands that follow. `file` can't create files.
+
+Files are read when a command first needs them, so a large set costs nothing
+until a selector searches it. A `FILE` or `file` path that doesn't exist is
+still an error at once; one that isn't UTF-8 is an error from the first command
+that reads it.
+
+With `-w`, the workspace's files are its regular files, except those that
+`.gitignore`, `.ignore` or git's excludes leave out (inside a git repository or
+not) and hidden files and directories. Files that aren't UTF-8 are skipped
+silently. The set is in path order; paths are shown relative to the working
+directory when they're inside it, and absolute otherwise.
 
 `ned` expands globs in `FILE` arguments and `file` paths itself, relative to the
 working directory, so a quoted glob works too:
