@@ -140,9 +140,10 @@ language detection and parsing (`lang`), syntax items and parts from
 supports every selector (including `A..B` ranges) and verb (including
 `create`), `show +N`, globbed file sets, the parse-error guard, formatting, and
 `ned help`. Every error ends with a fix. `ned-daemon` has the per-workspace
-daemon (socket, lock, lazy spawn, idle exit) behind `ned daemon`; the version
-names the build commit, and a daemon serves only its own build. Next: §9's LSP
-client (9b), then `check`, `rename`/`refs:`/`def:` and the formatting fallback.
+daemon (socket, lock, lazy spawn, idle exit) behind `ned daemon`, and starts
+language servers (`lsp`, `servers`; `[lsp]` config in `ned-core`) for `open`
+requests; the version names the build commit, and a daemon serves only its own
+build. Next (§9): `check`, `rename`/`refs:`/`def:`, the formatting fallback.
 
 ## Key Documentation
 
@@ -167,9 +168,10 @@ client (9b), then `check`, `rename`/`refs:`/`def:` and the formatting fallback.
 | `thiserror` / `anyhow`            | Errors in core / CLI                         |
 | `clap` (derive)                   | CLI arguments                                |
 | `tokio`, `serde_json`, `libc`     | Daemon: event loop, protocol, `getuid`       |
+| `url`                             | File URIs for LSP                            |
 | `insta`, `assert_cmd`, `tempfile` | Snapshot, CLI, and fs tests                  |
 
-Deferred: `lsp-types` (LSP client, TODO.md §9).
+Deferred: `lsp-types` (diagnostics and edits, TODO.md §9).
 
 ## Repository Structure
 
@@ -220,15 +222,16 @@ Planned crates: `ned-repl`, `ned-mcp`. All logic lives in
 
 ## Local Development
 
-| Target / Script                             | Description                |
-| ------------------------------------------- | -------------------------- |
-| `cargo build`                               | Build workspace            |
-| `cargo test`                                | Run all tests              |
-| `cargo clippy --all-targets -- -D warnings` | Lint                       |
-| `cargo fmt --check`                         | Format check               |
-| `cargo run -q -p ned-cli -- ARGS`           | Run `ned` from source      |
-| `cd bench && uv run bench.py --check`       | Token benchmark vs spec §8 |
-| `cd bench && uv run pytest`                 | Benchmark unit tests       |
+| Target / Script                             | Description                 |
+| ------------------------------------------- | --------------------------- |
+| `cargo build`                               | Build workspace             |
+| `cargo test`                                | Run all tests               |
+| `cargo clippy --all-targets -- -D warnings` | Lint                        |
+| `cargo fmt --check`                         | Format check                |
+| `cargo run -q -p ned-cli -- ARGS`           | Run `ned` from source       |
+| `cargo test -p ned-daemon -- --ignored`     | Smoke test real LSP servers |
+| `cd bench && uv run bench.py --check`       | Token benchmark vs spec §8  |
+| `cd bench && uv run pytest`                 | Benchmark unit tests        |
 
 ## Deployment Notes
 
