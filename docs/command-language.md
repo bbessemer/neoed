@@ -201,7 +201,9 @@ A script is one transaction over a snapshot of its files:
 3. Two edits whose spans overlap are an error that names both commands.
    Insertions at the same point are allowed, and apply in command order. An
    insertion exactly at the boundary of a replaced or deleted span is also
-   allowed.
+   allowed. Whole-line deletions (by `delete` or `move`) that only blank lines
+   separate are merged into one, so neighbouring items can be deleted
+   together.
 4. All edits are applied in one pass. Then the parse-error guard (§4.3) and the
    formatters (§6.4) run. Every modified file is written atomically, or none is.
 5. Reads (`show`, `outline`) always display the original contents.
@@ -476,7 +478,7 @@ Notes:
 - **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
   lines in a row, a blank line right after an opening delimiter or right before
   a closing one, or a blank line at the start or end of the file, one blank
-  line is removed.
+  line is removed. Merged deletions (§2.3) are tidied as one span.
 - Text that `replace`, `insert` or `move` puts into an empty `.body` is always
   line-oriented, re-based to the enclosing item's indentation plus one indent
   unit (§5.2). An empty single-line body such as `fn f() {}` is opened onto
