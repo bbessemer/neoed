@@ -120,7 +120,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] Diagnostics that only `cargo check` reports (rust-analyzer flycheck on
       save), e.g. unresolved names, for automatic checking and `check`
 - [x] `rename` verb (within the file set, or the workspace with `-w`)
-- [ ] `.refs` / `.def` parts (replacing the reserved `refs:` / `def:`)
+- [x] `.refs` / `.def` parts (replacing the reserved `refs:` / `def:`)
 - [ ] LSP formatting fallback when no external formatter is configured
 
 ## 10. REPL
@@ -166,6 +166,10 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] Formatting a file that `create` makes in a new directory reports
       `rustfmt not found`: the formatter runs in the file's directory, which
       doesn't exist until the write; run it in the nearest existing ancestor
+- [ ] Syntax selectors are slow on large files: any `fn:` selector on the
+      3,500-line `crates/ned-core/src/exec.rs` takes 1.2 s (a 400-line file:
+      0.01 s), even when it matches nothing, so the cost grows faster than the
+      file; profile items/query resolution
 
 ## Future improvements
 
