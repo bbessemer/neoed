@@ -1543,6 +1543,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn create_makes_a_file_later_commands_can_edit() {
+        let out = exec_with(
+            &[("a.rs", "x\n")],
+            1,
+            "create {dir}/b.rs <<END\n    fn b() {}\nEND\ninsert end fn:b \"c();\"\nshow fn:b",
+        );
+        assert_eq!(out.output, "b.rs:1\n1:fn b() {}\n");
+        let changes = out.result.unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "b.rs");
+        assert!(changes[0].created);
+        assert_eq!(changes[0].old, "");
+        assert_eq!(changes[0].new, "fn b() {\n    c();\n}\n");
+    }
+
+    #[test]
+    fn created_files_join_the_file_set() {
+        let out = exec_with(
+            &[("a.rs", "x\n")],
+            1,
+            "create {dir}/b.rs \"y\"\nsub /x|y/ with \"z\"",
+        );
+        let news: Vec<_> = out.result.unwrap().into_iter().map(|c| c.new).collect();
+        assert_eq!(news, ["z\n", "z\n"]);
+    }
+
+    #[test]
+    fn create_needs_a_new_path() {
+        assert_eq!(
+            exec_with(&[("a.rs", "x\n")], 0, "create {dir}/a.rs \"y\"").error(),
+            "error: script:1:1: a.rs already exists; edit it with `file a.rs`"
+        );
+        let twice = exec_with(&[], 0, "create {dir}/b.rs \"x\"\ncreate {dir}/b.rs \"y\"");
+        assert!(
+            twice
+                .error()
+                .starts_with("error: script:2:1: b.rs already exists"),
+            "{}",
+            twice.error()
+        );
+    }
+
+    #[test]
+    fn created_files_pass_the_guard_and_may_be_empty() {
+        let out = exec_with_options(&[], 0, "create {dir}/b.rs \"fn (\"", &Options::default());
+        assert!(
+            out.error().contains("edit introduces a syntax error"),
+            "{}",
+            out.error()
+        );
+        let empty = exec_with(&[], 0, "create {dir}/e.txt \"\"");
+        assert_eq!(empty.result.unwrap()[0].new, "");
+    }
+
     const MOVE: &str = "\
 impl A {
     fn a() {

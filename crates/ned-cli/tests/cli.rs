@@ -1007,3 +1007,30 @@ fn move_into_its_own_source_exits_1() {
     ");
     assert_eq!(read(&dir, "parser.rs"), PARSER);
 }
+
+#[test]
+fn create_writes_a_new_file_and_its_directories() {
+    let dir = dir_with(&[]);
+    let script = "create src/new.rs <<END\nfn a() {}\nEND\n";
+    let out = ned(dir.path(), &["-n"], script);
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    (dry run) src/new.rs: created, +1
+    @@ -0,0 +1,1 @@
+    +fn a() {}
+    --- stderr
+    ");
+    assert!(!dir.path().join("src").exists());
+    let out = ned(dir.path(), &["-q"], script);
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    src/new.rs: created, +1
+    --- stderr
+    ");
+    assert_eq!(read(&dir, "src/new.rs"), "fn a() {}\n");
+    let out = ned(dir.path(), &[], script);
+    assert!(out.starts_with("exit: 1\n"), "{out}");
+    assert!(out.contains("src/new.rs already exists"), "{out}");
+}

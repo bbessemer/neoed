@@ -162,6 +162,19 @@ impl Parser {
     }
 
     #[test]
+    fn created_summary_line() {
+        let stat = DiffStat {
+            added: 3,
+            removed: 0,
+        };
+        assert_eq!(created_summary("a.rs", stat, false), "a.rs: created, +3");
+        assert_eq!(
+            created_summary("a.rs", stat, true),
+            "(dry run) a.rs: created, +3"
+        );
+    }
+
+    #[test]
     fn spec_example_hunk() {
         let new = PARSER.replace("unexpected end", "unexpected end of input");
         let expected = concat!(

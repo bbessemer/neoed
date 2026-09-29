@@ -767,6 +767,28 @@ mod tests {
     }
 
     #[test]
+    fn create_command() {
+        assert_eq!(
+            one(r#"create src/a.rs "x""#),
+            CommandKind::Create {
+                path: "src/a.rs".into(),
+                text: string("x"),
+            }
+        );
+        assert_eq!(
+            one("create \"my file.rs\" <<END\nx\nEND\n"),
+            CommandKind::Create {
+                path: "my file.rs".into(),
+                text: text("x", TextKind::Heredoc),
+            }
+        );
+        assert_eq!(
+            message("create"),
+            "expected a path, found end of script; usage: create PATH TEXT"
+        );
+    }
+
+    #[test]
     fn nested_selectors_and_parts() {
         let show = |steps| CommandKind::Show {
             target: Some(target(steps)),
@@ -1047,7 +1069,7 @@ mod tests {
         assert_eq!(
             message(r#""x""#),
             "expected a command, found a string; \
-             commands are show outline replace insert delete sub move file"
+             commands are show outline replace insert delete sub move file create"
         );
     }
 
