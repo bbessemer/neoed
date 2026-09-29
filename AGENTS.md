@@ -139,8 +139,10 @@ language detection and parsing (`lang`), syntax items and parts from
 `outline`, and external formatters with `.ned.toml` config (`format`). The CLI
 supports every selector (including `A..B` ranges) and verb (including
 `create`), `show +N`, globbed file sets, the parse-error guard, formatting, and
-`ned help`. Every error ends with a fix. Next: the open TODO.md §8 items and
-Bugs, then the LSP daemon (§9).
+`ned help`. Every error ends with a fix. `ned-daemon` has the per-workspace
+daemon (socket, lock, lazy spawn, idle exit) behind `ned daemon`; the version
+names the build commit, and a daemon serves only its own build. Next: §9's LSP
+client (9b), then `check`, `rename`/`refs:`/`def:` and the formatting fallback.
 
 ## Key Documentation
 

@@ -104,7 +104,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 
 ## 9. LSP daemon _(split)_
 
-- [ ] `ned-daemon` crate: per-workspace socket, lazy spawn, idle timeout
+- [x] `ned-daemon` crate: per-workspace socket, lazy spawn, idle timeout
 - [ ] LSP client (`lsp-types`, `tokio`): initialize, didOpen/didChange, shutdown
 - [ ] Server configuration per language (rust-analyzer, gopls, pyright, tsserver)
 - [ ] `check` verb: diagnostics for edited files
