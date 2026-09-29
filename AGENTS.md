@@ -138,8 +138,8 @@ language detection and parsing (`lang`), syntax items and parts from
 `queries/<lang>/selectors.scm` (`syntax`; Rust and Markdown until TODO.md §12),
 `outline`, and external formatters with `.ned.toml` config (`format`). The CLI
 supports every selector (including `A..B` ranges) and verb (including
-`create`), `show +N`, globbed file sets, the parse-error guard, formatting, and
-`ned help`. Every error ends with a fix. `ned-daemon` has the per-workspace
+`create`), `show +N`, globbed file sets, the parse-error guard, formatting, `-w`
+(every workspace file; files are read lazily), and `ned help`. Every error ends with a fix. `ned-daemon` has the per-workspace
 daemon (socket, lock, lazy spawn, idle exit) behind `ned daemon`, and starts
 language servers (`lsp`, `servers`; `[lsp]` config in `ned-core`) for `open`
 requests and diagnostics, through the `Lsp` trait in `ned-core`: `check [SEL]
@@ -165,7 +165,7 @@ fallback.
 | `tree-sitter` + grammar crates    | Parsing: Rust, Python, TS/JS, Go (linked in) |
 | `ropey`                           | Rope text buffer                             |
 | `regex`                           | Regex selectors and `sub`                    |
-| `glob`                            | File-set globs                               |
+| `glob`, `ignore`                  | File-set globs; `-w` workspace walk          |
 | `similar`                         | Diff output                                  |
 | `serde` + `toml`                  | Config (`.ned.toml`)                         |
 | `thiserror` / `anyhow`            | Errors in core / CLI                         |
