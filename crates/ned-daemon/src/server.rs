@@ -126,6 +126,10 @@ impl Daemon<'_> {
                     Ok(located) => Response::Located(located),
                     Err(err) => Response::Error(err.to_string()),
                 },
+                Ok(Request::Format { document }) => match self.servers.format(&document).await {
+                    Ok(formatting) => Response::Formatted(formatting),
+                    Err(err) => Response::Error(err.to_string()),
+                },
                 Err(err) => Response::Error(format!("invalid request: {err}")),
             };
             reply(&mut write, &response).await;

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use ned_core::config::Config;
 use std::time::Duration;
 
-use ned_core::lsp::{Diagnosis, Locate, Located, Position, Renamed, Severity};
+use ned_core::lsp::{Diagnosis, Formatting, Locate, Located, Position, Renamed, Severity};
 
 use crate::lsp::{LspError, Server};
 use crate::protocol::{Document, ServerStatus};
@@ -140,6 +140,11 @@ impl Servers {
             .locate(kind, &document.path, position, timeout)
             .await?;
         Ok(Located::Locations(locations))
+    }
+
+    /// The edits that format the document.
+    pub async fn format(&mut self, document: &Document) -> Result<Formatting, ServersError> {
+        todo!()
     }
 
     pub fn status(&self) -> Vec<ServerStatus> {

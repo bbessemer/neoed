@@ -10,6 +10,7 @@ use toml::Value;
 use crate::config::{Config, ConfigError, Entry, program};
 use crate::exec::Change;
 use crate::lang::Language;
+use crate::lsp::Lsp;
 
 const DEFAULT_EDITION: &str = "2015";
 
@@ -30,8 +31,10 @@ pub enum Outcome {
     Unchanged,
     /// The text from the formatter named `name`.
     Formatted { name: String, text: String },
-    /// Formatting was skipped; the note says why.
-    Skipped(String),
+    /// No formatter for the file is installed; the note says so.
+    NotFound(String),
+    /// The formatter failed; the note says why.
+    Failed(String),
 }
 
 /// Formats the new text of each of `changes`, in parallel.
@@ -59,6 +62,12 @@ pub fn run(changes: &[Change], config: &mut Config) -> Result<Vec<Outcome>, Conf
             .map(|h| h.join().expect("formatting doesn't panic"))
             .collect()
     }))
+}
+
+/// Formats with `lsp` each of `changes` whose outcome is `NotFound`, where the
+/// language server can.
+pub fn fallback(changes: &[Change], outcomes: &mut [Outcome], lsp: &mut dyn Lsp) {
+    todo!()
 }
 
 impl Config {
@@ -109,7 +118,7 @@ impl Formatter {
     /// Formats `text`, the new contents of the file at `path`.
     fn format(&self, path: &str, text: &str) -> Outcome {
         let skipped = |name: &str, why: &str| {
-            Outcome::Skipped(format!("{name} {why}; skipped formatting {path}"))
+            Outcome::Failed(format!("{name} {why}; skipped formatting {path}"))
         };
         let mut missing = String::new();
         for command in &self.commands {
@@ -157,7 +166,7 @@ impl Formatter {
                 Err(_) => skipped(&name, "failed: output is not UTF-8"),
             };
         }
-        skipped(&missing, "not found")
+        Outcome::NotFound(format!("{missing} not found; skipped formatting {path}"))
     }
 }
 
@@ -608,7 +617,9 @@ mod tests {
     fn a_missing_program_is_skipped() {
         assert_eq!(
             format_with(&[&["ned-no-such-formatter", "-q"]], "x\n"),
-            Outcome::Skipped("ned-no-such-formatter not found; skipped formatting src/a.rs".into())
+            Outcome::NotFound(
+                "ned-no-such-formatter not found; skipped formatting src/a.rs".into()
+            )
         );
     }
 
@@ -620,7 +631,7 @@ mod tests {
         );
         assert_eq!(
             format_with(&[&["ned-no-such-a"], &["/nowhere/ned-no-such-b"]], "x\n"),
-            Outcome::Skipped("ned-no-such-b not found; skipped formatting src/a.rs".into())
+            Outcome::NotFound("ned-no-such-b not found; skipped formatting src/a.rs".into())
         );
     }
 
@@ -635,11 +646,11 @@ mod tests {
                 ]],
                 "x\n"
             ),
-            Outcome::Skipped("sh failed: bad input; skipped formatting src/a.rs".into())
+            Outcome::Failed("sh failed: bad input; skipped formatting src/a.rs".into())
         );
         assert_eq!(
             format_with(&[&["sh", "-c", "exit 1"]], "x\n"),
-            Outcome::Skipped("sh failed: exit status: 1; skipped formatting src/a.rs".into())
+            Outcome::Failed("sh failed: exit status: 1; skipped formatting src/a.rs".into())
         );
     }
 
@@ -647,7 +658,7 @@ mod tests {
     fn non_utf8_output_is_a_failure() {
         assert_eq!(
             format_with(&[&["sh", "-c", "printf '\\377'"]], "x\n"),
-            Outcome::Skipped("sh failed: output is not UTF-8; skipped formatting src/a.rs".into())
+            Outcome::Failed("sh failed: output is not UTF-8; skipped formatting src/a.rs".into())
         );
     }
 

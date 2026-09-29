@@ -103,6 +103,7 @@ fn daemon(action: Action) -> anyhow::Result<()> {
         | Response::Diagnosis(_)
         | Response::Renamed(_)
         | Response::Located(_)
+        | Response::Formatted(_)
         | Response::Stopped => {
             println!("stopped the daemon for {shown}")
         }

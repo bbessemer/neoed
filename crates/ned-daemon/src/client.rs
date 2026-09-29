@@ -9,7 +9,9 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ned_core::lsp::{Diagnosis, Document, Locate, Located, Lsp, LspFailure, Position, Renamed};
+use ned_core::lsp::{
+    Diagnosis, Document, Formatting, Locate, Located, Lsp, LspFailure, Position, Renamed,
+};
 use thiserror::Error;
 
 use crate::paths::{Paths, runtime_dir};
@@ -90,7 +92,8 @@ impl Client {
             Request::Open { .. }
             | Request::Diagnose { .. }
             | Request::Rename { .. }
-            | Request::Locate { .. } => SERVER_REPLY_TIMEOUT,
+            | Request::Locate { .. }
+            | Request::Format { .. } => SERVER_REPLY_TIMEOUT,
         };
         stream.set_read_timeout(Some(timeout))?;
         let mut line = serde_json::to_string(request).expect("requests serialize");
@@ -208,6 +211,18 @@ impl Lsp for Workspace {
         };
         match self.request(&request)? {
             Response::Located(located) => Ok(located),
+            other => Err(LspFailure(
+                ClientError::Protocol(format!("{other:?}")).to_string(),
+            )),
+        }
+    }
+
+    fn format(&mut self, document: &Document) -> Result<Formatting, LspFailure> {
+        let request = Request::Format {
+            document: document.clone(),
+        };
+        match self.request(&request)? {
+            Response::Formatted(formatting) => Ok(formatting),
             other => Err(LspFailure(
                 ClientError::Protocol(format!("{other:?}")).to_string(),
             )),

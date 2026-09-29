@@ -1628,8 +1628,8 @@ mod tests {
 
     use super::*;
     use crate::lsp::{
-        Diagnosis, Diagnostic, Document, FileEdits, Locate, Located, Location, LspFailure,
-        Position, Renamed, TextEdit,
+        Diagnosis, Diagnostic, Document, FileEdits, Formatting, Locate, Located, Location,
+        LspFailure, Position, Renamed, TextEdit,
     };
     use crate::script::parse;
 
@@ -2680,6 +2680,10 @@ fn main() {}
         fn locate(&mut self, _: Locate, _: &Document, _: Position) -> Result<Located, LspFailure> {
             unreachable!("not located in these tests")
         }
+
+        fn format(&mut self, _: &Document) -> Result<Formatting, LspFailure> {
+            unreachable!("not formatted in these tests")
+        }
     }
 
     fn diag(line: u32, character: u32, severity: Severity, message: &str) -> Diagnostic {
@@ -3140,6 +3144,10 @@ fn main() {}
                 })
                 .collect();
             Ok(Located::Locations(locations))
+        }
+
+        fn format(&mut self, _: &Document) -> Result<Formatting, LspFailure> {
+            unreachable!("not formatted in these tests")
         }
     }
 
