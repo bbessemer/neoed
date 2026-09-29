@@ -121,3 +121,16 @@ END
 - **Formatting.** A configured formatter (rustfmt, gofmt, ruff or black,
   prettier) runs after the edit, and its changes are shown under
   `fmt NAME`. `--no-fmt` skips it.
+- **Heredoc tags nest like the shell's.** A script heredoc ends at the first
+  line holding only its tag, so when the text contains an `END` line (a ned
+  script inside a script, say), use another tag: `<<'MD'`.
+- **Line numbers are absolute**, even in a nested step: `fn:parse>15-16`
+  names lines 15 and 16 of the file, which must lie inside `fn:parse`.
+- **Use `delete` to remove lines.** `replace 12 with ""` leaves an empty line,
+  because line-oriented text always ends with a newline.
+- **Items start at their first token.** A literal that includes a line's
+  leading spaces won't match inside an item such as `fn:x`, because the item
+  starts at `fn`, not at the line's indentation. Drop the leading spaces, or
+  select whole lines with `.lines`.
+- **Partial matches get verbatim text.** `insert after /re/` inserts right
+  after the match, even mid-line; add `.lines` to insert after the whole line.
