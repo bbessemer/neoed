@@ -6,7 +6,7 @@ first line. A partial span, such as a string match, takes TEXT verbatim.
 A field or variant keeps its trailing `,`. `$` is never expanded; use `sub`.
 
 Examples:
-    replace fn:parse.params with "(&mut self, depth: usize)"
+    replace fn:parse.params with "&mut self, depth: usize"
     replace fn:parse.body with <<END
     let tok = self.next()?;
     self.parse_expr(tok)
