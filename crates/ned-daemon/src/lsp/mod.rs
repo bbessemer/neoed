@@ -45,6 +45,8 @@ pub struct Server {
     /// Whether the server answers `textDocument/diagnostic`; otherwise it
     /// publishes diagnostics.
     pulls: bool,
+    /// Whether the server answers `textDocument/formatting`.
+    formats: bool,
     /// Signalled whenever the server sends a notification or exits.
     changed: Arc<Notify>,
     /// Forwards the server's stderr to the daemon's.
@@ -189,6 +191,7 @@ impl Server {
             next_id: 0,
             documents: HashMap::new(),
             pulls: false,
+            formats: false,
             changed,
         };
         let root_uri = uri(root);
@@ -216,7 +219,7 @@ impl Server {
                     "diagnostic": {"dynamicRegistration": false},
                     "definition": {"linkSupport": true},
                     "references": {},
-
+                    "formatting": {"dynamicRegistration": false},
                 },
                 "experimental": {"serverStatusNotification": true},
             },
@@ -224,6 +227,8 @@ impl Server {
         let result = server.request("initialize", params).await?;
         let provider = &result["capabilities"]["diagnosticProvider"];
         server.pulls = !(provider.is_null() || *provider == Value::Bool(false));
+        let provider = &result["capabilities"]["documentFormattingProvider"];
+        server.formats = !(provider.is_null() || *provider == Value::Bool(false));
         // rust-analyzer's only sign of loading the project is
         // `experimental/serverStatus`; until it's quiescent, it has nothing
         // to report.
@@ -437,6 +442,40 @@ impl Server {
             method: method.into(),
             message,
         })
+    }
+
+    /// The edits that format `path`, indented with `indent`, within `timeout`;
+    /// the server must be ready.
+    pub async fn format(
+        &mut self,
+        path: &Path,
+        indent: &str,
+        timeout: Duration,
+    ) -> Result<Vec<TextEdit>, LspError> {
+        let method = "textDocument/formatting";
+        let spaces = !indent.contains('\t');
+        let params = json!({
+            "textDocument": {"uri": uri(path)},
+            "options": {
+                "tabSize": if spaces { indent.len() } else { 4 },
+                "insertSpaces": spaces,
+            },
+        });
+        let reply = self.request_within(timeout, method, params).await?;
+        text_edits(&reply).map_err(|message| LspError::Invalid {
+            name: self.name.clone(),
+            method: method.into(),
+            message,
+        })
+    }
+
+    /// Whether the server formats documents.
+    pub fn formats(&self) -> bool {
+        self.formats
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Waits until `done` holds, the server exits, or `deadline` passes.
@@ -669,19 +708,10 @@ fn renamed(server: &str, edit: &Value) -> Result<Renamed, String> {
     }
     let mut files: BTreeMap<PathBuf, Vec<TextEdit>> = BTreeMap::new();
     let mut add = |uri: &str, edits: &Value| -> Result<(), String> {
-        let path = file_path(uri)?;
-
-        let edits: Vec<lsp_types::TextEdit> =
-            serde_json::from_value(edits.clone()).map_err(|err| err.to_string())?;
-
         files
-            .entry(path)
+            .entry(file_path(uri)?)
             .or_default()
-            .extend(edits.into_iter().map(|e| TextEdit {
-                start: position(e.range.start),
-                end: position(e.range.end),
-                text: e.new_text,
-            }));
+            .extend(text_edits(edits)?);
         Ok(())
     };
     if let Some(changes) = edit["documentChanges"].as_array() {
@@ -733,6 +763,23 @@ fn locations(reply: &Value) -> Result<Vec<Location>, String> {
         .collect::<Result<Vec<_>, String>>()?;
     locations.sort_by(|a, b| (&a.path, a.start).cmp(&(&b.path, b.start)));
     Ok(locations)
+}
+
+/// A list of `TextEdit`s, or null for none; `Err` says what's wrong with it.
+fn text_edits(edits: &Value) -> Result<Vec<TextEdit>, String> {
+    if edits.is_null() {
+        return Ok(Vec::new());
+    }
+    let edits: Vec<lsp_types::TextEdit> =
+        serde_json::from_value(edits.clone()).map_err(|err| err.to_string())?;
+    Ok(edits
+        .into_iter()
+        .map(|e| TextEdit {
+            start: position(e.range.start),
+            end: position(e.range.end),
+            text: e.new_text,
+        })
+        .collect())
 }
 
 fn file_path(uri: &str) -> Result<PathBuf, String> {

@@ -771,7 +771,7 @@ async fn format_without_a_formatting_server_says_so() {
 #[tokio::test]
 #[ignore]
 async fn real_servers_format() {
-    let cases: [(&[(&str, &str)], &str, &str, &str); 2] = [
+    let cases: [FormatCase; 2] = [
         (
             &[(
                 "Cargo.toml",
@@ -818,6 +818,9 @@ async fn real_servers_format() {
         servers.shutdown().await;
     }
 }
+
+/// Project files, the file to format, its text, and its formatted text.
+type FormatCase<'a> = (&'a [(&'a str, &'a str)], &'a str, &'a str, &'a str);
 
 /// The default servers find references and definitions across files: `cargo
 /// test -- --ignored`.

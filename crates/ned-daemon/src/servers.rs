@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use ned_core::config::Config;
+use ned_core::text::indent_unit;
 use std::time::Duration;
 
 use ned_core::lsp::{Diagnosis, Formatting, Locate, Located, Position, Renamed, Severity};
@@ -144,7 +145,18 @@ impl Servers {
 
     /// The edits that format the document.
     pub async fn format(&mut self, document: &Document) -> Result<Formatting, ServersError> {
-        todo!()
+        let Some((server, timeout)) = self.prepare(document).await? else {
+            return Ok(Formatting::NoServer);
+        };
+        if !server.formats() {
+            return Ok(Formatting::NoServer);
+        }
+        let indent = indent_unit(&document.text, document.lang.default_indent());
+        let edits = server.format(&document.path, &indent, timeout).await?;
+        Ok(Formatting::Edits {
+            server: server.name().into(),
+            edits,
+        })
     }
 
     pub fn status(&self) -> Vec<ServerStatus> {

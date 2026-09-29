@@ -7,10 +7,12 @@ use std::{fs, io, thread};
 
 use toml::Value;
 
+use crate::buffer::Buffer;
 use crate::config::{Config, ConfigError, Entry, program};
+use crate::edit::{Edit, EditSet};
 use crate::exec::Change;
 use crate::lang::Language;
-use crate::lsp::Lsp;
+use crate::lsp::{Document, Formatting, Lsp, LspFailure, TextEdit};
 
 const DEFAULT_EDITION: &str = "2015";
 
@@ -67,7 +69,46 @@ pub fn run(changes: &[Change], config: &mut Config) -> Result<Vec<Outcome>, Conf
 /// Formats with `lsp` each of `changes` whose outcome is `NotFound`, where the
 /// language server can.
 pub fn fallback(changes: &[Change], outcomes: &mut [Outcome], lsp: &mut dyn Lsp) {
-    todo!()
+    for (change, outcome) in changes.iter().zip(outcomes) {
+        let (Outcome::NotFound(note), Some(lang)) = (&*outcome, change.lang) else {
+            continue;
+        };
+        let Ok(path) = std::path::absolute(&change.path) else {
+            continue;
+        };
+        let document = Document {
+            path,
+            lang,
+            text: change.new.clone(),
+        };
+        *outcome = match lsp.format(&document) {
+            Ok(Formatting::NoServer) => continue,
+            Ok(Formatting::Edits { server, edits }) => match apply(&change.new, &edits) {
+                Some(text) if text == change.new => Outcome::Unchanged,
+                Some(text) => Outcome::Formatted { name: server, text },
+                None => Outcome::NotFound(format!("{note}; {server} sent overlapping edits")),
+            },
+            Err(LspFailure(reason)) => Outcome::NotFound(format!("{note}; {reason}")),
+        };
+    }
+}
+
+/// `text` with a server's `edits` applied, or `None` if they overlap.
+fn apply(text: &str, edits: &[TextEdit]) -> Option<String> {
+    let buffer = Buffer::new(text);
+    let mut set = EditSet::new(&buffer);
+    for edit in edits {
+        let start = buffer.lsp_offset(edit.start.line, edit.start.character);
+        let end = buffer.lsp_offset(edit.end.line, edit.end.character);
+        let text = edit.text.clone();
+        set.push(Edit {
+            range: start..end,
+            text,
+            command: 0,
+        })
+        .ok()?;
+    }
+    Some(set.apply())
 }
 
 impl Config {
@@ -231,9 +272,7 @@ fn rust_edition(dir: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lsp::{
-        Diagnosis, Document, Formatting, Locate, Located, LspFailure, Position, Renamed, TextEdit,
-    };
+    use crate::lsp::{Diagnosis, Locate, Located, Position, Renamed};
     use std::fs;
     use tempfile::TempDir;
 
