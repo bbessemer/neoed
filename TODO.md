@@ -120,6 +120,9 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] Searching with `show all /re/` over a glob or `-w`: no match is a normal
       answer, so say `no matches` (exit 1, as grep does) instead of an error
       listing the files searched with a hint to `show` them
+- [ ] A `replace` whose TEXT starts with a copy of the line just above its
+      span, or ends with a copy of the line just below, prints a note naming
+      the duplicated line (the range was probably off by one)
 
 ## 9. LSP daemon _(split)_
 
@@ -156,7 +159,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 
 ## Bugs
 
-- [ ] Ambiguity candidates for nested selectors put the scope before the
+- [x] Ambiguity candidates for nested selectors put the scope before the
       whole selector (`64>fn:items>/name/`, `var:comma>fn:items>/name/`,
       `fn:x>file:a.rs>/re/`), so they select nothing; put `file:` first and
       the line or enclosing-item scope just before the last step. The line
@@ -167,24 +170,24 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       without selector queries yet (e.g. a `.py` file next to `.rs` files),
       even if other files match; skip such files as files without a language
       are skipped, and fail only if no searched file supports the kind
-- [ ] Deleting (or moving) the last two items of a block in one script is an
+- [x] Deleting (or moving) the last two items of a block in one script is an
       overlap error: in `mod t { fn x() {} fn a() {} fn b() {} }`, with blank
       lines between the functions, `delete fn:a; delete fn:b` gives "edit
       overlaps command 1", because both tidy the blank line between them
-- [ ] A line selector nested in a syntax item can't select the item's last
+- [x] A line selector nested in a syntax item can't select the item's last
       line (`fn:b>$`, `fn:b>8`): the line's newline lies outside the item's
       span, which ends at `}`
-- [ ] Formatting a file that `create` makes in a new directory reports
+- [x] Formatting a file that `create` makes in a new directory reports
       `rustfmt not found`: the formatter runs in the file's directory, which
       doesn't exist until the write; run it in the nearest existing ancestor
-- [ ] Syntax selectors are slow on large files: any `fn:` selector on the
+- [x] Syntax selectors are slow on large files: any `fn:` selector on the
       3,500-line `crates/ned-core/src/exec.rs` takes 1.2 s (a 400-line file:
       0.01 s), even when it matches nothing, so the cost grows faster than the
       file; profile items/query resolution
-- [ ] `ned` panics when stdout closes early (`ned F -e '...' | head -1`):
-      "failed printing to stdout: Broken pipe"; exit quietly instead (the
-      edit is already written)
-- [ ] `a_stale_socket_is_replaced` (ned-daemon `tests/daemon.rs`) is flaky:
+- [x] `ned` panics when stdout closes early (`ned F -e '...' | head -1`):
+      "failed printing to stdout: Broken pipe", before the edit was written;
+      finish the script instead
+- [x] `a_stale_socket_is_replaced` (ned-daemon `tests/daemon.rs`) is flaky:
       about 1 run in 5 fails `Client::connect(..).is_none()` just after
       binding and dropping a listener
 

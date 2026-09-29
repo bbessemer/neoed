@@ -1,3 +1,19 @@
+// `print!` and `println!` that ignore a closed stdout: the script still
+// completes when the reader stops early (`ned ... | head`).
+macro_rules! out {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = write!(std::io::stdout(), $($arg)*);
+    }};
+}
+
+macro_rules! outln {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), $($arg)*);
+    }};
+}
+
 mod daemon;
 mod help;
 
@@ -80,7 +96,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Help { topic }) => {
-            print!("{}", help::text(topic));
+            out!("{}", help::text(topic));
             return ExitCode::SUCCESS;
         }
         Some(Command::Daemon { action }) => return daemon::run(action),
@@ -130,7 +146,7 @@ fn main() -> ExitCode {
     #[cfg(not(unix))]
     let lsp = None;
     let run = exec::run(&parsed, &src, initial, &options, lsp);
-    print!("{}", run.output);
+    out!("{}", run.output);
     for note in &run.notes {
         eprintln!("note: {note}");
     }
@@ -199,7 +215,7 @@ fn main() -> ExitCode {
     }
     for (i, (change, outcome)) in changes.iter().zip(&outcomes).enumerate() {
         let stat = DiffStat::between(&change.old, &change.new);
-        println!(
+        outln!(
             "{}",
             if change.created {
                 diff::created_summary(&change.path, stat, cli.dry_run)
@@ -208,13 +224,13 @@ fn main() -> ExitCode {
             }
         );
         if !cli.quiet {
-            print!("{}", diff::hunks(&change.old, &change.new, cli.context));
+            out!("{}", diff::hunks(&change.old, &change.new, cli.context));
         }
         match outcome {
             Outcome::Formatted { name, text } => {
-                println!("fmt {name}: {}", DiffStat::between(&change.new, text));
+                outln!("fmt {name}: {}", DiffStat::between(&change.new, text));
                 if !cli.quiet {
-                    print!("{}", diff::hunks(&change.new, text, cli.context));
+                    out!("{}", diff::hunks(&change.new, text, cli.context));
                 }
             }
             Outcome::NotFound(note) | Outcome::Failed(note) => eprintln!("note: {note}"),
@@ -223,7 +239,7 @@ fn main() -> ExitCode {
         if let Some(checked) = &checked {
             let buffer = Buffer::new(finals[i]);
             for d in &checked.files[i] {
-                print!("{}", lsp::render(&change.path, &buffer, d));
+                out!("{}", lsp::render(&change.path, &buffer, d));
             }
         }
     }

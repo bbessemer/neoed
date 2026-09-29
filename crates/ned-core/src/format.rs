@@ -151,6 +151,13 @@ impl Config {
                 command
             })
             .collect();
+        // A file `create` makes in a new directory is formatted before the
+        // directory exists.
+        let dir = dir
+            .ancestors()
+            .find(|a| a.is_dir())
+            .unwrap_or(&dir)
+            .to_path_buf();
         Ok(Some(Formatter { commands, dir }))
     }
 }
@@ -327,7 +334,7 @@ mod tests {
 
     #[test]
     fn defaults() {
-        let root = tree(&[]);
+        let root = tree(&[("src/keep", "")]);
         let a = |name: &str| at(&root, name);
         let rust = lookup(&root, None, "src/a.rs", Language::Rust)
             .unwrap()
@@ -722,6 +729,22 @@ mod tests {
         ]);
         let changes = [change(
             &root.path().join("sub/a.go"),
+            Some(Language::Go),
+            "",
+        )];
+        let outcomes = run(&changes, &mut Config::new(None).unwrap()).unwrap();
+        let dir = fs::canonicalize(root.path().join("sub")).unwrap();
+        assert_eq!(outcomes, [formatted("sh", &format!("{}\n", dir.display()))]);
+    }
+
+    #[test]
+    fn formatters_for_files_in_new_directories_run_in_an_existing_ancestor() {
+        let root = tree(&[
+            (".ned.toml", "[format]\ngo = [\"sh\", \"-c\", \"pwd -P\"]\n"),
+            ("sub/keep", ""),
+        ]);
+        let changes = [change(
+            &root.path().join("sub/new/deeper/a.go"),
             Some(Language::Go),
             "",
         )];

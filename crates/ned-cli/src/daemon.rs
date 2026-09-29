@@ -90,7 +90,7 @@ fn daemon(action: Action) -> anyhow::Result<()> {
     };
     let shown = root.display();
     let Some(client) = client else {
-        println!("no daemon for {shown}");
+        outln!("no daemon for {shown}");
         return Ok(());
     };
     let request = match action {
@@ -98,14 +98,14 @@ fn daemon(action: Action) -> anyhow::Result<()> {
         _ => Request::Status,
     };
     match client.request(&request)? {
-        Response::Status(status) => print!("{}", status_text(&status)),
+        Response::Status(status) => out!("{}", status_text(&status)),
         Response::Opened
         | Response::Diagnosis(_)
         | Response::Renamed(_)
         | Response::Located(_)
         | Response::Formatted(_)
         | Response::Stopped => {
-            println!("stopped the daemon for {shown}")
+            outln!("stopped the daemon for {shown}")
         }
         Response::Error(err) => {
             bail!("the daemon refused the request: {err}; run `ned daemon stop`, then retry")

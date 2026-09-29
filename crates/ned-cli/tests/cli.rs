@@ -3,7 +3,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::Output;
+use std::process::{Command, Output, Stdio};
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use insta::assert_snapshot;
@@ -1058,4 +1058,27 @@ fn markdown_outline_and_edits() {
         read(&dir, "notes.md"),
         "# Notes\n\n## Todo\n\n- [ ] one\n      more\n- [ ] one and a half\n- [ ] two\n\n## Done\n\n- [x] zero\n"
     );
+}
+
+#[test]
+fn a_closed_stdout_does_not_stop_the_script() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("a.txt");
+    fs::write(&path, "x\n".repeat(50_000)).unwrap();
+    // More output than a pipe holds, so ned writes after the reader is gone.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ned"))
+        .arg(&path)
+        .args(["-e", "show all /x/; replace 1 with \"y\""])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(fs::read_to_string(&path).unwrap().starts_with("y\nx\n"));
 }

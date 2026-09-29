@@ -201,7 +201,9 @@ A script is one transaction over a snapshot of its files:
 3. Two edits whose spans overlap are an error that names both commands.
    Insertions at the same point are allowed, and apply in command order. An
    insertion exactly at the boundary of a replaced or deleted span is also
-   allowed.
+   allowed. Whole-line deletions (by `delete` or `move`) that only blank lines
+   separate are merged into one, so neighbouring items can be deleted
+   together.
 4. All edits are applied in one pass. Then the parse-error guard (§4.3) and the
    formatters (§6.4) run. Every modified file is written atomically, or none is.
 5. Reads (`show`, `outline`) always display the original contents.
@@ -256,7 +258,9 @@ A selector resolves to a set of **spans** (byte ranges) in one or more files.
 
 Line numbers are 1-based. A line selector covers whole lines, including their
 line endings. A range whose start is after its end, or a line past the end of
-the file, is an error.
+the file, is an error. Numbers count from the top of the file even in a nested
+step, but there `$` is the last line of the enclosing span: `fn:parse>$` is the
+function's closing line.
 
 ### 3.2 Regex and literal
 
@@ -323,7 +327,9 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 ### 3.4 Nesting and parts
 
 - `A>B` resolves `B` within each span of `A`. That is, `B`'s matches must lie
-  inside `A`, at any depth. Any kinds of primaries can be mixed:
+  inside `A`, at any depth. A line lies inside a span that covers whole lines
+  (such as a syntax item) if its text does, so `fn:new>12` can select the
+  item's first or last line. Any kinds of primaries can be mixed:
   `impl:Parser>fn:new`, `fn:main>/unwrap\(\)/`, `100-200>fn:new`.
 - A **part** narrows each span of its step:
 
@@ -367,8 +373,11 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 - There is no nth-match syntax. To disambiguate, nest (`impl:Lexer>fn:new`),
   scope by lines (`40-80>fn:new`), or scope by file (`file:src/a.rs>fn:new`).
   Error messages list the candidates in exactly these forms (§7): nested in the
-  match's nearest enclosing item if that's unique among the matches, otherwise
-  scoped by file if that's unique, otherwise by lines.
+  match's nearest enclosing item (within the previous step's span) if that's
+  unique among the matches, otherwise scoped by file if that's unique,
+  otherwise by lines. A `file:` scope goes first; an item or line scope goes
+  just before the selector's last step (`impl:Lexer>fn:new>40-44>/x/`), and a
+  line scope covers the whole matched item, even when a part follows it.
 - Every listed candidate picks exactly one match. Matches that share a line
   with another match can't be picked by scope, so they aren't listed; the error
   counts them and suggests selecting longer text, or `all`.
@@ -469,7 +478,7 @@ Notes:
 - **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
   lines in a row, a blank line right after an opening delimiter or right before
   a closing one, or a blank line at the start or end of the file, one blank
-  line is removed.
+  line is removed. Merged deletions (§2.3) are tidied as one span.
 - Text that `replace`, `insert` or `move` puts into an empty `.body` is always
   line-oriented, re-based to the enclosing item's indentation plus one indent
   unit (§5.2). An empty single-line body such as `fn f() {}` is opened onto
@@ -639,7 +648,8 @@ added. The daemon isn't started for this, and `false` disables the fallback
 too.
 
 A formatter gets the file's text on stdin and prints the formatted text on
-stdout. It runs in the file's directory, so its own configuration
+stdout. It runs in the file's directory (or, for a file `create` makes in a new
+directory, its nearest existing ancestor), so its own configuration
 (`rustfmt.toml`, `.prettierrc`, ...) is found. Its name in the output is the
 basename of its program.
 

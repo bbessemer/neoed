@@ -95,6 +95,8 @@ pub struct Selector {
 pub struct Step {
     pub primary: Primary,
     pub parts: Vec<Part>,
+    /// The step in the script, parts included.
+    pub span: Range<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

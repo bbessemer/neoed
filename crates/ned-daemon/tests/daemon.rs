@@ -1,7 +1,7 @@
 //! The daemon and its client, in process (command-language spec §1.1).
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -120,7 +120,18 @@ fn a_second_daemon_for_a_workspace_returns_at_once() {
 #[test]
 fn a_stale_socket_is_replaced() {
     let daemon = Daemon::new();
-    drop(UnixListener::bind(&daemon.paths.socket).unwrap());
+    // Bound by a child process: a listener bound here could leak into a
+    // process another test spawns at that moment (macOS sets close-on-exec
+    // after creating the socket), and keep listening after being dropped.
+    let bound = process::Command::new("python3")
+        .args([
+            "-c",
+            "import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])",
+        ])
+        .arg(&daemon.paths.socket)
+        .status()
+        .unwrap();
+    assert!(bound.success());
     assert!(daemon.paths.socket.exists());
     assert!(Client::connect(&daemon.paths).is_none());
     let daemon = daemon.start(IDLE);

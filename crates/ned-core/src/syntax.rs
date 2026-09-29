@@ -113,58 +113,63 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
     });
     found.dedup_by(|b, a| a.kind == b.kind && a.node == b.node);
 
-    let mut items: Vec<Item> =
-        found
-            .into_iter()
-            .map(
-                |Found {
-                     kind,
-                     node,
-                     name,
-                     body,
-                     params,
-                 }| {
-                    let mut range = node.byte_range();
-                    // Some nodes (Markdown blocks) take the blank lines after them.
-                    range.end = range.start + text[range.clone()].trim_end().len();
-                    let comma = node
-                        .next_sibling()
-                        .filter(|n| n.kind() == "," && !n.is_named())
-                        .filter(|n| {
-                            text[range.end..n.start_byte()]
-                                .trim_matches([' ', '\t'])
-                                .is_empty()
-                        });
-                    if let Some(comma) = comma {
-                        range.end = comma.end_byte();
+    let mut items: Vec<Item> = found
+        .into_iter()
+        .map(
+            |Found {
+                 kind,
+                 node,
+                 name,
+                 body,
+                 params,
+             }| {
+                let mut range = node.byte_range();
+                // Some nodes (Markdown blocks) take the blank lines after them.
+                range.end = range.start + text[range.clone()].trim_end().len();
+                let comma = node
+                    .next_sibling()
+                    .filter(|n| n.kind() == "," && !n.is_named())
+                    .filter(|n| {
+                        text[range.end..n.start_byte()]
+                            .trim_matches([' ', '\t'])
+                            .is_empty()
+                    });
+                if let Some(comma) = comma {
+                    range.end = comma.end_byte();
+                }
+                let mut doc: Option<Range<usize>> = None;
+                // Only the nearest node can be directly before: any earlier one has
+                // it in between.
+                while let Some((l, is_doc)) = leading
+                    [..leading.partition_point(|(l, _)| l.start < range.start)]
+                    .iter()
+                    .rev()
+                    .find(|(l, _)| l.end <= range.start)
+                    .filter(|(l, _)| directly_before(text, l, range.start))
+                {
+                    range.start = l.start;
+                    if *is_doc {
+                        doc = Some(l.start..doc.map_or(l.end, |d| d.end));
                     }
-                    let mut doc: Option<Range<usize>> = None;
-                    while let Some((l, is_doc)) = leading.iter().rev().find(|(l, _)| {
-                        l.end <= range.start && directly_before(text, l, range.start)
-                    }) {
-                        range.start = l.start;
-                        if *is_doc {
-                            doc = Some(l.start..doc.map_or(l.end, |d| d.end));
-                        }
-                    }
-                    Item {
-                        kind,
-                        name: name.map_or(String::new(), |n| {
-                            let text = &text[n.byte_range()];
-                            text.lines().next().unwrap_or_default().trim().to_string()
-                        }),
-                        range,
-                        trailing_comma: comma.is_some(),
-                        node: node.byte_range(),
-                        name_range: name
-                            .map_or(node.start_byte()..node.start_byte(), |n| n.byte_range()),
-                        body,
-                        params,
-                        doc,
-                    }
-                },
-            )
-            .collect();
+                }
+                Item {
+                    kind,
+                    name: name.map_or(String::new(), |n| {
+                        let text = &text[n.byte_range()];
+                        text.lines().next().unwrap_or_default().trim().to_string()
+                    }),
+                    range,
+                    trailing_comma: comma.is_some(),
+                    node: node.byte_range(),
+                    name_range: name
+                        .map_or(node.start_byte()..node.start_byte(), |n| n.byte_range()),
+                    body,
+                    params,
+                    doc,
+                }
+            },
+        )
+        .collect();
     items.sort_by_key(|i| (i.range.start, Reverse(i.range.end)));
     items
 }
@@ -182,8 +187,8 @@ struct Found<'t> {
 /// `start`.
 fn directly_before(text: &str, leading: &Range<usize>, start: usize) -> bool {
     let gap = &text[leading.end..start];
-    let newlines = gap.matches('\n').count() + usize::from(text[..leading.end].ends_with('\n'));
-    gap.trim().is_empty() && newlines <= 1
+    gap.trim().is_empty()
+        && gap.matches('\n').count() + usize::from(text[..leading.end].ends_with('\n')) <= 1
 }
 
 /// The span of `part` of `item` (§3.4); `None` if the item doesn't have it.
@@ -420,6 +425,16 @@ mod tests {}
         assert_eq!(span("fn", text), "#[inline]\nfn a() {}");
         let text = "/// A.\n\nfn a() {}\n";
         assert_eq!(span("fn", text), "fn a() {}");
+    }
+
+    #[test]
+    fn leading_docs_belong_to_the_next_item_only() {
+        let text = "/// S.\n#[derive(Debug)]\nstruct S;\n/// A.\nfn a() {}\nfn b() {}\n";
+        let docs: Vec<Option<&str>> = items_in(text)
+            .iter()
+            .map(|i| i.doc.clone().map(|d| &text[d]))
+            .collect();
+        assert_eq!(docs, [Some("/// S.\n"), Some("/// A.\n"), None]);
     }
 
     #[test]
