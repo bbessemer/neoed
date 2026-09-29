@@ -11,7 +11,7 @@ use tree_sitter::{Query, QueryCursor, QueryError, QueryErrorKind, StreamingItera
 use crate::buffer::{Buffer, LineEnding};
 use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
 use crate::lang::Language;
-use crate::script::ast::{LineNo, Part, Primary, Step, Target, TextKind};
+use crate::script::ast::{LineNo, Part, Pattern, Primary, Step, Target, TextKind};
 use crate::syntax::{self, Item};
 use crate::text::{full_lines, strip_indent};
 
@@ -142,7 +142,7 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
                         syntax::part(item, *part, &f.text).ok_or_else(|| E::MissingPart {
                             item: syntax::selector(item.kind, &item.name),
                             part: part_name(*part).into(),
-                            has: String::new(),
+                            has: parts_of(item),
                         })?
                     }
                     (_, None) => unreachable!("checked above"),
@@ -380,7 +380,7 @@ fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]
             let selector = syntax::selector(kind, name);
             return Err(E::Unsupported {
                 what: format!("`{selector}` in {lang} files"),
-                instead: "",
+                instead: r#"use a line, /regex/, "literal" or query{} selector"#,
             });
         };
         let kinds = syntax::kinds(query);
@@ -422,7 +422,7 @@ fn compile_query(
         }
         let query = Query::new(&lang.grammar(), source).map_err(|err| E::InvalidQuery {
             lang: lang.to_string(),
-            message: query_error(&err),
+            message: query_error(&err, &lang.grammar()),
         })?;
         queries.push((lang, query));
     }
@@ -439,28 +439,196 @@ fn compile_query(
     Ok(queries)
 }
 
-fn query_error(err: &QueryError) -> String {
+fn query_error(err: &QueryError, grammar: &tree_sitter::Language) -> String {
     let message = &err.message;
+    let closest = |wanted: &str, names: Vec<&str>| {
+        let limit = (wanted.chars().count() / 3).max(2);
+        names
+            .into_iter()
+            .map(|n| (syntax::distance(wanted, n), n))
+            .filter(|(d, _)| *d <= limit)
+            .min()
+            .map_or(String::new(), |(_, n)| format!("; did you mean `{n}`?"))
+    };
+    let hint = match err.kind {
+        QueryErrorKind::NodeType => {
+            let kinds = (0..grammar.node_kind_count() as u16)
+                .filter(|&id| grammar.node_kind_is_named(id) && grammar.node_kind_is_visible(id))
+                .filter_map(|id| grammar.node_kind_for_id(id))
+                .collect();
+            closest(message.trim_matches('"'), kinds)
+        }
+        QueryErrorKind::Field => {
+            let fields = (1..=grammar.field_count() as u16)
+                .filter_map(|id| grammar.field_name_for_id(id))
+                .collect();
+            closest(message.trim_matches('"'), fields)
+        }
+        QueryErrorKind::Predicate => "; predicates look like (#eq? @capture \"text\")".into(),
+        QueryErrorKind::Language => String::new(),
+        _ => "; queries look like (node field: (child) @sel)".into(),
+    };
     let what = match err.kind {
         QueryErrorKind::NodeType => format!("unknown node type `{}`", message.trim_matches('"')),
-        QueryErrorKind::Field => format!("unknown field `{message}`"),
+        QueryErrorKind::Field => format!("unknown field `{}`", message.trim_matches('"')),
         QueryErrorKind::Capture => format!("unknown capture `@{message}`"),
         QueryErrorKind::Predicate => "bad predicate".into(),
         QueryErrorKind::Structure => "impossible pattern".into(),
         QueryErrorKind::Syntax => "syntax error".into(),
         QueryErrorKind::Language => return message.clone(),
     };
-    format!("{what} at column {}", err.column + 1)
+    format!("{what} at column {}{hint}", err.column + 1)
+}
+
+/// The parts `item` has, as `.body .sig ...`.
+fn parts_of(item: &Item) -> String {
+    [
+        item.body.is_some().then_some(".body"),
+        Some(".sig"),
+        item.params.is_some().then_some(".params"),
+        Some(".name"),
+        item.doc.is_some().then_some(".doc"),
+        Some(".lines"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+/// The fix for a `step` that matched nothing within `parents` (§7): a close
+/// syntax name, a literal match ignoring case and spacing, a case-insensitive
+/// regex match, the spans a nested step searched, or where to look.
+pub(crate) fn hint(
+    step: &Step,
+    files: &[&SourceFile],
+    parents: &[Match],
+    selector: &str,
+) -> String {
+    if let Some(hint) = close_name(step, files, parents, selector) {
+        return hint;
+    }
+    let location = |m: &Match| {
+        let f = files[m.file];
+        let lines = line_numbers(&f.buffer, &m.range);
+        if files.len() > 1 {
+            format!("{}:{lines}", f.path)
+        } else {
+            lines
+        }
+    };
+    match &step.primary {
+        Primary::Literal(text) => {
+            if let Some(m) = near_literal(&text.value, files, parents) {
+                return format!(
+                    "; ignoring case and spacing, it matches at {}",
+                    location(&m)
+                );
+            }
+        }
+        Primary::Regex(pattern) if !pattern.flags.case_insensitive => {
+            if let Some(m) = case_insensitive_match(pattern, files, parents) {
+                return format!(
+                    "; it matches case-insensitively at {} (add the i flag)",
+                    location(&m)
+                );
+            }
+        }
+        _ => {}
+    }
+    let nested = parents
+        .iter()
+        .any(|p| p.range != (0..files[p.file].text.len()));
+    if nested {
+        let mut searched: Vec<String> = parents.iter().take(3).map(location).collect();
+        if parents.len() > 3 {
+            searched.push("...".into());
+        }
+        return format!("; it searched {}", searched.join(", "));
+    }
+    match step.primary {
+        Primary::Syntax { .. } => "; `outline` lists the items".into(),
+        _ => "; `show` prints the text to match against".into(),
+    }
+}
+
+/// The first place within `parents` where `needle` occurs once case and runs
+/// of whitespace are ignored.
+fn near_literal(needle: &str, files: &[&SourceFile], parents: &[Match]) -> Option<Match> {
+    let (needle, _) = fold(needle);
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return None;
+    }
+    parents.iter().find_map(|p| {
+        let (haystack, offsets) = fold(&files[p.file].text[p.range.clone()]);
+        let at = haystack.find(needle)?;
+        let start = p.range.start + offsets[at];
+        let end = p.range.start + offsets[at + needle.len() - 1] + 1;
+        Some(Match {
+            file: p.file,
+            range: start..end,
+        })
+    })
+}
+
+/// The first match of `pattern` within `parents` when case is ignored.
+fn case_insensitive_match(
+    pattern: &Pattern,
+    files: &[&SourceFile],
+    parents: &[Match],
+) -> Option<Match> {
+    let mut folded = pattern.clone();
+    folded.flags.case_insensitive = true;
+    let re = folded.regex().ok()?;
+    parents.iter().find_map(|p| {
+        let found = re.find(&files[p.file].text[p.range.clone()])?;
+        let start = p.range.start + found.start();
+        Some(Match {
+            file: p.file,
+            range: start..(start + found.len()).max(start + 1),
+        })
+    })
+}
+
+/// `text` lowercased, with each run of whitespace as one space, and the byte
+/// offset in `text` of each byte of the result.
+fn fold(text: &str) -> (String, Vec<usize>) {
+    let mut folded = String::new();
+    let mut offsets = Vec::new();
+    let mut in_space = false;
+    for (i, c) in text.char_indices() {
+        if c.is_whitespace() {
+            if !in_space {
+                folded.push(' ');
+                offsets.push(i);
+            }
+            in_space = true;
+            continue;
+        }
+        in_space = false;
+        for lower in c.to_lowercase() {
+            let before = folded.len();
+            folded.push(lower);
+            offsets.extend(std::iter::repeat_n(i, folded.len() - before));
+        }
+    }
+    (folded, offsets)
 }
 
 /// `; did you mean SEL (LINES)?`, naming the item closest in name to a syntax
-/// `step` that matched nothing within `parents`; empty if none is close.
-fn hint(step: &Step, files: &[&SourceFile], parents: &[Match], selector: &str) -> String {
+/// `step` that matched nothing within `parents`, if one is close.
+fn close_name(
+    step: &Step,
+    files: &[&SourceFile],
+    parents: &[Match],
+    selector: &str,
+) -> Option<String> {
     let Primary::Syntax { kind, name } = &step.primary else {
-        return String::new();
+        return None;
     };
     if name.contains('*') {
-        return String::new();
+        return None;
     }
     let limit = (name.chars().count() / 3).max(2);
     let best = parents
@@ -476,9 +644,7 @@ fn hint(step: &Step, files: &[&SourceFile], parents: &[Match], selector: &str) -
         })
         .filter(|(d, ..)| *d <= limit)
         .min_by_key(|(d, ..)| *d);
-    let Some((_, file, item)) = best else {
-        return String::new();
-    };
+    let (_, file, item) = best?;
     let written = syntax::selector(kind, name);
     let fixed = syntax::selector(kind, &item.name);
     let suggestion = match selector.rfind(&written) {
@@ -496,7 +662,7 @@ fn hint(step: &Step, files: &[&SourceFile], parents: &[Match], selector: &str) -
     } else {
         lines
     };
-    format!("; did you mean {suggestion} ({location})?")
+    Some(format!("; did you mean {suggestion} ({location})?"))
 }
 
 fn line_index(n: LineNo, count: usize) -> Option<usize> {

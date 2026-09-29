@@ -123,7 +123,7 @@ fn main() -> ExitCode {
             })
             .collect();
         if let Err(err) = fs::write_atomic(&writes) {
-            eprintln!("error: cannot write files: {err}");
+            eprintln!("error: cannot write files: {err}; no file was changed");
             return ExitCode::from(3);
         }
     }
@@ -167,6 +167,6 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         ExecErrorKind::Unsupported { .. }
         | ExecErrorKind::NoFiles
         | ExecErrorKind::InvalidQuery { .. } => 2,
-        ExecErrorKind::Io { .. } | ExecErrorKind::NoGlobMatch(_) => 3,
+        ExecErrorKind::Io { .. } | ExecErrorKind::NoGlobMatch { .. } => 3,
     }
 }
