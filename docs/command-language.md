@@ -534,7 +534,7 @@ error: src/parser.rs:15:31: edit introduces a syntax error (use --force to apply
 15:        let tok = (self.next();
                                  ^
 
-error: script:2:28: unterminated heredoc <<END (started here)
+error: script:2:28: unterminated heredoc <<END (started here); end it with a line holding only END
 2:replace fn:parse.body with <<END
                              ^
 ```

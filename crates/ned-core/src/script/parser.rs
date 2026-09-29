@@ -3,7 +3,7 @@
 use std::ops::Range;
 
 use super::ast::*;
-use super::error::{ParseError, ParseErrorKind as E};
+use super::error::{COMMANDS, ParseError, ParseErrorKind as E};
 use super::lexer::{Lexer, Token, TokenKind};
 
 pub fn parse(src: &str) -> Result<Script, ParseError> {
@@ -64,9 +64,29 @@ impl Parser<'_> {
     fn command(&mut self) -> Result<Command, ParseError> {
         let verb = self.bump()?;
         let TokenKind::Word(word) = &verb.kind else {
-            return Err(expected("a command", &verb));
+            let mut err = expected("a command", &verb);
+            if let E::Expected { hint, .. } = &mut err.kind {
+                *hint = format!("; commands are {COMMANDS}");
+            }
+            return Err(err);
         };
-        let kind = match word.as_str() {
+        let kind = self.command_kind(&verb, word).map_err(|mut err| {
+            if let E::Expected { hint, .. } = &mut err.kind
+                && hint.is_empty()
+                && let Some(usage) = usage(word)
+            {
+                *hint = format!("; usage: {usage}");
+            }
+            err
+        })?;
+        Ok(Command {
+            kind,
+            span: verb.span.start..self.last_end,
+        })
+    }
+
+    fn command_kind(&mut self, verb: &Token, word: &str) -> Result<CommandKind, ParseError> {
+        Ok(match word {
             "show" => CommandKind::Show(self.optional_target()?),
             "outline" => CommandKind::Outline(self.optional_target()?),
             "replace" => {
@@ -91,17 +111,23 @@ impl Parser<'_> {
             },
             "file" => CommandKind::File(self.paths()?),
             "rename" | "check" => {
-                let reserved = E::Reserved {
-                    what: word.clone(),
-                    instead: "",
+                let instead = if word == "rename" {
+                    r#"use sub /\bOLD\b/ with "NEW" over the files"#
+                } else {
+                    "run the project's build or linter"
                 };
-                return Err(ParseError::new(reserved, verb.span));
+                let reserved = E::Reserved {
+                    what: word.into(),
+                    instead,
+                };
+                return Err(ParseError::new(reserved, verb.span.clone()));
             }
-            _ => return Err(ParseError::new(E::UnknownCommand(word.clone()), verb.span)),
-        };
-        Ok(Command {
-            kind,
-            span: verb.span.start..self.last_end,
+            _ => {
+                return Err(ParseError::new(
+                    E::UnknownCommand(word.into()),
+                    verb.span.clone(),
+                ));
+            }
         })
     }
 
@@ -252,9 +278,14 @@ fn primary(token: Token) -> Result<Primary, ParseError> {
         TokenKind::Syntax { kind, name } => match kind.as_str() {
             "file" => Primary::File(name),
             "refs" | "def" => {
+                let instead = if kind == "refs" {
+                    "select uses with a /regex/"
+                } else {
+                    "select the definition with kind:NAME, e.g. fn:NAME"
+                };
                 let reserved = E::Reserved {
                     what: format!("{kind}:"),
-                    instead: "",
+                    instead,
                 };
                 return Err(ParseError::new(reserved, token.span));
             }
@@ -307,10 +338,23 @@ fn validate_regex(
     Ok(pattern)
 }
 
+const KEYWORDS: [&str; 8] = [
+    "all", "with", "to", "before", "after", "start", "end", "file",
+];
+
 /// The syntax of the command `verb`, as `ned help VERB` starts.
 pub fn usage(verb: &str) -> Option<&'static str> {
-    let _ = verb;
-    None
+    Some(match verb {
+        "show" => "show [SEL]",
+        "outline" => "outline [SEL]",
+        "replace" => "replace [all] SEL with TEXT",
+        "insert" => "insert before|after|start|end [all] SEL TEXT",
+        "delete" => "delete [all] SEL",
+        "sub" => "sub [[all] SEL] /re/ with TEXT",
+        "move" => "move [all] SEL before|after|start|end DEST",
+        "file" => "file PATH...",
+        _ => return None,
+    })
 }
 
 fn expected(what: &'static str, token: &Token) -> ParseError {
@@ -329,11 +373,22 @@ fn expected(what: &'static str, token: &Token) -> ParseError {
         TokenKind::Newline => "end of line".into(),
         TokenKind::Eof => "end of script".into(),
     };
+    let hint = match &token.kind {
+        // A keyword out of place is a usage mistake, not unquoted text.
+        TokenKind::Word(w)
+            if (what == "a selector" || what.starts_with("text"))
+                && !KEYWORDS.contains(&w.as_str())
+                && usage(w).is_none() =>
+        {
+            format!("; quote literal text: \"{w}\"")
+        }
+        _ => String::new(),
+    };
     ParseError::new(
         E::Expected {
             expected: what,
             found,
-            hint: String::new(),
+            hint,
         },
         token.span.clone(),
     )
