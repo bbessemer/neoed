@@ -89,7 +89,7 @@ check      = "check" ;                              (* reserved *)
 position   = "before" | "after" | "start" | "end" ;
 target     = [ "all" ] selector ;
 selector   = step { ">" step } ;
-step       = primary { part } ;
+step       = primary [ ".." primary ] { part } ;
 part       = ".body" | ".sig" | ".params" | ".name" | ".doc" | ".lines" ;
 primary    = lines | regex | literal | syntax | query ;
 
@@ -289,6 +289,19 @@ delete all query{(call_expression function: (identifier) @f (#eq? @f "dbg")) @se
 
 `refs:NAME` (references to a symbol) and `def:NAME` (its definition) are
 reserved for the LSP milestone.
+
+### 3.8 Ranges
+
+`A..B` selects from the start of a match of `A` to the end of the first match of
+`B` that starts after it: `/^## 6/../^## 7/`, `fn:a..fn:c`, `"BEGIN"..$`.
+
+- Both ends are primaries, without parts. `..` binds tighter than `>`, and
+  parts apply to the whole range: `impl:Parser>fn:new..fn:parse`,
+  `/^## 6/../^## 7/.lines`.
+- The range is whole-line when both ends are, as with lines and syntax items.
+  Add `.lines` to widen a range with regex or literal ends to whole lines.
+- Matches of `A` inside an earlier range are skipped. A match of `A` with no
+  `B` after it ends the search.
 
 ## 4. Verbs
 
