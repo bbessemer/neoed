@@ -1,8 +1,10 @@
+mod help;
+
 use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use ned_core::diff::{self, DiffStat};
 use ned_core::exec::{self, ExecErrorKind, Options};
 use ned_core::format::{self, Formatters, Outcome};
@@ -11,8 +13,15 @@ use ned_core::{fs, script};
 
 /// Token-economical, syntax-aware line editor for AI agents.
 #[derive(Parser)]
-#[command(name = "ned", version)]
+#[command(
+    name = "ned",
+    version,
+    args_conflicts_with_subcommands = true,
+    disable_help_subcommand = true
+)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
     /// Files to edit: the initial file set.
     files: Vec<String>,
     /// A script to run; repeat to join several with newlines. Without -e, the
@@ -41,8 +50,18 @@ struct Cli {
     context: usize,
 }
 
+#[derive(Subcommand)]
+enum Command {
+    /// Print a summary of the command language, or details of one topic.
+    Help { topic: Option<help::Topic> },
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Some(Command::Help { topic }) = cli.command {
+        print!("{}", help::text(topic));
+        return ExitCode::SUCCESS;
+    }
     let src = if cli.scripts.is_empty() {
         let mut src = String::new();
         if let Err(err) = io::stdin().read_to_string(&mut src) {
