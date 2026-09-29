@@ -1646,6 +1646,7 @@ mod tests {
     struct Outcome {
         output: String,
         result: Result<Vec<Change>, String>,
+        notes: Vec<String>,
     }
 
     impl Outcome {
@@ -1722,6 +1723,7 @@ mod tests {
                     .collect()),
                 Err(err) => Err(strip(&err.render(&src))),
             },
+            notes: run.notes,
         }
     }
 
@@ -2651,11 +2653,19 @@ fn main() {}
         files: HashMap<&'static str, Option<Vec<Diagnostic>>>,
         failure: Option<&'static str>,
         asked: Vec<Document>,
+        /// `saved`, for each `diagnose`.
+        saved: Vec<bool>,
+        notes: Vec<&'static str>,
     }
 
     impl Lsp for FakeLsp {
-        fn diagnose(&mut self, documents: &[Document], _: bool) -> Result<Diagnosis, LspFailure> {
+        fn diagnose(
+            &mut self,
+            documents: &[Document],
+            saved: bool,
+        ) -> Result<Diagnosis, LspFailure> {
             self.asked.extend_from_slice(documents);
+            self.saved.push(saved);
             if let Some(failure) = self.failure {
                 return Err(LspFailure(failure.into()));
             }
@@ -2670,7 +2680,7 @@ fn main() {}
                 show: self.show.unwrap_or(Severity::Warning),
                 block: Some(Severity::Error),
                 files,
-                notes: Vec::new(),
+                notes: self.notes.iter().map(|n| n.to_string()).collect(),
             })
         }
 
@@ -2869,6 +2879,23 @@ fn main() {}
     }
 
     #[test]
+    fn check_asks_for_save_time_checks_and_passes_on_notes() {
+        let mut lsp = FakeLsp {
+            notes: vec![
+                "rust-analyzer's check on save didn't finish within 30s; raise [lsp] timeout",
+            ],
+            ..FakeLsp::default()
+        };
+        let out = checked(&[("a.rs", CHECKED)], "check", &mut lsp);
+        assert_eq!(out.result, Ok(vec![]));
+        assert_eq!(lsp.saved, [true]);
+        assert_eq!(
+            out.notes,
+            ["rust-analyzer's check on save didn't finish within 30s; raise [lsp] timeout"]
+        );
+    }
+
+    #[test]
     fn check_without_language_servers_is_an_error() {
         let out = exec(CHECKED, "check");
         assert!(out.error().contains("Unix-only"), "{}", out.error());
@@ -2922,6 +2949,7 @@ fn main() {}
                     .collect()),
                 Err(err) => Err(strip(&err.render(&src))),
             },
+            notes: run.notes,
         }
     }
 
@@ -3199,6 +3227,7 @@ fn main() {}
                     .collect()),
                 Err(err) => Err(strip(&err.render(&src))),
             },
+            notes: run.notes,
         }
     }
 

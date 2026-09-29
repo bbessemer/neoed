@@ -17,7 +17,11 @@ version. Further arguments are flags:
 - `rename-file`: answer renames with a file rename;
 - `rename-error`: refuse renames with an error;
 - `links`: answer definitions with `LocationLink`s;
-- `format`: offer formatting, which strips trailing spaces.
+- `format`: offer formatting, which strips trailing spaces;
+- `flycheck`: ask for saves; on one, like rust-analyzer's `cargo check`,
+  begin progress, then 200 ms later publish, unversioned, the document's
+  diagnostics plus an error for each line containing CARGO, and end it;
+- `flycheck-slow`: with `flycheck`, never end that progress.
 
 
 It renames the word at the position wherever it occurs as a whole word, in
@@ -31,6 +35,7 @@ references.
 import json
 import re
 import sys
+import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -56,10 +61,8 @@ def request(method, params):
     send({"id": f"s{requests}", "method": method, "params": params})
 
 
-def progress(kind):
-    send(
-        {"method": "$/progress", "params": {"token": "index", "value": {"kind": kind}}}
-    )
+def progress(kind, token="index"):
+    send({"method": "$/progress", "params": {"token": token, "value": {"kind": kind}}})
 
 
 def diagnostics(text):
@@ -81,6 +84,22 @@ def diagnostics(text):
                     diagnostic["code"] = "F1"
                 found.append(diagnostic)
     return found
+
+
+def cargo_errors(text):
+    return [
+        {
+            "range": {
+                "start": {"line": line, "character": 0},
+                "end": {"line": line, "character": len(content)},
+            },
+            "severity": 1,
+            "message": "cargo here",
+            "source": "cargo",
+        }
+        for line, content in enumerate(text.split("\n"))
+        if "CARGO" in content
+    ]
 
 
 def occurrences(params):
@@ -189,6 +208,9 @@ while (message := read()) is not None:
     if method == "initialize":
         root = Path(unquote(urlparse(params["rootUri"]).path))
         capabilities = {"textDocumentSync": 1, "renameProvider": True}
+        if "flycheck" in flags:
+            sync = {"openClose": True, "change": 1, "save": {"includeText": False}}
+            capabilities["textDocumentSync"] = sync
         if "format" in flags:
             capabilities["documentFormattingProvider"] = True
         if "pull" in flags:
@@ -228,6 +250,16 @@ while (message := read()) is not None:
                 "diagnostics": diagnostics(text),
             }
             send({"method": "textDocument/publishDiagnostics", "params": publish})
+    elif method == "textDocument/didSave" and "flycheck" in flags:
+        uri = params["textDocument"]["uri"]
+        request("window/workDoneProgress/create", {"token": "check"})
+        progress("begin", "check")
+        time.sleep(0.2)
+        found = diagnostics(documents[uri]) + cargo_errors(documents[uri])
+        publish = {"uri": uri, "diagnostics": found}
+        send({"method": "textDocument/publishDiagnostics", "params": publish})
+        if "flycheck-slow" not in flags:
+            progress("end", "check")
     elif method == "textDocument/diagnostic":
         if "cancel-once" in flags:
             flags.discard("cancel-once")

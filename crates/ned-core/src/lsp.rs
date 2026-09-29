@@ -555,7 +555,12 @@ mod tests {
     }
 
     impl Lsp for TextLsp {
-        fn diagnose(&mut self, documents: &[Document], _: bool) -> Result<Diagnosis, LspFailure> {
+        fn diagnose(
+            &mut self,
+            documents: &[Document],
+            saved: bool,
+        ) -> Result<Diagnosis, LspFailure> {
+            assert!(!saved, "edits aren't written when they're checked");
             self.asked
                 .push(documents.iter().map(|d| d.text.clone()).collect());
             if let Some(failure) = self.failure {
