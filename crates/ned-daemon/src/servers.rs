@@ -63,7 +63,14 @@ impl Servers {
 
     /// `open`, then each document's diagnostics, with the workspace's
     /// `[check] show`.
-    pub async fn diagnose(&mut self, documents: &[Document]) -> Result<Diagnosis, ServersError> {
+    pub async fn diagnose(
+        &mut self,
+        documents: &[Document],
+        saved: bool,
+    ) -> Result<Diagnosis, ServersError> {
+        if saved {
+            todo!()
+        }
         self.open(documents).await?;
         let mut config = Config::new(self.user_config.as_deref())?;
         let show = config.check_show(&self.root)?.unwrap_or(Severity::Warning);
@@ -86,6 +93,7 @@ impl Servers {
                 .check_block(&self.root)?
                 .unwrap_or(Some(Severity::Error)),
             files,
+            notes: Vec::new(),
         })
     }
 

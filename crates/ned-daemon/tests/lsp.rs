@@ -307,7 +307,7 @@ async fn diagnose_reports_published_diagnostics() {
     let ws = Workspace::new();
     let mut servers = ws.servers();
     let diagnosis = servers
-        .diagnose(&[ws.rust("a.rs", "done\nlet x; // ERROR\n  WARN\n")])
+        .diagnose(&[ws.rust("a.rs", "done\nlet x; // ERROR\n  WARN\n")], false)
         .await
         .unwrap();
     assert_eq!(diagnosis.show, Severity::Warning);
@@ -326,11 +326,11 @@ async fn diagnostics_follow_the_text() {
     let ws = Workspace::new();
     let mut servers = ws.servers();
     servers
-        .diagnose(&[ws.rust("a.rs", "done ERROR")])
+        .diagnose(&[ws.rust("a.rs", "done ERROR")], false)
         .await
         .unwrap();
     let diagnosis = servers
-        .diagnose(&[ws.rust("a.rs", "done HINT")])
+        .diagnose(&[ws.rust("a.rs", "done HINT")], false)
         .await
         .unwrap();
     assert_eq!(
@@ -338,7 +338,7 @@ async fn diagnostics_follow_the_text() {
         [Some(vec![fake(0, 5, "HINT", Severity::Hint)])]
     );
     let again = servers
-        .diagnose(&[ws.rust("a.rs", "done HINT")])
+        .diagnose(&[ws.rust("a.rs", "done HINT")], false)
         .await
         .unwrap();
     assert_eq!(again, diagnosis);
@@ -355,7 +355,7 @@ async fn diagnose_pulls_from_servers_that_offer_it() {
     fs::write(ws.dir.path().join(".ned.toml"), config).unwrap();
     let mut servers = ws.servers();
     let diagnosis = servers
-        .diagnose(&[ws.rust("a.rs", "done ERROR")])
+        .diagnose(&[ws.rust("a.rs", "done ERROR")], false)
         .await
         .unwrap();
     assert_eq!(
@@ -373,7 +373,7 @@ async fn diagnose_waits_for_indexing_up_to_the_timeout() {
     let mut servers = ws.servers();
     let started = Instant::now();
     let err = servers
-        .diagnose(&[ws.rust("a.rs", "still indexing ERROR")])
+        .diagnose(&[ws.rust("a.rs", "still indexing ERROR")], false)
         .await
         .unwrap_err()
         .to_string();
@@ -393,12 +393,12 @@ async fn rust_analyzer_is_busy_until_it_says_it_is_quiescent() {
     fs::write(ws.dir.path().join(".ned.toml"), config).unwrap();
     let mut servers = ws.servers();
     let err = servers
-        .diagnose(&[ws.rust("a.rs", "ERROR")])
+        .diagnose(&[ws.rust("a.rs", "ERROR")], false)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("rerun"), "{err}");
     let diagnosis = servers
-        .diagnose(&[ws.rust("a.rs", "done ERROR")])
+        .diagnose(&[ws.rust("a.rs", "done ERROR")], false)
         .await
         .unwrap();
     assert_eq!(
@@ -413,10 +413,13 @@ async fn diagnose_returns_the_configured_level_and_skips_serverless_files() {
     let ws = Workspace::with_config("\n[check]\nshow = \"hint\"\n");
     let mut servers = ws.servers();
     let diagnosis = servers
-        .diagnose(&[
-            ws.doc("a.md", Language::Markdown, "# ERROR"),
-            ws.rust("a.rs", "done"),
-        ])
+        .diagnose(
+            &[
+                ws.doc("a.md", Language::Markdown, "# ERROR"),
+                ws.rust("a.rs", "done"),
+            ],
+            false,
+        )
         .await
         .unwrap();
     assert_eq!(diagnosis.show, Severity::Hint);
@@ -455,7 +458,7 @@ async fn real_servers_report_errors() {
         }
     }
     let mut servers = Servers::new(root, None);
-    let diagnosis = servers.diagnose(&documents).await.unwrap();
+    let diagnosis = servers.diagnose(&documents, false).await.unwrap();
     for (document, diagnostics) in documents.iter().zip(&diagnosis.files) {
         let diagnostics = diagnostics.as_ref().expect("a server");
         assert!(
@@ -471,12 +474,18 @@ async fn real_servers_report_errors() {
 async fn diagnose_returns_the_configured_block_level() {
     let ws = Workspace::with_config("\n[check]\nblock = false\n");
     let mut servers = ws.servers();
-    let diagnosis = servers.diagnose(&[ws.rust("a.rs", "done")]).await.unwrap();
+    let diagnosis = servers
+        .diagnose(&[ws.rust("a.rs", "done")], false)
+        .await
+        .unwrap();
     assert_eq!(diagnosis.block, None);
     servers.shutdown().await;
     let ws = Workspace::new();
     let mut servers = ws.servers();
-    let diagnosis = servers.diagnose(&[ws.rust("a.rs", "done")]).await.unwrap();
+    let diagnosis = servers
+        .diagnose(&[ws.rust("a.rs", "done")], false)
+        .await
+        .unwrap();
     assert_eq!(diagnosis.block, Some(Severity::Error));
     servers.shutdown().await;
 }
