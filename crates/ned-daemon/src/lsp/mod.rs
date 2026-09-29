@@ -12,7 +12,9 @@ use std::time::Duration;
 use lsp_types::{DiagnosticSeverity, NumberOrString};
 
 use ned_core::lang::Language;
-use ned_core::lsp::{Diagnostic, FileEdits, Position, Renamed, Severity, TextEdit, language_id};
+use ned_core::lsp::{
+    Diagnostic, FileEdits, Locate, Location, Position, Renamed, Severity, TextEdit, language_id,
+};
 use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::io::AsyncBufReadExt;
@@ -212,6 +214,9 @@ impl Server {
                     "synchronization": {"didSave": true},
                     "publishDiagnostics": {"versionSupport": true},
                     "diagnostic": {"dynamicRegistration": false},
+                    "definition": {"linkSupport": true},
+                    "references": {},
+
                 },
                 "experimental": {"serverStatusNotification": true},
             },
@@ -405,6 +410,33 @@ impl Server {
             Err(LspError::Timeout { .. }) => Err(timed_out()),
             Err(err) => Err(err),
         }
+    }
+
+    /// The references to (without the declaration), or the definition of, the
+    /// symbol at `position` in `path`, within `timeout`; the server must be
+    /// ready.
+    pub async fn locate(
+        &mut self,
+        kind: Locate,
+        path: &Path,
+        position: Position,
+        timeout: Duration,
+    ) -> Result<Vec<Location>, LspError> {
+        let (method, mut params) = match kind {
+            Locate::References => (
+                "textDocument/references",
+                json!({"context": {"includeDeclaration": false}}),
+            ),
+            Locate::Definition => ("textDocument/definition", json!({})),
+        };
+        params["textDocument"] = json!({"uri": uri(path)});
+        params["position"] = json!({"line": position.line, "character": position.character});
+        let reply = self.request_within(timeout, method, params).await?;
+        locations(&reply).map_err(|message| LspError::Invalid {
+            name: self.name.clone(),
+            method: method.into(),
+            message,
+        })
     }
 
     /// Waits until `done` holds, the server exits, or `deadline` passes.
@@ -637,16 +669,11 @@ fn renamed(server: &str, edit: &Value) -> Result<Renamed, String> {
     }
     let mut files: BTreeMap<PathBuf, Vec<TextEdit>> = BTreeMap::new();
     let mut add = |uri: &str, edits: &Value| -> Result<(), String> {
-        let path = url::Url::parse(uri)
-            .ok()
-            .and_then(|url| url.to_file_path().ok())
-            .ok_or_else(|| format!("{uri} is not a file"))?;
+        let path = file_path(uri)?;
+
         let edits: Vec<lsp_types::TextEdit> =
             serde_json::from_value(edits.clone()).map_err(|err| err.to_string())?;
-        let position = |p: lsp_types::Position| Position {
-            line: p.line,
-            character: p.character,
-        };
+
         files
             .entry(path)
             .or_default()
@@ -677,6 +704,49 @@ fn renamed(server: &str, edit: &Value) -> Result<Renamed, String> {
         .map(|(path, edits)| FileEdits { path, edits })
         .collect();
     Ok(Renamed::Edits(files))
+}
+
+/// The locations in a `definition` or `references` reply, in path order;
+/// `Err` says what's wrong with it.
+fn locations(reply: &Value) -> Result<Vec<Location>, String> {
+    let items: Vec<&Value> = match reply {
+        Value::Null => Vec::new(),
+        Value::Array(items) => items.iter().collect(),
+        item => vec![item],
+    };
+    let mut locations = items
+        .into_iter()
+        .map(|item| {
+            // A `LocationLink`'s selection range is the name.
+            let (uri, range) = match item.get("targetUri") {
+                Some(uri) => (uri, &item["targetSelectionRange"]),
+                None => (&item["uri"], &item["range"]),
+            };
+            let range: lsp_types::Range =
+                serde_json::from_value(range.clone()).map_err(|err| err.to_string())?;
+            Ok(Location {
+                path: file_path(uri.as_str().unwrap_or_default())?,
+                start: position(range.start),
+                end: position(range.end),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    locations.sort_by(|a, b| (&a.path, a.start).cmp(&(&b.path, b.start)));
+    Ok(locations)
+}
+
+fn file_path(uri: &str) -> Result<PathBuf, String> {
+    url::Url::parse(uri)
+        .ok()
+        .and_then(|url| url.to_file_path().ok())
+        .ok_or_else(|| format!("{uri} is not a file"))
+}
+
+fn position(p: lsp_types::Position) -> Position {
+    Position {
+        line: p.line,
+        character: p.character,
+    }
 }
 
 /// The result for a request from the server: no settings for

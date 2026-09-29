@@ -88,40 +88,58 @@ impl Servers {
         })
     }
 
-    /// `open`s the document, brings its server's other documents up to date
-    /// with the disk, and renames the symbol at `position` to `name`.
+    /// Renames the symbol at `position` in the document to `name`.
     pub async fn rename(
         &mut self,
         document: &Document,
         position: Position,
         name: &str,
     ) -> Result<Renamed, ServersError> {
-        self.open(std::slice::from_ref(document)).await?;
-        let mut config = Config::new(self.user_config.as_deref())?;
-        let Some(command) = config.server(&self.root, document.lang)? else {
+        let Some((server, timeout)) = self.prepare(document).await? else {
             return Ok(Renamed::NoServer);
         };
-        let timeout = config.lsp_timeout(&self.root)?.unwrap_or(DEFAULT_TIMEOUT);
-        let server = self.servers.get_mut(&command).expect("opened above");
-        server.refresh(&document.path);
-        let timeout = Duration::from_secs(timeout);
-        // Servers such as pyright give no sign of loading the workspace, but
-        // diagnose a document only once they have.
-        server.diagnostics(&document.path, timeout).await?;
         Ok(server
             .rename(&document.path, position, name, timeout)
             .await?)
     }
 
-    /// Like `rename`, but finds references to or the definition of the symbol
-    /// at `position`.
+    /// `open`s the document and readies its server to answer about it: brings
+    /// the server's other documents up to date with the disk, and waits until
+    /// it has diagnosed this one. `None` if the language has no server.
+    async fn prepare(
+        &mut self,
+        document: &Document,
+    ) -> Result<Option<(&mut Server, Duration)>, ServersError> {
+        self.open(std::slice::from_ref(document)).await?;
+        let mut config = Config::new(self.user_config.as_deref())?;
+        let Some(command) = config.server(&self.root, document.lang)? else {
+            return Ok(None);
+        };
+        let timeout = config.lsp_timeout(&self.root)?.unwrap_or(DEFAULT_TIMEOUT);
+        let timeout = Duration::from_secs(timeout);
+        let server = self.servers.get_mut(&command).expect("opened above");
+        server.refresh(&document.path);
+        // Servers such as pyright give no sign of loading the workspace, but
+        // diagnose a document only once they have.
+        server.diagnostics(&document.path, timeout).await?;
+        Ok(Some((server, timeout)))
+    }
+
+    /// The references to, or definition of, the symbol at `position` in the
+    /// document.
     pub async fn locate(
         &mut self,
         kind: Locate,
         document: &Document,
         position: Position,
     ) -> Result<Located, ServersError> {
-        todo!("{kind:?} {document:?} {position:?}")
+        let Some((server, timeout)) = self.prepare(document).await? else {
+            return Ok(Located::NoServer);
+        };
+        let locations = server
+            .locate(kind, &document.path, position, timeout)
+            .await?;
+        Ok(Located::Locations(locations))
     }
 
     pub fn status(&self) -> Vec<ServerStatus> {

@@ -201,6 +201,16 @@ impl Lsp for Workspace {
         document: &Document,
         position: Position,
     ) -> Result<Located, LspFailure> {
-        todo!("{kind:?} {document:?} {position:?}")
+        let request = Request::Locate {
+            kind,
+            document: document.clone(),
+            position,
+        };
+        match self.request(&request)? {
+            Response::Located(located) => Ok(located),
+            other => Err(LspFailure(
+                ClientError::Protocol(format!("{other:?}")).to_string(),
+            )),
+        }
     }
 }
