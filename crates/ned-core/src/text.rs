@@ -347,6 +347,21 @@ mod tests {
     fn tidy_leaves_single_blank_lines() {
         assert_eq!(delete("a\nb\nc\n", "b\n"), "a\nc\n");
         assert_eq!(delete("a\n\nb\nc\n", "b\n"), "a\n\nc\n");
-        assert_eq!(delete("b\n\nc\n", "b\n"), "\nc\n");
+        assert_eq!(delete("b\nc\n", "b\n"), "c\n");
+        assert_eq!(delete("b\n", "b\n"), "");
+    }
+
+    #[test]
+    fn tidy_removes_blank_at_start_of_file() {
+        assert_eq!(delete("b\n\nc\n", "b\n"), "c\n");
+        assert_eq!(delete("b\r\n\r\nc\r\n", "b\r\n"), "c\r\n");
+        assert_eq!(delete("b\n\n\nc\n", "b\n"), "\nc\n");
+    }
+
+    #[test]
+    fn tidy_removes_blank_at_end_of_file() {
+        assert_eq!(delete("a\n\nb\n", "b\n"), "a\n");
+        assert_eq!(delete("a\n\nb", "b"), "a\n");
+        assert_eq!(delete("a\r\n\r\nb\r\n", "b\r\n"), "a\r\n");
     }
 }

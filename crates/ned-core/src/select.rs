@@ -1161,6 +1161,50 @@ fn main() {
     }
 
     #[test]
+    fn wildcard_candidates_name_their_items() {
+        assert_eq!(
+            error("delete fn:*", &[("a.rs", "fn a() {}\n\nfn b() {}\n")]),
+            "error: script:1:8: fn:* matches 2 items; add `all` or use one of:\n  \
+             fn:a   a.rs:1\n  \
+             fn:b   a.rs:3"
+        );
+        assert_eq!(
+            error(
+                "delete impl:A>fn:*.body",
+                &[("a.rs", "impl A {\n    fn f() {}\n    fn g() {}\n}\n")]
+            ),
+            "error: script:1:8: impl:A>fn:*.body matches 2 items; add `all` or use one of:\n  \
+             impl:A>fn:f.body   a.rs:2\n  \
+             impl:A>fn:g.body   a.rs:3"
+        );
+    }
+
+    #[test]
+    fn wildcard_candidates_sharing_a_name_are_scoped() {
+        let text = "impl A {\n    fn f() {}\n}\nimpl B {\n    fn f() {}\n}\nfn g() {}\n";
+        assert_eq!(
+            error("delete fn:*", &[("a.rs", text)]),
+            "error: script:1:8: fn:* matches 3 items; add `all` or use one of:\n  \
+             impl:A>fn:f   a.rs:2\n  \
+             impl:B>fn:f   a.rs:5\n  \
+             fn:g          a.rs:7"
+        );
+        assert_eq!(
+            error(
+                "delete fn:*",
+                &[
+                    ("a.rs", "fn new() {}\n"),
+                    ("b.rs", "fn new() {}\nfn old() {}\n")
+                ]
+            ),
+            "error: script:1:8: fn:* matches 3 items; add `all` or use one of:\n  \
+             file:a.rs>fn:new   a.rs:1\n  \
+             file:b.rs>fn:new   b.rs:1\n  \
+             fn:old             b.rs:2"
+        );
+    }
+
+    #[test]
     fn candidates_across_files_use_enclosing_items() {
         let parser = "impl Parser {\n    fn new() {}\n}\n";
         let lexer = "impl Lexer {\n    fn new() {}\n}\n";
