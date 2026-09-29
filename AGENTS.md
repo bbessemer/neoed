@@ -139,8 +139,10 @@ language detection and parsing (`lang`), syntax items and parts from
 `outline`, and external formatters with `.ned.toml` config (`format`). The CLI
 supports every selector (including `A..B` ranges) and verb (including
 `create`), `show +N`, globbed file sets, the parse-error guard, formatting, and
-`ned help`. Every error ends with a fix. Next: the open TODO.md §8 items and
-Bugs, then the LSP daemon (§9).
+`ned help`. Every error ends with a fix. `ned-daemon` has the per-workspace
+daemon (socket, lock, lazy spawn, idle exit) behind `ned daemon`; the version
+names the build commit, and a daemon serves only its own build. Next: §9's LSP
+client (9b), then `check`, `rename`/`refs:`/`def:` and the formatting fallback.
 
 ## Key Documentation
 
@@ -164,9 +166,10 @@ Bugs, then the LSP daemon (§9).
 | `serde` + `toml`                  | Config (`.ned.toml`)                         |
 | `thiserror` / `anyhow`            | Errors in core / CLI                         |
 | `clap` (derive)                   | CLI arguments                                |
+| `tokio`, `serde_json`, `libc`     | Daemon: event loop, protocol, `getuid`       |
 | `insta`, `assert_cmd`, `tempfile` | Snapshot, CLI, and fs tests                  |
 
-Deferred: `lsp-types`, `tokio` (LSP daemon milestone).
+Deferred: `lsp-types` (LSP client, TODO.md §9).
 
 ## Repository Structure
 
@@ -174,12 +177,13 @@ Deferred: `lsp-types`, `tokio` (LSP daemon milestone).
 Cargo.toml         workspace; shared version, edition, lints
 crates/ned-core/   library: buffer, script parser, selectors, languages, exec, formatting
 crates/ned-cli/    `ned` binary: args, I/O, output rendering only
+crates/ned-daemon/ per-workspace daemon (Unix socket) and its sync client; LSP later
 queries/<lang>/    tree-sitter selector queries (.scm), one dir per language
 docs/              specs, agent guide, Claude Code skill
 bench/             token-cost benchmark (uv project; cases/ back spec §8's table)
 ```
 
-Planned crates: `ned-daemon` (LSP), `ned-repl`, `ned-mcp`. All logic lives in
+Planned crates: `ned-repl`, `ned-mcp`. All logic lives in
 `ned-core` so frontends stay thin.
 
 ## Design Decisions

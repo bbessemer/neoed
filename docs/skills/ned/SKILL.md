@@ -134,3 +134,10 @@ END
   select whole lines with `.lines`.
 - **Partial matches get verbatim text.** `insert after /re/` inserts right
   after the match, even mid-line; add `.lines` to insert after the whole line.
+- **Re-basing follows the target line.** `<<END` text takes the indentation of
+  the line it's inserted next to, so after a wrapped list item's continuation
+  line it gets the hanging indent. For code, use `<<END` (a quoted `<<'END'`
+  inside the script, a shell habit, leaves code at column 0); for Markdown or
+  prose inserted after a line, use `<<'END'`, or target the `item:`.
+- **Always give a script.** Without `-e` or a heredoc, `ned` reads the script
+  from stdin, and hangs in a shell that has none to give.
