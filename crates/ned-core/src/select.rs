@@ -12,7 +12,7 @@ use tree_sitter::{Query, QueryCursor, QueryError, QueryErrorKind, StreamingItera
 use crate::buffer::{Buffer, LineEnding};
 use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
 use crate::lang::Language;
-use crate::script::ast::{LineNo, Part, Pattern, Primary, Step, Target, TextKind};
+use crate::script::ast::{LineNo, Part, Pattern, Primary, Selector, Step, Target, TextKind};
 use crate::syntax::{self, Item};
 use crate::text::{full_lines, is_whole_line, strip_indent};
 
@@ -116,8 +116,10 @@ pub fn resolve_within(
     let error = |kind| ExecError::new(kind, Some(span.clone()));
     let mut matches = start;
     let mut parents = Vec::new();
+    let mut found = Vec::new();
     for step in &target.selector.steps {
-        let next = resolve_step(step, files, &matches).map_err(error)?;
+        found = resolve_step(step, files, &matches).map_err(error)?;
+        let next = found.iter().map(|f| f.m.clone()).collect();
         parents = std::mem::replace(&mut matches, next);
     }
     let selector = &src[span.clone()];
@@ -136,12 +138,21 @@ pub fn resolve_within(
         _ if target.all => Ok(matches),
         _ => Err(error(E::Ambiguous {
             selector: selector.into(),
-            candidates: candidates(&matches, files, selector, target.selector.steps.last()),
+            candidates: candidates(&found, &parents, files, &target.selector, src),
         })),
     }
 }
 
-fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result<Vec<Match>, E> {
+/// A match of a step, with what candidates need to scope it.
+struct Found {
+    m: Match,
+    /// The span before the step's parts: the item itself, for a syntax step.
+    core: Range<usize>,
+    /// The index of the parent match it lies in.
+    parent: usize,
+}
+
+fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result<Vec<Found>, E> {
     // Only a syntax item has parts other than `.lines`, and a part's span is
     // no longer an item.
     let mut item = matches!(step.primary, Primary::Syntax { .. });
@@ -154,10 +165,11 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
         item = false;
     }
     let matcher = Matcher::new(&step.primary, files, parents)?;
-    let mut out: Vec<Match> = Vec::new();
-    for parent in parents {
+    let mut out: Vec<Found> = Vec::new();
+    for (p, parent) in parents.iter().enumerate() {
         let f = &files[parent.file];
         for mut range in matcher.find(f, parent.range.clone()) {
+            let core = range.clone();
             let mut item = match &step.primary {
                 Primary::Syntax { kind, .. } => f
                     .items()
@@ -184,8 +196,8 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
                 file: parent.file,
                 range,
             };
-            if out.last() != Some(&m) {
-                out.push(m);
+            if out.last().map(|f| &f.m) != Some(&m) {
+                out.push(Found { m, core, parent: p });
             }
         }
     }
@@ -790,35 +802,56 @@ pub(crate) fn part_name(part: Part) -> &'static str {
 }
 
 /// A selector for each match (§3.5): `selector`, with a wildcard name in
-/// its `last` step replaced by the match's item name. Among the matches with
-/// the same selector, it's nested in the match's nearest enclosing item if no
-/// other match shares it, otherwise scoped to its file if no other match
-/// shares that, otherwise to its lines.
+/// its last step replaced by the match's item name. Among the matches with
+/// the same selector, it's scoped by the match's nearest enclosing item if no
+/// other match shares it, otherwise by its file if no other match shares
+/// that, otherwise by its lines. An item or line scope goes just before the
+/// last step; a file scope goes first.
 fn candidates(
-    matches: &[Match],
+    found: &[Found],
+    parents: &[Match],
     files: &[&SourceFile],
-    selector: &str,
-    last: Option<&Step>,
+    selector: &Selector,
+    src: &str,
 ) -> Candidates {
-    let named: Vec<String> = matches
+    let last = selector
+        .steps
+        .last()
+        .filter(|s| selector.span.start <= s.span.start && s.span.end <= selector.span.end);
+    let split = last.map_or(selector.span.start, |s| s.span.start);
+    let prefix = &src[selector.span.start..split];
+    let in_file = matches!(
+        selector.steps.first(),
+        Some(Step {
+            primary: Primary::File(_),
+            ..
+        })
+    );
+    let named: Vec<String> = found
         .iter()
-        .map(|m| {
-            last.and_then(|step| named(selector, step, files[m.file], &m.range))
-                .unwrap_or_else(|| selector.to_string())
+        .map(|c| {
+            last.and_then(|step| named(step, files[c.m.file], &c.core))
+                .unwrap_or_else(|| src[split..selector.span.end].to_string())
         })
         .collect();
-    let enclosing: Vec<Option<String>> = matches
+    let enclosing: Vec<Option<String>> = found
         .iter()
-        .map(|m| enclosing(files[m.file], &m.range))
+        .map(|c| enclosing(files[c.m.file], &c.core, &parents[c.parent].range))
         .collect();
-    let all: Vec<(String, String)> = (0..matches.len())
+    let all: Vec<(Option<String>, String)> = (0..found.len())
         .map(|i| {
-            let (m, selector) = (&matches[i], &named[i]);
-            let f = &files[m.file];
-            let lines = line_numbers(&f.buffer, &m.range);
-            let peers: Vec<usize> = (0..matches.len())
-                .filter(|&j| named[j] == *selector)
-                .collect();
+            let (c, last) = (&found[i], &named[i]);
+            let f = &files[c.m.file];
+            let lines = line_numbers(&f.buffer, &c.core);
+            let parent = &parents[c.parent].range;
+            let scope = if is_whole_line(&f.text, parent) {
+                full_lines(&f.text, parent.clone())
+            } else {
+                parent.clone()
+            };
+            let covered = full_lines(&f.text, c.core.clone());
+            let lines_fit = scope.start <= covered.start && covered.end <= scope.end;
+            let peers: Vec<usize> = (0..found.len()).filter(|&j| named[j] == *last).collect();
             let unique_item = enclosing[i].as_ref().filter(|&item| {
                 peers
                     .iter()
@@ -826,39 +859,51 @@ fn candidates(
                     .count()
                     == 1
             });
-            let scope = match unique_item {
-                _ if peers.len() == 1 => String::new(),
-                Some(item) => format!("{item}>"),
-                None if files.len() == 1 => format!("{lines}>"),
-                None if peers.iter().filter(|&&j| matches[j].file == m.file).count() == 1 => {
-                    format!("file:{}>", f.path)
+            let one_in_file = peers
+                .iter()
+                .filter(|&&j| found[j].m.file == c.m.file)
+                .count()
+                == 1;
+            let candidate = match unique_item {
+                _ if peers.len() == 1 => Some(format!("{prefix}{last}")),
+                Some(item) => Some(format!("{prefix}{item}>{last}")),
+                None if files.len() == 1 || in_file => {
+                    lines_fit.then(|| format!("{prefix}{lines}>{last}"))
                 }
-                None => format!("file:{}>{lines}>", f.path),
+                None if one_in_file => Some(format!("file:{}>{prefix}{last}", f.path)),
+                None => lines_fit.then(|| format!("file:{}>{prefix}{lines}>{last}", f.path)),
             };
-            (format!("{scope}{selector}"), format!("{}:{lines}", f.path))
+            (
+                candidate,
+                format!("{}:{}", f.path, line_numbers(&f.buffer, &c.m.range)),
+            )
         })
         .collect();
     // Matches on one line get the same line-scoped selector, which picks none
     // of them alone.
     let mut counts: HashMap<&str, usize> = HashMap::new();
-    for (selector, _) in &all {
-        *counts.entry(selector).or_default() += 1;
+    for (candidate, _) in &all {
+        if let Some(candidate) = candidate {
+            *counts.entry(candidate).or_default() += 1;
+        }
     }
     let unique: Vec<(String, String)> = all
         .iter()
-        .filter(|(selector, _)| counts[selector.as_str()] == 1)
-        .cloned()
+        .filter_map(|(candidate, location)| {
+            let candidate = candidate.as_ref()?;
+            (counts[candidate.as_str()] == 1).then(|| (candidate.clone(), location.clone()))
+        })
         .collect();
     Candidates {
         shared: all.len() - unique.len(),
         listed: unique.into_iter().take(MAX_CANDIDATES).collect(),
-        total: matches.len(),
+        total: found.len(),
     }
 }
 
-/// `selector` with the wildcard name of its `last` step replaced by the name
-/// of the innermost item of that kind holding `range`, if it has one.
-fn named(selector: &str, last: &Step, f: &SourceFile, range: &Range<usize>) -> Option<String> {
+/// The `last` step with its wildcard name replaced by the name of the
+/// innermost item of its kind holding `range`, if it has one.
+fn named(last: &Step, f: &SourceFile, range: &Range<usize>) -> Option<String> {
     let Primary::Syntax { kind, name } = &last.primary else {
         return None;
     };
@@ -870,24 +915,28 @@ fn named(selector: &str, last: &Step, f: &SourceFile, range: &Range<usize>) -> O
         .iter()
         .rev()
         .find(|i| i.kind == kind && i.range.start <= range.start && range.end <= i.range.end)?;
-    let prefix = &selector[..selector.rfind(&format!("{kind}:"))?];
     let parts: String = last
         .parts
         .iter()
         .map(|&p| format!(".{}", part_name(p)))
         .collect();
-    Some(format!(
-        "{prefix}{}{parts}",
-        syntax::selector(kind, &item.name)
-    ))
+    Some(format!("{}{parts}", syntax::selector(kind, &item.name)))
 }
 
-/// The selector of the innermost item that strictly contains `range`.
-fn enclosing(f: &SourceFile, range: &Range<usize>) -> Option<String> {
+/// The selector of the innermost item that strictly contains `range` and
+/// lies strictly inside `parent`, where a step nested in the parent finds it.
+fn enclosing(f: &SourceFile, range: &Range<usize>, parent: &Range<usize>) -> Option<String> {
     f.items()?
         .iter()
         .rev()
-        .find(|i| i.range.start <= range.start && range.end <= i.range.end && i.range != *range)
+        .find(|i| {
+            i.range.start <= range.start
+                && range.end <= i.range.end
+                && i.range != *range
+                && parent.start <= i.range.start
+                && i.range.end <= parent.end
+                && i.range != *parent
+        })
         .map(|i| syntax::selector(i.kind, &i.name))
 }
 
@@ -1627,7 +1676,7 @@ fn main() {
         );
         assert_eq!(
             listed("delete 1-4>/let/", &[("a.rs", TEXT)]),
-            ["1-4>2>/let/", "1-4>3>/let/"]
+            ["1-4>var:x>/let/", "1-4>var:y>/let/"]
         );
     }
 
