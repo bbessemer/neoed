@@ -582,6 +582,14 @@ Every line-oriented `TEXT` is re-based, except a `<<'TAG'` heredoc.
 | `replace`, `insert before\|after`, `move` (before/after) | indentation of the target span's first line                                                                                                            |
 | `insert start\|end`, `move` (start/end)                  | indentation of the first non-blank line inside the span. If the span is empty, the indentation of the enclosing item's first line plus one indent unit |
 
+In Markdown, when `TEXT` starts with a list item (`-`, `*`, `+`, `1.` or `1)`)
+and the target line lies in a list item (not in a code block inside it), the
+edit anchors to that innermost list item: the target indentation is its
+marker's column, `insert after` (and `move ... after`) goes after the whole
+item, its wrapped lines and nested items included, and `insert before` goes
+before its first line. So a new item next to a wrapped item's continuation line
+becomes its sibling. `<<'TAG'` text is placed the same way but not re-based.
+
 The file's **indent unit** is the smallest non-zero increase in indentation
 between consecutive non-blank lines. If the file has none, it's the language
 default: four spaces, or a tab for Go.

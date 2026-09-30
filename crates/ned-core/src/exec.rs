@@ -2286,12 +2286,7 @@ mod tests {
 
     #[test]
     fn markdown_section_bodies() {
-        let md = |script: &str| {
-            let text = "# A\n\nintro\n\n## B\n\nb text\n\n## C\n\n# D";
-            exec_with(&[("a.md", text)], 1, script)
-                .new_text()
-                .to_string()
-        };
+        let md = |script: &str| md("# A\n\nintro\n\n## B\n\nb text\n\n## C\n\n# D", script);
         assert_eq!(
             md("insert end section:B \"more\""),
             "# A\n\nintro\n\n## B\n\nb text\nmore\n\n## C\n\n# D"
@@ -2311,6 +2306,69 @@ mod tests {
         assert_eq!(
             md("insert end section:A <<END\n\n## E\nEND\n"),
             "# A\n\nintro\n\n## B\n\nb text\n\n## C\n\n## E\n\n# D"
+        );
+    }
+
+    fn md(text: &str, script: &str) -> String {
+        exec_with(&[("a.md", text)], 1, script)
+            .new_text()
+            .to_string()
+    }
+
+    const WRAPPED: &str = "- [ ] One item\n      wrapped here\n- [ ] Two\n";
+
+    #[test]
+    fn list_item_text_anchors_to_the_list_item() {
+        let one_new_two = "- [ ] One item\n      wrapped here\n- [ ] New\n- [ ] Two\n";
+        assert_eq!(
+            md(WRAPPED, "insert after 2 <<END\n- [ ] New\nEND\n"),
+            one_new_two
+        );
+        assert_eq!(
+            md(WRAPPED, "insert after 1 <<END\n- [ ] New\nEND\n"),
+            one_new_two
+        );
+        assert_eq!(
+            md(WRAPPED, "insert before 2 <<END\n- [ ] New\nEND\n"),
+            "- [ ] New\n- [ ] One item\n      wrapped here\n- [ ] Two\n"
+        );
+        assert_eq!(
+            md(WRAPPED, "replace 2 with <<END\n- [ ] Replaced\nEND\n"),
+            "- [ ] One item\n- [ ] Replaced\n- [ ] Two\n"
+        );
+        assert_eq!(
+            md(WRAPPED, "insert after 2 <<'END'\n  - raw\nEND\n"),
+            "- [ ] One item\n      wrapped here\n  - raw\n- [ ] Two\n"
+        );
+        // Prose continues the paragraph.
+        assert_eq!(
+            md(WRAPPED, "insert after 2 <<END\nmore words\nEND\n"),
+            "- [ ] One item\n      wrapped here\n      more words\n- [ ] Two\n"
+        );
+    }
+
+    #[test]
+    fn list_item_text_anchors_to_the_innermost_list_item() {
+        let nested = "- a\n  - b\n    wrapped\n- c\n";
+        assert_eq!(
+            md(nested, "insert after 3 <<END\n- new\nEND\n"),
+            "- a\n  - b\n    wrapped\n  - new\n- c\n"
+        );
+        assert_eq!(
+            md(nested, "insert after 1 <<END\n- new\nEND\n"),
+            "- a\n  - b\n    wrapped\n- new\n- c\n"
+        );
+        assert_eq!(
+            md(
+                "1. one\n   more\n2. two\n",
+                "insert after 2 <<END\n1. x\nEND\n"
+            ),
+            "1. one\n   more\n1. x\n2. two\n"
+        );
+        let code = "- a\n\n  ```\n  - y\n  ```\n";
+        assert_eq!(
+            md(code, "insert after 4 <<END\n- z\nEND\n"),
+            "- a\n\n  ```\n  - y\n  - z\n  ```\n"
         );
     }
 
