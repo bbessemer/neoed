@@ -330,6 +330,11 @@ The kinds each language supports, and the items they cover there:
   `variant`, `trait`, `impl`, `type` (also associated types), `const` (also
   `static`), `var` (`let` bindings), `mod`, `import` (`use`).
 - **Markdown**: `section`, `item`, `table`, `code`.
+- **Python**: `fn` (functions and methods, `async` too), `class`, `field`
+  (assignments and annotations directly in a class body), `const` (module-level
+  assignments to an `UPPER_SNAKE` name), `var` (other module-level
+  assignments), `import` (named by the module: `import:"os.path"`;
+  `from a.b import c` is `import:"a.b"`).
 
 - An inherent impl is named by its self type (`impl:Parser`), a trait impl by
   `TRAIT for TYPE` (`impl:"Display for Parser"`), each the last path segment
@@ -369,7 +374,7 @@ The kinds each language supports, and the items they cover there:
 | `.sig`    | from the start of the item (after its doc and attributes) up to its body                                                         |
 | `.params` | the parameter list, between its parentheses                                                                                      |
 | `.name`   | the item's name identifier                                                                                                       |
-| `.doc`    | the item's leading doc comment lines                                                                                             |
+| `.doc`    | the item's leading doc comment lines; a Python docstring                                                                         |
 | `.lines`  | the span widened to the whole lines it touches (any selector)                                                                    |
 | `.refs`   | each reference to the symbol at the span (below), without its declaration                                                        |
 | `.def`    | the symbol's definition: the item it names, or its identifier if it names no item                                                |
@@ -386,6 +391,9 @@ The kinds each language supports, and the items they cover there:
   them in the text. `.sig` is the heading line.
 - `.doc` covers whole lines. On an item with no body (such as a trait method
   declaration), `.sig` is the whole item.
+- In Python, `.doc` is the docstring, and `.body` is the block's whole lines
+  after it, so `insert start fn:f` goes after the docstring. `.sig` runs from
+  `def` or `class` up to the `:` (decorators are attributes).
 - `.refs` and `.def` ask the language server (§1.1) about the symbol at the
   start of the step's `.name` (for a syntax item) or of its span, so they work
   on any step: `fn:parse.refs`, `fn:main>"helper(".def`. Their spans may be in
@@ -525,9 +533,10 @@ Notes:
     starts with what precedes the span on its first line. The note suggests
     selecting whole lines with `.lines`.
 - **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
-  lines in a row, a blank line right after an opening delimiter or right before
-  a closing one, or a blank line at the start or end of the file, one blank
-  line is removed. Merged deletions (§2.3) are tidied as one span.
+  lines in a row, a blank line right after an opening delimiter (or a line
+  ending in `:`, as in Python) or right before a closing one, or a blank line
+  at the start or end of the file, one blank line is removed. Merged deletions
+  (§2.3) are tidied as one span.
 - Text that `replace`, `insert` or `move` puts into an empty `.body` is always
   line-oriented, re-based to the enclosing item's indentation plus one indent
   unit (§5.2). An empty single-line body such as `fn f() {}` is opened onto
