@@ -17,7 +17,7 @@ macro_rules! outln {
 mod daemon;
 mod help;
 
-use std::io::{self, Read};
+use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -101,6 +101,10 @@ fn main() -> ExitCode {
         }
         Some(Command::Daemon { action }) => return daemon::run(action),
         None => {}
+    }
+    if let Some(err) = usage_error(&cli) {
+        eprintln!("error: {err}");
+        return ExitCode::from(2);
     }
     let src = if cli.scripts.is_empty() {
         let mut src = String::new();
@@ -248,6 +252,33 @@ fn main() -> ExitCode {
         daemon::restore(&mut workspace, &changes);
     }
     ExitCode::SUCCESS
+}
+
+/// A usage error found before the script is read (spec §1): a command's name
+/// given as a FILE, or no script with stdin a terminal.
+fn usage_error(cli: &Cli) -> Option<String> {
+    let exists = |arg: &str| std::path::Path::new(arg).exists();
+    let is_command = |arg: &str| script::error::COMMANDS.split(' ').any(|c| c == arg);
+    if cli.workspace.is_none()
+        && let Some(verb) = cli.files.iter().position(|a| !exists(a) && is_command(a))
+    {
+        // The command's words are the arguments from it on that aren't files.
+        let (mut files, mut words) = (Vec::new(), Vec::new());
+        for (i, arg) in cli.files.iter().enumerate() {
+            match i < verb || exists(arg) {
+                true => files.push(arg.as_str()),
+                false => words.push(arg.as_str()),
+            }
+        }
+        return Some(format!(
+            "`{}` is a command, not a file; give the script with -e: ned {} -e '{}'",
+            cli.files[verb],
+            files.join(" "),
+            words.join(" ")
+        ));
+    }
+    (cli.scripts.is_empty() && io::stdin().is_terminal())
+        .then(|| "no script: give one with -e SCRIPT or on stdin, e.g. ned FILE -e outline".into())
 }
 
 /// The exit code for an error that rejected a script (spec §7).

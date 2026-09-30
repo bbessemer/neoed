@@ -1053,6 +1053,29 @@ fn an_off_by_one_replace_notes_it_on_stderr() {
     ");
 }
 
+#[test]
+fn a_command_named_as_a_file_suggests_the_script_form() {
+    let dir = dir_with(&[("a.rs", "fn a() {}\n")]);
+    assert_snapshot!(ned(dir.path(), &["outline", "a.rs"], ""), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: `outline` is a command, not a file; give the script with -e: ned a.rs -e 'outline'
+    ");
+    assert_snapshot!(ned(dir.path(), &["show", "fn:a", "a.rs"], ""), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: `show` is a command, not a file; give the script with -e: ned a.rs -e 'show fn:a'
+    ");
+    assert_snapshot!(ned(dir.path(), &["delete", "a.rs", "-e", "outline"], ""), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: `delete` is a command, not a file; give the script with -e: ned a.rs -e 'delete'
+    ");
+}
+
 const NOTES: &str = "# Notes\n\n## Todo\n\n- [ ] one\n      more\n- [ ] two\n\n## Done\n\ntext\n";
 
 #[test]
