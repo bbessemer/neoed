@@ -168,10 +168,9 @@ END
   after the match, even mid-line, and `insert start|end /re/` does the same at
   the span's start or end. A heredoc `insert before|after` goes on lines of
   its own beside the match's lines instead (but in place beside `.body` and
-  other item parts). Likewise
-  `replace /^- \[ \] Foo/ with "- [x] Foo bar"` replaces only the match and
-  keeps the rest of the line, duplicating it: use `sub` for a prefix, or
-  `.lines` (also on a range's end, `/a/../b/.lines`) to replace whole lines.
+  other item parts). `replace /re/` replaces only the match, so add `.lines`
+  to replace whole lines; a note says so when TEXT repeats the rest of the
+  line.
 - **Re-basing follows the target line.** `<<END` text takes the indentation of
   the line it's inserted next to, or of the first line it replaces, so next to
   (or starting at) a wrapped list item's continuation line it gets the hanging

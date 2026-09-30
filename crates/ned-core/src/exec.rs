@@ -366,7 +366,12 @@ impl Executor<'_> {
             CommandKind::Outline(target) => self.outline(span, target.as_ref())?,
             CommandKind::Replace { target, text } => {
                 for m in self.resolve(target)? {
-                    let (range, new) = replace(&self.files[m.file].file, m.range, text);
+                    let f = &self.files[m.file].file;
+                    let selector = &self.src[target.selector.span.clone()];
+                    if let Some(note) = off_by_one(f, &m.range, text, selector) {
+                        self.notes.push(note);
+                    }
+                    let (range, new) = replace(f, m.range, text);
                     self.push(index, span, m.file, range, new)?;
                 }
             }
@@ -1427,6 +1432,73 @@ fn leading_len(f: &SourceFile, text: &str) -> usize {
     syntax::leading_len(query, &lang.parse(text), text)
 }
 
+/// A note when replacing `range` with `new` looks off by one (§4.2): `new`
+/// repeats the line just outside a whole-line span, or the rest of a partial
+/// span's line, which `selector.lines` would have replaced.
+fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) -> Option<String> {
+    let t = &f.text;
+    let counts = |s: &str| s.chars().any(char::is_alphanumeric);
+    let line_of = |offset: usize| f.buffer.byte_to_line(offset).map_or(0, |l| l + 1);
+    let at = format!("{}:{}", f.path, line_of(range.start));
+    let value = new.value.trim_matches(['\n', '\r']);
+    if text::is_whole_line(t, range) {
+        let full = text::full_lines(t, range.clone());
+        let lines: Vec<&str> = t[full.clone()].lines().map(str::trim).collect();
+        let first = value.lines().map(str::trim).find(|l| !l.is_empty())?;
+        let last = value.lines().map(str::trim).rfind(|l| !l.is_empty())?;
+        let above = t[..full.start].strip_suffix('\n').map(|before| {
+            let start = before.rfind('\n').map_or(0, |i| i + 1);
+            (line_of(start), before[start..].trim())
+        });
+        let below = t[full.end..]
+            .lines()
+            .next()
+            .map(|l| (line_of(full.end), l.trim()));
+        if let Some((n, line)) = above
+            && first == line
+            && counts(line)
+            && lines.first() != Some(&line)
+        {
+            return Some(format!(
+                "{at}: the new text starts with a copy of line {n} (`{line}`), just above \
+                 the replaced lines; the range may be off by one"
+            ));
+        }
+        if let Some((n, line)) = below
+            && full.end < t.len()
+            && last == line
+            && counts(line)
+            && lines.last() != Some(&line)
+        {
+            return Some(format!(
+                "{at}: the new text ends with a copy of line {n} (`{line}`), just below \
+                 the replaced lines; the range may be off by one"
+            ));
+        }
+        return None;
+    }
+    let line_start = t[..range.start].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = t[range.end..].find('\n').map_or(t.len(), |i| range.end + i);
+    let (before, after) = (
+        t[line_start..range.start].trim(),
+        t[range.end..line_end].trim(),
+    );
+    let fix = format!("to replace whole lines, select {selector}.lines");
+    if counts(after) && value.trim_end().ends_with(after) {
+        return Some(format!(
+            "{at}: the new text ends with `{after}`, which already follows the replaced \
+             text on its line; {fix}"
+        ));
+    }
+    if counts(before) && value.trim_start().starts_with(before) {
+        return Some(format!(
+            "{at}: the new text starts with `{before}`, which already precedes the \
+             replaced text on its line; {fix}"
+        ));
+    }
+    None
+}
+
 /// `new`, with a `,` appended if the item at `range` ends with one and `new`
 /// doesn't (§3.3).
 fn with_trailing_comma<'t>(f: &SourceFile, range: &Range<usize>, new: &'t Text) -> Cow<'t, Text> {
@@ -1863,7 +1935,7 @@ mod tests {
                     .collect()),
                 Err(err) => Err(strip(&err.render(&src))),
             },
-            notes: run.notes,
+            notes: run.notes.iter().map(|n| strip(n)).collect(),
         }
     }
 
