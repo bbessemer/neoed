@@ -543,6 +543,12 @@ and regex matches are not.
 - **Partial-line target:** `TEXT` is inserted **verbatim** at the span.
   - If `TEXT` has several lines, the first is inserted as-is. The rest are
     re-based relative to the line the span starts on.
+  - Exception: `insert before|after` with heredoc `TEXT` widens a partial-line
+    target to its whole lines, as if `.lines` were given, so
+    `insert after /re/ <<END` adds lines after the match's line. A target that
+    ends in an item part (`.body`, `.params`, `.name`, `.sig`, `.doc`) isn't
+    widened, and string `TEXT` stays verbatim. `move` to such a destination
+    widens the same way when it moves whole lines.
 
 Blank or whitespace-only lines in `TEXT` are written as empty lines. Leading and
 trailing blank lines in `TEXT` are kept. This is how an agent adds a separating
