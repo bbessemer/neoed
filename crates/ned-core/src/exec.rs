@@ -2416,6 +2416,36 @@ mod tests {
         );
     }
 
+    const MAIN_GO: &str = "package main\n\nconst (\n\tA = 1\n\tB = 2\n)\n\ntype Server struct {\n\taddr string\n}\n\nfunc (s *Server) Run() error {\n\treturn nil\n}\n";
+
+    #[test]
+    fn go_edits() {
+        assert_eq!(
+            edited_in("a.go", MAIN_GO, "insert end fn:\"Server.Run\" \"log()\""),
+            MAIN_GO.replace("\treturn nil\n", "\treturn nil\n\tlog()\n")
+        );
+        assert_eq!(
+            edited_in("a.go", MAIN_GO, "insert end struct:Server \"port int\""),
+            MAIN_GO.replace("\taddr string\n", "\taddr string\n\tport int\n")
+        );
+        assert_eq!(
+            edited_in("a.go", MAIN_GO, "delete const:A"),
+            MAIN_GO.replace("\tA = 1\n", "")
+        );
+        assert_eq!(
+            edited_in("a.go", MAIN_GO, "insert before fn:Run \"// Run serves.\""),
+            MAIN_GO.replace("func (s", "// Run serves.\nfunc (s")
+        );
+    }
+
+    #[test]
+    fn go_outline() {
+        assert_eq!(
+            exec_with(&[("a.go", MAIN_GO)], 1, "outline").output,
+            "a.go\n4 const:A\n5 const:B\n8-10 struct:Server\n12-14 fn:\"Server.Run\"\n"
+        );
+    }
+
     #[test]
     fn inserted_text_takes_the_files_indent_style() {
         assert_eq!(

@@ -1122,6 +1122,31 @@ fn python_outline_and_edits() {
 }
 
 #[test]
+fn go_outline_and_edits() {
+    let text = "package main\n\ntype T struct{}\n\nfunc (t T) Run() {\n\tstart()\n}\n";
+    let dir = dir_with(&[("main.go", text)]);
+    let out = ned(dir.path(), &["main.go", "-e", "outline"], "");
+    assert_snapshot!(out, @r#"
+    exit: 0
+    --- stdout
+    main.go
+    3 struct:T
+    5-7 fn:"T.Run"
+    --- stderr
+    "#);
+    let out = ned(
+        dir.path(),
+        &["-q", "main.go"],
+        "insert end fn:Run \"stop()\"\n",
+    );
+    assert!(out.starts_with("exit: 0\n"), "{out}");
+    assert_eq!(
+        read(&dir, "main.go"),
+        "package main\n\ntype T struct{}\n\nfunc (t T) Run() {\n\tstart()\n\tstop()\n}\n"
+    );
+}
+
+#[test]
 fn a_closed_stdout_does_not_stop_the_script() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("a.txt");
