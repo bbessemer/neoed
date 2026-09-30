@@ -102,6 +102,10 @@ struct Loaded {
     deletions: Vec<Deletion>,
     /// Made by `create`: its original text is what `create` gave it.
     created: bool,
+    /// The text before the first `|` changed it (§2.3), and the edits
+    /// applied at each `|` since.
+    original: Option<String>,
+    applied: usize,
 }
 
 /// A whole-line deletion: its `lines`, and the span it `removed` once tidied.
@@ -159,6 +163,9 @@ impl Executor<'_> {
         };
         self.named = self.set.iter().map(|m| m.path.clone()).collect();
         for (index, command) in script.commands.iter().enumerate() {
+            if script.stages.contains(&index) {
+                self.commit()?;
+            }
             self.command(index, command)?;
         }
         // Files are read as commands need them, so they're reported in the
@@ -167,35 +174,50 @@ impl Executor<'_> {
         let mut changed: Vec<&Loaded> = self
             .files
             .iter()
-            .filter(|l| l.created || !l.edits.is_empty())
+            .filter(|l| l.created || l.applied > 0 || !l.edits.is_empty())
             .collect();
         changed.sort_by_key(|l| rank(&l.file.path));
         let changes: Vec<Change> = changed
             .iter()
             .map(|l| Change {
                 path: l.file.path.clone(),
-                old: if l.created {
-                    String::new()
-                } else {
-                    l.file.text.clone()
+                old: match (&l.original, l.created) {
+                    (_, true) => String::new(),
+                    (Some(original), false) => original.clone(),
+                    (None, false) => l.file.text.clone(),
                 },
                 new: l.edits.apply(),
-                edits: l.edits.len(),
+                edits: l.applied + l.edits.len(),
                 lang: l.file.lang,
                 created: l.created,
             })
             .collect();
         if !self.options.force {
             for (l, change) in changed.iter().zip(&changes) {
-                if l.created {
-                    let empty = SourceFile::new(&l.file.path, String::new(), l.file.lang);
-                    guard(&empty, &change.new)?;
-                } else {
-                    guard(&l.file, &change.new)?;
-                }
+                guard(&stage_input(l), &change.new)?;
             }
         }
         Ok(changes)
+    }
+
+    /// Applies each file's edits at a `|`, after the parse-error guard, so the
+    /// next stage sees them (§2.3).
+    fn commit(&mut self) -> Result<(), ExecError> {
+        for l in &mut self.files {
+            if l.edits.is_empty() {
+                continue;
+            }
+            let new = l.edits.apply();
+            if !self.options.force {
+                guard(&stage_input(l), &new)?;
+            }
+            l.applied += l.edits.len();
+            l.original.get_or_insert_with(|| l.file.text.clone());
+            l.file = SourceFile::new(&l.file.path, new, l.file.lang);
+            l.edits = EditSet::new(&l.file.buffer);
+            l.deletions.clear();
+        }
+        Ok(())
     }
 
     /// Adds a file made by `create` to the file set, holding `new` (§4.2).
@@ -220,6 +242,8 @@ impl Executor<'_> {
             file,
             edits,
             deletions: Vec::new(),
+            original: None,
+            applied: 0,
             created: true,
         });
         self.named.push(path.into());
@@ -335,6 +359,8 @@ impl Executor<'_> {
             file,
             edits,
             deletions: Vec::new(),
+            original: None,
+            applied: 0,
             created: false,
         });
         Ok(self.files.len() - 1)
@@ -1344,6 +1370,16 @@ fn fill_body(
     }
 }
 
+/// The text `l`'s current stage started from, as the parse-error guard
+/// compares it: empty for a file `create` made in this stage.
+fn stage_input(l: &Loaded) -> Cow<'_, SourceFile> {
+    if l.created && l.original.is_none() {
+        Cow::Owned(SourceFile::new(&l.file.path, String::new(), l.file.lang))
+    } else {
+        Cow::Borrowed(&l.file)
+    }
+}
+
 /// Rejects `new`, the edited text of `f`, if it has more tree-sitter error
 /// nodes than the original (§4.3).
 fn guard(f: &SourceFile, new: &str) -> Result<(), ExecError> {
@@ -1803,7 +1839,7 @@ pub enum ExecErrorKind {
     #[error("{what} is not yet supported; {instead}")]
     Unsupported { what: String, instead: &'static str },
     #[error(
-        "edit overlaps command {command} at {location}; merge the two edits, or make one in a separate ned run"
+        "edit overlaps command {command} at {location}; merge the two edits, or put a `|` between them"
     )]
     Overlap { command: usize, location: String },
     #[error("no files to edit; pass FILE arguments or use `file PATH`")]
@@ -2043,6 +2079,75 @@ mod tests {
         for script in ["show /zzz/", "show all fn:nope", "show all fn:nope>/x/"] {
             assert!(exec(TEXT, script).result.is_err(), "{script}");
         }
+    }
+
+    #[test]
+    fn a_stage_sees_the_edits_of_the_stages_before_it() {
+        assert_eq!(
+            edited(
+                TEXT,
+                "insert after fn:a <<END | replace fn:c with \"fn c() { x(); }\"\n\nfn c() {}\nEND\n"
+            ),
+            TEXT.replace("}\n\nfn b", "}\n\nfn c() { x(); }\n\nfn b")
+        );
+        assert_eq!(
+            edited(
+                TEXT,
+                "move fn:b before fn:a | replace fn:b>\"3\" with \"4\""
+            ),
+            "fn b() {\n    let x = 4;\n}\n\nfn a() {\n    let x = 1;\n    let y = 2;\n}\n"
+        );
+        assert_eq!(
+            edited(
+                "a\r\nb\r\n",
+                "replace 1 with \"x\" | replace 1 with \"y\"; replace 2 with \"z\""
+            ),
+            "y\r\nz\r\n"
+        );
+    }
+
+    #[test]
+    fn reads_show_their_stages_text() {
+        let out = exec(TEXT, "show 2 | insert before 1 \"// c\" | show 3");
+        assert_eq!(
+            out.output,
+            "a.rs:2\n2:    let x = 1;\na.rs:3\n3:    let x = 1;\n"
+        );
+    }
+
+    #[test]
+    fn stages_sum_their_edits_against_the_original() {
+        let out = exec(
+            TEXT,
+            "replace 2 with \"let x = 5;\" | replace 3 with \"let y = 6;\"",
+        );
+        let changes = out.result.unwrap();
+        assert_eq!(changes[0].old, TEXT);
+        assert_eq!(changes[0].edits, 2);
+        let two = exec_with(
+            &[("a.rs", "a\n"), ("b.rs", "b\n")],
+            1,
+            "replace 1 with \"x\" | file {dir}/b.rs; replace 1 with \"y\"",
+        );
+        let news: Vec<&str> = two
+            .result
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|c| c.new.as_str())
+            .collect();
+        assert_eq!(news, ["x\n", "y\n"]);
+    }
+
+    #[test]
+    fn every_stage_passes_the_parse_error_guard() {
+        let out = exec_with_options(
+            &[("a.rs", "fn a() {}\n")],
+            1,
+            "replace \"() {}\" with \"() {\" | replace \"fn a() {\" with \"fn a() {}\"",
+            &Options::default(),
+        );
+        assert!(out.error().contains("syntax error"), "{}", out.error());
     }
 
     #[test]
@@ -2492,11 +2597,11 @@ mod tests {
     fn overlapping_edits_name_the_earlier_command() {
         assert_eq!(
             exec(TEXT, "replace 2 with \"a\"\ndelete 2-3").error(),
-            "error: script:2:1: edit overlaps command 1 at a.rs:2; merge the two edits, or make one in a separate ned run"
+            "error: script:2:1: edit overlaps command 1 at a.rs:2; merge the two edits, or put a `|` between them"
         );
         assert_eq!(
             exec(TEXT, "show 1; delete 2-3; replace \"y\" with \"z\"").error(),
-            "error: script:1:21: edit overlaps command 2 at a.rs:2-3; merge the two edits, or make one in a separate ned run"
+            "error: script:1:21: edit overlaps command 2 at a.rs:2-3; merge the two edits, or put a `|` between them"
         );
     }
 

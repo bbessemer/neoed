@@ -4,7 +4,8 @@ applies, or none does. Output is a per-file summary plus diff hunks.
   ned [FLAGS] [FILE... | -w [DIR]] -e SCRIPT   (or the script on stdin)
   ned help [TOPIC]
 
-Commands, separated by newlines or `;`:
+Commands, separated by newlines or `;`; `|` starts a new stage that sees the
+edits before it (it binds looser than `;`: `a; b | c` is a;b then c):
   show [SEL [+N]]               print the lines of SEL, numbered, N around
   outline [SEL]                 list syntax items as pasteable selectors
   check [SEL] [LEVEL]           language-server diagnostics; LEVEL error..hint
@@ -30,8 +31,9 @@ Selectors (a selector must match exactly one span unless prefixed with `all`):
   /^## 6/../^## 7/  fn:a..fn:c  range: a match to the end of the next
 
 TEXT is "a string" or a heredoc: <<END ... END is re-indented to fit its
-target; <<'END' is inserted verbatim. Selectors resolve against the original
-text, so line numbers from `show` stay valid for the whole script.
+target; <<'END' is inserted verbatim. Selectors resolve against the text at
+the start of their stage, so line numbers from `show` stay valid until the
+next `|`. After a `|`, check, rename, .refs and .def are errors.
 
 Flags: -n dry run   -q summaries only   --force skip the syntax-error guard
        --no-fmt   --no-check   --lang LANG   --context N

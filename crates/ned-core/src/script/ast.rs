@@ -9,6 +9,8 @@ use crate::lsp::Severity;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Script {
     pub commands: Vec<Command>,
+    /// The index of each command that starts a stage after a `|` (§2.3).
+    pub stages: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

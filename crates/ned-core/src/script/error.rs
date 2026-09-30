@@ -68,6 +68,14 @@ pub enum ParseErrorKind {
     /// `fix` names the levels, or the one meant.
     #[error("unknown level `{word}`; {fix}")]
     UnknownLevel { word: String, fix: String },
+    #[error("`|` needs a command on each side")]
+    EmptyStage,
+    /// A command or part that reads the files on disk, in a stage after the
+    /// first (§2.3).
+    #[error(
+        "{0} reads the files on disk, which don't hold the edits before a `|`; run it before the first `|`, or in a separate ned call"
+    )]
+    ReadsDisk(&'static str),
 }
 
 /// Every command, as error messages list them.

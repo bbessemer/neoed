@@ -109,7 +109,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [x] A syntax step that matches nothing suggests the same name under another
       kind first (`struct:LspError` → "did you mean enum:LspError?"), before
       the close-name hint
-- [ ] Explicit chaining with `|`: `CMD | CMD` runs the right command against
+- [x] Explicit chaining with `|`: `CMD | CMD` runs the right command against
       the text as the left one left it (selectors see its additions, renames
       and moves), while `;` and newlines keep snapshot semantics (§2.3). The
       script stays one transaction. It avoids a second ned call for, e.g.,
@@ -131,6 +131,12 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [x] Markdown list re-basing: list-item TEXT inserted, replaced or moved next
       to any line of a list item anchors to the item: re-based to its marker
       column, inserted after the whole item (children included)
+- [ ] A `sub` replacement that names a group its regex doesn't have is an
+      error, not an empty expansion: `$1deletions` is the group `1deletions`,
+      so suggest `${1}deletions` (or `$$` for a literal `$`)
+- [ ] An invalid escape in a string suggests doubling the backslash, for
+      text copied from source: "invalid escape `\r`; write `\\r` for a
+      backslash and r"
 
 ## 9. LSP daemon _(split)_
 
@@ -208,3 +214,6 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       aligned to a delimiter rather than indented by levels) and preserve it
 - [ ] Re-basing keeps block-quote prefixes (`> `): inserted lines take the
       target line's `>` markers, not just its whitespace
+- [ ] `check`, `rename`, `.refs` and `.def` after a `|`: send the daemon each
+      changed file's stage text instead of relying on the files on disk, and
+      lift the syntax error

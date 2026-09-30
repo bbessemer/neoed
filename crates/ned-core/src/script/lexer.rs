@@ -53,6 +53,8 @@ pub enum TokenKind {
     /// `+N`: lines of context for `show`.
     Context(usize),
     Semicolon,
+    /// `|`, between stages.
+    Pipe,
     Newline,
     Eof,
 }
@@ -98,6 +100,10 @@ impl<'a> Lexer<'a> {
                 self.pos += 1;
                 TokenKind::Semicolon
             }
+            '|' => {
+                self.pos += 1;
+                TokenKind::Pipe
+            }
             '>' => {
                 self.pos += 1;
                 TokenKind::Gt
@@ -128,16 +134,16 @@ impl<'a> Lexer<'a> {
     }
 
     /// Lexes one `file` argument: a quoted string, or a run of characters up
-    /// to whitespace or `;`. Returns `None`, consuming nothing, at the end of
-    /// the command.
+    /// to whitespace, `;` or `|`. Returns `None`, consuming nothing, at the end
+    /// of the command.
     pub fn path(&mut self) -> Result<Option<Token>, ParseError> {
         let space_before = self.skip_space();
         let start = self.pos;
         let path = match self.peek() {
-            None | Some(';' | '\n' | '\r') => return Ok(None),
+            None | Some(';' | '\n' | '\r' | '|') => return Ok(None),
             Some('"') => self.string()?,
             Some(_) => self
-                .take_while(|c| !matches!(c, ' ' | '\t' | '\r' | '\n' | ';'))
+                .take_while(|c| !matches!(c, ' ' | '\t' | '\r' | '\n' | ';' | '|'))
                 .to_string(),
         };
         Ok(Some(Token {
@@ -338,7 +344,7 @@ impl<'a> Lexer<'a> {
                 let name = match self.peek() {
                     Some('"') => self.string()?,
                     _ if word == "file" => self
-                        .take_while(|c| !matches!(c, ' ' | '\t' | '\r' | '\n' | '>' | ';'))
+                        .take_while(|c| !matches!(c, ' ' | '\t' | '\r' | '\n' | '>' | ';' | '|'))
                         .to_string(),
                     _ => self
                         .take_while(|c| is_ident_char(c) || c == ':' || c == '*')

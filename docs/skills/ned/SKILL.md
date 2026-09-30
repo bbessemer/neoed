@@ -103,6 +103,13 @@ END
 insert after struct:Lexer "impl Lexer {}"
 ```
 
+Edit what an earlier command moved or inserted: a `|` starts a stage that sees
+the edits before it:
+
+```ned
+move fn:new after fn:parse | insert before fn:new "#[inline]"
+```
+
 Rename a symbol everywhere it's used with `rename`, which asks the language
 server. Pass `-w` so it can reach every file in the workspace:
 
@@ -139,10 +146,13 @@ END
 - **One match.** A selector must match exactly one span. If it matches more,
   the error lists selectors that each pick one; paste one back. Use
   `all SEL` to act on every match.
-- **The original text.** Every selector in a script sees the file as it was
-  before the script. Line numbers from an earlier `show` stay valid, but a
-  command can't select text that an earlier command in the same script
-  inserted. Use a second `ned` call for that.
+- **The original text, per stage.** Every selector sees the file as it was
+  before the script, or at the last `|`. Line numbers from an earlier `show`
+  stay valid until the next `|`. To select what an earlier command inserted,
+  moved or renamed, put a `|` between them. `|` binds more loosely than `;`
+  and newlines, unlike a shell's: `a; b | c` is `a; b`, then `c`. After a `|`,
+  `check`, `rename`, `.refs` and `.def` are errors, because they read the
+  files on disk; run them before the first `|` or in another `ned` call.
 - **Indentation is automatic.** `<<END` text is re-indented to fit its
   target. Use `<<'END'` for text that must stay exactly as written.
 - **Strings** are `"..."` on one line, with `\n \t \" \\`. Use a heredoc for
