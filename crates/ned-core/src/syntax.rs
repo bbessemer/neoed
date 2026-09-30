@@ -3,11 +3,16 @@
 //!
 //! A query in `queries/<lang>/selectors.scm` captures each item node as its
 //! kind (`@fn`, `@struct`, ...) and the item's name node as `@name`, in one
-//! pattern, with optional `@body` and `@params` nodes for those parts, or a
-//! `@head` node whose following lines are the body (a Markdown heading).
+//! pattern, with optional `@body` and `@params` nodes for those parts. The
+//! body may instead be the lines after a `@head` node (a Markdown heading), or
+//! the lines of a `@block` node (a Python block), after a `@doc` in the same
+//! pattern (a docstring), which is the item's `.doc`.
+//!
 //! Standalone `@doc` and `@attr` patterns capture the doc comments and
 //! attributes that extend an item's default span when they directly precede
-//! it.
+//! it; `@attr` nodes that start an item's node count as leading too (JS
+//! decorators). A standalone `@wrap` node that ends where an item's node does
+//! becomes the item's node (a JS `export`).
 //!
 //! A pattern's `(#set! name "TEMPLATE")` names its items by `TEMPLATE`, with
 //! each `{CAPTURE}` replaced by that capture's text, when every capture it
@@ -139,6 +144,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
     let mut found: Vec<Found> = Vec::new();
     // Every @doc and @attr node, and whether it's a doc.
     let mut leading: Vec<(Range<usize>, bool)> = Vec::new();
+    let mut wraps: Vec<Node> = Vec::new();
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
     while let Some(m) = matches.next() {
@@ -154,6 +160,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                 "block" => block = Some(capture.node),
                 "doc" => docs.push(capture.node.byte_range()),
                 "attr" => leading.push((capture.node.byte_range(), false)),
+                "wrap" => wraps.push(capture.node),
                 other => {
                     if let Some(kind) = find_kind(other) {
                         item = Some((kind.name, capture.node));
@@ -195,6 +202,17 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
         }
     }
     leading.sort_by_key(|(r, _)| r.start);
+    // A @wrap node that ends where an item does (an `export`) is the item.
+    for f in &mut found {
+        let (start, end) = (f.node.start_byte(), f.node.end_byte());
+        if let Some(wrap) = wraps.iter().find(|w| {
+            w.start_byte() < start
+                && w.end_byte() >= end
+                && text[end..w.end_byte()].trim().is_empty()
+        }) {
+            f.node = *wrap;
+        }
+    }
 
     // A wrapper and the node it wraps can both match; keep the widest.
     found.sort_by_key(|f| {
@@ -288,7 +306,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                     name: templated.unwrap_or_else(|| name_text(name)),
                     range,
                     trailing_comma: comma.is_some(),
-                    node: node.byte_range(),
+                    node: after_attrs(text, node.byte_range(), &leading),
                     name_range: name
                         .map_or(node.start_byte()..node.start_byte(), |n| n.byte_range()),
                     body,
@@ -302,6 +320,26 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
         .collect();
     items.sort_by_key(|i| (i.range.start, Reverse(i.range.end)));
     items
+}
+
+/// `node` without the attributes it starts with (JS decorators), which
+/// belong to the item's leading attributes, as they do in languages that put
+/// them before the item's node.
+fn after_attrs(text: &str, node: Range<usize>, leading: &[(Range<usize>, bool)]) -> Range<usize> {
+    let mut start = node.start;
+    for (attr, _) in leading
+        .iter()
+        .filter(|(l, is_doc)| !is_doc && node.start <= l.start && l.end <= node.end)
+    {
+        if !text[start..attr.start].trim().is_empty() {
+            break;
+        }
+        start = attr.end;
+    }
+    if start > node.start {
+        start += text[start..].len() - text[start..].trim_start().len();
+    }
+    start..node.end
 }
 
 /// An item pattern's captures.
@@ -1406,7 +1444,7 @@ func (s Size) Parse() {}
             Some("export function add(a: number, b: number): number")
         );
         assert_eq!(ts("fn", "render", Part::Sig), Some("render(): void"));
-        assert_eq!(ts("fn", "area", Part::Sig), Some("area(): number;"));
+        assert_eq!(ts("fn", "area", Part::Sig), Some("area(): number"));
         assert_eq!(
             ts("enum", "Color", Part::Body),
             Some("  Red,\n  Green = 2,\n")
