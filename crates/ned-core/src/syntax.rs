@@ -475,7 +475,7 @@ pub fn distance(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang::Language::{self, Markdown, Rust};
+    use crate::lang::Language::{self, Markdown, Python, Rust};
 
     fn items_in(lang: Language, text: &str) -> Vec<Item> {
         items(lang.selectors().unwrap(), &lang.parse(text), text)
@@ -980,5 +980,117 @@ const C: u8 = 1;
         assert_eq!(part_of(Rust, "struct", "Parser", Part::Params, PARTS), None);
         assert_eq!(part_of(Rust, "fn", "f", Part::Body, PARTS), None);
         assert_eq!(part_of(Rust, "variant", "B", Part::Body, PARTS), None);
+    }
+
+    const PYTHON: &str = r#""""Module doc."""
+from __future__ import annotations
+import os.path
+from typing import Any
+import a, b as c
+
+MAX = 3
+count = 0
+
+
+@dataclass
+class Point(Base):
+    """A point."""
+
+    x: int
+    y: int = 0
+
+    @staticmethod
+    def origin() -> "Point":
+        return Point(0)
+
+    async def dist(self, other):
+        """Distance."""
+        def helper():
+            pass
+        return 1
+
+
+def main(argv):
+    total = 1
+    return total
+
+
+def short(): return 1
+"#;
+
+    #[test]
+    fn python_items_of_every_kind() {
+        let expected = [
+            ("import", "__future__"),
+            ("import", "os.path"),
+            ("import", "typing"),
+            ("import", "a"),
+            ("const", "MAX"),
+            ("var", "count"),
+            ("class", "Point"),
+            ("field", "x"),
+            ("field", "y"),
+            ("fn", "origin"),
+            ("fn", "dist"),
+            ("fn", "helper"),
+            ("fn", "main"),
+            ("fn", "short"),
+        ];
+        let expected: Vec<(&str, String)> =
+            expected.iter().map(|(k, n)| (*k, n.to_string())).collect();
+        assert_eq!(names(Python, PYTHON), expected);
+    }
+
+    #[test]
+    fn python_spans_take_decorators() {
+        let origin = items_in(Python, PYTHON)
+            .into_iter()
+            .find(|i| i.name == "origin")
+            .unwrap();
+        assert_eq!(
+            &PYTHON[origin.range],
+            "@staticmethod\n    def origin() -> \"Point\":\n        return Point(0)"
+        );
+    }
+
+    #[test]
+    fn python_parts() {
+        let part = |kind, name, p| part_of(Python, kind, name, p, PYTHON);
+        assert_eq!(
+            part("fn", "dist", Part::Body),
+            Some("        def helper():\n            pass\n        return 1\n")
+        );
+        assert_eq!(
+            part("fn", "dist", Part::Doc),
+            Some("        \"\"\"Distance.\"\"\"\n")
+        );
+        assert_eq!(
+            part("fn", "dist", Part::Sig),
+            Some("async def dist(self, other)")
+        );
+        assert_eq!(part("fn", "dist", Part::Params), Some("self, other"));
+        assert_eq!(part("fn", "dist", Part::Name), Some("dist"));
+        assert_eq!(
+            part("fn", "main", Part::Body),
+            Some("    total = 1\n    return total\n")
+        );
+        assert_eq!(part("fn", "main", Part::Doc), None);
+        assert_eq!(
+            part("fn", "origin", Part::Sig),
+            Some("def origin() -> \"Point\"")
+        );
+        assert_eq!(part("class", "Point", Part::Sig), Some("class Point(Base)"));
+        assert_eq!(
+            part("class", "Point", Part::Doc),
+            Some("    \"\"\"A point.\"\"\"\n")
+        );
+        assert!(
+            part("class", "Point", Part::Body)
+                .unwrap()
+                .starts_with("    x: int\n")
+        );
+        assert_eq!(part("fn", "short", Part::Body), Some("return 1"));
+        assert_eq!(part("fn", "short", Part::Sig), Some("def short()"));
+        assert_eq!(part("field", "x", Part::Body), None);
     }
 }

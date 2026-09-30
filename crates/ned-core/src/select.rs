@@ -2079,13 +2079,4 @@ fn main() {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].file, 1);
     }
-
-    #[test]
-    fn syntax_steps_are_not_yet_supported_for_other_languages() {
-        assert_eq!(
-            error("delete fn:main", &[("a.go", "func main() {}\n")]),
-            "error: script:1:8: `fn:main` in go files is not yet supported; \
-             use a line, /regex/, \"literal\" or query{} selector"
-        );
-    }
 }

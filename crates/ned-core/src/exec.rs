@@ -2333,6 +2333,87 @@ mod tests {
         );
     }
 
+    const APP_PY: &str = "class App:\n    \"\"\"An app.\"\"\"\n\n    def start(self):\n        \"\"\"Start.\"\"\"\n        if self.ok:\n            run()\n\n    def stop(self):\n        pass\n\n\n@cache\ndef load(path):\n    return path\n";
+
+    #[test]
+    fn python_insert_start_and_end_go_inside_blocks() {
+        assert_eq!(
+            edited_in("a.py", APP_PY, "insert start fn:start \"self.n = 0\""),
+            APP_PY.replace(
+                "\"\"\"Start.\"\"\"\n",
+                "\"\"\"Start.\"\"\"\n        self.n = 0\n"
+            )
+        );
+        assert_eq!(
+            edited_in("a.py", APP_PY, "insert end fn:start \"done()\""),
+            APP_PY.replace("run()\n", "run()\n        done()\n")
+        );
+        assert_eq!(
+            edited_in(
+                "a.py",
+                APP_PY,
+                "insert end class:App <<END\n\ndef pause(self):\n    pass\nEND"
+            ),
+            APP_PY.replace(
+                "        pass\n",
+                "        pass\n\n    def pause(self):\n        pass\n"
+            )
+        );
+        let doc_only = "class A:\n    \"\"\"Doc.\"\"\"\n";
+        assert_eq!(
+            edited_in("a.py", doc_only, "insert end class:A \"x = 1\""),
+            "class A:\n    \"\"\"Doc.\"\"\"\n    x = 1\n"
+        );
+    }
+
+    #[test]
+    fn python_decorators_stay_with_their_item() {
+        assert_eq!(
+            edited_in(
+                "a.py",
+                APP_PY,
+                "replace fn:load <<END\ndef load(path, mode):\n    return path\nEND"
+            ),
+            APP_PY.replace("def load(path):", "def load(path, mode):")
+        );
+        assert_eq!(
+            edited_in("a.py", APP_PY, "insert before fn:load \"@trace\""),
+            APP_PY.replace("@cache\n", "@trace\n@cache\n")
+        );
+        assert_eq!(
+            edited_in("a.py", APP_PY, "replace fn:start.body \"pass\""),
+            APP_PY.replace("        if self.ok:\n            run()\n", "        pass\n")
+        );
+    }
+
+    #[test]
+    fn python_delete_tidies_the_blank_line_after_a_colon() {
+        let text = "class A:\n\n    def a(self):\n        pass\n\n    def b(self):\n        pass\n";
+        assert_eq!(
+            edited_in("a.py", text, "delete fn:a"),
+            "class A:\n\n    def b(self):\n        pass\n"
+        );
+        let text = "class A:\n    def a(self):\n        pass\n\n    def b(self):\n        pass\n";
+        assert_eq!(
+            edited_in("a.py", text, "delete fn:a"),
+            "class A:\n    def b(self):\n        pass\n"
+        );
+    }
+
+    #[test]
+    fn python_outline() {
+        let files = [("a.py", APP_PY)];
+        assert_eq!(
+            exec_with(&files, 1, "outline").output,
+            "a.py\n1-10 class:App\n  4-7 fn:start\n  9-10 fn:stop\n13-15 fn:load\n"
+        );
+        let text = "X = 1\n\nclass A:\n    y = 2\n\n    def f(self):\n        def g():\n            pass\n";
+        assert_eq!(
+            exec_with(&[("a.py", text)], 1, "outline class:A").output,
+            "a.py\n4 field:y\n6-8 fn:f\n"
+        );
+    }
+
     #[test]
     fn inserted_text_takes_the_files_indent_style() {
         assert_eq!(
@@ -3738,7 +3819,7 @@ fn main() {}
         let files = [
             ("a.rs", "fn a() {}\n"),
             ("b.md", "# B\n\ntext\n"),
-            ("c.go", "package c\n"),
+            ("c.json", "{}\n"),
         ];
         let out = exec_with(&files, 3, "show fn:a\nshow section:B");
         assert_eq!(
@@ -3748,16 +3829,10 @@ fn main() {}
         let out = exec_with(&files, 3, "outline");
         assert!(out.output.starts_with("a.rs\n"), "{}", out.output);
         assert!(out.output.contains("b.md\n"), "{}", out.output);
-        assert!(!out.output.contains("c.go"), "{}", out.output);
+        assert!(!out.output.contains("c.json"), "{}", out.output);
         let out = exec_with(&files[1..], 2, "show fn:a");
         assert!(
             out.error().contains("markdown has no `fn` items"),
-            "{}",
-            out.error()
-        );
-        let out = exec_with(&files[2..], 1, "outline");
-        assert!(
-            out.error().contains("`outline` in go files"),
             "{}",
             out.error()
         );
