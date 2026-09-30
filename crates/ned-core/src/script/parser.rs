@@ -19,7 +19,12 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
             TokenKind::Newline | TokenKind::Semicolon => {
                 parser.bump()?;
             }
-            TokenKind::Eof => return Ok(Script { commands }),
+            TokenKind::Eof => {
+                return Ok(Script {
+                    commands,
+                    stages: Vec::new(),
+                });
+            }
             _ => {
                 commands.push(parser.command()?);
                 let next = parser.peek()?;
@@ -973,6 +978,67 @@ mod tests {
                 },
                 CommandKind::Delete(target(vec![lines(N(2), None)])),
             ]
+        );
+    }
+
+    fn stages(src: &str) -> Vec<usize> {
+        parse(src)
+            .unwrap_or_else(|e| panic!("{}", e.render(src)))
+            .stages
+    }
+
+    #[test]
+    fn pipes_separate_stages_more_loosely_than_semicolons() {
+        assert_eq!(stages("show 1; show 2 | show 3"), [2]);
+        assert_eq!(stages("show 1 |\nshow 2\nshow 3 | show 4"), [1, 3]);
+        assert_eq!(stages("show 1 | # c\nshow 2"), [1]);
+        assert_eq!(stages("show /a|b/ | show \"|\""), [1]);
+        assert_eq!(
+            commands("file a.rs| show 1"),
+            [
+                CommandKind::File(vec!["a.rs".into()]),
+                CommandKind::Show {
+                    target: Some(target(vec![lines(N(1), None)])),
+                    context: 0
+                }
+            ]
+        );
+        assert_eq!(stages("show 1"), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn a_pipe_needs_a_command_on_each_side() {
+        for src in [
+            "| show 1",
+            "show 1 || show 2",
+            "show 1 | | show 2",
+            "show 1 |",
+            "show 1 |\n",
+        ] {
+            assert_eq!(message(src), "`|` needs a command on each side", "{src:?}");
+        }
+    }
+
+    #[test]
+    fn commands_that_read_the_disk_are_errors_after_a_pipe() {
+        for (src, what) in [
+            ("show 1 | check", "check"),
+            ("show 1 | rename fn:a to b", "rename"),
+            ("show 1 | show all fn:a.refs", ".refs"),
+            ("show 1 | show fn:a>\"f(\".def", ".def"),
+        ] {
+            assert_eq!(
+                message(src),
+                format!(
+                    "{what} reads the files on disk, which don't hold the edits before a `|`; \
+                     run it before the first `|`, or in a separate ned call"
+                ),
+                "{src:?}"
+            );
+        }
+        assert_eq!(
+            stages("check; rename fn:a to b; show fn:a.refs | show 1"),
+            [3]
         );
     }
 

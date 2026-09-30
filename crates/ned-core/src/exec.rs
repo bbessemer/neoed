@@ -2046,6 +2046,75 @@ mod tests {
     }
 
     #[test]
+    fn a_stage_sees_the_edits_of_the_stages_before_it() {
+        assert_eq!(
+            edited(
+                TEXT,
+                "insert after fn:a <<END | replace fn:c with \"fn c() { x(); }\"\n\nfn c() {}\nEND\n"
+            ),
+            TEXT.replace("}\n\nfn b", "}\n\nfn c() { x(); }\n\nfn b")
+        );
+        assert_eq!(
+            edited(
+                TEXT,
+                "move fn:b before fn:a | replace fn:b>\"3\" with \"4\""
+            ),
+            "fn b() {\n    let x = 4;\n}\n\nfn a() {\n    let x = 1;\n    let y = 2;\n}\n"
+        );
+        assert_eq!(
+            edited(
+                "a\r\nb\r\n",
+                "replace 1 with \"x\" | replace 1 with \"y\"; replace 2 with \"z\""
+            ),
+            "y\r\nz\r\n"
+        );
+    }
+
+    #[test]
+    fn reads_show_their_stages_text() {
+        let out = exec(TEXT, "show 2 | insert before 1 \"// c\" | show 3");
+        assert_eq!(
+            out.output,
+            "a.rs:2\n2:    let x = 1;\na.rs:3\n3:    let x = 1;\n"
+        );
+    }
+
+    #[test]
+    fn stages_sum_their_edits_against_the_original() {
+        let out = exec(
+            TEXT,
+            "replace 2 with \"let x = 5;\" | replace 3 with \"let y = 6;\"",
+        );
+        let changes = out.result.unwrap();
+        assert_eq!(changes[0].old, TEXT);
+        assert_eq!(changes[0].edits, 2);
+        let two = exec_with(
+            &[("a.rs", "a\n"), ("b.rs", "b\n")],
+            1,
+            "replace 1 with \"x\" | file {dir}/b.rs; replace 1 with \"y\"",
+        );
+        let news: Vec<&str> = two
+            .result
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|c| c.new.as_str())
+            .collect();
+        assert_eq!(news, ["x\n", "y\n"]);
+    }
+
+    #[test]
+    fn every_stage_passes_the_parse_error_guard() {
+        let out = exec_with_options(
+            &[("a.rs", "fn a() {}\n")],
+            1,
+            "replace \"() {}\" with \"() {\" | replace \"fn a() {\" with \"fn a() {}\"",
+            &Options::default(),
+        );
+        assert!(out.error().contains("syntax error"), "{}", out.error());
+    }
+
+    #[test]
     fn show_adds_context_lines() {
         assert_eq!(
             exec(TEXT, "show 3 +1").output,
