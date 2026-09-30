@@ -156,7 +156,9 @@ insert start class:App>fn:handle "metrics.count(req)"
   `check`, `rename`, `.refs` and `.def` are errors, because they read the
   files on disk; run them before the first `|` or in another `ned` call.
 - **Indentation is automatic.** `<<END` text is re-indented to fit its
-  target. Use `<<'END'` for text that must stay exactly as written.
+  target, and so is a one-line string inserted or replaced on lines of its
+  own: its leading spaces don't survive. Use `<<'END'` for text that must stay
+  exactly as written, such as an indented line in a test's expected output.
 - **Strings** are `"..."` on one line, with `\n \t \" \\`. Use a heredoc for
   multi-line text.
 - **`$`** is literal in `replace`. Only `sub` expands `$1`, `${name}` and `$0`.
