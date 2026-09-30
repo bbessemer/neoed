@@ -343,16 +343,25 @@ The kinds each language supports, and the items they cover there:
   `import:"net/http"`). In a grouped declaration (`const ( ... )`) each spec
   is an item; a declaration with one spec includes its keyword. Every comment
   directly above an item is its doc.
+- **JavaScript** and **TypeScript** (TSX too): `fn` (function declarations,
+  generators, class methods, and a variable declared as an arrow function or
+  function expression, which is also `const` or `var`; `outline` lists it as
+  `fn`), `class`, `field` (class fields), `const` (`const` declarations),
+  `var` (`let` and `var`), `import` (named by the source without quotes:
+  `import:react`, `import:"./util"`). TypeScript adds `interface` (with `fn`
+  and `field` members), `type`, `enum` with its `variant`s, `mod` (namespaces
+  and `declare module`), and `fn` signatures without a body (overloads,
+  `declare function`, abstract methods). An exported item's span and `.sig`
+  include `export`; a `/** ... */` comment directly above an item is its doc.
 
 - An inherent impl is named by its self type (`impl:Parser`), a trait impl by
   `TRAIT for TYPE` (`impl:"Display for Parser"`), each the last path segment
   without generic arguments (`impl<T> fmt::Display for Foo<T>` is
   `"Display for Foo"`). `impl:TYPE` also matches every trait impl of the type.
-- A syntax step skips files whose language doesn't support its kind (or has no
-  syntax items yet), as it skips files without a language, so `fn:parse` works
-  in a set that also holds Markdown. If no searched file supports the kind, the
-  step is an error that lists the kinds the first such language does support.
-  `outline` likewise skips files whose language has no syntax items.
+- A syntax step skips files whose language doesn't support its kind, as it
+  skips files without a language, so `fn:parse` works in a set that also holds
+  Markdown. If no searched file supports the kind, the step is an error that
+  lists the kinds the first such language does support.
 - A syntax item's default span is the **whole item as a reader sees it**,
   including its leading doc comments and attributes or decorators, up to the
   first blank line above it. A `,` directly after the item, on the same line,
@@ -826,7 +835,6 @@ Errors go to stderr, in the form `error: LOC: message`.
 | Rename, `.refs` or `.def` reaching a file outside the set | `-w`; outside the workspace, a regex (`sub`, for a rename)                                                                                                                                                                                                                                              |
 | Ambiguous `.refs` or `.def` result                        | `all`, with the matches' locations                                                                                                                                                                                                                                                                      |
 | File not in the set                                       | The `file` command that adds it                                                                                                                                                                                                                                                                         |
-| Unsupported in a language                                 | Selectors that work there                                                                                                                                                                                                                                                                               |
 | Overlapping edits                                         | Merging them, or a `\|` between them                                                                                                                                                                                                                                                                    |
 | Missing file or empty glob                                | The working directory paths are relative to                                                                                                                                                                                                                                                             |
 
