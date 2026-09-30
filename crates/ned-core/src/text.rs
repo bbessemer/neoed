@@ -111,8 +111,8 @@ pub fn blank_separated(text: &str, full: Range<usize>) -> bool {
 
 /// Widens a whole-line deletion by one adjacent blank line when deleting
 /// `range` would leave two blank lines in a row, a blank line right after an
-/// opening delimiter (or a line ending in `:`) or right before a closing one, or a blank line at the
-/// start or end of the file (§4.2).
+/// opening delimiter (or a line ending in `:`) or right before a closing one,
+/// or a blank line at the start or end of the file (§4.2).
 pub fn tidy_delete(text: &str, range: Range<usize>) -> Range<usize> {
     let blank = |line: &str| line.trim().is_empty();
     // The lines around the span, with their other ends; `None` at the start

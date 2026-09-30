@@ -282,7 +282,9 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                 };
                 Item {
                     kind,
-                    base_name: templated.is_some().then(|| name_text(name)),
+                    base_name: name
+                        .filter(|_| templated.is_some())
+                        .map(|n| first_line(text, n)),
                     name: templated.unwrap_or_else(|| name_text(name)),
                     range,
                     trailing_comma: comma.is_some(),

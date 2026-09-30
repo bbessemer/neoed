@@ -10,10 +10,11 @@ script applies, or none do. It prints a summary and diff hunks for each file,
 so you don't need to read the file back to check the edit.
 
 Syntax selectors work in Rust (`fn:parse`, `impl:Parser`,
-`impl:"Display for Parser"`) and Markdown (`section:"Install"`, `item:`,
-`table:`, `code:`); `insert end section:X` appends to a section. In other
-files, use lines, regexes, literals or `query{}`. Run `ned help` for the whole
-language in one screen, and `ned help TOPIC` for one verb.
+`impl:"Display for Parser"`), Python (`class:App>fn:start`; decorators come
+with the item, and `.doc` is the docstring) and Markdown (`section:"Install"`,
+`item:`, `table:`, `code:`); `insert end section:X` appends to a section. In
+other files, use lines, regexes, literals or `query{}`. Run `ned help` for the
+whole language in one screen, and `ned help TOPIC` for one verb.
 
 ## Invocation
 
@@ -132,13 +133,11 @@ file src/**/*.rs
 sub /\bold_name\b/ with "new_name"
 ```
 
-Insert into a Python block by line number, after checking the lines with
-`show`:
+Add a statement at the start of a Python method, after its docstring; ned
+indents it to the block:
 
 ```ned
-insert after 3 <<END
-metrics.count(req)
-END
+insert start class:App>fn:handle "metrics.count(req)"
 ```
 
 ## Rules that trip agents up
