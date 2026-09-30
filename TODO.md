@@ -206,6 +206,9 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       binding and dropping a listener
 - [ ] `create a.rs "fn a() {}\n"` followed by `insert after fn:a ...` in the
       same script leaves a trailing blank line (rustfmt removes it)
+- [ ] The did-you-mean-another-kind hint only fires for a selector's last
+      step: `show fn:tests>fn:exec` says "`outline` lists the items" where
+      `show fn:tests` suggests `mod:tests`
 
 ## Future improvements
 
