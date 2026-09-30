@@ -299,8 +299,7 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::RenameRefused { .. }
         | ExecErrorKind::Outside { .. }
         | ExecErrorKind::AmbiguousLocated { .. } => 1,
-        ExecErrorKind::Unsupported { .. }
-        | ExecErrorKind::NoFiles
+        ExecErrorKind::NoFiles
         | ExecErrorKind::InvalidQuery { .. }
         | ExecErrorKind::NoServer { .. } => 2,
         ExecErrorKind::Io { .. } | ExecErrorKind::NoGlobMatch { .. } | ExecErrorKind::Lsp(_) => 3,

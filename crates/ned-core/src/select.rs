@@ -64,10 +64,9 @@ impl SourceFile {
         }
     }
 
-    /// The syntax items of the text; `None` if the file's language has no
-    /// selector query (or it has no language).
+    /// The syntax items of the text; `None` without a language.
     pub fn items(&self) -> Option<&[Item]> {
-        let query = self.lang?.selectors()?;
+        let query = self.lang?.selectors();
         let tree = self.tree()?;
         Some(
             self.items
@@ -462,24 +461,15 @@ fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]
     let mut first_error = None;
     for &i in &searched {
         let Some(lang) = files[i].lang else { continue };
-        let error = match lang.selectors() {
-            None => E::Unsupported {
-                what: format!("`{}` in {lang} files", syntax::selector(kind, name)),
-                instead: r#"use a line, /regex/, "literal" or query{} selector"#,
-            },
-            Some(query) => {
-                let kinds = syntax::kinds(query);
-                if kinds.contains(&kind) {
-                    return Ok(());
-                }
-                E::UnknownKind {
-                    kind: kind.into(),
-                    lang: lang.to_string(),
-                    kinds: kinds.join(", "),
-                }
-            }
-        };
-        first_error.get_or_insert(error);
+        let kinds = syntax::kinds(lang.selectors());
+        if kinds.contains(&kind) {
+            return Ok(());
+        }
+        first_error.get_or_insert(E::UnknownKind {
+            kind: kind.into(),
+            lang: lang.to_string(),
+            kinds: kinds.join(", "),
+        });
     }
     match first_error {
         Some(error) => Err(error),

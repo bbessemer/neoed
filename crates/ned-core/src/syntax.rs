@@ -565,7 +565,7 @@ mod tests {
     use crate::lang::Language::{self, Go, JavaScript, Markdown, Python, Rust, Tsx, TypeScript};
 
     fn items_in(lang: Language, text: &str) -> Vec<Item> {
-        items(lang.selectors().unwrap(), &lang.parse(text), text)
+        items(lang.selectors(), &lang.parse(text), text)
     }
 
     /// `(kind, name)` of every item in `text`, which must hold an item of
@@ -575,11 +575,7 @@ mod tests {
         let mut seen: Vec<&str> = found.iter().map(|i| i.kind).collect();
         seen.sort_by_key(|k| rank(k));
         seen.dedup();
-        assert_eq!(
-            seen,
-            kinds(lang.selectors().unwrap()),
-            "kinds without a test"
-        );
+        assert_eq!(seen, kinds(lang.selectors()), "kinds without a test");
         found.into_iter().map(|i| (i.kind, i.name)).collect()
     }
 
@@ -702,7 +698,7 @@ mod tests {}
     fn rust_kinds() {
         let lang = Language::Rust;
         assert_eq!(
-            kinds(lang.selectors().unwrap()),
+            kinds(lang.selectors()),
             [
                 "fn", "struct", "enum", "variant", "trait", "impl", "type", "const", "var",
                 "field", "mod", "import"
@@ -734,9 +730,8 @@ mod tests {}
             "name", "body", "block", "params", "head", "doc", "attr", "wrap",
         ];
         for lang in Language::ALL {
-            let Some(query) = lang.selectors() else {
-                continue;
-            };
+            let query = lang.selectors();
+
             let templates: String = (0..query.pattern_count())
                 .flat_map(|p| query.property_settings(p))
                 .filter(|s| &*s.key == "name")

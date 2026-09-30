@@ -83,9 +83,8 @@ impl Language {
         }
     }
 
-    /// The compiled selector query, `queries/<lang>/selectors.scm`; `None`
-    /// until the language has one.
-    pub fn selectors(self) -> Option<&'static Query> {
+    /// The compiled selector query, `queries/<lang>/selectors.scm`.
+    pub fn selectors(self) -> &'static Query {
         static QUERIES: [OnceLock<Query>; 7] = [const { OnceLock::new() }; 7];
         let source = match self {
             Language::Rust => include_str!("../../../queries/rust/selectors.scm"),
@@ -101,9 +100,9 @@ impl Language {
                 include_str!("../../../queries/typescript/selectors.scm")
             ),
         };
-        Some(QUERIES[self as usize].get_or_init(|| {
+        QUERIES[self as usize].get_or_init(|| {
             Query::new(&self.grammar(), source).expect("selector queries are valid")
-        }))
+        })
     }
 
     pub fn parse(self, text: &str) -> Tree {
