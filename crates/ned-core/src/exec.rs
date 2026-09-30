@@ -2003,6 +2003,27 @@ mod tests {
     }
 
     #[test]
+    fn show_all_searching_in_vain_says_so_and_goes_on() {
+        let out = exec_with(&[("a.rs", TEXT), ("b.rs", TEXT)], 2, "show all /zzz/");
+        assert_eq!(out.output, "no matches for /zzz/ in 2 files\n");
+        assert_eq!(out.result, Ok(vec![]));
+        assert_eq!(
+            exec(TEXT, "show all fn:a>\"zzz\"").output,
+            "no matches for fn:a>\"zzz\" in 1 file\n"
+        );
+        let out = exec(TEXT, "show all /zzz/; replace 2 with \"x\"");
+        assert_eq!(out.output, "no matches for /zzz/ in 1 file\n");
+        assert_eq!(out.result.map(|changes| changes.len()), Ok(1));
+    }
+
+    #[test]
+    fn show_all_still_fails_without_a_search() {
+        for script in ["show /zzz/", "show all fn:nope", "show all fn:nope>/x/"] {
+            assert!(exec(TEXT, script).result.is_err(), "{script}");
+        }
+    }
+
+    #[test]
     fn show_adds_context_lines() {
         assert_eq!(
             exec(TEXT, "show 3 +1").output,
