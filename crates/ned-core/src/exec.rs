@@ -2046,7 +2046,11 @@ mod tests {
     }
 
     fn edited(text: &str, script: &str) -> String {
-        exec(text, script).new_text().to_string()
+        edited_in("a.rs", text, script)
+    }
+
+    fn edited_in(path: &str, text: &str, script: &str) -> String {
+        exec_with(&[(path, text)], 1, script).new_text().to_string()
     }
 
     #[test]
@@ -2320,7 +2324,8 @@ mod tests {
     fn insert_into_python_block() {
         let app = "def handle(req):\n    if req.ok:\n        log(req)\n        return 200\n    return 500\n";
         assert_eq!(
-            edited(
+            edited_in(
+                "a.py",
                 app,
                 "insert after \"log(req)\".lines <<END\nif req.slow:\n    warn(req)\nEND\n"
             ),

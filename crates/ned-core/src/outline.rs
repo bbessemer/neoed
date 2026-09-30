@@ -75,18 +75,19 @@ mod tests {
     use super::*;
     use crate::lang::Language;
 
-    fn outline(text: &str) -> String {
-        render(
-            &SourceFile::new("a.rs", text.into(), Some(Language::Rust)),
-            None,
-        )
+    fn file(path: &str, text: &str) -> SourceFile {
+        SourceFile::new(path, text.into(), Language::detect(path, text))
+    }
+
+    fn outline(path: &str, text: &str) -> String {
+        render(&file(path, text), None)
     }
 
     #[test]
     fn nests_items_by_containment() {
         let text = "mod a {\n    mod b {\n        fn c() {}\n    }\n    trait T {\n        fn d(&self);\n    }\n}\nconst E: u8 = 1;\n";
         assert_eq!(
-            outline(text),
+            outline("a.rs", text),
             "1-8 mod:a\n  2-4 mod:b\n    3 fn:c\n  5-7 trait:T\n    6 fn:d\n9 const:E\n"
         );
     }
@@ -95,7 +96,7 @@ mod tests {
     fn collapses_consecutive_imports() {
         let text = "use a;\nuse b::{c, d};\nuse e;\n\nfn f() {}\nuse g;\nmod h {\n    use i;\n}\n";
         assert_eq!(
-            outline(text),
+            outline("a.rs", text),
             "1-3 import (3)\n5 fn:f\n6 import (1)\n7-9 mod:h\n  8 import (1)\n"
         );
     }
@@ -103,13 +104,13 @@ mod tests {
     #[test]
     fn omits_items_inside_function_bodies() {
         let text = "fn f() {\n    let x = 1;\n    fn g() {}\n    struct S;\n}\n";
-        assert_eq!(outline(text), "1-5 fn:f\n");
+        assert_eq!(outline("a.rs", text), "1-5 fn:f\n");
     }
 
     #[test]
     fn lists_fields_and_variants_only_inside_their_parent() {
         let text = "/// Doc.\nstruct S {\n    a: u8,\n}\nenum E {\n    A,\n    B(u8),\n}\n";
-        assert_eq!(outline(text), "1-4 struct:S\n5-8 enum:E\n");
+        assert_eq!(outline("a.rs", text), "1-4 struct:S\n5-8 enum:E\n");
         let f = SourceFile::new("a.rs", text.into(), Some(Language::Rust));
         let s = f
             .items()
@@ -141,13 +142,13 @@ mod tests {
     #[test]
     fn names_trait_impls_by_trait_and_self_type() {
         let text = "impl<T> std::fmt::Display for W<T> {}\n";
-        assert_eq!(outline(text), "1 impl:\"Display for W\"\n");
+        assert_eq!(outline("a.rs", text), "1 impl:\"Display for W\"\n");
     }
 
     #[test]
     fn outlines_markdown_as_a_tree_of_sections() {
         let text = "# Title\n\n## Two\n\n- a\n- b\n\n| X | Y |\n| - | - |\n\n```rust\nx\n```\n\n### Deep\n\ntext\n";
-        let f = SourceFile::new("a.md", text.into(), Some(Language::Markdown));
+        let f = file("a.md", text);
         assert_eq!(
             render(&f, None),
             "1-17 section:Title\n  3-17 section:Two\n    15-17 section:Deep\n"
