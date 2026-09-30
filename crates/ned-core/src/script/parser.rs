@@ -13,30 +13,74 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
         peeked: None,
         last_end: 0,
     };
-    let mut commands = Vec::new();
+    let mut commands: Vec<Command> = Vec::new();
+    let mut stages: Vec<usize> = Vec::new();
+    let mut pipe = 0..0;
     loop {
-        match parser.peek()?.kind {
+        let token = parser.peek()?;
+        match token.kind {
             TokenKind::Newline | TokenKind::Semicolon => {
                 parser.bump()?;
             }
+            TokenKind::Pipe => {
+                if commands.len() == stages.last().copied().unwrap_or(0) {
+                    return Err(ParseError::new(E::EmptyStage, token.span.clone()));
+                }
+                pipe = parser.bump()?.span;
+                stages.push(commands.len());
+            }
             TokenKind::Eof => {
-                return Ok(Script {
-                    commands,
-                    stages: Vec::new(),
-                });
+                if stages.last() == Some(&commands.len()) {
+                    return Err(ParseError::new(E::EmptyStage, pipe));
+                }
+                let later = stages.first().map_or(&[][..], |&first| &commands[first..]);
+                if let Some((what, command)) = later
+                    .iter()
+                    .find_map(|c| reads_disk(&c.kind).map(|what| (what, c)))
+                {
+                    return Err(ParseError::new(E::ReadsDisk(what), command.span.clone()));
+                }
+                return Ok(Script { commands, stages });
             }
             _ => {
                 commands.push(parser.command()?);
                 let next = parser.peek()?;
                 if !matches!(
                     next.kind,
-                    TokenKind::Newline | TokenKind::Semicolon | TokenKind::Eof
+                    TokenKind::Newline | TokenKind::Semicolon | TokenKind::Pipe | TokenKind::Eof
                 ) {
                     return Err(expected("end of command", next));
                 }
             }
         }
     }
+}
+
+/// What in a command reads the files on disk, which a stage after a `|` can't
+/// use (§2.3): `check`, `rename`, or a `.refs` or `.def` part.
+fn reads_disk(kind: &CommandKind) -> Option<&'static str> {
+    let selectors: Vec<&Selector> = match kind {
+        CommandKind::Check { .. } => return Some("check"),
+        CommandKind::Rename { .. } => return Some("rename"),
+        CommandKind::Show { target, .. } | CommandKind::Outline(target) => {
+            target.iter().map(|t| &t.selector).collect()
+        }
+        CommandKind::Sub { scope, .. } => scope.iter().map(|t| &t.selector).collect(),
+        CommandKind::Replace { target, .. }
+        | CommandKind::Insert { target, .. }
+        | CommandKind::Delete(target) => vec![&target.selector],
+        CommandKind::Move { target, dest, .. } => vec![&target.selector, dest],
+        CommandKind::File(_) | CommandKind::Create { .. } | CommandKind::Allow(_) => vec![],
+    };
+    selectors
+        .iter()
+        .flat_map(|s| &s.steps)
+        .flat_map(|step| &step.parts)
+        .find_map(|part| match part {
+            Part::Refs => Some(".refs"),
+            Part::Def => Some(".def"),
+            _ => None,
+        })
 }
 
 struct Parser<'a> {
@@ -465,6 +509,7 @@ fn expected(what: &'static str, token: &Token) -> ParseError {
         TokenKind::DotDot => "`..`".into(),
         TokenKind::Context(_) => "a context count".into(),
         TokenKind::Semicolon => "`;`".into(),
+        TokenKind::Pipe => "`|`".into(),
         TokenKind::Newline => "end of line".into(),
         TokenKind::Eof => "end of script".into(),
     };

@@ -102,6 +102,10 @@ struct Loaded {
     deletions: Vec<Deletion>,
     /// Made by `create`: its original text is what `create` gave it.
     created: bool,
+    /// The text before the first `|` changed it (§2.3), and the edits
+    /// applied at each `|` since.
+    original: Option<String>,
+    applied: usize,
 }
 
 /// A whole-line deletion: its `lines`, and the span it `removed` once tidied.
@@ -159,6 +163,9 @@ impl Executor<'_> {
         };
         self.named = self.set.iter().map(|m| m.path.clone()).collect();
         for (index, command) in script.commands.iter().enumerate() {
+            if script.stages.contains(&index) {
+                self.commit()?;
+            }
             self.command(index, command)?;
         }
         // Files are read as commands need them, so they're reported in the
@@ -167,35 +174,50 @@ impl Executor<'_> {
         let mut changed: Vec<&Loaded> = self
             .files
             .iter()
-            .filter(|l| l.created || !l.edits.is_empty())
+            .filter(|l| l.created || l.applied > 0 || !l.edits.is_empty())
             .collect();
         changed.sort_by_key(|l| rank(&l.file.path));
         let changes: Vec<Change> = changed
             .iter()
             .map(|l| Change {
                 path: l.file.path.clone(),
-                old: if l.created {
-                    String::new()
-                } else {
-                    l.file.text.clone()
+                old: match (&l.original, l.created) {
+                    (_, true) => String::new(),
+                    (Some(original), false) => original.clone(),
+                    (None, false) => l.file.text.clone(),
                 },
                 new: l.edits.apply(),
-                edits: l.edits.len(),
+                edits: l.applied + l.edits.len(),
                 lang: l.file.lang,
                 created: l.created,
             })
             .collect();
         if !self.options.force {
             for (l, change) in changed.iter().zip(&changes) {
-                if l.created {
-                    let empty = SourceFile::new(&l.file.path, String::new(), l.file.lang);
-                    guard(&empty, &change.new)?;
-                } else {
-                    guard(&l.file, &change.new)?;
-                }
+                guard(&stage_input(l), &change.new)?;
             }
         }
         Ok(changes)
+    }
+
+    /// Applies each file's edits at a `|`, after the parse-error guard, so the
+    /// next stage sees them (§2.3).
+    fn commit(&mut self) -> Result<(), ExecError> {
+        for l in &mut self.files {
+            if l.edits.is_empty() {
+                continue;
+            }
+            let new = l.edits.apply();
+            if !self.options.force {
+                guard(&stage_input(l), &new)?;
+            }
+            l.applied += l.edits.len();
+            l.original.get_or_insert_with(|| l.file.text.clone());
+            l.file = SourceFile::new(&l.file.path, new, l.file.lang);
+            l.edits = EditSet::new(&l.file.buffer);
+            l.deletions.clear();
+        }
+        Ok(())
     }
 
     /// Adds a file made by `create` to the file set, holding `new` (§4.2).
@@ -220,6 +242,8 @@ impl Executor<'_> {
             file,
             edits,
             deletions: Vec::new(),
+            original: None,
+            applied: 0,
             created: true,
         });
         self.named.push(path.into());
@@ -335,6 +359,8 @@ impl Executor<'_> {
             file,
             edits,
             deletions: Vec::new(),
+            original: None,
+            applied: 0,
             created: false,
         });
         Ok(self.files.len() - 1)
@@ -1341,6 +1367,16 @@ fn fill_body(
     } else {
         let closer = text::indent_at(t, body.end - 1);
         (inner, format!("\n{lines}{closer}"))
+    }
+}
+
+/// The text `l`'s current stage started from, as the parse-error guard
+/// compares it: empty for a file `create` made in this stage.
+fn stage_input(l: &Loaded) -> Cow<'_, SourceFile> {
+    if l.created && l.original.is_none() {
+        Cow::Owned(SourceFile::new(&l.file.path, String::new(), l.file.lang))
+    } else {
+        Cow::Borrowed(&l.file)
     }
 }
 
