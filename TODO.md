@@ -109,7 +109,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [x] A syntax step that matches nothing suggests the same name under another
       kind first (`struct:LspError` → "did you mean enum:LspError?"), before
       the close-name hint
-- [ ] Explicit chaining with `|`: `CMD | CMD` runs the right command against
+- [x] Explicit chaining with `|`: `CMD | CMD` runs the right command against
       the text as the left one left it (selectors see its additions, renames
       and moves), while `;` and newlines keep snapshot semantics (§2.3). The
       script stays one transaction. It avoids a second ned call for, e.g.,
@@ -208,3 +208,6 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       aligned to a delimiter rather than indented by levels) and preserve it
 - [ ] Re-basing keeps block-quote prefixes (`> `): inserted lines take the
       target line's `>` markers, not just its whitespace
+- [ ] `check`, `rename`, `.refs` and `.def` after a `|`: send the daemon each
+      changed file's stage text instead of relying on the files on disk, and
+      lift the syntax error
