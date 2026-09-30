@@ -8,6 +8,11 @@
 //! Standalone `@doc` and `@attr` patterns capture the doc comments and
 //! attributes that extend an item's default span when they directly precede
 //! it.
+//!
+//! A pattern's `(#set! name "TEMPLATE")` names its items by `TEMPLATE`, with
+//! each `{CAPTURE}` replaced by that capture's text, when every capture it
+//! names matched (`"{trait_name} for {name}"`). The item's selector then also
+//! matches the `@name` text alone. Other captures only fill templates.
 
 use std::cmp::Reverse;
 use std::ops::Range;

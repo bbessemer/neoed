@@ -324,6 +324,13 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 | `table`     | Markdown tables (name = the first header cell)                     |
 | `code`      | Markdown code blocks (name = the info string, or `""` if none)     |
 
+The kinds each language supports, and the items they cover there:
+
+- **Rust**: `fn` (also trait method declarations), `struct`, `field`, `enum`,
+  `variant`, `trait`, `impl`, `type` (also associated types), `const` (also
+  `static`), `var` (`let` bindings), `mod`, `import` (`use`).
+- **Markdown**: `section`, `item`, `table`, `code`.
+
 - An inherent impl is named by its self type (`impl:Parser`), a trait impl by
   `TRAIT for TYPE` (`impl:"Display for Parser"`), each the last path segment
   without generic arguments (`impl<T> fmt::Display for Foo<T>` is
