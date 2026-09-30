@@ -1382,6 +1382,7 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, St
     }
     let t = &f.text;
     let new = &*with_trailing_comma(f, &range, new);
+    let range = without_leading(f, range, new);
     let unit = indent_unit(f);
     if text::is_whole_line(t, &range) {
         let full = text::full_lines(t, range);
@@ -1394,6 +1395,36 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, St
         let indent = text::indent_at(t, range.start);
         (range, verbatim(new, indent, &unit))
     }
+}
+
+/// `range` without the leading doc comments and attributes of the syntax item
+/// it is, when `new` doesn't start with its own (§4.2).
+fn without_leading(f: &SourceFile, range: Range<usize>, new: &Text) -> Range<usize> {
+    let t = &f.text;
+    let Some(item) = f
+        .items()
+        .and_then(|items| items.iter().find(|i| i.range == range))
+    else {
+        return range;
+    };
+    let line = t[..item.node.start].rfind('\n').map_or(0, |i| i + 1);
+    // An attribute on the item's own line goes with it.
+    if item.node.start == range.start || !t[line..item.node.start].trim().is_empty() {
+        return range;
+    }
+    if leading_len(f, &new.value) > 0 {
+        return range;
+    }
+    line..range.end
+}
+
+/// The length of the doc comments and attributes that `text` starts with, in
+/// `f`'s language.
+fn leading_len(f: &SourceFile, text: &str) -> usize {
+    let Some((lang, query)) = f.lang.and_then(|l| Some((l, l.selectors()?))) else {
+        return 0;
+    };
+    syntax::leading_len(query, &lang.parse(text), text)
 }
 
 /// `new`, with a `,` appended if the item at `range` ends with one and `new`
@@ -1439,6 +1470,10 @@ fn separated<'t>(
     let mut value = new.value.clone();
     match position {
         Position::After if !blank(new.value.split('\n').next()) => value.insert(0, '\n'),
+        // Doc comments and attributes attach to the item.
+        Position::Before if leading_len(f, &new.value) == new.value.trim_end().len() => {
+            return Cow::Borrowed(new);
+        }
         Position::Before if !blank(new.value.split('\n').next_back()) => value.push('\n'),
         _ => return Cow::Borrowed(new),
     }
@@ -2477,7 +2512,7 @@ mod tests {
             "#[tokio::test]\nasync fn a() {}\n"
         );
         assert_eq!(
-            edited(ATTRS, "replace fn:a with \"/// New.\nfn a() {}\""),
+            edited(ATTRS, "replace fn:a with \"/// New.\\nfn a() {}\""),
             "/// New.\nfn a() {}\n"
         );
         assert_eq!(

@@ -235,6 +235,32 @@ fn lines_after(text: &str, head: Range<usize>, range: &Range<usize>) -> Range<us
     start..end
 }
 
+/// The length of the doc comments and attributes that `text` starts with,
+/// separated by whitespace only, as `query` captures them in its `tree`.
+pub fn leading_len(query: &Query, tree: &Tree, text: &str) -> usize {
+    let names = query.capture_names();
+    let mut leading: Vec<Range<usize>> = Vec::new();
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
+    while let Some(m) = matches.next() {
+        for capture in m.captures() {
+            if matches!(names[capture.index as usize], "doc" | "attr") {
+                leading.push(capture.node.byte_range());
+            }
+        }
+    }
+    leading.sort_by_key(|r| r.start);
+    let mut end = 0;
+    for r in leading {
+        if r.start >= end && text[end..r.start].trim().is_empty() {
+            end = r.end;
+        } else if r.start >= end {
+            break;
+        }
+    }
+    end
+}
+
 /// The span of `part` of `item` (§3.4); `None` if the item doesn't have it.
 /// `.lines`, `.refs` and `.def` aren't item parts.
 pub fn part(item: &Item, part: Part, text: &str) -> Option<Range<usize>> {

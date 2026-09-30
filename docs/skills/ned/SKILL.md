@@ -172,10 +172,6 @@ END
   `replace /^- \[ \] Foo/ with "- [x] Foo bar"` replaces only the match and
   keeps the rest of the line, duplicating it: use `sub` for a prefix, or
   `.lines` (also on a range's end, `/a/../b/.lines`) to replace whole lines.
-- **Replacing an item replaces its attributes.** `replace fn:x with ...` covers
-  `#[test]` and `///` lines too, so repeat them in TEXT, or replace `.sig` or
-  `.body` instead. A `#[test]` dropped this way fails nothing: the test just
-  stops running.
 - **Re-basing follows the target line.** `<<END` text takes the indentation of
   the line it's inserted next to, or of the first line it replaces, so next to
   (or starting at) a wrapped list item's continuation line it gets the hanging
