@@ -692,7 +692,9 @@ mod tests {}
 
     #[test]
     fn selector_queries_use_only_known_captures() {
-        const CAPTURES: [&str; 7] = ["name", "body", "block", "params", "head", "doc", "attr"];
+        const CAPTURES: [&str; 8] = [
+            "name", "body", "block", "params", "head", "doc", "attr", "wrap",
+        ];
         for lang in Language::ALL {
             let Some(query) = lang.selectors() else {
                 continue;

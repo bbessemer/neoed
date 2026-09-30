@@ -92,7 +92,14 @@ impl Language {
             Language::Markdown => include_str!("../../../queries/markdown/selectors.scm"),
             Language::Python => include_str!("../../../queries/python/selectors.scm"),
             Language::Go => include_str!("../../../queries/go/selectors.scm"),
-            _ => return None,
+            Language::JavaScript => concat!(
+                include_str!("../../../queries/ecma/selectors.scm"),
+                include_str!("../../../queries/javascript/selectors.scm")
+            ),
+            Language::TypeScript | Language::Tsx => concat!(
+                include_str!("../../../queries/ecma/selectors.scm"),
+                include_str!("../../../queries/typescript/selectors.scm")
+            ),
         };
         Some(QUERIES[self as usize].get_or_init(|| {
             Query::new(&self.grammar(), source).expect("selector queries are valid")
