@@ -19,7 +19,10 @@ An unknown topic is a usage error that lists the topics. `help` must be the
 first argument; write a file named `help` as `./help`.
 
 - `-e SCRIPT` may be repeated; the scripts are joined with newlines, in order.
-- Without `-e`, the script is read from stdin.
+- Without `-e`, the script is read from stdin. If stdin is a terminal, that's
+  a usage error instead of a wait for input.
+- A `FILE` that doesn't exist but is a command's name (`ned outline a.rs`) is a
+  usage error suggesting the `-e` form (`ned a.rs -e 'outline'`).
 - `FILE...` sets the initial **file set** (§2.4). A script may also name files
   itself with `file`, so `FILE` arguments are optional. `-w` starts with every
   file in the workspace instead; giving both is a usage error.
@@ -609,6 +612,11 @@ Its lines follow as `N:text`, with no padding. `show SEL +N` adds up to `N`
 lines of context before and after each span. If regions are within one line of
 each other, they merge.
 
+`show all` is a search: when its last step (a regex, literal, heredoc or
+`.refs`) matches nothing where the earlier steps matched, it prints
+`no matches for SEL in N files` and the script goes on, exiting 0 if nothing
+else fails. `show` without `all`, and every edit, still fail on no match.
+
 ```
 src/parser.rs:14-17
 14:    pub fn parse(&mut self) -> Result<Ast, Error> {
@@ -767,6 +775,7 @@ Errors go to stderr, in the form `error: LOC: message`.
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Script syntax                                             | Quoting, for a bare word where text or a selector belongs; otherwise the command's usage, e.g. `usage: replace [all] SEL with TEXT`                                                                                                                                                                     |
 | Selector matches nothing                                  | The same name under another kind; a close syntax name; for `P>"a"..P>"b"`, `P>"a".."b"`; a string literal that matches as escaped source text (`"\\n"` for `"\n"`); a literal match that differs only in case or spacing; a regex that matches with `i`; the spans a nested step searched; or `outline` |
+| Command's name given as a `FILE`                          | The `-e` form of the arguments                                                                                                                                                                                                                                                                          |
 | Ambiguous selector                                        | Candidate selectors (§3.5), or longer text for matches that share a line                                                                                                                                                                                                                                |
 | Missing part, part on a non-syntax step                   | The parts the item has, or an example                                                                                                                                                                                                                                                                   |
 | Invalid query                                             | The closest node type or field name in the grammar                                                                                                                                                                                                                                                      |
@@ -803,7 +812,7 @@ error: script:2:28: unterminated heredoc <<END (started here); end it with a lin
 | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 0    | Success, including dry runs and skipped formatters                                                                                                                                                    |
 | 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unsupported kind, parse-error guard, introduced diagnostics, move into its own source, rename refused, reaching outside the file set |
-| 2    | Usage error (bad flags or arguments), script syntax error, invalid query or config, or no language server                                                                                             |
+| 2    | Usage error (bad flags or arguments, a command's name given as a `FILE`, no script on a terminal), script syntax error, invalid query or config, or no language server                                |
 | 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, write failure, or language server failure                                                                                              |
 
 On any non-zero exit, no file is modified. Reads that ran before the failure

@@ -30,7 +30,8 @@ Add `-n` to preview without writing.
 
 Search with `show all` instead of grep. It prints each match's line with its
 number, under the file's name, across a glob or the whole workspace (`-w`,
-which skips ignored files); add `+N` for context:
+which skips ignored files), or `no matches for ...` if there are none; add
+`+N` for context:
 
 ```sh
 ned 'crates/**/*.rs' -e 'show all /fn with_published/'
@@ -184,4 +185,5 @@ END
   is added, so a trailing `\n` in the string adds a blank line. Leave the
   `\n` off, or use a line number or a heredoc.
 - **Always give a script.** Without `-e` or a heredoc, `ned` reads the script
-  from stdin, and hangs in a shell that has none to give.
+  from stdin: on a terminal that's an error, but an open pipe that never
+  closes makes it wait.

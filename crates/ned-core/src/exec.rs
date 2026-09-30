@@ -528,6 +528,7 @@ impl Executor<'_> {
                     selector: what.into(),
                     files: select::file_list(&paths),
                     hint: String::new(),
+                    searched: Some(paths.len()),
                 }))
             }
             1 => Ok(matches),
@@ -812,7 +813,24 @@ impl Executor<'_> {
                 }
             }
             Some(target) => {
-                for m in self.resolve(target)? {
+                let found = match self.resolve(target) {
+                    // `show all` is a search, and finding nothing is an answer.
+                    Err(err) if target.all => match &err.kind {
+                        ExecErrorKind::NoMatch {
+                            selector,
+                            searched: Some(n),
+                            ..
+                        } => {
+                            let files = if *n == 1 { "file" } else { "files" };
+                            let line = format!("no matches for {selector} in {n} {files}\n");
+                            self.output.push_str(&line);
+                            Vec::new()
+                        }
+                        _ => return Err(err),
+                    },
+                    found => found?,
+                };
+                for m in found {
                     let buffer = &self.files[m.file].file.buffer;
                     let max = buffer.line_count().saturating_sub(1);
                     let line = |offset| buffer.byte_to_line(offset).unwrap_or(max).min(max);
@@ -1192,6 +1210,7 @@ impl Executor<'_> {
                         &set.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
                     ),
                     hint,
+                    searched: None,
                 },
                 Some(span.clone()),
             ));
@@ -1734,12 +1753,15 @@ pub struct ExecError {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExecErrorKind {
-    /// `hint` is empty, or `; did you mean SEL (LINES)?`.
+    /// `hint` is empty, or `; did you mean SEL (LINES)?`. `searched` is the
+    /// number of files searched when only a search's last step (a regex,
+    /// literal, heredoc or `.refs`) matched nothing.
     #[error("{selector} matches nothing in {files}{hint}")]
     NoMatch {
         selector: String,
         files: String,
         hint: String,
+        searched: Option<usize>,
     },
     #[error("{selector} needs a language, but {files} has none; use --lang")]
     NoLanguage { selector: String, files: String },
@@ -2000,6 +2022,27 @@ mod tests {
         assert_eq!(out.output, "a.rs:2-3\n2:    let x = 1;\n3:    let y = 2;\n");
         assert_eq!(out.result, Ok(vec![]));
         assert_eq!(exec("a\r\nb\r\n", "show $").output, "a.rs:2\n2:b\n");
+    }
+
+    #[test]
+    fn show_all_searching_in_vain_says_so_and_goes_on() {
+        let out = exec_with(&[("a.rs", TEXT), ("b.rs", TEXT)], 2, "show all /zzz/");
+        assert_eq!(out.output, "no matches for /zzz/ in 2 files\n");
+        assert_eq!(out.result, Ok(vec![]));
+        assert_eq!(
+            exec(TEXT, "show all fn:a>\"zzz\"").output,
+            "no matches for fn:a>\"zzz\" in 1 file\n"
+        );
+        let out = exec(TEXT, "show all /zzz/; replace 2 with \"x\"");
+        assert_eq!(out.output, "no matches for /zzz/ in 1 file\n");
+        assert_eq!(out.result.map(|changes| changes.len()), Ok(1));
+    }
+
+    #[test]
+    fn show_all_still_fails_without_a_search() {
+        for script in ["show /zzz/", "show all fn:nope", "show all fn:nope>/x/"] {
+            assert!(exec(TEXT, script).result.is_err(), "{script}");
+        }
     }
 
     #[test]

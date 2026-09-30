@@ -133,6 +133,7 @@ pub fn resolve_within(
                     Some(hint(step, files, &parents, selector))
                 })
                 .unwrap_or_default(),
+            searched: searched(&target.selector, &parents),
         })),
         1 => Ok(matches),
         _ if target.all => Ok(matches),
@@ -141,6 +142,19 @@ pub fn resolve_within(
             candidates: candidates(&found, &parents, files, &target.selector, src),
         })),
     }
+}
+
+/// For a search whose last step (a regex, literal or heredoc) matched nothing
+/// within the `parents` the earlier steps found, the number of files searched.
+fn searched(selector: &Selector, parents: &[Match]) -> Option<usize> {
+    let last = selector.steps.last()?;
+    let search = matches!(last.primary, Primary::Regex(_) | Primary::Literal(_));
+    if !search || parents.is_empty() {
+        return None;
+    }
+    let mut files: Vec<usize> = parents.iter().map(|m| m.file).collect();
+    files.dedup();
+    Some(files.len())
 }
 
 /// A match of a step, with what candidates need to scope it.
