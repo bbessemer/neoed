@@ -13,8 +13,9 @@ ned daemon start|status|stop [DIR]
 ```
 
 `ned help` prints a summary of the language, sized to fit in an agent's
-context. `ned help TOPIC` details one verb (`show`, `outline`, `replace`,
-`insert`, `delete`, `sub`, `move`, `file`), or `selectors`, `text` or `config`.
+context. `ned help TOPIC` details one verb (`show`, `outline`, `check`,
+`allow`, `replace`, `insert`, `delete`, `sub`, `move`, `rename`, `file`,
+`create`), or `selectors`, `text` or `config`.
 An unknown topic is a usage error that lists the topics. `help` must be the
 first argument; write a file named `help` as `./help`.
 
@@ -39,10 +40,24 @@ first argument; write a file named `help` as `./help`.
 | `--no-fmt`                | Don't run formatters (§6.4).                                                                                  |
 | `--lang LANG`             | Use this language for every file: `rust`, `python`, `typescript`, `tsx`, `javascript`, `go`, `markdown`.      |
 | `--context N`             | Context lines around diff hunks (default 1).                                                                  |
+| `-V`, `--version`         | Print the version: the package version and the build's git commit.                                            |
 
 Otherwise, a file's language is detected from its extension, then from its
-shebang. Line, regex and literal selectors work on any file; syntax selectors
-need a language.
+shebang (`python…` or `node`, directly or through `env`). Extensions are
+case-sensitive:
+
+| Language     | Extensions                    |
+| ------------ | ----------------------------- |
+| `rust`       | `.rs`                         |
+| `python`     | `.py`, `.pyi`                 |
+| `typescript` | `.ts`, `.mts`, `.cts`         |
+| `tsx`        | `.tsx`                        |
+| `javascript` | `.js`, `.mjs`, `.cjs`, `.jsx` |
+| `go`         | `.go`                         |
+| `markdown`   | `.md`, `.markdown`            |
+
+Line, regex and literal selectors work on any file; syntax selectors need a
+language.
 
 ### 1.1 Daemon
 
@@ -50,9 +65,10 @@ Language-server features run through a daemon, one per workspace, that keeps
 the servers warm between invocations. A workspace is the nearest directory,
 from the working directory up, that holds `.git`, `.hg` or `.jj`; without one,
 it's the working directory. `-w DIR` makes `DIR` the workspace instead, for the
-file set and the daemon alike. Features that need the daemon spawn it on demand,
-and it exits after 10 minutes without a request (see `idle_timeout` below).
-Everything else works without it.
+file set and the daemon alike. `check`, `rename`, `.refs` and `.def` spawn the
+daemon on demand; checking edits (§6.5) and formatting through a server (§6.4)
+use it only if it's already running. It exits after 10 minutes without a
+request (see `idle_timeout` below). Everything else works without it.
 
 `ned daemon start`, `status` and `stop` manage the daemon for the workspace
 containing `DIR` (default: the working directory). `start` spawns it if it isn't
@@ -77,11 +93,12 @@ next needed. Servers are shut down with the daemon.
 Servers are configured per language under `[lsp]`, like formatters (§6.4): the
 same files, merging and program lookup, read from the workspace root up. A value
 is a command as an argv array, or `false` for none; `timeout` sets how long any
-request (`check`, `rename`, `.refs`, `.def`) waits for a server, in seconds
-(default 30). `[daemon]` sets `idle_timeout`, in seconds. `[check]` sets
-`show`, the lowest severity `check` prints by default (`error`, `warning`,
-`info` or `hint`; default `warning`). `block` is the lowest severity of an introduced diagnostic that
-rejects an edit (§6.5; default `error`), or `false` for none.
+request (`check`, edit checks, `rename`, `.refs`, `.def`, formatting) waits for
+a server, in seconds (default 30). `[daemon]` sets `idle_timeout`, in seconds.
+`[check]` sets `show`, the lowest severity `check` prints by default (`error`,
+`warning`, `info` or `hint`; default `warning`), and `block`, the lowest
+severity of an introduced diagnostic that rejects an edit (§6.5; default
+`error`), or `false` for none.
 
 ```toml
 [lsp]
@@ -108,10 +125,11 @@ A server that isn't installed is an error when a feature needs it, naming the
 `[lsp]` setting to change.
 
 The daemon listens on a Unix socket in `$XDG_RUNTIME_DIR/ned/`, or
-`$TMPDIR/ned-UID/` without it; `ned` refuses a directory that isn't owned by the
-user or that others can access. Its log is next to the socket. A daemon serves
-only the `ned` version that started it. The daemon is Unix-only for now; on
-other platforms, features that need it are errors.
+`$TMPDIR/ned-UID/` without it (`/tmp/ned-UID/` if `TMPDIR` is unset too); `ned`
+refuses a directory that isn't owned by the user or that others can access. Its
+log is next to the socket. A daemon serves only the `ned` version that started
+it. The daemon is Unix-only for now; on other platforms, features that need it
+are errors.
 
 ## 2. Scripts
 
@@ -140,7 +158,9 @@ other platforms, features that need it are errors.
     indentation-insensitively when used as selectors (§3.2).
   - `<<'TAG'` bodies are **verbatim**: no re-basing, and exact matching.
 - **Keywords**: the verbs, `all`, `with`, `to`, `before`, `after`, `start`,
-  `end`, and `file`. Any other bare word is an error.
+  `end`, and `file`; after `check`, its levels (`error`, `warning`, `info`,
+  `hint`), and after `allow`, `errors` and `warnings`. Any other bare word is
+  an error.
 
 [`regex`]: https://docs.rs/regex/latest/regex/#syntax
 
@@ -301,7 +321,9 @@ Regexes see the file's raw text.
 `*` matches any run of characters (`fn:test_*`, `fn:*`). A name that has other
 characters, such as `.` or `-`, must be quoted: `import:"os.path"`.
 
-Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
+Core kinds. Each language maps a subset of these through
+`queries/<lang>/selectors.scm` (JavaScript and TypeScript both start with
+`queries/ecma/selectors.scm`):
 
 | Kind        | Items                                                              |
 | ----------- | ------------------------------------------------------------------ |
@@ -322,7 +344,7 @@ Core kinds. Each language maps a subset of these through `queries/<lang>/*.scm`:
 | `section`   | Markdown sections: a `#` heading and its content (name = its text) |
 | `item`      | Markdown list items (name = the first line of the item's text)     |
 | `table`     | Markdown tables (name = the first header cell)                     |
-| `code`      | Markdown code blocks (name = the info string, or `""` if none)     |
+| `code`      | Markdown code blocks (name = the language tag, or `""` if none)    |
 
 The kinds each language supports, and the items they cover there:
 
@@ -346,13 +368,14 @@ The kinds each language supports, and the items they cover there:
 - **JavaScript** and **TypeScript** (TSX too): `fn` (function declarations,
   generators, class methods, and a variable declared as an arrow function or
   function expression, which is also `const` or `var`; `outline` lists it as
-  `fn`), `class`, `field` (class fields), `const` (`const` declarations),
-  `var` (`let` and `var`), `import` (named by the source without quotes:
-  `import:react`, `import:"./util"`). TypeScript adds `interface` (with `fn`
-  and `field` members), `type`, `enum` with its `variant`s, `mod` (namespaces
-  and `declare module`), and `fn` signatures without a body (overloads,
-  `declare function`, abstract methods). An exported item's span and `.sig`
-  include `export`; a `/** ... */` comment directly above an item is its doc.
+  `fn`), `class` (abstract too), `field` (class fields), `const` (`const`
+  declarations), `var` (`let` and `var`), `import` (named by the source without
+  quotes: `import:react`, `import:"./util"`). TypeScript adds `interface` (with
+  `fn` and `field` members), `type`, `enum` with its `variant`s, `mod`
+  (namespaces and `declare module`), and `fn` signatures without a body
+  (overloads, `declare function`, abstract methods). An exported item's span and
+  `.sig` include `export`; a `/** ... */` comment directly above an item is its
+  doc.
 
 - An inherent impl is named by its self type (`impl:Parser`), a trait impl by
   `TRAIT for TYPE` (`impl:"Display for Parser"`), each the last path segment
@@ -642,7 +665,7 @@ becomes its sibling. `<<'TAG'` text is placed the same way but not re-based.
 
 The file's **indent unit** is the smallest non-zero increase in indentation
 between consecutive non-blank lines. If the file has none, it's the language
-default: four spaces, or a tab for Go.
+default: four spaces, two for Markdown, or a tab for Go.
 
 Formatters (§6.4) run after re-basing, so small indentation differences in brace
 languages don't matter. Python relies on re-basing alone.
@@ -768,8 +791,9 @@ python = false
   directory and each one above it, then on `PATH`. A program path containing `/`
   is relative to the config file that sets it.
 - An unknown key or a value of the wrong type is an error at its location:
-  `error: .ned.toml:2:1: invalid config: ...`. Configs are read only when
-  formatting runs, so `--no-fmt` skips them.
+  `error: .ned.toml:2:1: invalid config: ...`. Formatting reads `[format]`
+  only when it runs, so `--no-fmt` skips it; `check`, `rename` and edit checks
+  read `[check]` and `[lsp]` through the daemon.
 
 | Language                    | Default formatter                                                                                         |
 | --------------------------- | --------------------------------------------------------------------------------------------------------- |
@@ -804,7 +828,7 @@ Positions don't count, since edits move them.
 
 - A server that fails or doesn't report in time (`[lsp] timeout`) skips
   checking with a note, and the edit applies:
-  `note: rust-analyzer didn't answer diagnostics within 30s; skipped checking src/parser.rs`.
+  `note: rust-analyzer didn't answer diagnostics within 30s; it may still be indexing, so rerun in a few seconds; skipped checking src/parser.rs`.
 - If the edit isn't written, the servers are sent the original text again.
 - Checks a server runs on save (rust-analyzer's `cargo check`) don't run,
   since the edit isn't written yet; run `check` after the edit for those.
@@ -828,6 +852,8 @@ Errors go to stderr, in the form `error: LOC: message`.
 | Ambiguous selector                                        | Candidate selectors (§3.5), or longer text for matches that share a line                                                                                                                                                                                                                                |
 | Missing part, part on a non-syntax step                   | The parts the item has, or an example                                                                                                                                                                                                                                                                   |
 | Invalid query                                             | The closest node type or field name in the grammar                                                                                                                                                                                                                                                      |
+| Syntax step or `outline` in a file without a language     | `--lang`                                                                                                                                                                                                                                                                                                |
+| Kind the language doesn't have                            | The kinds it has                                                                                                                                                                                                                                                                                        |
 | Line past the end                                         | `$` for the last line                                                                                                                                                                                                                                                                                   |
 | No language server for the files                          | The `[lsp]` setting for their language                                                                                                                                                                                                                                                                  |
 | Language server failure                                   | Installing the server or fixing its `[lsp]` setting, or rerunning once it has indexed                                                                                                                                                                                                                   |
@@ -837,6 +863,8 @@ Errors go to stderr, in the form `error: LOC: message`.
 | File not in the set                                       | The `file` command that adds it                                                                                                                                                                                                                                                                         |
 | Overlapping edits                                         | Merging them, or a `\|` between them                                                                                                                                                                                                                                                                    |
 | Missing file or empty glob                                | The working directory paths are relative to                                                                                                                                                                                                                                                             |
+| No files to edit                                          | `FILE` arguments or `file PATH`                                                                                                                                                                                                                                                                         |
+| `create` of a file that exists                            | `file PATH` to edit it                                                                                                                                                                                                                                                                                  |
 
 ```
 error: script:1:8: fn:new matches 2 items; add `all` or use one of:
@@ -856,12 +884,12 @@ error: script:2:28: unterminated heredoc <<END (started here); end it with a lin
                              ^
 ```
 
-| Code | Meaning                                                                                                                                                                                               |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | Success, including dry runs and skipped formatters                                                                                                                                                    |
-| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unsupported kind, parse-error guard, introduced diagnostics, move into its own source, rename refused, reaching outside the file set |
-| 2    | Usage error (bad flags or arguments, a command's name given as a `FILE`, no script on a terminal), script syntax error, invalid query or config, or no language server                                |
-| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, write failure, or language server failure                                                                                              |
+| Code | Meaning                                                                                                                                                                                                                                                                                                               |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Success, including dry runs and skipped formatters                                                                                                                                                                                                                                                                    |
+| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unknown kind, no language, line past the end, file not in the set, `create` of an existing file, parse-error guard, introduced diagnostics, move into its own source, rename refused, reaching outside the file set, ambiguous `.refs`/`.def` result |
+| 2    | Usage error (bad flags or arguments, a command's name given as a `FILE`, no script on a terminal, no files to edit), script syntax error, invalid query or config, or no language server                                                                                                                              |
+| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, write failure, or language server failure                                                                                                                                                                                                              |
 
 On any non-zero exit, no file is modified. Reads that ran before the failure
 still print their output.

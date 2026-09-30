@@ -1,6 +1,6 @@
 ---
 name: ned
-description: Read, search, create and edit source files with ned, a syntax-aware line editor. Outline a file, show an item (fn:parse, impl:Parser>fn:new), a line range or every match of a regex or literal across a glob or the whole workspace (-w); create files; replace, insert, delete or move code in one all-or-nothing call that prints a diff. Use it instead of grep, sed, cat, inline Python or str_replace.
+description: Read, search, create and edit source files with ned, a syntax-aware line editor. Outline a file, show an item (fn:parse, impl:Parser>fn:new), a line range or every match of a regex or literal across a glob or the whole workspace (-w); create files; replace, insert, delete or move code in one all-or-nothing call that prints a diff; find a symbol's references or definition, rename it across the workspace, and check language-server diagnostics without a build. Use it instead of grep, sed, cat, inline Python or str_replace.
 ---
 
 # Reading, searching and editing files with ned
@@ -15,9 +15,9 @@ with the item, and `.doc` is the docstring), Go (`fn:"Server.Run"` for a
 method), JavaScript and TypeScript (`class:App>fn:render`,
 `interface:Shape`; an item includes its `export`) and Markdown
 (`section:"Install"`, `item:`, `table:`, `code:`); `insert end section:X`
-appends to a section. In other files, use lines, regexes, literals or
-`query{}`. Run `ned help` for the whole language in one screen, and
-`ned help TOPIC` for one verb.
+appends to a section. In other files, use lines, regexes and literals, or give
+the file a language with `--lang LANG`. Run `ned help` for the whole language
+in one screen, and `ned help TOPIC` for one verb.
 
 ## Invocation
 
@@ -129,11 +129,21 @@ show all fn:parse.refs
 show fn:main>"helper(".def
 ```
 
-Without a language server, rename with a word-bounded regex:
+Without a language server, rename with a word-bounded regex. `sub` takes an
+optional selector to limit it:
 
 ```ned
 file src/**/*.rs
 sub /\bold_name\b/ with "new_name"
+sub fn:parse /\bpos\b/ with "offset"
+```
+
+Select a run of items or lines with `A..B`, from the start of the first to the
+end of the second:
+
+```ned
+delete fn:helper_a..fn:helper_c
+show /^## Usage/../^## License/
 ```
 
 Add a statement at the start of a Python method, after its docstring; ned
@@ -146,8 +156,9 @@ insert start class:App>fn:handle "metrics.count(req)"
 ## Rules that trip agents up
 
 - **One match.** A selector must match exactly one span. If it matches more,
-  the error lists selectors that each pick one; paste one back. Use
-  `all SEL` to act on every match.
+  the error lists selectors that each pick one; paste one back. They narrow by
+  enclosing item (`impl:Lexer>fn:new`), line range (`40-80>fn:new`) or file
+  (`file:src/a.rs>fn:new`). Use `all SEL` to act on every match.
 - **The original text, per stage.** Every selector sees the file as it was
   before the script, or at the last `|`. Line numbers from an earlier `show`
   stay valid until the next `|`. To select what an earlier command inserted,
@@ -166,17 +177,29 @@ insert start class:App>fn:handle "metrics.count(req)"
   flag. Apply it and rerun; nothing was written.
 - **Syntax guard.** An edit that introduces a parse error is rejected. Fix the
   text; use `--force` only if the error is intended.
-- **Introduced errors block edits** while a daemon runs (`ned daemon start`):
-  the error lists what the edit broke. Fix the text, or add `allow errors` to
-  the script when the code is knowingly unfinished.
+- **Introduced errors block edits** while a daemon runs (`ned daemon start`;
+  `status` and `stop` too; Unix only): the error lists what the edit broke.
+  Fix the text, or add `allow errors` to the script when the code is knowingly
+  unfinished. `--no-check` skips checking; `--force` applies anyway.
 - **Formatting.** A configured formatter (rustfmt, gofmt, ruff or black,
-  prettier) runs after the edit, and its changes are shown under
-  `fmt NAME`. `--no-fmt` skips it.
+  prettier) runs after the edit, and its changes are shown under `fmt NAME`;
+  if none is installed and a daemon runs, the language server formats instead
+  (`fmt rust-analyzer`). `--no-fmt` skips it.
+- **Replacing an item keeps its doc comments and attributes** (`///`,
+  `#[test]`, decorators) unless TEXT starts with its own; select `ITEM.lines`
+  to replace them too. A field or variant keeps its trailing `,`: TEXT without
+  one gets it back.
 - **Heredoc tags nest like the shell's.** A script heredoc ends at the first
   line holding only its tag, so when the text contains an `END` line (a ned
-  script inside a script, say), use another tag: `<<'MD'`.
+  script inside a script, say), use another tag: `<<'MD'`. The same goes for
+  the shell's `<<'EOF'`: if the text has an `EOF` line, pick another shell tag.
 - **Line numbers are absolute**, even in a nested step: `fn:parse>15-16`
-  names lines 15 and 16 of the file, which must lie inside `fn:parse`.
+  names lines 15 and 16 of the file, which must lie inside `fn:parse`. But `$`
+  in a nested step is the parent's last line: `fn:parse>$`. Line numbers from
+  an earlier call are stale once its edits are written: take them from a new
+  `show`, not from the diff, or use an item or regex selector.
+- **Keep output small** on big edits with `-q` (summaries only) or
+  `--context 0`.
 - **Use `delete` to remove lines.** `replace 12 with ""` leaves an empty line,
   because line-oriented text always ends with a newline.
 - **Partial matches get verbatim text.** `insert after /re/ "x"` inserts right

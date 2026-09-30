@@ -171,8 +171,9 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       `= function () {}`) is both `fn:f` and `const:f` (outline lists it once,
       as `fn`), `const` declarations are `const`, and `let`/`var` are `var`
 - [ ] CI (build, test, clippy, fmt) on Linux and macOS
-- [ ] Release binaries and install instructions
-- [ ] Choose a license
+- [x] Install instructions (`cargo install --git`, README)
+- [ ] Release binaries
+- [x] License: MIT (`LICENSE`)
 
 ## Bugs
 
@@ -212,6 +213,15 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] The did-you-mean-another-kind hint only fires for a selector's last
       step: `show fn:tests>fn:exec` says "`outline` lists the items" where
       `show fn:tests` suggests `mod:tests`
+- [ ] `show`, `outline` or `check` without a selector can't come before a
+      `|`: `outline | show 1` is a parse error ("expected a selector, found
+      '|'"), because `optional_target` (`script/parser.rs`) doesn't treat
+      `|` as the end of the command
+- [ ] `cargo install --git` builds report a dirty version
+      (`0.1.0+6bf01e7.dirty.1790803292`): `build.rs` sees cargo's checkout
+      marker (`.cargo-ok`) as an uncommitted change, so every install gets a
+      new build time and a daemon from an earlier install of the same commit
+      isn't reused
 
 ## Future improvements
 

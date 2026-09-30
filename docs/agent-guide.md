@@ -7,25 +7,27 @@ the skill, [`skills/ned/SKILL.md`](skills/ned/SKILL.md).
 
 ## Setup
 
-Install the binary:
+Install the binary (Rust 1.90 or later):
 
 ```sh
-cargo install --path crates/ned-cli
+cargo install --locked --git https://github.com/bbessemer/neoed ned-cli
 ```
+
+From a clone, use `cargo install --path crates/ned-cli` instead.
 
 **Claude Code.** Copy the skill directory into a skills directory:
 
 - all projects: `cp -r docs/skills/ned ~/.claude/skills/`
 - one project: `cp -r docs/skills/ned .claude/skills/`
 
-Claude loads it when an edit to existing files comes up.
+Claude loads it when reading, searching or editing files comes up.
 
 **Other agents.** Add the snippet below to the system prompt. It's shorter than
 the skill, and it points the agent at `ned help` for the rest.
 
 ```text
-To edit existing files, use `ned` rather than sed, inline Python or whole-file
-rewrites. Pass the script on stdin with a quoted heredoc:
+To read, search or edit files, use `ned` rather than cat, grep, sed, inline
+Python or whole-file rewrites. Pass the script on stdin with a quoted heredoc:
 
   ned FILE... <<'EOF'
   replace fn:parse>"old text" with "new text"
@@ -34,10 +36,14 @@ rewrites. Pass the script on stdin with a quoted heredoc:
 Selectors: line ranges (12-20), /regex/, "literal", and in Rust, Python, Go,
 JS/TS and Markdown, syntax items (fn:parse, impl:Parser>fn:new,
 fn:parse.body). A selector must match exactly one span unless prefixed with
-`all`. Run `outline` to list items and `show SEL` to read part of a file.
-Write inserted code at column 0; ned re-indents it. ned prints a diff, so
-don't re-read the file to check the edit. Errors end with a fix; apply it and
-rerun. `ned help` and `ned help TOPIC` document the rest.
+`all`. Run `outline` to list items and `show SEL` to read part of a file;
+search with `ned -w -e 'show all /re/'`; make files with `create PATH <<END`.
+Write inserted code at column 0 in a `<<END` heredoc; ned re-indents it
+(`<<'END'` inside the script keeps text verbatim). ned prints a diff, so don't
+re-read the file to check the edit. Errors end with a fix; apply it and rerun.
+With a language server: `check` for diagnostics, `rename SEL to NAME`,
+`SEL.refs` and `SEL.def`; after `ned daemon start`, edits that introduce
+errors are rejected. `ned help` and `ned help TOPIC` document the rest.
 
 ```
 

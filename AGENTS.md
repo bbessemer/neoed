@@ -125,8 +125,9 @@ to the current feature branch (prefix `todo:`), not a new branch.
 Neoed (`ned`) is a line editor for AI coding agents, replacing `sed`/ad-hoc
 Python. LLMs, like teletypes, work over an append-only text stream where every
 token costs, so `ned` offers a concise, word-based command language, syntax-aware
-addressing (tree-sitter, later LSP), and automatic formatting. MVP is a one-shot
-CLI; a human REPL and an MCP server come later.
+addressing (tree-sitter, plus LSP through a per-workspace daemon), and
+automatic formatting. MVP is a one-shot CLI; a human REPL and an MCP server
+come later.
 
 ## Status
 
@@ -148,7 +149,9 @@ unless `allow errors`), `rename`, and the `.refs`/`.def` parts (within the file
 set or `-w` workspace); the version names the build commit, and a daemon serves
 only its own build. With a daemon running, language servers format files whose
 formatters aren't installed, and `check` also waits for save-time checks
-(`cargo check`). §9 is done.
+(`cargo check`). §9 is done. Syntax selectors cover Rust, Python, Go,
+JavaScript, TypeScript/TSX and Markdown. MIT-licensed; README has install and
+usage; CI and release binaries are still open (§12).
 
 ## Key Documentation
 
@@ -161,27 +164,27 @@ formatters aren't installed, and `check` also waits for save-time checks
 
 ## Tech Stack / Dependencies
 
-| Technology                        | Role                                         |
-| --------------------------------- | -------------------------------------------- |
-| Rust (edition 2024)               | Language; single fast-starting binary        |
-| `tree-sitter` + grammar crates    | Parsing: Rust, Python, TS/JS, Go (linked in) |
-| `ropey`                           | Rope text buffer                             |
-| `regex`                           | Regex selectors and `sub`                    |
-| `glob`, `ignore`                  | File-set globs; `-w` workspace walk          |
-| `similar`                         | Diff output                                  |
-| `serde` + `toml`                  | Config (`.ned.toml`)                         |
-| `thiserror` / `anyhow`            | Errors in core / CLI                         |
-| `clap` (derive)                   | CLI arguments                                |
-| `tokio`, `serde_json`, `libc`     | Daemon: event loop, protocol, `getuid`       |
-| `lsp-types`, `url`                | LSP messages and file URIs                   |
-| `insta`, `assert_cmd`, `tempfile` | Snapshot, CLI, and fs tests                  |
+| Technology                        | Role                                       |
+| --------------------------------- | ------------------------------------------ |
+| Rust (edition 2024)               | Language; single fast-starting binary      |
+| `tree-sitter` + grammar crates    | Parsing: Rust, Python, TS/JS, Go, Markdown |
+| `ropey`                           | Rope text buffer                           |
+| `regex`                           | Regex selectors and `sub`                  |
+| `glob`, `ignore`                  | File-set globs; `-w` workspace walk        |
+| `similar`                         | Diff output                                |
+| `serde` + `toml`                  | Config (`.ned.toml`)                       |
+| `thiserror` / `anyhow`            | Errors in core / CLI                       |
+| `clap` (derive)                   | CLI arguments                              |
+| `tokio`, `serde_json`, `libc`     | Daemon: event loop, protocol, `getuid`     |
+| `lsp-types`, `url`                | LSP messages and file URIs                 |
+| `insta`, `assert_cmd`, `tempfile` | Snapshot, CLI, and fs tests                |
 
 ## Repository Structure
 
 ```
 Cargo.toml         workspace; shared version, edition, lints
 crates/ned-core/   library: buffer, script parser, selectors, languages, exec, formatting
-crates/ned-cli/    `ned` binary: args, I/O, output rendering only
+crates/ned-cli/    `ned` binary: args, I/O, output rendering, help texts, daemon client glue
 crates/ned-daemon/ per-workspace daemon (Unix socket), its sync client, language servers
 queries/<lang>/    tree-sitter selector queries (.scm), one dir per language
 docs/              specs, agent guide, Claude Code skill
@@ -195,7 +198,7 @@ Planned crates: `ned-repl`, `ned-mcp`. All logic lives in
 
 - **One-shot, stateless CLI.** `ned FILE... -e SCRIPT` (or script on stdin).
   Startup latency matters, so grammars are statically linked. LSP features go
-  through a lazily-spawned per-workspace daemon (later) that keeps servers warm;
+  through a lazily-spawned per-workspace daemon that keeps servers warm;
   the CLI must work fully without it.
 - **Tokens, not characters.** Verbs are short words (`show`, `replace`,
   `insert after`, `delete`, `sub`, `outline`), not sigils. Output is terse:
@@ -242,5 +245,6 @@ Planned crates: `ned-repl`, `ned-mcp`. All logic lives in
 
 ## Deployment Notes
 
-Local install: `cargo install --path crates/ned-cli`. Release packaging TBD
-(TODO.md §12).
+Install: `cargo install --locked --git https://github.com/bbessemer/neoed
+ned-cli`; from a checkout, `cargo install --path crates/ned-cli`. Release
+binaries TBD (TODO.md §12).
