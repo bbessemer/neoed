@@ -3,7 +3,7 @@
 use std::ops::Range;
 
 use crate::select::{SourceFile, line_numbers};
-use crate::syntax::{self, Item, rank};
+use crate::syntax::{self, Item, Kind, rank};
 
 /// The outline entries of the items in `f`, one per line, or of the items
 /// strictly inside `within`. Empty if `f` has no items.
@@ -18,7 +18,8 @@ pub fn render(f: &SourceFile, within: Option<&Range<usize>>) -> String {
     });
     let mut out = String::new();
     let mut stack: Vec<&Item> = Vec::new();
-    // Consecutive imports at one depth: (depth, span, count).
+    // Consecutive grouped items at one depth: (depth, span, count).
+
     let mut imports: Option<(usize, Range<usize>, usize)> = None;
     let flush = |out: &mut String, imports: &mut Option<(usize, Range<usize>, usize)>| {
         if let Some((depth, range, count)) = imports.take() {
@@ -33,16 +34,16 @@ pub fn render(f: &SourceFile, within: Option<&Range<usize>>) -> String {
         {
             stack.pop();
         }
-        if stack.iter().any(|p| p.kind == "fn") {
+        if stack.iter().any(|p| is(p, |k| k.opaque)) {
             continue;
         }
         let depth = stack.len();
-        let member = matches!(item.kind, "field" | "variant" | "item" | "table" | "code");
+        let member = is(item, |k| k.member);
         if member && !(within.is_some() && depth == 0) {
             continue;
         }
         stack.push(item);
-        if item.kind == "import" {
+        if is(item, |k| k.grouped) {
             match &mut imports {
                 Some((d, range, count)) if *d == depth => {
                     range.end = item.range.end;
@@ -62,6 +63,11 @@ pub fn render(f: &SourceFile, within: Option<&Range<usize>>) -> String {
     }
     flush(&mut out, &mut imports);
     out
+}
+
+/// Whether `item`'s kind has the property `has`.
+fn is(item: &Item, has: fn(&Kind) -> bool) -> bool {
+    syntax::find_kind(item.kind).is_some_and(has)
 }
 
 #[cfg(test)]
