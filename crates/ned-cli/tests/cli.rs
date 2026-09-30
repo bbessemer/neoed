@@ -747,14 +747,14 @@ fn outline_of_a_selector_lists_the_items_inside() {
 }
 
 #[test]
-fn outline_in_a_deferred_language_exits_2() {
-    let dir = dir_with(&[("app.py", APP)]);
-    let out = ned(dir.path(), &["app.py", "-e", "outline"], "");
+fn outline_without_a_language_exits_1() {
+    let dir = dir_with(&[("a.json", "{}\n")]);
+    let out = ned(dir.path(), &["a.json", "-e", "outline"], "");
     assert_snapshot!(out, @r"
-    exit: 2
+    exit: 1
     --- stdout
     --- stderr
-    error: script:1:1: `outline` in python files is not yet supported; use `show`
+    error: script:1:1: outline needs a language, but a.json has none; use --lang
     ");
 }
 
@@ -1097,6 +1097,27 @@ fn markdown_outline_and_edits() {
     assert_eq!(
         read(&dir, "notes.md"),
         "# Notes\n\n## Todo\n\n- [ ] one\n      more\n- [ ] one and a half\n- [ ] two\n\n## Done\n\n- [x] zero\n"
+    );
+}
+
+#[test]
+fn python_outline_and_edits() {
+    let dir = dir_with(&[("app.py", APP)]);
+    let out = ned(dir.path(), &["app.py", "-e", "outline"], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    app.py
+    1-5 fn:handle
+    --- stderr
+    ");
+    let script =
+        "replace fn:handle.params with \"req, log\"\ninsert start fn:handle \"trace(req)\"\n";
+    let out = ned(dir.path(), &["-q", "app.py"], script);
+    assert!(out.starts_with("exit: 0\n"), "{out}");
+    assert_eq!(
+        read(&dir, "app.py"),
+        "def handle(req, log):\n    trace(req)\n    if req.ok:\n        log(req)\n        return 200\n    return 500\n"
     );
 }
 

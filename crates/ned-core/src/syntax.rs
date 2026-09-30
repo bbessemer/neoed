@@ -120,13 +120,16 @@ pub struct Item {
     pub node: Range<usize>,
     pub name_range: Range<usize>,
     /// The `@body` and `@params` nodes, delimiters included, unless
-    /// `body_lines`.
+    /// `undelimited`.
     pub body: Option<Range<usize>>,
     pub params: Option<Range<usize>>,
-    /// Whether `body` is the whole lines after a `@head` (a Markdown
-    /// section's heading) rather than a delimited node.
-    pub body_lines: bool,
-    /// The leading doc comments.
+    /// Whether `body` is the part itself, not a delimited node: the lines
+    /// after a `@head` (a Markdown section's heading) or of a `@block` (a
+    /// Python block).
+    pub undelimited: bool,
+    /// Where `.sig` ends, if not at the body: before a `@block`'s `:`.
+    pub sig_end: Option<usize>,
+    /// The leading doc comments, or the docstring.
     pub doc: Option<Range<usize>>,
 }
 
@@ -139,14 +142,17 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
     while let Some(m) = matches.next() {
-        let (mut item, mut name, mut body, mut params, mut head) = (None, None, None, None, None);
+        let (mut item, mut name, mut body, mut params, mut head, mut block) =
+            (None, None, None, None, None, None);
+        let mut docs = Vec::new();
         for capture in m.captures() {
             match names[capture.index as usize] {
                 "name" => name = Some(capture.node),
                 "body" => body = Some(capture.node.byte_range()),
                 "params" => params = Some(capture.node.byte_range()),
                 "head" => head = Some(capture.node.byte_range()),
-                "doc" => leading.push((capture.node.byte_range(), true)),
+                "block" => block = Some(capture.node),
+                "doc" => docs.push(capture.node.byte_range()),
                 "attr" => leading.push((capture.node.byte_range(), false)),
                 other => {
                     if let Some(kind) = find_kind(other) {
@@ -166,8 +172,18 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
             .iter()
             .find(|s| &*s.key == "name")
             .and_then(|s| fill(s.value.as_deref()?, captured));
+        // A doc in an item's pattern is inside it (a docstring).
+        let inner_doc = match item {
+            Some(_) => docs.into_iter().next(),
+            None => {
+                leading.extend(docs.into_iter().map(|d| (d, true)));
+                None
+            }
+        };
         if let Some((kind, node)) = item {
             found.push(Found {
+                block,
+                inner_doc,
                 kind,
                 node,
                 name,
@@ -198,6 +214,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
             Reverse(f.node.end_byte()),
             f.name.is_none(),
             f.name.map(|n| n.start_byte()),
+            f.inner_doc.is_none(),
         )
     });
     found.dedup_by(|b, a| a.kind == b.kind && a.node == b.node);
@@ -216,6 +233,8 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                  templated,
 
                  head,
+                 block,
+                 inner_doc,
              }| {
                 let mut range = node.byte_range();
                 // Some nodes (Markdown blocks) take the blank lines after them.
@@ -246,13 +265,26 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                         doc = Some(l.start..doc.map_or(l.end, |d| d.end));
                     }
                 }
-                let body = match &head {
-                    Some(head) => Some(lines_after(text, head.clone(), &range)),
-                    None => body,
+                let (body, sig_end) = match (&head, block) {
+                    (Some(head), _) => (Some(lines_after(text, head.clone(), &range)), None),
+                    (None, Some(block)) => {
+                        let colon = colon_before(node, block);
+                        let body = if !text[colon..block.start_byte()].contains('\n') {
+                            block.byte_range()
+                        } else if let Some(doc) = &inner_doc {
+                            lines_after(text, doc.clone(), &range)
+                        } else {
+                            full_lines(text, block.byte_range())
+                        };
+                        (Some(body), Some(colon))
+                    }
+                    (None, None) => (body, None),
                 };
                 Item {
                     kind,
-                    base_name: templated.is_some().then(|| name_text(name)),
+                    base_name: name
+                        .filter(|_| templated.is_some())
+                        .map(|n| first_line(text, n)),
                     name: templated.unwrap_or_else(|| name_text(name)),
                     range,
                     trailing_comma: comma.is_some(),
@@ -261,8 +293,9 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                         .map_or(node.start_byte()..node.start_byte(), |n| n.byte_range()),
                     body,
                     params,
-                    body_lines: head.is_some(),
-                    doc,
+                    undelimited: head.is_some() || block.is_some(),
+                    sig_end,
+                    doc: inner_doc.or(doc),
                 }
             },
         )
@@ -281,6 +314,18 @@ struct Found<'t> {
     /// The name from the pattern's template.
     templated: Option<String>,
     head: Option<Range<usize>>,
+    block: Option<Node<'t>>,
+    /// A `@doc` inside the item (a docstring).
+    inner_doc: Option<Range<usize>>,
+}
+
+/// Where the `:` that opens `block`, a child of `node`, starts.
+fn colon_before(node: Node, block: Node) -> usize {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .filter(|c| c.kind() == ":" && c.end_byte() <= block.start_byte())
+        .last()
+        .map_or(block.start_byte(), |c| c.start_byte())
 }
 
 /// The first line of `node`'s text, trimmed.
@@ -360,13 +405,17 @@ pub fn part(item: &Item, part: Part, text: &str) -> Option<Range<usize>> {
         Part::Body => item
             .body
             .clone()
-            .map(|r| if item.body_lines { r } else { inside(text, r) }),
+            .map(|r| if item.undelimited { r } else { inside(text, r) }),
         Part::Params => item.params.clone().map(|r| inside(text, r)),
         Part::Name => Some(item.name_range.clone()),
         Part::Sig => Some(match &item.body {
             Some(body) => {
                 let start = item.node.start;
-                start..start + text[start..body.start].trim_end().len()
+                start
+                    ..start
+                        + text[start..item.sig_end.unwrap_or(body.start)]
+                            .trim_end()
+                            .len()
             }
             None => item.node.clone(),
         }),
@@ -475,7 +524,7 @@ pub fn distance(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang::Language::{self, Markdown, Rust};
+    use crate::lang::Language::{self, Markdown, Python, Rust};
 
     fn items_in(lang: Language, text: &str) -> Vec<Item> {
         items(lang.selectors().unwrap(), &lang.parse(text), text)
@@ -643,7 +692,7 @@ mod tests {}
 
     #[test]
     fn selector_queries_use_only_known_captures() {
-        const CAPTURES: [&str; 6] = ["name", "body", "params", "head", "doc", "attr"];
+        const CAPTURES: [&str; 7] = ["name", "body", "block", "params", "head", "doc", "attr"];
         for lang in Language::ALL {
             let Some(query) = lang.selectors() else {
                 continue;
@@ -980,5 +1029,117 @@ const C: u8 = 1;
         assert_eq!(part_of(Rust, "struct", "Parser", Part::Params, PARTS), None);
         assert_eq!(part_of(Rust, "fn", "f", Part::Body, PARTS), None);
         assert_eq!(part_of(Rust, "variant", "B", Part::Body, PARTS), None);
+    }
+
+    const PYTHON: &str = r#""""Module doc."""
+from __future__ import annotations
+import os.path
+from typing import Any
+import a, b as c
+
+MAX = 3
+count = 0
+
+
+@dataclass
+class Point(Base):
+    """A point."""
+
+    x: int
+    y: int = 0
+
+    @staticmethod
+    def origin() -> "Point":
+        return Point(0)
+
+    async def dist(self, other):
+        """Distance."""
+        def helper():
+            pass
+        return 1
+
+
+def main(argv):
+    total = 1
+    return total
+
+
+def short(): return 1
+"#;
+
+    #[test]
+    fn python_items_of_every_kind() {
+        let expected = [
+            ("import", "__future__"),
+            ("import", "os.path"),
+            ("import", "typing"),
+            ("import", "a"),
+            ("const", "MAX"),
+            ("var", "count"),
+            ("class", "Point"),
+            ("field", "x"),
+            ("field", "y"),
+            ("fn", "origin"),
+            ("fn", "dist"),
+            ("fn", "helper"),
+            ("fn", "main"),
+            ("fn", "short"),
+        ];
+        let expected: Vec<(&str, String)> =
+            expected.iter().map(|(k, n)| (*k, n.to_string())).collect();
+        assert_eq!(names(Python, PYTHON), expected);
+    }
+
+    #[test]
+    fn python_spans_take_decorators() {
+        let origin = items_in(Python, PYTHON)
+            .into_iter()
+            .find(|i| i.name == "origin")
+            .unwrap();
+        assert_eq!(
+            &PYTHON[origin.range],
+            "@staticmethod\n    def origin() -> \"Point\":\n        return Point(0)"
+        );
+    }
+
+    #[test]
+    fn python_parts() {
+        let part = |kind, name, p| part_of(Python, kind, name, p, PYTHON);
+        assert_eq!(
+            part("fn", "dist", Part::Body),
+            Some("        def helper():\n            pass\n        return 1\n")
+        );
+        assert_eq!(
+            part("fn", "dist", Part::Doc),
+            Some("        \"\"\"Distance.\"\"\"\n")
+        );
+        assert_eq!(
+            part("fn", "dist", Part::Sig),
+            Some("async def dist(self, other)")
+        );
+        assert_eq!(part("fn", "dist", Part::Params), Some("self, other"));
+        assert_eq!(part("fn", "dist", Part::Name), Some("dist"));
+        assert_eq!(
+            part("fn", "main", Part::Body),
+            Some("    total = 1\n    return total\n")
+        );
+        assert_eq!(part("fn", "main", Part::Doc), None);
+        assert_eq!(
+            part("fn", "origin", Part::Sig),
+            Some("def origin() -> \"Point\"")
+        );
+        assert_eq!(part("class", "Point", Part::Sig), Some("class Point(Base)"));
+        assert_eq!(
+            part("class", "Point", Part::Doc),
+            Some("    \"\"\"A point.\"\"\"\n")
+        );
+        assert!(
+            part("class", "Point", Part::Body)
+                .unwrap()
+                .starts_with("    x: int\n")
+        );
+        assert_eq!(part("fn", "short", Part::Body), Some("return 1"));
+        assert_eq!(part("fn", "short", Part::Sig), Some("def short()"));
+        assert_eq!(part("field", "x", Part::Body), None);
     }
 }
