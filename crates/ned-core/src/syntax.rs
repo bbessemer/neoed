@@ -108,8 +108,8 @@ pub fn rank(name: &str) -> usize {
 pub struct Item {
     pub kind: &'static str,
     pub name: String,
-    /// For a trait impl, named `TRAIT for TYPE`: the self type, which the
-    /// item's selector also matches.
+    /// For an item named by a template (`TRAIT for TYPE`), the `@name`
+    /// text, which the item's selector also matches.
     pub base_name: Option<String>,
     /// The default span: the item with its leading doc comments and
     /// attributes, and a `,` that directly follows it.
@@ -139,14 +139,12 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
     while let Some(m) = matches.next() {
-        let (mut item, mut name, mut body, mut params, mut trait_name, mut head) =
-            (None, None, None, None, None, None);
+        let (mut item, mut name, mut body, mut params, mut head) = (None, None, None, None, None);
         for capture in m.captures() {
             match names[capture.index as usize] {
                 "name" => name = Some(capture.node),
                 "body" => body = Some(capture.node.byte_range()),
                 "params" => params = Some(capture.node.byte_range()),
-                "trait_name" => trait_name = Some(capture.node),
                 "head" => head = Some(capture.node.byte_range()),
                 "doc" => leading.push((capture.node.byte_range(), true)),
                 "attr" => leading.push((capture.node.byte_range(), false)),
@@ -157,6 +155,17 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                 }
             }
         }
+        let captured = |wanted: &str| {
+            m.captures()
+                .iter()
+                .find(|c| names[c.index as usize] == wanted)
+                .map(|c| first_line(text, c.node))
+        };
+        let templated = query
+            .property_settings(m.pattern_index)
+            .iter()
+            .find(|s| &*s.key == "name")
+            .and_then(|s| fill(s.value.as_deref()?, captured));
         if let Some((kind, node)) = item {
             found.push(Found {
                 kind,
@@ -164,7 +173,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                 name,
                 body,
                 params,
-                trait_name,
+                templated,
                 head,
             });
         }
@@ -193,12 +202,8 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
     });
     found.dedup_by(|b, a| a.kind == b.kind && a.node == b.node);
 
-    let name_text = |name: Option<Node>| {
-        name.map_or(String::new(), |n| {
-            let text = &text[n.byte_range()];
-            text.lines().next().unwrap_or_default().trim().to_string()
-        })
-    };
+    let name_text = |name: Option<Node>| name.map_or(String::new(), |n| first_line(text, n));
+
     let mut items: Vec<Item> = found
         .into_iter()
         .map(
@@ -208,7 +213,8 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                  name,
                  body,
                  params,
-                 trait_name,
+                 templated,
+
                  head,
              }| {
                 let mut range = node.byte_range();
@@ -246,11 +252,8 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                 };
                 Item {
                     kind,
-                    name: match trait_name {
-                        Some(t) => format!("{} for {}", &text[t.byte_range()], name_text(name)),
-                        None => name_text(name),
-                    },
-                    base_name: trait_name.map(|_| name_text(name)),
+                    base_name: templated.is_some().then(|| name_text(name)),
+                    name: templated.unwrap_or_else(|| name_text(name)),
                     range,
                     trailing_comma: comma.is_some(),
                     node: node.byte_range(),
@@ -275,8 +278,30 @@ struct Found<'t> {
     name: Option<Node<'t>>,
     body: Option<Range<usize>>,
     params: Option<Range<usize>>,
-    trait_name: Option<Node<'t>>,
+    /// The name from the pattern's template.
+    templated: Option<String>,
     head: Option<Range<usize>>,
+}
+
+/// The first line of `node`'s text, trimmed.
+fn first_line(text: &str, node: Node) -> String {
+    let text = &text[node.byte_range()];
+    text.lines().next().unwrap_or_default().trim().to_string()
+}
+
+/// `template` with each `{CAPTURE}` replaced by `captured(CAPTURE)`; `None`
+/// if a capture didn't match.
+fn fill(template: &str, captured: impl Fn(&str) -> Option<String>) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let close = open + rest[open..].find('}')?;
+        out.push_str(&rest[..open]);
+        out.push_str(&captured(&rest[open + 1..close])?);
+        rest = &rest[close + 1..];
+    }
+    out.push_str(rest);
+    Some(out)
 }
 
 /// Whether only whitespace, and no blank line, separates `leading` from
