@@ -486,7 +486,13 @@ Notes:
 - `insert before|after` on a syntax item other than an import or a Markdown
   list item, when the item has a blank line directly above or below it,
   separates the new text from it with one blank line, unless the text already
-  starts (for `after`) or ends (for `before`) with a blank line.
+  starts (for `after`) or ends (for `before`) with a blank line. Text inserted
+  before an item that is only doc comments and attributes (`#[inline]`,
+  `/// ...`) gets no blank line: it attaches to the item.
+- `replace` of a syntax item keeps the item's leading doc comments and
+  attributes unless `TEXT` starts with its own, so replacing a test function
+  keeps its `#[test]`. To replace them too, start `TEXT` with them, or select
+  `ITEM.lines`.
 - **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
   lines in a row, a blank line right after an opening delimiter or right before
   a closing one, or a blank line at the start or end of the file, one blank

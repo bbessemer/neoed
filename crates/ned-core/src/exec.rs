@@ -2458,6 +2458,58 @@ mod tests {
         );
     }
 
+    const ATTRS: &str = "/// Doc.\n#[test]\nfn a() {\n    old();\n}\n";
+
+    #[test]
+    fn replacing_an_item_keeps_its_attributes_and_docs() {
+        assert_eq!(
+            edited(
+                ATTRS,
+                "replace fn:a with <<END\nfn a() {\n    new();\n}\nEND\n"
+            ),
+            "/// Doc.\n#[test]\nfn a() {\n    new();\n}\n"
+        );
+        assert_eq!(
+            edited(
+                ATTRS,
+                "replace fn:a with <<END\n#[tokio::test]\nasync fn a() {}\nEND\n"
+            ),
+            "#[tokio::test]\nasync fn a() {}\n"
+        );
+        assert_eq!(
+            edited(ATTRS, "replace fn:a with \"/// New.\nfn a() {}\""),
+            "/// New.\nfn a() {}\n"
+        );
+        assert_eq!(
+            edited(ATTRS, "replace fn:a.lines with \"fn a() {}\""),
+            "fn a() {}\n"
+        );
+        assert_eq!(
+            edited("#[inline] fn a() {}\n", "replace fn:a with \"fn b() {}\""),
+            "fn b() {}\n"
+        );
+    }
+
+    #[test]
+    fn attributes_inserted_before_an_item_attach_to_it() {
+        let text = "fn z() {}\n\n/// Doc.\nfn a() {}\n";
+        assert_eq!(
+            edited(text, "insert before fn:a \"#[inline]\""),
+            "fn z() {}\n\n#[inline]\n/// Doc.\nfn a() {}\n"
+        );
+        assert_eq!(
+            edited(
+                text,
+                "insert before fn:a <<END\n/// More.\n#[must_use]\nEND\n"
+            ),
+            "fn z() {}\n\n/// More.\n#[must_use]\n/// Doc.\nfn a() {}\n"
+        );
+        assert_eq!(
+            edited(text, "insert before fn:a \"// c\""),
+            "fn z() {}\n\n// c\n\n/// Doc.\nfn a() {}\n"
+        );
+    }
+
     #[test]
     fn create_makes_a_file_later_commands_can_edit() {
         let out = exec_with(
