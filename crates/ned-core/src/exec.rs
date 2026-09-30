@@ -1962,6 +1962,35 @@ mod tests {
     }
 
     #[test]
+    fn heredoc_insert_beside_a_partial_span_takes_whole_lines() {
+        assert_eq!(
+            edited(TEXT, "insert after /let x = 1/ <<END\nlet z = 0;\nEND\n"),
+            TEXT.replace("    let x = 1;\n", "    let x = 1;\n    let z = 0;\n")
+        );
+        assert_eq!(
+            edited(TEXT, "insert before \"y = 2\" <<END\nw();\nEND\n"),
+            TEXT.replace("    let y", "    w();\n    let y")
+        );
+        assert_eq!(
+            edited(TEXT, "insert before /let y/ <<'END'\nraw\nEND\n"),
+            TEXT.replace("    let y", "raw\n    let y")
+        );
+        // An item part stays where it is.
+        assert_eq!(
+            edited("fn f() { x }\n", "insert after fn:f.body <<END\ny\nEND\n"),
+            "fn f() { xy }\n"
+        );
+    }
+
+    #[test]
+    fn move_beside_a_partial_span_takes_whole_lines() {
+        assert_eq!(
+            edited(TEXT, "move 7 after /let x = 1/"),
+            "fn a() {\n    let x = 1;\n    let x = 3;\n    let y = 2;\n}\n\nfn b() {\n}\n"
+        );
+    }
+
+    #[test]
     fn insert_into_python_block() {
         let app = "def handle(req):\n    if req.ok:\n        log(req)\n        return 200\n    return 500\n";
         assert_eq!(
