@@ -1,10 +1,10 @@
 file PATH...
 
 Sets the file set for the commands that follow; it starts as the FILE
-arguments. Globs (* ? [..] **) are expanded by ned, relative to the working
-directory, so quote them on the command line. A glob matching nothing, or a
-missing file, is an error. Selectors search every file in the set; use a
-file:PATH step to narrow one to a single file.
+arguments, or every workspace file with -w. Globs (* ? [..] **) are expanded
+by ned, relative to the working directory, so quote them on the command line.
+A glob matching nothing, or a missing file, is an error. Selectors search
+every file in the set; use a file:PATH step to narrow one to a single file.
 
 Examples:
     file src/*.rs
