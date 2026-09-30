@@ -524,7 +524,7 @@ pub fn distance(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang::Language::{self, Go, Markdown, Python, Rust};
+    use crate::lang::Language::{self, Go, JavaScript, Markdown, Python, Rust, Tsx, TypeScript};
 
     fn items_in(lang: Language, text: &str) -> Vec<Item> {
         items(lang.selectors().unwrap(), &lang.parse(text), text)
@@ -1293,5 +1293,208 @@ func (p *Parser) Parse() error {
 func (l List[T]) Len() int { return len(l.items) }
 
 func (s Size) Parse() {}
+"#;
+
+    #[test]
+    fn javascript_items_of_every_kind() {
+        let expected = [
+            ("import", "fs"),
+            ("fn", "load"),
+            ("const", "parse"),
+            ("fn", "parse"),
+            ("var", "cache"),
+            ("var", "hits"),
+            ("fn", "ids"),
+            ("class", "Store"),
+            ("field", "#items"),
+            ("field", "size"),
+            ("fn", "add"),
+        ];
+        let expected: Vec<(&str, String)> =
+            expected.iter().map(|(k, n)| (*k, n.to_string())).collect();
+        assert_eq!(names(JavaScript, JS), expected);
+    }
+
+    #[test]
+    fn typescript_items_of_every_kind() {
+        let expected = [
+            ("import", "react"),
+            ("import", "./util"),
+            ("const", "MAX"),
+            ("var", "count"),
+            ("var", "legacy"),
+            ("fn", "add"),
+            ("const", "double"),
+            ("fn", "double"),
+            ("const", "handler"),
+            ("fn", "handler"),
+            ("fn", "gen"),
+            ("class", "App"),
+            ("field", "name"),
+            ("field", "#secret"),
+            ("fn", "render"),
+            ("interface", "Shape"),
+            ("fn", "area"),
+            ("field", "label"),
+            ("type", "ID"),
+            ("enum", "Color"),
+            ("variant", "Red"),
+            ("variant", "Green"),
+            ("mod", "Util"),
+            ("fn", "help"),
+            ("mod", "mod"),
+            ("fn", "over"),
+            ("class", "Base"),
+            ("fn", "size"),
+        ];
+        let expected: Vec<(&str, String)> =
+            expected.iter().map(|(k, n)| (*k, n.to_string())).collect();
+        assert_eq!(names(TypeScript, TS), expected);
+        let tsx = "export function App() {\n  return <div>hi</div>;\n}\n";
+        assert_eq!(items_in(Tsx, tsx)[0].name, "App");
+    }
+
+    #[test]
+    fn ecma_spans_take_export_docs_and_decorators() {
+        let span = |lang: Language, text: &'static str, kind: &str, name: &str| {
+            let item = items_in(lang, text)
+                .into_iter()
+                .find(|i| i.kind == kind && i.name == name)
+                .unwrap();
+            (&text[item.range.clone()], &text[item.node])
+        };
+        assert_eq!(
+            span(TypeScript, TS, "const", "MAX"),
+            (
+                "/** The max. */\nexport const MAX = 3;",
+                "export const MAX = 3;"
+            )
+        );
+        let (range, node) = span(TypeScript, TS, "class", "App");
+        assert!(
+            range.starts_with("@Component({})\nexport class App"),
+            "{range}"
+        );
+        assert!(node.starts_with("export class App"), "{node}");
+        let (range, node) = span(TypeScript, TS, "fn", "render");
+        assert!(range.starts_with("@Input()\n  render()"), "{range}");
+        assert!(node.starts_with("render()"), "{node}");
+        let (range, node) = span(JavaScript, JS, "fn", "add");
+        assert!(range.starts_with("@logged\n  add(item)"), "{range}");
+        assert!(node.starts_with("add(item)"), "{node}");
+    }
+
+    #[test]
+    fn ecma_parts() {
+        let js = |kind, name, p| part_of(JavaScript, kind, name, p, JS);
+        let ts = |kind, name, p| part_of(TypeScript, kind, name, p, TS);
+        assert_eq!(
+            js("fn", "load", Part::Sig),
+            Some("export async function load(path)")
+        );
+        assert_eq!(js("fn", "load", Part::Doc), Some("/** Loads. */\n"));
+        assert_eq!(
+            js("fn", "load", Part::Body),
+            Some("  return fs.read(path);\n")
+        );
+        assert_eq!(js("fn", "parse", Part::Params), Some("text"));
+        assert_eq!(js("fn", "parse", Part::Body), None);
+        assert_eq!(ts("fn", "handler", Part::Body), Some("  log(e);\n"));
+        assert_eq!(ts("fn", "add", Part::Params), Some("a: number, b: number"));
+        assert_eq!(
+            ts("fn", "add", Part::Sig),
+            Some("export function add(a: number, b: number): number")
+        );
+        assert_eq!(ts("fn", "render", Part::Sig), Some("render(): void"));
+        assert_eq!(ts("fn", "area", Part::Sig), Some("area(): number;"));
+        assert_eq!(
+            ts("enum", "Color", Part::Body),
+            Some("  Red,\n  Green = 2,\n")
+        );
+        assert_eq!(
+            ts("interface", "Shape", Part::Body),
+            Some("  area(): number;\n  label: string;\n")
+        );
+    }
+
+    const JS: &str = r#"import fs from "fs";
+
+/** Loads. */
+export async function load(path) {
+  return fs.read(path);
+}
+
+export const parse = (text) => JSON.parse(text);
+let cache = null;
+var hits = 0;
+
+function* ids() {}
+
+class Store {
+  #items = [];
+  size = 0;
+
+  @logged
+  add(item) {
+    this.#items.push(item);
+  }
+}
+"#;
+
+    const TS: &str = r#"import React from "react";
+import { util } from "./util";
+
+/** The max. */
+export const MAX = 3;
+let count = 0;
+var legacy = 1;
+
+/** Adds. */
+export function add(a: number, b: number): number {
+  return a + b;
+}
+
+export const double = (x: number) => x * 2;
+const handler = async (e) => {
+  log(e);
+};
+
+function* gen() {}
+
+@Component({})
+export class App extends Base {
+  /** Name. */
+  name: string = "";
+  #secret = 1;
+
+  @Input()
+  render(): void {
+    return;
+  }
+}
+
+export interface Shape {
+  area(): number;
+  label: string;
+}
+
+type ID = string;
+
+enum Color {
+  Red,
+  Green = 2,
+}
+
+namespace Util {
+  export function help() {}
+}
+
+declare module "mod" {}
+
+export function over(a: string): void;
+
+abstract class Base {
+  abstract size(): number;
+}
 "#;
 }

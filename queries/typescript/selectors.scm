@@ -17,5 +17,9 @@
 (enum_body (property_identifier) @name @variant)
 (enum_body (enum_assignment name: (property_identifier) @name) @variant)
 
-(internal_module name: (_) @name body: (statement_block) @body) @mod
-(module name: (_) @name body: (statement_block)? @body) @mod
+(internal_module
+  name: [(identifier) (nested_identifier)] @name
+  body: (statement_block) @body) @mod
+(module
+  name: [(identifier) @name (nested_identifier) @name (string (string_fragment) @name)]
+  body: (statement_block)? @body) @mod

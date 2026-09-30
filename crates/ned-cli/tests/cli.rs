@@ -1147,6 +1147,30 @@ fn go_outline_and_edits() {
 }
 
 #[test]
+fn typescript_outline_and_edits() {
+    let text = "import { a } from \"./a\";\n\nexport interface Shape {\n  area(): number;\n}\n\nexport function main(): void {\n  a();\n}\n";
+    let dir = dir_with(&[("main.ts", text)]);
+    let out = ned(dir.path(), &["main.ts", "-e", "outline"], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    main.ts
+    1 import (1)
+    3-5 interface:Shape
+      4 fn:area
+    7-9 fn:main
+    --- stderr
+    ");
+    let script = "insert end interface:Shape \"name: string;\"\ninsert start fn:main \"init();\"\n";
+    let out = ned(dir.path(), &["-q", "main.ts"], script);
+    assert!(out.starts_with("exit: 0\n"), "{out}");
+    assert_eq!(
+        read(&dir, "main.ts"),
+        "import { a } from \"./a\";\n\nexport interface Shape {\n  area(): number;\n  name: string;\n}\n\nexport function main(): void {\n  init();\n  a();\n}\n"
+    );
+}
+
+#[test]
 fn a_closed_stdout_does_not_stop_the_script() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("a.txt");

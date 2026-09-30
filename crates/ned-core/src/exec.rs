@@ -2446,6 +2446,63 @@ mod tests {
         );
     }
 
+    const STORE_JS: &str = "/** A store. */\nexport class Store {\n  size = 0;\n\n  @logged\n  add(item) {\n    this.size++;\n  }\n}\n\nexport const empty = () => new Store();\n";
+
+    #[test]
+    fn javascript_edits() {
+        assert_eq!(
+            edited_in(
+                "a.js",
+                STORE_JS,
+                "insert end class:Store <<END\n\nclear() {\n  this.size = 0;\n}\nEND"
+            ),
+            STORE_JS.replace(
+                "    this.size++;\n  }\n",
+                "    this.size++;\n  }\n\n  clear() {\n    this.size = 0;\n  }\n"
+            )
+        );
+        assert_eq!(
+            edited_in(
+                "a.js",
+                STORE_JS,
+                "replace fn:add with <<END\nadd(item, n) {\n  this.size += n;\n}\nEND"
+            ),
+            STORE_JS.replace(
+                "add(item) {\n    this.size++;",
+                "add(item, n) {\n    this.size += n;"
+            )
+        );
+        assert_eq!(
+            edited_in("a.js", STORE_JS, "insert before fn:add \"@traced\""),
+            STORE_JS.replace("  @logged\n", "  @traced\n  @logged\n")
+        );
+        assert_eq!(
+            edited_in("a.js", STORE_JS, "delete fn:empty"),
+            STORE_JS.replace("\nexport const empty = () => new Store();\n", "")
+        );
+        assert_eq!(
+            edited_in(
+                "a.js",
+                STORE_JS,
+                "replace class:Store.sig with \"export class Shop\""
+            ),
+            STORE_JS.replace("export class Store", "export class Shop")
+        );
+    }
+
+    #[test]
+    fn typescript_outline_lists_a_function_variable_once() {
+        let text = "export const f = (x: number) => x;\nconst n = 1;\n";
+        assert_eq!(
+            exec_with(&[("a.ts", text)], 1, "outline").output,
+            "a.ts\n1 fn:f\n2 const:n\n"
+        );
+        assert_eq!(
+            edited_in("a.ts", text, "replace const:f.name with \"g\""),
+            text.replace("const f", "const g")
+        );
+    }
+
     #[test]
     fn inserted_text_takes_the_files_indent_style() {
         assert_eq!(
