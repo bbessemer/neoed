@@ -612,6 +612,11 @@ Its lines follow as `N:text`, with no padding. `show SEL +N` adds up to `N`
 lines of context before and after each span. If regions are within one line of
 each other, they merge.
 
+`show all` is a search: when its last step (a regex, literal, heredoc or
+`.refs`) matches nothing where the earlier steps matched, it prints
+`no matches for SEL in N files` and the script goes on, exiting 0 if nothing
+else fails. `show` without `all`, and every edit, still fail on no match.
+
 ```
 src/parser.rs:14-17
 14:    pub fn parse(&mut self) -> Result<Ast, Error> {
