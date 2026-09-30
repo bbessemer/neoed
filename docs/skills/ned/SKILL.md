@@ -164,11 +164,11 @@ END
   names lines 15 and 16 of the file, which must lie inside `fn:parse`.
 - **Use `delete` to remove lines.** `replace 12 with ""` leaves an empty line,
   because line-oriented text always ends with a newline.
-- **Partial matches get verbatim text.** `insert after /re/` inserts right
-  after the match, even mid-line, and `insert end /re/` or `"a".."b"` does the
-  same at the span's end; add `.lines` to insert after the whole line. A
-  heredoc's final newline is dropped there, so a blank line ending it vanishes;
-  target the item itself (`insert before fn:x`) instead. Likewise
+- **Partial matches get verbatim text.** `insert after /re/ "x"` inserts right
+  after the match, even mid-line, and `insert start|end /re/` does the same at
+  the span's start or end. A heredoc `insert before|after` goes on lines of
+  its own beside the match's lines instead (but in place beside `.body` and
+  other item parts). Likewise
   `replace /^- \[ \] Foo/ with "- [x] Foo bar"` replaces only the match and
   keeps the rest of the line, duplicating it: use `sub` for a prefix, or
   `.lines` (also on a range's end, `/a/../b/.lines`) to replace whole lines.

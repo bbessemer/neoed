@@ -377,8 +377,9 @@ impl Executor<'_> {
             } => {
                 for m in self.resolve(&implied_body(target, *position))? {
                     let f = &self.files[m.file].file;
-                    let text = separated(f, target, *position, &m.range, text);
-                    let (range, new) = insert(f, m.range, *position, &text);
+                    let range = heredoc_lines(f, target, *position, text, m.range);
+                    let text = separated(f, target, *position, &range, text);
+                    let (range, new) = insert(f, range, *position, &text);
                     self.push(index, span, m.file, range, new)?;
                 }
             }
@@ -763,15 +764,16 @@ impl Executor<'_> {
             let removal = removal(source, from.range.clone());
             let (mut moved, separated) = moved_text(source, &from.range);
             let target = &self.files[to.file].file;
-            if separated && text::is_whole_line(&target.text, &to.range) {
+            let at = heredoc_lines(target, &dest, position, &moved, to.range.clone());
+            if separated && text::is_whole_line(&target.text, &at) {
                 match position {
                     Position::Before => moved.value.push('\n'),
                     Position::After => moved.value.insert(0, '\n'),
                     Position::Start | Position::End => {}
                 }
             }
-            let moved = with_trailing_comma(target, &to.range, &moved);
-            let (range, new) = insert(target, to.range.clone(), position, &moved);
+            let moved = with_trailing_comma(target, &at, &moved);
+            let (range, new) = insert(target, at, position, &moved);
             if from.file == to.file && removal.start < range.start && range.end < removal.end {
                 let location = format!(
                     "{}:{}",
@@ -1472,6 +1474,31 @@ fn moved_text(f: &SourceFile, range: &Range<usize>) -> (Text, bool) {
         kind: TextKind::Heredoc,
     };
     (text, text::blank_separated(t, full))
+}
+
+/// `range`, widened to its whole lines if it's partial and heredoc `new` is
+/// inserted before or after it, unless `target` ends in an item part (§5.1).
+fn heredoc_lines(
+    f: &SourceFile,
+    target: &Target,
+    position: Position,
+    new: &Text,
+    range: Range<usize>,
+) -> Range<usize> {
+    let item_part = target.selector.steps.last().is_some_and(|s| {
+        s.parts.iter().any(|p| {
+            matches!(
+                p,
+                Part::Body | Part::Params | Part::Name | Part::Sig | Part::Doc
+            )
+        })
+    });
+    let beside = matches!(position, Position::Before | Position::After);
+    if beside && new.kind != TextKind::Str && !item_part && !text::is_whole_line(&f.text, &range) {
+        text::full_lines(&f.text, range)
+    } else {
+        range
+    }
 }
 
 /// The span and text of an insertion at `position` of `range` (§4.2, §5):
