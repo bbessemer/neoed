@@ -31,13 +31,13 @@ rewrites. Pass the script on stdin with a quoted heredoc:
   replace fn:parse>"old text" with "new text"
   EOF
 
-Selectors: line ranges (12-20), /regex/, "literal", and in Rust, Python, Go
-and Markdown, syntax items (fn:parse, impl:Parser>fn:new, fn:parse.body). A
-selector must match exactly one span unless prefixed with `all`. Run `outline`
-to list items and `show SEL` to read part of a file. Write inserted code at
-column 0; ned re-indents it. ned prints a diff, so don't re-read the file to
-check the edit. Errors end with a fix; apply it and rerun. `ned help` and `ned
-help TOPIC` document the rest.
+Selectors: line ranges (12-20), /regex/, "literal", and in Rust, Python, Go,
+JS/TS and Markdown, syntax items (fn:parse, impl:Parser>fn:new,
+fn:parse.body). A selector must match exactly one span unless prefixed with
+`all`. Run `outline` to list items and `show SEL` to read part of a file.
+Write inserted code at column 0; ned re-indents it. ned prints a diff, so
+don't re-read the file to check the edit. Errors end with a fix; apply it and
+rerun. `ned help` and `ned help TOPIC` document the rest.
 
 ```
 

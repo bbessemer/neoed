@@ -48,7 +48,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 ## 5. Tree-sitter integration _(split)_
 
 - [x] Language detection (extension, shebang, `--lang`) and grammar registry
-- [x] `queries/rust/selectors.scm` (other languages: §12)
+- [x] `queries/<lang>/selectors.scm` for every language (§12)
 - [x] Syntax selectors and nesting; ambiguity errors with candidates
 - [x] Parts (`.body`, `.sig`, `.params`, `.name`, `.doc`); `insert start|end`
       on an item implies `.body`
@@ -165,7 +165,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 
 ## 12. Release
 
-- [ ] Syntax selectors and `outline` for Python, TypeScript, TSX, JavaScript,
+- [x] Syntax selectors and `outline` for Python, TypeScript, TSX, JavaScript,
       Go: query files, a test per kind and part, spec notes. Decided: Python
       `.doc` is the docstring; in JS/TS, `const f = () => {}` (or
       `= function () {}`) is both `fn:f` and `const:f` (outline lists it once,
