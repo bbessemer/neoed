@@ -217,7 +217,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       `|`: `outline | show 1` is a parse error ("expected a selector, found
       '|'"), because `optional_target` (`script/parser.rs`) doesn't treat
       `|` as the end of the command
-- [ ] `cargo install --git` builds report a dirty version
+- [x] `cargo install --git` builds report a dirty version
       (`0.1.0+6bf01e7.dirty.1790803292`): `build.rs` sees cargo's checkout
       marker (`.cargo-ok`) as an uncommitted change, so every install gets a
       new build time and a daemon from an earlier install of the same commit

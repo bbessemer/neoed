@@ -24,8 +24,17 @@ fn main() {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
+    // Cargo marks a `cargo install --git` checkout finished with an untracked
+    // `.cargo-ok` at its root; that doesn't make the build dirty.
+    let status = [
+        "status",
+        "--porcelain",
+        "--",
+        ":(top)",
+        ":(top,exclude).cargo-ok",
+    ];
     let build = match git(&["rev-parse", "--short", "HEAD"]) {
-        Some(commit) if git(&["status", "--porcelain"]).is_some_and(|s| s.is_empty()) => commit,
+        Some(commit) if git(&status).is_some_and(|s| s.is_empty()) => commit,
         Some(commit) => format!("{commit}.dirty.{now}"),
         None => format!("unknown.{now}"),
     };
