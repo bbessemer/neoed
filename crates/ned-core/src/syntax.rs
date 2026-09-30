@@ -599,6 +599,47 @@ mod tests {}
     }
 
     #[test]
+    fn name_templates_fill_captures_that_matched() {
+        let source = r#"(impl_item
+        trait: (type_identifier)? @of
+        type: (type_identifier) @name
+        (#set! name "{name} as {of}")) @impl"#;
+        let query = Query::new(&Rust.grammar(), source).unwrap();
+        let text = "impl A for B {}\nimpl C {}\n";
+        let found: Vec<(String, Option<String>)> = items(&query, &Rust.parse(text), text)
+            .into_iter()
+            .map(|i| (i.name, i.base_name))
+            .collect();
+        assert_eq!(
+            found,
+            [("B as A".into(), Some("B".into())), ("C".into(), None)]
+        );
+    }
+
+    #[test]
+    fn selector_queries_use_only_known_captures() {
+        const CAPTURES: [&str; 6] = ["name", "body", "params", "head", "doc", "attr"];
+        for lang in Language::ALL {
+            let Some(query) = lang.selectors() else {
+                continue;
+            };
+            let templates: String = (0..query.pattern_count())
+                .flat_map(|p| query.property_settings(p))
+                .filter(|s| &*s.key == "name")
+                .filter_map(|s| s.value.as_deref())
+                .collect();
+            for &capture in query.capture_names() {
+                assert!(
+                    find_kind(capture).is_some()
+                        || CAPTURES.contains(&capture)
+                        || templates.contains(&format!("{{{capture}}}")),
+                    "{lang:?}: unknown capture @{capture}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn default_span_takes_leading_docs_and_attributes() {
         let text = "// Not a doc.\n/// A.\n/** B. */\n#[derive(Debug)]\n/// C.\npub struct A;\n";
         assert_eq!(
