@@ -172,11 +172,12 @@ END
   to replace whole lines; a note says so when TEXT repeats the rest of the
   line.
 - **Re-basing follows the target line.** `<<END` text takes the indentation of
-  the line it's inserted next to, or of the first line it replaces, so next to
-  (or starting at) a wrapped list item's continuation line it gets the hanging
-  indent. For code, use `<<END` (a quoted `<<'END'` inside the script, a shell
-  habit, leaves code at column 0); for Markdown or prose, use `<<'END'`, target
-  the `item:`, or start a replaced range at the item's first line.
+  the line it's inserted next to, or of the first line it replaces. In
+  Markdown, a new list item (`- ...`) next to any line of a list item goes
+  beside the whole item, at its marker's column; other text next to a wrapped
+  item's continuation line gets the hanging indent, continuing its paragraph.
+  For code, use `<<END`: a quoted `<<'END'` inside the script, a shell habit,
+  leaves code at column 0.
 - **Whole-line string TEXT gets its own newline.** A literal that runs from a
   line's indentation to its end (`"    x,\n"`, or `"    s\n}"`) is a whole-line
   target: string TEXT for it is re-based like a heredoc, and a final newline

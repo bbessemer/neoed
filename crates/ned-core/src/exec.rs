@@ -1217,8 +1217,6 @@ fn defining_item(f: &SourceFile, offset: usize) -> Option<Range<usize>> {
         .min_by_key(|r| r.len())
 }
 
-/// `target`, with `.body` added when `insert start|end` targets a syntax
-/// step with no parts (§4.2).
 /// For a relative `path`, ` (paths are relative to DIR)`, naming the working
 /// directory; otherwise empty.
 fn relative_note(path: &str) -> String {
@@ -1264,6 +1262,9 @@ fn expand(path: &str, span: Option<&Range<usize>>) -> Result<Vec<String>, ExecEr
     files.sort();
     Ok(files)
 }
+
+/// `target`, with `.body` added when `insert start|end` targets a syntax
+/// step with no parts (§4.2).
 
 fn implied_body(target: &Target, position: Position) -> Cow<'_, Target> {
     let last = target.selector.steps.last();
@@ -1391,7 +1392,11 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, St
     let unit = indent_unit(f);
     if text::is_whole_line(t, &range) {
         let full = text::full_lines(t, range);
-        let mut new = line_oriented(new, text::indent_at(t, full.start), &unit);
+        let indent = match list_anchor(f, full.start, new) {
+            Some(item) => text::indent_at(t, item.range.start),
+            None => text::indent_at(t, full.start),
+        };
+        let mut new = line_oriented(new, indent, &unit);
         if !t[..full.end].ends_with('\n') {
             new.pop();
         }
@@ -1632,6 +1637,13 @@ fn insert(
         );
     }
     let full = text::full_lines(t, range);
+    // List-item text next to a list item's line goes beside the whole item.
+    let anchor = match position {
+        Position::Before => list_anchor(f, full.start, new),
+        Position::After => list_anchor(f, full.end.saturating_sub(1).max(full.start), new),
+        Position::Start | Position::End => None,
+    };
+    let full = anchor.map_or(full, |item| text::full_lines(t, item.range.clone()));
     let first = text::indent_at(t, full.start);
     let inner = text::first_indent(t, full.clone()).unwrap_or(first);
     let (at, indent) = match position {
@@ -1667,6 +1679,33 @@ fn line_oriented(new: &Text, indent: &str, unit: &str) -> String {
     };
     out.push('\n');
     out
+}
+
+/// The Markdown list item that list-item `new` placed on the line holding
+/// `offset` anchors to (§5.2): the innermost item on that line, if it's a list
+/// item that isn't in a block quote.
+fn list_anchor<'f>(f: &'f SourceFile, offset: usize, new: &Text) -> Option<&'f Item> {
+    if f.lang != Some(Language::Markdown) {
+        return None;
+    }
+    let first = new.value.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let digits = first.len() - first.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let marker = match digits {
+        0 => first.strip_prefix(['-', '*', '+']),
+        1..=9 => first[digits..].strip_prefix(['.', ')']),
+        _ => None,
+    };
+    if !marker.is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace)) {
+        return None;
+    }
+    let t = &f.text;
+    let item = f
+        .items()?
+        .iter()
+        .filter(|i| text::full_lines(t, i.range.clone()).contains(&offset))
+        .min_by_key(|i| i.range.len())?;
+    let line = t[..item.range.start].rfind('\n').map_or(0, |i| i + 1);
+    (item.kind == "item" && t[line..item.range.start].trim().is_empty()).then_some(item)
 }
 
 /// `new` inserted into a partial line: later lines re-based (unless raw).
