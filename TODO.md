@@ -131,6 +131,12 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [x] Markdown list re-basing: list-item TEXT inserted, replaced or moved next
       to any line of a list item anchors to the item: re-based to its marker
       column, inserted after the whole item (children included)
+- [ ] A `sub` replacement that names a group its regex doesn't have is an
+      error, not an empty expansion: `$1deletions` is the group `1deletions`,
+      so suggest `${1}deletions` (or `$$` for a literal `$`)
+- [ ] An invalid escape in a string suggests doubling the backslash, for
+      text copied from source: "invalid escape `\r`; write `\\r` for a
+      backslash and r"
 
 ## 9. LSP daemon _(split)_
 
