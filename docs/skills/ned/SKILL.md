@@ -185,4 +185,5 @@ END
   is added, so a trailing `\n` in the string adds a blank line. Leave the
   `\n` off, or use a line number or a heredoc.
 - **Always give a script.** Without `-e` or a heredoc, `ned` reads the script
-  from stdin, and hangs in a shell that has none to give.
+  from stdin: on a terminal that's an error, but an open pipe that never
+  closes makes it wait.
