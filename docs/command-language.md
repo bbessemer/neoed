@@ -335,6 +335,14 @@ The kinds each language supports, and the items they cover there:
   assignments to an `UPPER_SNAKE` name), `var` (other module-level
   assignments), `import` (named by the module: `import:"os.path"`;
   `from a.b import c` is `import:"a.b"`).
+- **Go**: `fn` (functions, interface methods, and methods, named
+  `RECEIVER.NAME`: `fn:"Parser.Parse"`; `fn:Parse` matches every `Parse`),
+  `struct`, `interface` and `type` (other type declarations and aliases),
+  `field` (named by its first name; an embedded field by its type), `const`,
+  `var`, `import` (named by the path without quotes: `import:fmt`,
+  `import:"net/http"`). In a grouped declaration (`const ( ... )`) each spec
+  is an item; a declaration with one spec includes its keyword. Every comment
+  directly above an item is its doc.
 
 - An inherent impl is named by its self type (`impl:Parser`), a trait impl by
   `TRAIT for TYPE` (`impl:"Display for Parser"`), each the last path segment
