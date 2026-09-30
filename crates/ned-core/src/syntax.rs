@@ -524,7 +524,7 @@ pub fn distance(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang::Language::{self, Markdown, Python, Rust};
+    use crate::lang::Language::{self, Go, Markdown, Python, Rust};
 
     fn items_in(lang: Language, text: &str) -> Vec<Item> {
         items(lang.selectors().unwrap(), &lang.parse(text), text)
@@ -1142,4 +1142,154 @@ def short(): return 1
         assert_eq!(part("fn", "short", Part::Sig), Some("def short()"));
         assert_eq!(part("field", "x", Part::Body), None);
     }
+
+    #[test]
+    fn go_items_of_every_kind() {
+        let expected = [
+            ("import", "fmt"),
+            ("import", "net/http"),
+            ("import", "strings"),
+            ("const", "Max"),
+            ("const", "A"),
+            ("const", "B"),
+            ("var", "count"),
+            ("struct", "Parser"),
+            ("field", "src"),
+            ("field", "pos"),
+            ("field", "fmt.Stringer"),
+            ("interface", "Shape"),
+            ("fn", "Area"),
+            ("type", "ID"),
+            ("struct", "List"),
+            ("field", "items"),
+            ("type", "Size"),
+            ("fn", "New"),
+            ("fn", "Parser.Parse"),
+            ("fn", "List.Len"),
+            ("fn", "Size.Parse"),
+        ];
+        let expected: Vec<(&str, String)> =
+            expected.iter().map(|(k, n)| (*k, n.to_string())).collect();
+        assert_eq!(names(Go, GO), expected);
+    }
+
+    #[test]
+    fn go_spans_take_the_keyword_of_a_single_spec() {
+        let spans: Vec<(String, &str)> = items_in(Go, GO)
+            .into_iter()
+            .filter(|i| matches!(i.kind, "const" | "import"))
+            .map(|i| (i.name, &GO[i.range]))
+            .collect();
+        assert_eq!(
+            spans,
+            [
+                ("fmt".into(), "import \"fmt\""),
+                ("net/http".into(), "\"net/http\""),
+                ("strings".into(), "str \"strings\""),
+                ("Max".into(), "// Max is the limit.\nconst Max = 3"),
+                ("A".into(), "A = iota"),
+                ("B".into(), "B"),
+            ]
+        );
+    }
+
+    #[test]
+    fn go_methods_are_named_by_receiver() {
+        let parse: Vec<Option<String>> = items_in(Go, GO)
+            .into_iter()
+            .filter(|i| item_matches("Parse", i))
+            .map(|i| i.base_name)
+            .collect();
+        assert_eq!(parse, [Some("Parse".into()), Some("Parse".into())]);
+    }
+
+    #[test]
+    fn go_parts() {
+        let part = |kind, name, p| part_of(Go, kind, name, p, GO);
+        assert_eq!(
+            part("fn", "Parser.Parse", Part::Body),
+            Some("\tx := 1\n\t_ = x\n\treturn nil\n")
+        );
+        assert_eq!(
+            part("fn", "Parser.Parse", Part::Sig),
+            Some("func (p *Parser) Parse() error")
+        );
+        assert_eq!(part("fn", "Parser.Parse", Part::Params), Some(""));
+        assert_eq!(part("fn", "Parser.Parse", Part::Name), Some("Parse"));
+        assert_eq!(
+            part("fn", "Parser.Parse", Part::Doc),
+            Some("// Parse parses.\n")
+        );
+        assert_eq!(part("fn", "New", Part::Params), Some("src string"));
+        assert_eq!(
+            part("fn", "List.Len", Part::Body),
+            Some("return len(l.items)")
+        );
+        assert_eq!(part("fn", "Area", Part::Sig), Some("Area() float64"));
+        assert!(
+            part("struct", "Parser", Part::Body)
+                .unwrap()
+                .starts_with("\t// src is the source.\n\tsrc string\n")
+        );
+        assert_eq!(
+            part("struct", "Parser", Part::Doc),
+            Some("// Parser parses.\n")
+        );
+    }
+
+    const GO: &str = r#"// Package a does things.
+package a
+
+import "fmt"
+
+import (
+	"net/http"
+	str "strings"
+)
+
+// Max is the limit.
+const Max = 3
+
+const (
+	A = iota
+	B
+)
+
+var count int
+
+// Parser parses.
+type Parser struct {
+	// src is the source.
+	src string
+	pos, end int
+	fmt.Stringer
+}
+
+type Shape interface {
+	Area() float64
+}
+
+type ID = string
+
+type (
+	List[T any] struct{ items []T }
+	Size int
+)
+
+// New makes a parser.
+func New(src string) *Parser {
+	return &Parser{src: src}
+}
+
+// Parse parses.
+func (p *Parser) Parse() error {
+	x := 1
+	_ = x
+	return nil
+}
+
+func (l List[T]) Len() int { return len(l.items) }
+
+func (s Size) Parse() {}
+"#;
 }

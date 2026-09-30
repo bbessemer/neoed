@@ -1937,6 +1937,20 @@ fn main() {
     }
 
     #[test]
+    fn go_methods_match_by_full_name_or_method_name() {
+        let text =
+            "package a\n\nfunc (p *P) Parse() {}\n\nfunc (s S) Parse() {}\n\nfunc Run() {}\n";
+        let lines = |script: &str| select_in(script, "a.go", text);
+        assert_eq!(lines("delete fn:\"S.Parse\""), ["func (s S) Parse() {}"]);
+        assert_eq!(lines("delete all fn:Parse").len(), 2);
+        let err = error("delete fn:Parse", &[("a.go", text)]);
+        assert!(
+            err.contains("fn:\"P.Parse\"") && err.contains("fn:\"S.Parse\""),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn trait_impl_candidates_use_their_full_names() {
         assert_eq!(
             listed("delete impl:S", &[("a.rs", IMPLS)]),
