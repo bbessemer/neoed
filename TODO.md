@@ -93,7 +93,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [x] `insert before|after` a syntax item that is blank-separated from its
       neighbours adds one separating blank line, as `move` does, unless the
       text already starts or ends with one
-- [ ] `insert before|after` with heredoc TEXT widens a partial-line target to
+- [x] `insert before|after` with heredoc TEXT widens a partial-line target to
       its whole lines, as if `.lines` were given (string TEXT stays verbatim),
       so `insert after /re/ <<END` can't land mid-line
 - [x] Name trait impls `TRAIT for TYPE` too: `impl:"Display for Language"`
@@ -101,10 +101,10 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       type
 - [x] Markdown sections get a `.body`: the content after the heading line, so
       `insert start|end section:X` and `replace section:X.body` work
-- [ ] `replace ITEM with TEXT` keeps the item's attributes and doc comments
+- [x] `replace ITEM with TEXT` keeps the item's attributes and doc comments
       (`#[test]`, `///`) unless TEXT starts with its own, so replacing a test
       function can't silently drop `#[test]`
-- [ ] `insert before ITEM` with TEXT that is only attributes or doc comments
+- [x] `insert before ITEM` with TEXT that is only attributes or doc comments
       adds no separating blank line: the text attaches to the item
 - [x] A syntax step that matches nothing suggests the same name under another
       kind first (`struct:LspError` → "did you mean enum:LspError?"), before
@@ -120,7 +120,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] Searching with `show all /re/` over a glob or `-w`: no match is a normal
       answer, so say `no matches` (exit 0) instead of an error
       listing the files searched with a hint to `show` them
-- [ ] A `replace` whose TEXT starts with a copy of the line just above its
+- [x] A `replace` whose TEXT starts with a copy of the line just above its
       span, or ends with a copy of the line just below, prints a note naming
       the duplicated line (the range was probably off by one)
 - [x] A regex, literal or heredoc lies inside a whole-line parent (a syntax
@@ -128,7 +128,7 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       `fn:x>"    let a"` matches and `^` means a real line start (also in `sub`)
 - [x] No-match hints for `P>"a"..P>"b"` (suggest `P>"a".."b"`) and for a string
       literal that matches as escaped source text (suggest `"\\n"` for `"\n"`)
-- [ ] Markdown list re-basing: list-item TEXT inserted, replaced or moved next
+- [x] Markdown list re-basing: list-item TEXT inserted, replaced or moved next
       to any line of a list item anchors to the item: re-based to its marker
       column, inserted after the whole item (children included)
 
