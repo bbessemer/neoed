@@ -1339,7 +1339,7 @@ fn empty_body<'f>(f: &'f SourceFile, range: &Range<usize>) -> Option<&'f Item> {
 
 /// The span and text that fill `item`'s empty body with `new` (§4.2):
 /// line-oriented, one indent unit inside the item, and on lines of its own;
-/// for a body of lines (a Markdown section), on the lines after its heading.
+/// for an undelimited body, on the lines after its heading or docstring.
 fn fill_body(
     f: &SourceFile,
     item: &Item,
@@ -1348,9 +1348,11 @@ fn fill_body(
 ) -> (Range<usize>, String) {
     let t = &f.text;
     let unit = indent_unit(f);
-    if item.body_lines {
-        // The lines right after the heading, which may end the file.
-        let lines = line_oriented(new, text::indent_at(t, item.node.start), &unit);
+    if item.undelimited {
+        // The lines right after the heading or docstring, which may end the
+        // file, at that line's indentation.
+        let indent = text::indent_at(t, range.start.saturating_sub(1));
+        let lines = line_oriented(new, indent, &unit);
         let lead = if t[..range.start].ends_with('\n') {
             ""
         } else {
@@ -2372,7 +2374,7 @@ mod tests {
             edited_in(
                 "a.py",
                 APP_PY,
-                "replace fn:load <<END\ndef load(path, mode):\n    return path\nEND"
+                "replace fn:load with <<END\ndef load(path, mode):\n    return path\nEND"
             ),
             APP_PY.replace("def load(path):", "def load(path, mode):")
         );
@@ -2381,7 +2383,7 @@ mod tests {
             APP_PY.replace("@cache\n", "@trace\n@cache\n")
         );
         assert_eq!(
-            edited_in("a.py", APP_PY, "replace fn:start.body \"pass\""),
+            edited_in("a.py", APP_PY, "replace fn:start.body with \"pass\""),
             APP_PY.replace("        if self.ok:\n            run()\n", "        pass\n")
         );
     }

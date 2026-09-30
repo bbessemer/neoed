@@ -1111,7 +1111,8 @@ fn python_outline_and_edits() {
     1-5 fn:handle
     --- stderr
     ");
-    let script = "replace fn:handle.params \"req, log\"\ninsert start fn:handle \"trace(req)\"\n";
+    let script =
+        "replace fn:handle.params with \"req, log\"\ninsert start fn:handle \"trace(req)\"\n";
     let out = ned(dir.path(), &["-q", "app.py"], script);
     assert!(out.starts_with("exit: 0\n"), "{out}");
     assert_eq!(

@@ -120,13 +120,16 @@ pub struct Item {
     pub node: Range<usize>,
     pub name_range: Range<usize>,
     /// The `@body` and `@params` nodes, delimiters included, unless
-    /// `body_lines`.
+    /// `undelimited`.
     pub body: Option<Range<usize>>,
     pub params: Option<Range<usize>>,
-    /// Whether `body` is the whole lines after a `@head` (a Markdown
-    /// section's heading) rather than a delimited node.
-    pub body_lines: bool,
-    /// The leading doc comments.
+    /// Whether `body` is the part itself, not a delimited node: the lines
+    /// after a `@head` (a Markdown section's heading) or of a `@block` (a
+    /// Python block).
+    pub undelimited: bool,
+    /// Where `.sig` ends, if not at the body: before a `@block`'s `:`.
+    pub sig_end: Option<usize>,
+    /// The leading doc comments, or the docstring.
     pub doc: Option<Range<usize>>,
 }
 
@@ -139,14 +142,17 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
     while let Some(m) = matches.next() {
-        let (mut item, mut name, mut body, mut params, mut head) = (None, None, None, None, None);
+        let (mut item, mut name, mut body, mut params, mut head, mut block) =
+            (None, None, None, None, None, None);
+        let mut docs = Vec::new();
         for capture in m.captures() {
             match names[capture.index as usize] {
                 "name" => name = Some(capture.node),
                 "body" => body = Some(capture.node.byte_range()),
                 "params" => params = Some(capture.node.byte_range()),
                 "head" => head = Some(capture.node.byte_range()),
-                "doc" => leading.push((capture.node.byte_range(), true)),
+                "block" => block = Some(capture.node),
+                "doc" => docs.push(capture.node.byte_range()),
                 "attr" => leading.push((capture.node.byte_range(), false)),
                 other => {
                     if let Some(kind) = find_kind(other) {
@@ -166,8 +172,18 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
             .iter()
             .find(|s| &*s.key == "name")
             .and_then(|s| fill(s.value.as_deref()?, captured));
+        // A doc in an item's pattern is inside it (a docstring).
+        let inner_doc = match item {
+            Some(_) => docs.into_iter().next(),
+            None => {
+                leading.extend(docs.into_iter().map(|d| (d, true)));
+                None
+            }
+        };
         if let Some((kind, node)) = item {
             found.push(Found {
+                block,
+                inner_doc,
                 kind,
                 node,
                 name,
@@ -198,6 +214,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
             Reverse(f.node.end_byte()),
             f.name.is_none(),
             f.name.map(|n| n.start_byte()),
+            f.inner_doc.is_none(),
         )
     });
     found.dedup_by(|b, a| a.kind == b.kind && a.node == b.node);
@@ -216,6 +233,8 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                  templated,
 
                  head,
+                 block,
+                 inner_doc,
              }| {
                 let mut range = node.byte_range();
                 // Some nodes (Markdown blocks) take the blank lines after them.
@@ -246,9 +265,20 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                         doc = Some(l.start..doc.map_or(l.end, |d| d.end));
                     }
                 }
-                let body = match &head {
-                    Some(head) => Some(lines_after(text, head.clone(), &range)),
-                    None => body,
+                let (body, sig_end) = match (&head, block) {
+                    (Some(head), _) => (Some(lines_after(text, head.clone(), &range)), None),
+                    (None, Some(block)) => {
+                        let colon = colon_before(node, block);
+                        let body = if !text[colon..block.start_byte()].contains('\n') {
+                            block.byte_range()
+                        } else if let Some(doc) = &inner_doc {
+                            lines_after(text, doc.clone(), &range)
+                        } else {
+                            full_lines(text, block.byte_range())
+                        };
+                        (Some(body), Some(colon))
+                    }
+                    (None, None) => (body, None),
                 };
                 Item {
                     kind,
@@ -261,8 +291,9 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                         .map_or(node.start_byte()..node.start_byte(), |n| n.byte_range()),
                     body,
                     params,
-                    body_lines: head.is_some(),
-                    doc,
+                    undelimited: head.is_some() || block.is_some(),
+                    sig_end,
+                    doc: inner_doc.or(doc),
                 }
             },
         )
@@ -281,6 +312,18 @@ struct Found<'t> {
     /// The name from the pattern's template.
     templated: Option<String>,
     head: Option<Range<usize>>,
+    block: Option<Node<'t>>,
+    /// A `@doc` inside the item (a docstring).
+    inner_doc: Option<Range<usize>>,
+}
+
+/// Where the `:` that opens `block`, a child of `node`, starts.
+fn colon_before(node: Node, block: Node) -> usize {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .filter(|c| c.kind() == ":" && c.end_byte() <= block.start_byte())
+        .last()
+        .map_or(block.start_byte(), |c| c.start_byte())
 }
 
 /// The first line of `node`'s text, trimmed.
@@ -360,13 +403,17 @@ pub fn part(item: &Item, part: Part, text: &str) -> Option<Range<usize>> {
         Part::Body => item
             .body
             .clone()
-            .map(|r| if item.body_lines { r } else { inside(text, r) }),
+            .map(|r| if item.undelimited { r } else { inside(text, r) }),
         Part::Params => item.params.clone().map(|r| inside(text, r)),
         Part::Name => Some(item.name_range.clone()),
         Part::Sig => Some(match &item.body {
             Some(body) => {
                 let start = item.node.start;
-                start..start + text[start..body.start].trim_end().len()
+                start
+                    ..start
+                        + text[start..item.sig_end.unwrap_or(body.start)]
+                            .trim_end()
+                            .len()
             }
             None => item.node.clone(),
         }),
