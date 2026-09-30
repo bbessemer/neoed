@@ -2546,6 +2546,48 @@ mod tests {
     }
 
     #[test]
+    fn replacing_off_by_one_lines_leaves_a_note() {
+        let notes = |text: &str, script: &str| exec(text, script).notes;
+        assert_eq!(
+            notes(TEXT, "replace 3 with <<END\nlet x = 1;\nlet y = 5;\nEND\n"),
+            [
+                "a.rs:3: the new text starts with a copy of line 2 (`let x = 1;`), \
+              just above the replaced lines; the range may be off by one"
+            ]
+        );
+        assert_eq!(
+            notes(TEXT, "replace 2 with <<END\nlet x = 0;\nlet y = 2;\nEND\n"),
+            [
+                "a.rs:2: the new text ends with a copy of line 3 (`let y = 2;`), \
+              just below the replaced lines; the range may be off by one"
+            ]
+        );
+        // `}` alone doesn't count, nor does repeating the span's own line.
+        assert!(notes(TEXT, "replace 7 with <<END\nlet x = 4;\n}\nEND\n").is_empty());
+        assert!(notes(TEXT, "replace 3 with <<END\nlet y = 2;\nlet z = 2;\nEND\n").is_empty());
+    }
+
+    #[test]
+    fn replacing_part_of_a_line_with_its_rest_leaves_a_note() {
+        let notes = |script: &str| exec("let a = f(b);\n", script).notes;
+        assert_eq!(
+            notes("replace /let a/ with \"let c = f(b);\""),
+            [
+                "a.rs:1: the new text ends with `= f(b);`, which already follows the \
+              replaced text on its line; to replace whole lines, select /let a/.lines"
+            ]
+        );
+        assert_eq!(
+            notes("replace \"f(b)\" with \"let a = g(b)\""),
+            [
+                "a.rs:1: the new text starts with `let a =`, which already precedes the \
+              replaced text on its line; to replace whole lines, select \"f(b)\".lines"
+            ]
+        );
+        assert!(notes("replace \"f(b)\" with \"g(b)\"").is_empty());
+    }
+
+    #[test]
     fn create_makes_a_file_later_commands_can_edit() {
         let out = exec_with(
             &[("a.rs", "x\n")],

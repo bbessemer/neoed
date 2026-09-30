@@ -493,6 +493,13 @@ Notes:
   attributes unless `TEXT` starts with its own, so replacing a test function
   keeps its `#[test]`. To replace them too, start `TEXT` with them, or select
   `ITEM.lines`.
+- A `replace` that looks off by one gets a note on stderr (never an error),
+  ignoring lines without a letter or digit (`}`):
+  - a whole-line span whose `TEXT` starts with a copy of the line just above
+    it, or ends with a copy of the line just below;
+  - a partial span whose `TEXT` ends with the rest of the span's last line, or
+    starts with what precedes the span on its first line. The note suggests
+    selecting whole lines with `.lines`.
 - **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
   lines in a row, a blank line right after an opening delimiter or right before
   a closing one, or a blank line at the start or end of the file, one blank
