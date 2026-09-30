@@ -2083,8 +2083,8 @@ fn main() {
     #[test]
     fn syntax_steps_are_not_yet_supported_for_other_languages() {
         assert_eq!(
-            error("delete fn:main", &[("a.py", "def main():\n    pass\n")]),
-            "error: script:1:8: `fn:main` in python files is not yet supported; \
+            error("delete fn:main", &[("a.go", "func main() {}\n")]),
+            "error: script:1:8: `fn:main` in go files is not yet supported; \
              use a line, /regex/, \"literal\" or query{} selector"
         );
     }

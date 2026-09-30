@@ -90,6 +90,7 @@ impl Language {
         let source = match self {
             Language::Rust => include_str!("../../../queries/rust/selectors.scm"),
             Language::Markdown => include_str!("../../../queries/markdown/selectors.scm"),
+            Language::Python => include_str!("../../../queries/python/selectors.scm"),
             _ => return None,
         };
         Some(QUERIES[self as usize].get_or_init(|| {

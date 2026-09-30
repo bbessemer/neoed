@@ -3738,7 +3738,7 @@ fn main() {}
         let files = [
             ("a.rs", "fn a() {}\n"),
             ("b.md", "# B\n\ntext\n"),
-            ("c.py", "def c():\n    pass\n"),
+            ("c.go", "package c\n"),
         ];
         let out = exec_with(&files, 3, "show fn:a\nshow section:B");
         assert_eq!(
@@ -3748,7 +3748,7 @@ fn main() {}
         let out = exec_with(&files, 3, "outline");
         assert!(out.output.starts_with("a.rs\n"), "{}", out.output);
         assert!(out.output.contains("b.md\n"), "{}", out.output);
-        assert!(!out.output.contains("c.py"), "{}", out.output);
+        assert!(!out.output.contains("c.go"), "{}", out.output);
         let out = exec_with(&files[1..], 2, "show fn:a");
         assert!(
             out.error().contains("markdown has no `fn` items"),
@@ -3757,7 +3757,7 @@ fn main() {}
         );
         let out = exec_with(&files[2..], 1, "outline");
         assert!(
-            out.error().contains("`outline` in python files"),
+            out.error().contains("`outline` in go files"),
             "{}",
             out.error()
         );

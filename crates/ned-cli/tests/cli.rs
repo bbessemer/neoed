@@ -748,13 +748,13 @@ fn outline_of_a_selector_lists_the_items_inside() {
 
 #[test]
 fn outline_in_a_deferred_language_exits_2() {
-    let dir = dir_with(&[("app.py", APP)]);
-    let out = ned(dir.path(), &["app.py", "-e", "outline"], "");
+    let dir = dir_with(&[("main.go", "package main\n")]);
+    let out = ned(dir.path(), &["main.go", "-e", "outline"], "");
     assert_snapshot!(out, @r"
     exit: 2
     --- stdout
     --- stderr
-    error: script:1:1: `outline` in python files is not yet supported; use `show`
+    error: script:1:1: `outline` in go files is not yet supported; use `show`
     ");
 }
 
