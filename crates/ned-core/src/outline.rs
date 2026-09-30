@@ -3,7 +3,7 @@
 use std::ops::Range;
 
 use crate::select::{SourceFile, line_numbers};
-use crate::syntax::{self, Item, KINDS};
+use crate::syntax::{self, Item, rank};
 
 /// The outline entries of the items in `f`, one per line, or of the items
 /// strictly inside `within`. Empty if `f` has no items.
@@ -11,7 +11,6 @@ pub fn render(f: &SourceFile, within: Option<&Range<usize>>) -> String {
     let Some(items) = f.items() else {
         return String::new();
     };
-    let rank = |kind: &str| KINDS.iter().position(|k| *k == kind);
     let listed = items.iter().filter(|i| {
         within.is_none_or(|w| w.start <= i.range.start && i.range.end <= w.end && i.range != *w)
             // One entry per node, preferring the earliest kind (`fn`).

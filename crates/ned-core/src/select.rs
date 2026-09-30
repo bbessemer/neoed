@@ -858,7 +858,7 @@ fn other_kind(
                 .filter(|i| p.range.start <= i.range.start && i.range.end <= p.range.end)
                 .map(|i| (p.file, i))
         })
-        .min_by_key(|(_, i)| syntax::KINDS.iter().position(|k| *k == i.kind))?;
+        .min_by_key(|(_, i)| syntax::rank(i.kind))?;
     Some(did_you_mean(
         selector,
         &syntax::selector(kind, name),

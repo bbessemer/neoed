@@ -21,26 +21,88 @@ use crate::script::ast::Part;
 use crate::text::full_lines;
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator, Tree};
 
-pub const KINDS: [&str; 18] = [
-    "fn",
-    "class",
-    "struct",
-    "enum",
-    "variant",
-    "trait",
-    "interface",
-    "impl",
-    "type",
-    "const",
-    "var",
-    "field",
-    "mod",
-    "import",
-    "section",
-    "item",
-    "table",
-    "code",
+/// A syntax kind (§3.3), and how `outline` and `insert` treat its items.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Kind {
+    pub name: &'static str,
+    /// `outline` lists its items only inside an outlined parent.
+    pub member: bool,
+    /// `outline` leaves out the items inside its items (function bodies).
+    pub opaque: bool,
+    /// `outline` collapses consecutive items into one line.
+    pub grouped: bool,
+    /// `insert` beside an item adds no separating blank line.
+    pub stacked: bool,
+}
+
+const fn kind(name: &'static str) -> Kind {
+    Kind {
+        name,
+        member: false,
+        opaque: false,
+        grouped: false,
+        stacked: false,
+    }
+}
+
+/// Every kind, in rank order: where several share a node, `outline` lists
+/// the first, and hints suggest the first.
+pub const KINDS: [Kind; 18] = [
+    Kind {
+        opaque: true,
+        ..kind("fn")
+    },
+    kind("class"),
+    kind("struct"),
+    kind("enum"),
+    Kind {
+        member: true,
+        ..kind("variant")
+    },
+    kind("trait"),
+    kind("interface"),
+    kind("impl"),
+    kind("type"),
+    kind("const"),
+    kind("var"),
+    Kind {
+        member: true,
+        ..kind("field")
+    },
+    kind("mod"),
+    Kind {
+        grouped: true,
+        stacked: true,
+        ..kind("import")
+    },
+    kind("section"),
+    Kind {
+        member: true,
+        stacked: true,
+        ..kind("item")
+    },
+    Kind {
+        member: true,
+        ..kind("table")
+    },
+    Kind {
+        member: true,
+        ..kind("code")
+    },
 ];
+
+/// The kind named `name`, if there is one.
+pub fn find_kind(name: &str) -> Option<&'static Kind> {
+    KINDS.iter().find(|k| k.name == name)
+}
+
+/// `name`'s position in `KINDS`; after every kind if it isn't one.
+pub fn rank(name: &str) -> usize {
+    KINDS
+        .iter()
+        .position(|k| k.name == name)
+        .unwrap_or(KINDS.len())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
@@ -89,8 +151,8 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                 "doc" => leading.push((capture.node.byte_range(), true)),
                 "attr" => leading.push((capture.node.byte_range(), false)),
                 other => {
-                    if let Some(kind) = KINDS.iter().find(|&&k| k == other) {
-                        item = Some((*kind, capture.node));
+                    if let Some(kind) = find_kind(other) {
+                        item = Some((kind.name, capture.node));
                     }
                 }
             }
@@ -314,7 +376,11 @@ fn inside(text: &str, delimited: Range<usize>) -> Range<usize> {
 /// The kinds `query` captures, in `KINDS` order.
 pub fn kinds(query: &Query) -> Vec<&'static str> {
     let names = query.capture_names();
-    KINDS.into_iter().filter(|k| names.contains(k)).collect()
+    KINDS
+        .iter()
+        .map(|k| k.name)
+        .filter(|k| names.contains(k))
+        .collect()
 }
 
 /// Whether `name` matches `pattern`, where `*` matches any run of characters.
@@ -384,24 +450,30 @@ pub fn distance(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang::Language;
+    use crate::lang::Language::{self, Markdown, Rust};
 
-    fn items_in(text: &str) -> Vec<Item> {
-        let lang = Language::Rust;
+    fn items_in(lang: Language, text: &str) -> Vec<Item> {
         items(lang.selectors().unwrap(), &lang.parse(text), text)
     }
 
-    /// `(kind, name)` of every item in `text`.
-    fn names(text: &str) -> Vec<(&'static str, String)> {
-        items_in(text)
-            .into_iter()
-            .map(|i| (i.kind, i.name))
-            .collect()
+    /// `(kind, name)` of every item in `text`, which must hold an item of
+    /// every kind `lang` supports.
+    fn names(lang: Language, text: &str) -> Vec<(&'static str, String)> {
+        let found = items_in(lang, text);
+        let mut seen: Vec<&str> = found.iter().map(|i| i.kind).collect();
+        seen.sort_by_key(|k| rank(k));
+        seen.dedup();
+        assert_eq!(
+            seen,
+            kinds(lang.selectors().unwrap()),
+            "kinds without a test"
+        );
+        found.into_iter().map(|i| (i.kind, i.name)).collect()
     }
 
     /// The default span of the only item of `kind` in `text`.
     fn span<'t>(kind: &str, text: &'t str) -> &'t str {
-        let found: Vec<Item> = items_in(text)
+        let found: Vec<Item> = items_in(Rust, text)
             .into_iter()
             .filter(|i| i.kind == kind)
             .collect();
@@ -482,14 +554,14 @@ mod tests {}
         ];
         let expected: Vec<(&str, String)> =
             expected.iter().map(|(k, n)| (*k, n.to_string())).collect();
-        assert_eq!(names(RUST), expected);
+        assert_eq!(names(Rust, RUST), expected);
     }
 
     #[test]
     fn trait_impls_are_named_trait_for_type() {
         let text = "impl<T> From<T> for a::B<T> {}\nimpl X for &Foo {}\n\
                     impl std::ops::Add for Foo {}\nimpl<T> Y for a::C<T> {}\nimpl Foo {}\n";
-        let found: Vec<(String, Option<String>)> = items_in(text)
+        let found: Vec<(String, Option<String>)> = items_in(Rust, text)
             .into_iter()
             .map(|i| (i.name, i.base_name))
             .collect();
@@ -504,7 +576,7 @@ mod tests {}
                 ("Foo".into(), None),
             ]
         );
-        let display = items_in(RUST)
+        let display = items_in(Rust, RUST)
             .into_iter()
             .find(|i| i.name == "Display for Token")
             .unwrap();
@@ -546,7 +618,7 @@ mod tests {}
     #[test]
     fn leading_docs_belong_to_the_next_item_only() {
         let text = "/// S.\n#[derive(Debug)]\nstruct S;\n/// A.\nfn a() {}\nfn b() {}\n";
-        let docs: Vec<Option<&str>> = items_in(text)
+        let docs: Vec<Option<&str>> = items_in(Rust, text)
             .iter()
             .map(|i| i.doc.clone().map(|d| &text[d]))
             .collect();
@@ -556,7 +628,7 @@ mod tests {}
     #[test]
     fn default_span_takes_a_trailing_comma() {
         let text = "enum A {\n    B(u8),\n    C\n}\nstruct D {\n    e: u8, // e\n}\n";
-        let found = items_in(text);
+        let found = items_in(Rust, text);
         let spans: Vec<(&str, bool)> = found
             .iter()
             .filter(|i| i.kind != "enum" && i.kind != "struct")
@@ -590,19 +662,12 @@ mod tests {}
         assert_eq!(selector("import", "a\"b\\"), "import:\"a\\\"b\\\\\"");
     }
 
-    fn markdown_items(text: &str) -> Vec<Item> {
-        let lang = Language::Markdown;
-        items(lang.selectors().unwrap(), &lang.parse(text), text)
-    }
-
     const MARKDOWN: &str = "# Title\n\nIntro.\n\n## 6.4 Formatting\n\n- [ ] item one\n      continued\n- item two\n\n  second para\n\n| Code | Meaning |\n| ---- | ------- |\n| 0    | Success |\n\n```rust\nfn x() {}\n```\n\n```\nplain\n```\n\n    indented\n\n### Deep\n\ntext\n";
 
     #[test]
     fn markdown_items_of_every_kind() {
-        let found: Vec<(&str, String)> = markdown_items(MARKDOWN)
-            .into_iter()
-            .map(|i| (i.kind, i.name))
-            .collect();
+        let found = names(Markdown, MARKDOWN);
+
         let expected = [
             ("section", "Title"),
             ("section", "6.4 Formatting"),
@@ -622,7 +687,7 @@ mod tests {}
     #[test]
     fn section_bodies_are_the_lines_after_the_heading() {
         let text = "# A\n\nintro\n\n## B\n\nb text\n\n## C\n\n# D";
-        let items = markdown_items(text);
+        let items = items_in(Markdown, text);
         let section = |name: &str| items.iter().find(|i| i.name == name).unwrap();
         let body = |name: &str| part(section(name), Part::Body, text).map(|r| &text[r]);
         assert_eq!(body("A"), Some("intro\n\n## B\n\nb text\n\n## C\n"));
@@ -641,7 +706,7 @@ mod tests {}
 
     #[test]
     fn markdown_spans_end_at_their_last_text() {
-        let items = markdown_items(MARKDOWN);
+        let items = items_in(Markdown, MARKDOWN);
         let span = |kind: &str, name: &str| {
             let item = items
                 .iter()
@@ -677,8 +742,14 @@ mod tests {}
     }
 
     /// The text of `part` of the only item of `kind` named `name` in `text`.
-    fn part_of<'t>(kind: &str, name: &str, p: Part, text: &'t str) -> Option<&'t str> {
-        let found: Vec<Item> = items_in(text)
+    fn part_of<'t>(
+        lang: Language,
+        kind: &str,
+        name: &str,
+        p: Part,
+        text: &'t str,
+    ) -> Option<&'t str> {
+        let found: Vec<Item> = items_in(lang, text)
             .into_iter()
             .filter(|i| i.kind == kind && i.name == name)
             .collect();
@@ -731,53 +802,62 @@ const C: u8 = 1;
     #[test]
     fn whole_line_body_and_params() {
         assert_eq!(
-            part_of("fn", "new", Part::Body, PARTS),
+            part_of(Rust, "fn", "new", Part::Body, PARTS),
             Some("        Parser { src }\n")
         );
         assert_eq!(
-            part_of("fn", "tall", Part::Params, PARTS),
+            part_of(Rust, "fn", "tall", Part::Params, PARTS),
             Some("        a: u8,\n        b: u8,\n")
         );
         assert_eq!(
-            part_of("fn", "tall", Part::Body, PARTS),
+            part_of(Rust, "fn", "tall", Part::Body, PARTS),
             Some("        a + b\n")
         );
         assert_eq!(
-            part_of("struct", "Parser", Part::Body, PARTS),
+            part_of(Rust, "struct", "Parser", Part::Body, PARTS),
             Some("    src: String,\n")
         );
         assert!(
-            part_of("impl", "Parser", Part::Body, PARTS)
+            part_of(Rust, "impl", "Parser", Part::Body, PARTS)
                 .unwrap()
                 .starts_with("    /// Makes one.\n")
         );
         assert!(
-            part_of("impl", "Parser", Part::Body, PARTS)
+            part_of(Rust, "impl", "Parser", Part::Body, PARTS)
                 .unwrap()
                 .ends_with("    fn open() {\n    }\n")
         );
         assert_eq!(
-            part_of("enum", "E", Part::Body, PARTS),
+            part_of(Rust, "enum", "E", Part::Body, PARTS),
             Some("    A { x: u8 },\n    B,\n")
         );
         assert_eq!(
-            part_of("trait", "T", Part::Body, PARTS),
+            part_of(Rust, "trait", "T", Part::Body, PARTS),
             Some("    fn f(&self);\n")
         );
     }
 
     #[test]
     fn inline_body_and_params_are_trimmed() {
-        assert_eq!(part_of("fn", "inline", Part::Body, PARTS), Some("a"));
-        assert_eq!(part_of("fn", "inline", Part::Params, PARTS), Some("a: u8"));
-        assert_eq!(part_of("fn", "new", Part::Params, PARTS), Some("src: &str"));
-        assert_eq!(part_of("variant", "A", Part::Body, PARTS), Some("x: u8"));
+        assert_eq!(part_of(Rust, "fn", "inline", Part::Body, PARTS), Some("a"));
+        assert_eq!(
+            part_of(Rust, "fn", "inline", Part::Params, PARTS),
+            Some("a: u8")
+        );
+        assert_eq!(
+            part_of(Rust, "fn", "new", Part::Params, PARTS),
+            Some("src: &str")
+        );
+        assert_eq!(
+            part_of(Rust, "variant", "A", Part::Body, PARTS),
+            Some("x: u8")
+        );
     }
 
     #[test]
     fn empty_bodies_are_empty_spans() {
         let empty = |name| {
-            let item = items_in(PARTS)
+            let item = items_in(Rust, PARTS)
                 .into_iter()
                 .find(|i| i.name == name)
                 .unwrap();
@@ -791,42 +871,48 @@ const C: u8 = 1;
         assert!((spaced..=spaced + 2).contains(&empty("spaced")));
         let open = PARTS.find("fn open() {\n").unwrap() + "fn open() {\n".len();
         assert_eq!(empty("open"), open);
-        assert_eq!(part_of("fn", "empty", Part::Params, PARTS), Some(""));
+        assert_eq!(part_of(Rust, "fn", "empty", Part::Params, PARTS), Some(""));
     }
 
     #[test]
     fn name_sig_and_doc() {
-        assert_eq!(part_of("fn", "new", Part::Name, PARTS), Some("new"));
-        assert_eq!(part_of("impl", "Parser", Part::Name, PARTS), Some("Parser"));
+        assert_eq!(part_of(Rust, "fn", "new", Part::Name, PARTS), Some("new"));
         assert_eq!(
-            part_of("fn", "new", Part::Sig, PARTS),
+            part_of(Rust, "impl", "Parser", Part::Name, PARTS),
+            Some("Parser")
+        );
+        assert_eq!(
+            part_of(Rust, "fn", "new", Part::Sig, PARTS),
             Some("pub fn new(src: &str) -> Self")
         );
         assert_eq!(
-            part_of("fn", "tall", Part::Sig, PARTS),
+            part_of(Rust, "fn", "tall", Part::Sig, PARTS),
             Some("fn tall(\n        a: u8,\n        b: u8,\n    ) -> u8")
         );
         assert_eq!(
-            part_of("struct", "Parser", Part::Sig, PARTS),
+            part_of(Rust, "struct", "Parser", Part::Sig, PARTS),
             Some("pub struct Parser")
         );
-        assert_eq!(part_of("fn", "f", Part::Sig, PARTS), Some("fn f(&self);"));
         assert_eq!(
-            part_of("fn", "new", Part::Doc, PARTS),
+            part_of(Rust, "fn", "f", Part::Sig, PARTS),
+            Some("fn f(&self);")
+        );
+        assert_eq!(
+            part_of(Rust, "fn", "new", Part::Doc, PARTS),
             Some("    /// Makes one.\n")
         );
         assert_eq!(
-            part_of("struct", "Parser", Part::Doc, PARTS),
+            part_of(Rust, "struct", "Parser", Part::Doc, PARTS),
             Some("/// A parser.\n/// Two lines.\n")
         );
     }
 
     #[test]
     fn missing_parts() {
-        assert_eq!(part_of("const", "C", Part::Body, PARTS), None);
-        assert_eq!(part_of("const", "C", Part::Doc, PARTS), None);
-        assert_eq!(part_of("struct", "Parser", Part::Params, PARTS), None);
-        assert_eq!(part_of("fn", "f", Part::Body, PARTS), None);
-        assert_eq!(part_of("variant", "B", Part::Body, PARTS), None);
+        assert_eq!(part_of(Rust, "const", "C", Part::Body, PARTS), None);
+        assert_eq!(part_of(Rust, "const", "C", Part::Doc, PARTS), None);
+        assert_eq!(part_of(Rust, "struct", "Parser", Part::Params, PARTS), None);
+        assert_eq!(part_of(Rust, "fn", "f", Part::Body, PARTS), None);
+        assert_eq!(part_of(Rust, "variant", "B", Part::Body, PARTS), None);
     }
 }
