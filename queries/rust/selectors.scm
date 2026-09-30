@@ -17,8 +17,8 @@
 
 (trait_item name: (type_identifier) @name body: (declaration_list) @body) @trait
 
-; A trait impl's @trait_name (the kind `trait` can't be a capture name) makes
-; its name `TRAIT for TYPE`.
+; A trait impl is named `TRAIT for TYPE` (the kind `trait` can't be a capture
+; name).
 (impl_item
   trait: [
     (type_identifier) @trait_name
@@ -38,7 +38,8 @@
       (generic_type type: (type_identifier) @name)
     ])
   ]
-  body: (declaration_list)? @body) @impl
+  body: (declaration_list)? @body
+  (#set! name "{trait_name} for {name}")) @impl
 
 (type_item name: (type_identifier) @name) @type
 (associated_type name: (type_identifier) @name) @type

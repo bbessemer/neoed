@@ -1597,7 +1597,7 @@ fn separated<'t>(
 ) -> Cow<'t, Text> {
     let item = matches!(
         target.selector.steps.last(),
-        Some(Step { primary: Primary::Syntax { kind, .. }, parts, .. }) if parts.is_empty() && kind != "import" && kind != "item"
+        Some(Step { primary: Primary::Syntax { kind, .. }, parts, .. }) if parts.is_empty() && !syntax::find_kind(kind).is_some_and(|k| k.stacked)
     );
     let t = &f.text;
     if !item
@@ -1748,9 +1748,6 @@ fn line_oriented(new: &Text, indent: &str, unit: &str) -> String {
 /// `offset` anchors to (§5.2): the innermost item on that line, if it's a list
 /// item that isn't in a block quote.
 fn list_anchor<'f>(f: &'f SourceFile, offset: usize, new: &Text) -> Option<&'f Item> {
-    if f.lang != Some(Language::Markdown) {
-        return None;
-    }
     let first = new.value.lines().map(str::trim).find(|l| !l.is_empty())?;
     let digits = first.len() - first.trim_start_matches(|c: char| c.is_ascii_digit()).len();
     let marker = match digits {
@@ -2049,7 +2046,11 @@ mod tests {
     }
 
     fn edited(text: &str, script: &str) -> String {
-        exec(text, script).new_text().to_string()
+        edited_in("a.rs", text, script)
+    }
+
+    fn edited_in(path: &str, text: &str, script: &str) -> String {
+        exec_with(&[(path, text)], 1, script).new_text().to_string()
     }
 
     #[test]
@@ -2323,7 +2324,8 @@ mod tests {
     fn insert_into_python_block() {
         let app = "def handle(req):\n    if req.ok:\n        log(req)\n        return 200\n    return 500\n";
         assert_eq!(
-            edited(
+            edited_in(
+                "a.py",
                 app,
                 "insert after \"log(req)\".lines <<END\nif req.slow:\n    warn(req)\nEND\n"
             ),
