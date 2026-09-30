@@ -770,7 +770,10 @@ impl Executor<'_> {
             let (mut moved, separated) = moved_text(source, &from.range);
             let target = &self.files[to.file].file;
             let at = heredoc_lines(target, &dest, position, &moved, to.range.clone());
-            if separated && text::is_whole_line(&target.text, &at) {
+            // Doc comments and attributes attach to the item they move before.
+            let attaches =
+                matches!(position, Position::Before) && only_leading(target, &moved.value);
+            if separated && !attaches && text::is_whole_line(&target.text, &at) {
                 match position {
                     Position::Before => moved.value.push('\n'),
                     Position::After => moved.value.insert(0, '\n'),
@@ -1265,7 +1268,6 @@ fn expand(path: &str, span: Option<&Range<usize>>) -> Result<Vec<String>, ExecEr
 
 /// `target`, with `.body` added when `insert start|end` targets a syntax
 /// step with no parts (§4.2).
-
 fn implied_body(target: &Target, position: Position) -> Cow<'_, Target> {
     let last = target.selector.steps.last();
     let syntax =
@@ -1437,6 +1439,12 @@ fn leading_len(f: &SourceFile, text: &str) -> usize {
     syntax::leading_len(query, &lang.parse(text), text)
 }
 
+/// Whether `text` is only doc comments and attributes, in `f`'s language.
+fn only_leading(f: &SourceFile, text: &str) -> bool {
+    let len = text.trim_end().len();
+    len > 0 && leading_len(f, text) == len
+}
+
 /// A note when replacing `range` with `new` looks off by one (§4.2): `new`
 /// repeats the line just outside a whole-line span, or the rest of a partial
 /// span's line, which `selector.lines` would have replaced.
@@ -1548,7 +1556,7 @@ fn separated<'t>(
     match position {
         Position::After if !blank(new.value.split('\n').next()) => value.insert(0, '\n'),
         // Doc comments and attributes attach to the item.
-        Position::Before if leading_len(f, &new.value) == new.value.trim_end().len() => {
+        Position::Before if only_leading(f, &new.value) => {
             return Cow::Borrowed(new);
         }
         Position::Before if !blank(new.value.split('\n').next_back()) => value.push('\n'),
@@ -2711,6 +2719,15 @@ mod tests {
         assert_eq!(
             edited(text, "insert before fn:a \"// c\""),
             "fn z() {}\n\n// c\n\n/// Doc.\nfn a() {}\n"
+        );
+    }
+
+    #[test]
+    fn moved_docs_attach_to_the_item_they_move_before() {
+        let text = "/// Doc.\n\nfn a() {}\n\nfn b() {}\n";
+        assert_eq!(
+            edited(text, "move 1 before fn:b"),
+            "fn a() {}\n\n/// Doc.\nfn b() {}\n"
         );
     }
 
