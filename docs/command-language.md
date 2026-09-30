@@ -118,6 +118,10 @@ other platforms, features that need it are errors.
 ### 2.1 Lexical structure
 
 - **Commands** are separated by newlines or `;`.
+- **Stages** are separated by `|` (§2.3). `|` binds more loosely than `;` and
+  newlines, the opposite of a shell: `a; b | c` is the stage `a; b`, then the
+  stage `c`. A line may end with `|`; the next stage starts on the next line. A
+  `|` needs a command on each side.
 - **Comments** start with `#` at the start of a token and run to the end of the
   line. A `#` inside a string, regex, query, or heredoc body is literal.
 - **Strings** are `"..."`, on a single line, with the escapes `\n`, `\t`, `\"`
@@ -144,7 +148,8 @@ other platforms, features that need it are errors.
 
 ```ebnf
 script     = { line } ;
-line       = [ command { ";" command } ] [ comment ] NEWLINE { heredoc-body } ;
+line       = [ command { ( ";" | "|" ) command } [ "|" ] ] [ comment ] NEWLINE
+             { heredoc-body } ;
 command    = show | outline | replace | insert | delete | sub | move | create
            | file | check | allow | rename ;
 
@@ -195,24 +200,33 @@ if present, is the scope: `sub fn:parse /x/ with "y"`.
 
 ### 2.3 Snapshot semantics
 
-A script is one transaction over a snapshot of its files:
+A script is one transaction. `|` splits it into **stages**, each over a
+snapshot of its files as the stage before left them; a script without `|` is
+one stage over the files as they are:
 
-1. Every selector resolves against the **original** contents of each file,
-   before any command in the script is applied. Line numbers printed by an
-   earlier `show` stay valid for the whole script.
-2. Each edit becomes one or more replacements of a byte span in the original.
-3. Two edits whose spans overlap are an error that names both commands.
-   Insertions at the same point are allowed, and apply in command order. An
-   insertion exactly at the boundary of a replaced or deleted span is also
-   allowed. Whole-line deletions (by `delete` or `move`) that only blank lines
-   separate are merged into one, so neighbouring items can be deleted
+1. Every selector resolves against the contents at the start of its stage (the
+   original contents, in the first stage). Line numbers printed by an earlier
+   `show` in the same stage stay valid for the whole stage.
+2. Each edit becomes one or more replacements of a byte span in those contents.
+3. Two edits in one stage whose spans overlap are an error that names both
+   commands. Insertions at the same point are allowed, and apply in command
+   order. An insertion exactly at the boundary of a replaced or deleted span is
+   also allowed. Whole-line deletions (by `delete` or `move`) that only blank
+   lines separate are merged into one, so neighbouring items can be deleted
    together.
-4. All edits are applied in one pass. Then the parse-error guard (§4.3) and the
-   formatters (§6.4) run. Every modified file is written atomically, or none is.
-5. Reads (`show`, `outline`) always display the original contents.
+4. At the end of each stage, its edits are applied in one pass and the
+   parse-error guard (§4.3) checks them. After the last stage the formatters
+   (§6.4) run, and every modified file is written atomically, or none is.
+5. Reads (`show`, `outline`) display the contents at the start of their stage.
 
-The consequence is that a command can't target text that another command in the
-same script inserts. Use a second `ned` invocation for that.
+So a command can't target text that another command in the same stage inserts;
+put it after a `|`: `create src/lexer.rs <<END | insert after struct:Lexer ...`
+or `rename fn:new to create | show fn:create`.
+
+After the first `|`, the files on disk no longer hold the stage's contents, so
+the commands that read them or ask a language server about them are a syntax
+error there: `check`, `rename`, and selectors with `.refs` or `.def`. Run them
+before the first `|`, or in a separate `ned` call.
 
 ### 2.4 File set
 
@@ -530,9 +544,9 @@ rename impl:Parser>fn:new>"tokens" to toks
 ### 4.3 Parse-error guard
 
 For each modified file that has a language, `ned` counts the tree-sitter `ERROR`
-and `MISSING` nodes before and after the edit. If the count rises, the script is
-rejected (exit 1) and the error shows the first new error node. `--force` skips
-this check.
+and `MISSING` nodes before and after each stage's edits (§2.3). If the count
+rises, the script is rejected (exit 1) and the error shows the first new error
+node. `--force` skips this check.
 
 ### 4.4 Directives
 
@@ -666,7 +680,8 @@ src/parser.rs: 1 edit, +1 -1
          self.parse_expr(tok)
 ```
 
-- The edit count is the number of spans edited.
+- The edit count is the number of spans edited, summed over stages; the hunks
+  show the change from the original contents to the last stage's.
 - `--dry-run` prefixes each summary line with `(dry run) `.
 - `--quiet` prints only the summary lines.
 - A file made by `create` is summarized as `PATH: created, +N`, and its hunks
@@ -774,6 +789,7 @@ Errors go to stderr, in the form `error: LOC: message`.
 | Error                                                     | Fix it suggests                                                                                                                                                                                                                                                                                         |
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Script syntax                                             | Quoting, for a bare word where text or a selector belongs; otherwise the command's usage, e.g. `usage: replace [all] SEL with TEXT`                                                                                                                                                                     |
+| `check`, `rename`, `.refs` or `.def` after a `\|`         | Running it before the first `\|`, or in a separate `ned` call                                                                                                                                                                                                                                           |
 | Selector matches nothing                                  | The same name under another kind; a close syntax name; for `P>"a"..P>"b"`, `P>"a".."b"`; a string literal that matches as escaped source text (`"\\n"` for `"\n"`); a literal match that differs only in case or spacing; a regex that matches with `i`; the spans a nested step searched; or `outline` |
 | Command's name given as a `FILE`                          | The `-e` form of the arguments                                                                                                                                                                                                                                                                          |
 | Ambiguous selector                                        | Candidate selectors (§3.5), or longer text for matches that share a line                                                                                                                                                                                                                                |
