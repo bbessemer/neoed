@@ -1839,7 +1839,7 @@ pub enum ExecErrorKind {
     #[error("{what} is not yet supported; {instead}")]
     Unsupported { what: String, instead: &'static str },
     #[error(
-        "edit overlaps command {command} at {location}; merge the two edits, or make one in a separate ned run"
+        "edit overlaps command {command} at {location}; merge the two edits, or put a `|` between them"
     )]
     Overlap { command: usize, location: String },
     #[error("no files to edit; pass FILE arguments or use `file PATH`")]
@@ -2597,11 +2597,11 @@ mod tests {
     fn overlapping_edits_name_the_earlier_command() {
         assert_eq!(
             exec(TEXT, "replace 2 with \"a\"\ndelete 2-3").error(),
-            "error: script:2:1: edit overlaps command 1 at a.rs:2; merge the two edits, or make one in a separate ned run"
+            "error: script:2:1: edit overlaps command 1 at a.rs:2; merge the two edits, or put a `|` between them"
         );
         assert_eq!(
             exec(TEXT, "show 1; delete 2-3; replace \"y\" with \"z\"").error(),
-            "error: script:1:21: edit overlaps command 2 at a.rs:2-3; merge the two edits, or make one in a separate ned run"
+            "error: script:1:21: edit overlaps command 2 at a.rs:2-3; merge the two edits, or put a `|` between them"
         );
     }
 
