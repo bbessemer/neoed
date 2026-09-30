@@ -11,10 +11,11 @@ so you don't need to read the file back to check the edit.
 
 Syntax selectors work in Rust (`fn:parse`, `impl:Parser`,
 `impl:"Display for Parser"`), Python (`class:App>fn:start`; decorators come
-with the item, and `.doc` is the docstring) and Markdown (`section:"Install"`,
-`item:`, `table:`, `code:`); `insert end section:X` appends to a section. In
-other files, use lines, regexes, literals or `query{}`. Run `ned help` for the
-whole language in one screen, and `ned help TOPIC` for one verb.
+with the item, and `.doc` is the docstring), Go (`fn:"Server.Run"` for a
+method) and Markdown (`section:"Install"`, `item:`, `table:`, `code:`);
+`insert end section:X` appends to a section. In other files, use lines,
+regexes, literals or `query{}`. Run `ned help` for the whole language in one
+screen, and `ned help TOPIC` for one verb.
 
 ## Invocation
 
