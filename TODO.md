@@ -137,6 +137,9 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
 - [ ] An invalid escape in a string suggests doubling the backslash, for
       text copied from source: "invalid escape `\r`; write `\\r` for a
       backslash and r"
+- [ ] `show` with a line range past the end of the file shows up to the last
+      line, with a note, instead of an error (`show 1-60` on a 57-line file);
+      edits keep the error
 
 ## 9. LSP daemon _(split)_
 
