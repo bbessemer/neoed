@@ -3,11 +3,16 @@
 //!
 //! A query in `queries/<lang>/selectors.scm` captures each item node as its
 //! kind (`@fn`, `@struct`, ...) and the item's name node as `@name`, in one
-//! pattern, with optional `@body` and `@params` nodes for those parts, or a
-//! `@head` node whose following lines are the body (a Markdown heading).
+//! pattern, with optional `@body` and `@params` nodes for those parts. The
+//! body may instead be the lines after a `@head` node (a Markdown heading), or
+//! the lines of a `@block` node (a Python block), after a `@doc` in the same
+//! pattern (a docstring), which is the item's `.doc`.
+//!
 //! Standalone `@doc` and `@attr` patterns capture the doc comments and
 //! attributes that extend an item's default span when they directly precede
-//! it.
+//! it; `@attr` nodes that start an item's node count as leading too (JS
+//! decorators). A standalone `@wrap` node that ends where an item's node does
+//! becomes the item's node (a JS `export`).
 //!
 //! A pattern's `(#set! name "TEMPLATE")` names its items by `TEMPLATE`, with
 //! each `{CAPTURE}` replaced by that capture's text, when every capture it
@@ -139,6 +144,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
     let mut found: Vec<Found> = Vec::new();
     // Every @doc and @attr node, and whether it's a doc.
     let mut leading: Vec<(Range<usize>, bool)> = Vec::new();
+    let mut wraps: Vec<Node> = Vec::new();
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
     while let Some(m) = matches.next() {
@@ -154,6 +160,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                 "block" => block = Some(capture.node),
                 "doc" => docs.push(capture.node.byte_range()),
                 "attr" => leading.push((capture.node.byte_range(), false)),
+                "wrap" => wraps.push(capture.node),
                 other => {
                     if let Some(kind) = find_kind(other) {
                         item = Some((kind.name, capture.node));
@@ -195,6 +202,17 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
         }
     }
     leading.sort_by_key(|(r, _)| r.start);
+    // A @wrap node that ends where an item does (an `export`) is the item.
+    for f in &mut found {
+        let (start, end) = (f.node.start_byte(), f.node.end_byte());
+        if let Some(wrap) = wraps.iter().find(|w| {
+            w.start_byte() < start
+                && w.end_byte() >= end
+                && text[end..w.end_byte()].trim().is_empty()
+        }) {
+            f.node = *wrap;
+        }
+    }
 
     // A wrapper and the node it wraps can both match; keep the widest.
     found.sort_by_key(|f| {
@@ -288,7 +306,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                     name: templated.unwrap_or_else(|| name_text(name)),
                     range,
                     trailing_comma: comma.is_some(),
-                    node: node.byte_range(),
+                    node: after_attrs(text, node.byte_range(), &leading),
                     name_range: name
                         .map_or(node.start_byte()..node.start_byte(), |n| n.byte_range()),
                     body,
@@ -302,6 +320,26 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
         .collect();
     items.sort_by_key(|i| (i.range.start, Reverse(i.range.end)));
     items
+}
+
+/// `node` without the attributes it starts with (JS decorators), which
+/// belong to the item's leading attributes, as they do in languages that put
+/// them before the item's node.
+fn after_attrs(text: &str, node: Range<usize>, leading: &[(Range<usize>, bool)]) -> Range<usize> {
+    let mut start = node.start;
+    for (attr, _) in leading
+        .iter()
+        .filter(|(l, is_doc)| !is_doc && node.start <= l.start && l.end <= node.end)
+    {
+        if !text[start..attr.start].trim().is_empty() {
+            break;
+        }
+        start = attr.end;
+    }
+    if start > node.start {
+        start += text[start..].len() - text[start..].trim_start().len();
+    }
+    start..node.end
 }
 
 /// An item pattern's captures.
@@ -524,10 +562,10 @@ pub fn distance(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang::Language::{self, Go, Markdown, Python, Rust};
+    use crate::lang::Language::{self, Go, JavaScript, Markdown, Python, Rust, Tsx, TypeScript};
 
     fn items_in(lang: Language, text: &str) -> Vec<Item> {
-        items(lang.selectors().unwrap(), &lang.parse(text), text)
+        items(lang.selectors(), &lang.parse(text), text)
     }
 
     /// `(kind, name)` of every item in `text`, which must hold an item of
@@ -537,11 +575,7 @@ mod tests {
         let mut seen: Vec<&str> = found.iter().map(|i| i.kind).collect();
         seen.sort_by_key(|k| rank(k));
         seen.dedup();
-        assert_eq!(
-            seen,
-            kinds(lang.selectors().unwrap()),
-            "kinds without a test"
-        );
+        assert_eq!(seen, kinds(lang.selectors()), "kinds without a test");
         found.into_iter().map(|i| (i.kind, i.name)).collect()
     }
 
@@ -664,7 +698,7 @@ mod tests {}
     fn rust_kinds() {
         let lang = Language::Rust;
         assert_eq!(
-            kinds(lang.selectors().unwrap()),
+            kinds(lang.selectors()),
             [
                 "fn", "struct", "enum", "variant", "trait", "impl", "type", "const", "var",
                 "field", "mod", "import"
@@ -692,11 +726,12 @@ mod tests {}
 
     #[test]
     fn selector_queries_use_only_known_captures() {
-        const CAPTURES: [&str; 7] = ["name", "body", "block", "params", "head", "doc", "attr"];
+        const CAPTURES: [&str; 8] = [
+            "name", "body", "block", "params", "head", "doc", "attr", "wrap",
+        ];
         for lang in Language::ALL {
-            let Some(query) = lang.selectors() else {
-                continue;
-            };
+            let query = lang.selectors();
+
             let templates: String = (0..query.pattern_count())
                 .flat_map(|p| query.property_settings(p))
                 .filter(|s| &*s.key == "name")
@@ -1291,5 +1326,208 @@ func (p *Parser) Parse() error {
 func (l List[T]) Len() int { return len(l.items) }
 
 func (s Size) Parse() {}
+"#;
+
+    #[test]
+    fn javascript_items_of_every_kind() {
+        let expected = [
+            ("import", "fs"),
+            ("fn", "load"),
+            ("const", "parse"),
+            ("fn", "parse"),
+            ("var", "cache"),
+            ("var", "hits"),
+            ("fn", "ids"),
+            ("class", "Store"),
+            ("field", "#items"),
+            ("field", "size"),
+            ("fn", "add"),
+        ];
+        let expected: Vec<(&str, String)> =
+            expected.iter().map(|(k, n)| (*k, n.to_string())).collect();
+        assert_eq!(names(JavaScript, JS), expected);
+    }
+
+    #[test]
+    fn typescript_items_of_every_kind() {
+        let expected = [
+            ("import", "react"),
+            ("import", "./util"),
+            ("const", "MAX"),
+            ("var", "count"),
+            ("var", "legacy"),
+            ("fn", "add"),
+            ("const", "double"),
+            ("fn", "double"),
+            ("const", "handler"),
+            ("fn", "handler"),
+            ("fn", "gen"),
+            ("class", "App"),
+            ("field", "name"),
+            ("field", "#secret"),
+            ("fn", "render"),
+            ("interface", "Shape"),
+            ("fn", "area"),
+            ("field", "label"),
+            ("type", "ID"),
+            ("enum", "Color"),
+            ("variant", "Red"),
+            ("variant", "Green"),
+            ("mod", "Util"),
+            ("fn", "help"),
+            ("mod", "mod"),
+            ("fn", "over"),
+            ("class", "Base"),
+            ("fn", "size"),
+        ];
+        let expected: Vec<(&str, String)> =
+            expected.iter().map(|(k, n)| (*k, n.to_string())).collect();
+        assert_eq!(names(TypeScript, TS), expected);
+        let tsx = "export function App() {\n  return <div>hi</div>;\n}\n";
+        assert_eq!(items_in(Tsx, tsx)[0].name, "App");
+    }
+
+    #[test]
+    fn ecma_spans_take_export_docs_and_decorators() {
+        let span = |lang: Language, text: &'static str, kind: &str, name: &str| {
+            let item = items_in(lang, text)
+                .into_iter()
+                .find(|i| i.kind == kind && i.name == name)
+                .unwrap();
+            (&text[item.range.clone()], &text[item.node])
+        };
+        assert_eq!(
+            span(TypeScript, TS, "const", "MAX"),
+            (
+                "/** The max. */\nexport const MAX = 3;",
+                "export const MAX = 3;"
+            )
+        );
+        let (range, node) = span(TypeScript, TS, "class", "App");
+        assert!(
+            range.starts_with("@Component({})\nexport class App"),
+            "{range}"
+        );
+        assert!(node.starts_with("export class App"), "{node}");
+        let (range, node) = span(TypeScript, TS, "fn", "render");
+        assert!(range.starts_with("@Input()\n  render()"), "{range}");
+        assert!(node.starts_with("render()"), "{node}");
+        let (range, node) = span(JavaScript, JS, "fn", "add");
+        assert!(range.starts_with("@logged\n  add(item)"), "{range}");
+        assert!(node.starts_with("add(item)"), "{node}");
+    }
+
+    #[test]
+    fn ecma_parts() {
+        let js = |kind, name, p| part_of(JavaScript, kind, name, p, JS);
+        let ts = |kind, name, p| part_of(TypeScript, kind, name, p, TS);
+        assert_eq!(
+            js("fn", "load", Part::Sig),
+            Some("export async function load(path)")
+        );
+        assert_eq!(js("fn", "load", Part::Doc), Some("/** Loads. */\n"));
+        assert_eq!(
+            js("fn", "load", Part::Body),
+            Some("  return fs.read(path);\n")
+        );
+        assert_eq!(js("fn", "parse", Part::Params), Some("text"));
+        assert_eq!(js("fn", "parse", Part::Body), None);
+        assert_eq!(ts("fn", "handler", Part::Body), Some("  log(e);\n"));
+        assert_eq!(ts("fn", "add", Part::Params), Some("a: number, b: number"));
+        assert_eq!(
+            ts("fn", "add", Part::Sig),
+            Some("export function add(a: number, b: number): number")
+        );
+        assert_eq!(ts("fn", "render", Part::Sig), Some("render(): void"));
+        assert_eq!(ts("fn", "area", Part::Sig), Some("area(): number"));
+        assert_eq!(
+            ts("enum", "Color", Part::Body),
+            Some("  Red,\n  Green = 2,\n")
+        );
+        assert_eq!(
+            ts("interface", "Shape", Part::Body),
+            Some("  area(): number;\n  label: string;\n")
+        );
+    }
+
+    const JS: &str = r#"import fs from "fs";
+
+/** Loads. */
+export async function load(path) {
+  return fs.read(path);
+}
+
+export const parse = (text) => JSON.parse(text);
+let cache = null;
+var hits = 0;
+
+function* ids() {}
+
+class Store {
+  #items = [];
+  size = 0;
+
+  @logged
+  add(item) {
+    this.#items.push(item);
+  }
+}
+"#;
+
+    const TS: &str = r#"import React from "react";
+import { util } from "./util";
+
+/** The max. */
+export const MAX = 3;
+let count = 0;
+var legacy = 1;
+
+/** Adds. */
+export function add(a: number, b: number): number {
+  return a + b;
+}
+
+export const double = (x: number) => x * 2;
+const handler = async (e) => {
+  log(e);
+};
+
+function* gen() {}
+
+@Component({})
+export class App extends Base {
+  /** Name. */
+  name: string = "";
+  #secret = 1;
+
+  @Input()
+  render(): void {
+    return;
+  }
+}
+
+export interface Shape {
+  area(): number;
+  label: string;
+}
+
+type ID = string;
+
+enum Color {
+  Red,
+  Green = 2,
+}
+
+namespace Util {
+  export function help() {}
+}
+
+declare module "mod" {}
+
+export function over(a: string): void;
+
+abstract class Base {
+  abstract size(): number;
+}
 "#;
 }

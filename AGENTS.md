@@ -135,7 +135,7 @@ atomic multi-file write (`fs`), diff rendering (`diff`), the script lexer,
 parser, and error rendering (`script::parse`), selector resolution (`select`),
 whole-line/re-basing text helpers (`text`), the executor (`exec::run`),
 language detection and parsing (`lang`), syntax items and parts from
-`queries/<lang>/selectors.scm` (`syntax`; Rust, Python, Go and Markdown; others in TODO.md §12),
+`queries/<lang>/selectors.scm` (`syntax`),
 `outline`, and external formatters with `.ned.toml` config (`format`). The CLI
 supports every selector (including `A..B` ranges) and verb (including
 `create`), `show +N`, globbed file sets, the parse-error guard, formatting, `-w`

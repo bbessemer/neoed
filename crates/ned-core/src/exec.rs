@@ -915,23 +915,7 @@ impl Executor<'_> {
         };
         let mut files: Vec<usize> = spans.iter().map(|(i, _)| *i).collect();
         files.dedup();
-        let mut any = false;
-        let mut unsupported = None;
-        for &i in &files {
-            let Some(lang) = self.files[i].file.lang else {
-                continue;
-            };
-            if lang.selectors().is_none() {
-                unsupported.get_or_insert(lang);
-                continue;
-            }
-            any = true;
-        }
-        if let (false, Some(lang)) = (any, unsupported) {
-            let what = format!("`outline` in {lang} files");
-            let instead = "use `show`";
-            return Err(error(ExecErrorKind::Unsupported { what, instead }));
-        }
+        let any = files.iter().any(|&i| self.files[i].file.lang.is_some());
         if !any {
             return Err(error(ExecErrorKind::NoLanguage {
                 selector: "outline".into(),
@@ -946,7 +930,7 @@ impl Executor<'_> {
         let mut last = None;
         for (i, range) in spans {
             let f = &self.files[i].file;
-            if f.lang.and_then(|l| l.selectors()).is_none() {
+            if f.lang.is_none() {
                 continue;
             }
             if last != Some(i) {
@@ -1490,10 +1474,10 @@ fn without_leading(f: &SourceFile, range: Range<usize>, new: &Text) -> Range<usi
 /// The length of the doc comments and attributes that `text` starts with, in
 /// `f`'s language.
 fn leading_len(f: &SourceFile, text: &str) -> usize {
-    let Some((lang, query)) = f.lang.and_then(|l| Some((l, l.selectors()?))) else {
+    let Some(lang) = f.lang else {
         return 0;
     };
-    syntax::leading_len(query, &lang.parse(text), text)
+    syntax::leading_len(lang.selectors(), &lang.parse(text), text)
 }
 
 /// Whether `text` is only doc comments and attributes, in `f`'s language.
@@ -1835,8 +1819,6 @@ pub enum ExecErrorKind {
         files: String,
         add: String,
     },
-    #[error("{what} is not yet supported; {instead}")]
-    Unsupported { what: String, instead: &'static str },
     #[error(
         "edit overlaps command {command} at {location}; merge the two edits, or put a `|` between them"
     )]
@@ -2443,6 +2425,63 @@ mod tests {
         assert_eq!(
             exec_with(&[("a.go", MAIN_GO)], 1, "outline").output,
             "a.go\n4 const:A\n5 const:B\n8-10 struct:Server\n12-14 fn:\"Server.Run\"\n"
+        );
+    }
+
+    const STORE_JS: &str = "/** A store. */\nexport class Store {\n  size = 0;\n\n  @logged\n  add(item) {\n    this.size++;\n  }\n}\n\nexport const empty = () => new Store();\n";
+
+    #[test]
+    fn javascript_edits() {
+        assert_eq!(
+            edited_in(
+                "a.js",
+                STORE_JS,
+                "insert end class:Store <<END\n\nclear() {\n  this.size = 0;\n}\nEND"
+            ),
+            STORE_JS.replace(
+                "    this.size++;\n  }\n",
+                "    this.size++;\n  }\n\n  clear() {\n    this.size = 0;\n  }\n"
+            )
+        );
+        assert_eq!(
+            edited_in(
+                "a.js",
+                STORE_JS,
+                "replace fn:add with <<END\nadd(item, n) {\n  this.size += n;\n}\nEND"
+            ),
+            STORE_JS.replace(
+                "add(item) {\n    this.size++;",
+                "add(item, n) {\n    this.size += n;"
+            )
+        );
+        assert_eq!(
+            edited_in("a.js", STORE_JS, "insert before fn:add \"@traced\""),
+            STORE_JS.replace("  @logged\n", "  @traced\n  @logged\n")
+        );
+        assert_eq!(
+            edited_in("a.js", STORE_JS, "delete fn:empty"),
+            STORE_JS.replace("\nexport const empty = () => new Store();\n", "")
+        );
+        assert_eq!(
+            edited_in(
+                "a.js",
+                STORE_JS,
+                "replace class:Store.sig with \"export class Shop\""
+            ),
+            STORE_JS.replace("export class Store", "export class Shop")
+        );
+    }
+
+    #[test]
+    fn typescript_outline_lists_a_function_variable_once() {
+        let text = "export const f = (x: number) => x;\nconst n = 1;\n";
+        assert_eq!(
+            exec_with(&[("a.ts", text)], 1, "outline").output,
+            "a.ts\n1 fn:f\n2 const:n\n"
+        );
+        assert_eq!(
+            edited_in("a.ts", text, "replace const:f.name with \"g\""),
+            text.replace("const f", "const g")
         );
     }
 

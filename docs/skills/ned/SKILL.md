@@ -12,10 +12,12 @@ so you don't need to read the file back to check the edit.
 Syntax selectors work in Rust (`fn:parse`, `impl:Parser`,
 `impl:"Display for Parser"`), Python (`class:App>fn:start`; decorators come
 with the item, and `.doc` is the docstring), Go (`fn:"Server.Run"` for a
-method) and Markdown (`section:"Install"`, `item:`, `table:`, `code:`);
-`insert end section:X` appends to a section. In other files, use lines,
-regexes, literals or `query{}`. Run `ned help` for the whole language in one
-screen, and `ned help TOPIC` for one verb.
+method), JavaScript and TypeScript (`class:App>fn:render`,
+`interface:Shape`; an item includes its `export`) and Markdown
+(`section:"Install"`, `item:`, `table:`, `code:`); `insert end section:X`
+appends to a section. In other files, use lines, regexes, literals or
+`query{}`. Run `ned help` for the whole language in one screen, and
+`ned help TOPIC` for one verb.
 
 ## Invocation
 
@@ -154,7 +156,9 @@ insert start class:App>fn:handle "metrics.count(req)"
   `check`, `rename`, `.refs` and `.def` are errors, because they read the
   files on disk; run them before the first `|` or in another `ned` call.
 - **Indentation is automatic.** `<<END` text is re-indented to fit its
-  target. Use `<<'END'` for text that must stay exactly as written.
+  target, and so is a one-line string inserted or replaced on lines of its
+  own: its leading spaces don't survive. Use `<<'END'` for text that must stay
+  exactly as written, such as an indented line in a test's expected output.
 - **Strings** are `"..."` on one line, with `\n \t \" \\`. Use a heredoc for
   multi-line text.
 - **`$`** is literal in `replace`. Only `sub` expands `$1`, `${name}` and `$0`.
