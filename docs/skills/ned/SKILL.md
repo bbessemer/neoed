@@ -30,7 +30,8 @@ Add `-n` to preview without writing.
 
 Search with `show all` instead of grep. It prints each match's line with its
 number, under the file's name, across a glob or the whole workspace (`-w`,
-which skips ignored files); add `+N` for context:
+which skips ignored files), or `no matches for ...` if there are none; add
+`+N` for context:
 
 ```sh
 ned 'crates/**/*.rs' -e 'show all /fn with_published/'
