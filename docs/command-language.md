@@ -486,7 +486,20 @@ Notes:
 - `insert before|after` on a syntax item other than an import or a Markdown
   list item, when the item has a blank line directly above or below it,
   separates the new text from it with one blank line, unless the text already
-  starts (for `after`) or ends (for `before`) with a blank line.
+  starts (for `after`) or ends (for `before`) with a blank line. Text inserted
+  before an item that is only doc comments and attributes (`#[inline]`,
+  `/// ...`) gets no blank line: it attaches to the item.
+- `replace` of a syntax item keeps the item's leading doc comments and
+  attributes unless `TEXT` starts with its own, so replacing a test function
+  keeps its `#[test]`. To replace them too, start `TEXT` with them, or select
+  `ITEM.lines`.
+- A `replace` that looks off by one gets a note on stderr (never an error),
+  ignoring lines without a letter or digit (`}`):
+  - a whole-line span whose `TEXT` starts with a copy of the line just above
+    it, or ends with a copy of the line just below;
+  - a partial span whose `TEXT` ends with the rest of the span's last line, or
+    starts with what precedes the span on its first line. The note suggests
+    selecting whole lines with `.lines`.
 - **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
   lines in a row, a blank line right after an opening delimiter or right before
   a closing one, or a blank line at the start or end of the file, one blank
@@ -543,6 +556,12 @@ and regex matches are not.
 - **Partial-line target:** `TEXT` is inserted **verbatim** at the span.
   - If `TEXT` has several lines, the first is inserted as-is. The rest are
     re-based relative to the line the span starts on.
+  - Exception: `insert before|after` with heredoc `TEXT` widens a partial-line
+    target to its whole lines, as if `.lines` were given, so
+    `insert after /re/ <<END` adds lines after the match's line. A target that
+    ends in an item part (`.body`, `.params`, `.name`, `.sig`, `.doc`) isn't
+    widened, and string `TEXT` stays verbatim. `move` to such a destination
+    widens the same way when it moves whole lines.
 
 Blank or whitespace-only lines in `TEXT` are written as empty lines. Leading and
 trailing blank lines in `TEXT` are kept. This is how an agent adds a separating
@@ -562,6 +581,14 @@ Every line-oriented `TEXT` is re-based, except a `<<'TAG'` heredoc.
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `replace`, `insert before\|after`, `move` (before/after) | indentation of the target span's first line                                                                                                            |
 | `insert start\|end`, `move` (start/end)                  | indentation of the first non-blank line inside the span. If the span is empty, the indentation of the enclosing item's first line plus one indent unit |
+
+In Markdown, when `TEXT` starts with a list item (`-`, `*`, `+`, `1.` or `1)`)
+and the target line lies in a list item (not in a code block inside it), the
+edit anchors to that innermost list item: the target indentation is its
+marker's column, `insert after` (and `move ... after`) goes after the whole
+item, its wrapped lines and nested items included, and `insert before` goes
+before its first line. So a new item next to a wrapped item's continuation line
+becomes its sibling. `<<'TAG'` text is placed the same way but not re-based.
 
 The file's **indent unit** is the smallest non-zero increase in indentation
 between consecutive non-blank lines. If the file has none, it's the language

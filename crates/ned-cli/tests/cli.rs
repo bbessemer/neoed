@@ -1036,6 +1036,23 @@ fn create_writes_a_new_file_and_its_directories() {
     assert!(out.contains("src/new.rs already exists"), "{out}");
 }
 
+#[test]
+fn an_off_by_one_replace_notes_it_on_stderr() {
+    let dir = dir_with(&[("a.txt", "- [ ] Foo bar\n")]);
+    let out = ned(
+        dir.path(),
+        &["a.txt", "-q"],
+        "replace /^- \\[ \\] Foo/ with \"- [x] Foo bar\"\n",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.txt: 1 edit, +1 -1
+    --- stderr
+    note: a.txt:1: the new text ends with `bar`, which already follows the replaced text on its line; to replace whole lines, select /^- \[ \] Foo/.lines
+    ");
+}
+
 const NOTES: &str = "# Notes\n\n## Todo\n\n- [ ] one\n      more\n- [ ] two\n\n## Done\n\ntext\n";
 
 #[test]

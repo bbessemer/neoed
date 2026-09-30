@@ -164,24 +164,20 @@ END
   names lines 15 and 16 of the file, which must lie inside `fn:parse`.
 - **Use `delete` to remove lines.** `replace 12 with ""` leaves an empty line,
   because line-oriented text always ends with a newline.
-- **Partial matches get verbatim text.** `insert after /re/` inserts right
-  after the match, even mid-line, and `insert end /re/` or `"a".."b"` does the
-  same at the span's end; add `.lines` to insert after the whole line. A
-  heredoc's final newline is dropped there, so a blank line ending it vanishes;
-  target the item itself (`insert before fn:x`) instead. Likewise
-  `replace /^- \[ \] Foo/ with "- [x] Foo bar"` replaces only the match and
-  keeps the rest of the line, duplicating it: use `sub` for a prefix, or
-  `.lines` (also on a range's end, `/a/../b/.lines`) to replace whole lines.
-- **Replacing an item replaces its attributes.** `replace fn:x with ...` covers
-  `#[test]` and `///` lines too, so repeat them in TEXT, or replace `.sig` or
-  `.body` instead. A `#[test]` dropped this way fails nothing: the test just
-  stops running.
+- **Partial matches get verbatim text.** `insert after /re/ "x"` inserts right
+  after the match, even mid-line, and `insert start|end /re/` does the same at
+  the span's start or end. A heredoc `insert before|after` goes on lines of
+  its own beside the match's lines instead (but in place beside `.body` and
+  other item parts). `replace /re/` replaces only the match, so add `.lines`
+  to replace whole lines; a note says so when TEXT repeats the rest of the
+  line.
 - **Re-basing follows the target line.** `<<END` text takes the indentation of
-  the line it's inserted next to, or of the first line it replaces, so next to
-  (or starting at) a wrapped list item's continuation line it gets the hanging
-  indent. For code, use `<<END` (a quoted `<<'END'` inside the script, a shell
-  habit, leaves code at column 0); for Markdown or prose, use `<<'END'`, target
-  the `item:`, or start a replaced range at the item's first line.
+  the line it's inserted next to, or of the first line it replaces. In
+  Markdown, a new list item (`- ...`) next to any line of a list item goes
+  beside the whole item, at its marker's column; other text next to a wrapped
+  item's continuation line gets the hanging indent, continuing its paragraph.
+  For code, use `<<END`: a quoted `<<'END'` inside the script, a shell habit,
+  leaves code at column 0.
 - **Whole-line string TEXT gets its own newline.** A literal that runs from a
   line's indentation to its end (`"    x,\n"`, or `"    s\n}"`) is a whole-line
   target: string TEXT for it is re-based like a heredoc, and a final newline

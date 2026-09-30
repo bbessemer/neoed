@@ -366,7 +366,12 @@ impl Executor<'_> {
             CommandKind::Outline(target) => self.outline(span, target.as_ref())?,
             CommandKind::Replace { target, text } => {
                 for m in self.resolve(target)? {
-                    let (range, new) = replace(&self.files[m.file].file, m.range, text);
+                    let f = &self.files[m.file].file;
+                    let selector = &self.src[target.selector.span.clone()];
+                    if let Some(note) = off_by_one(f, &m.range, text, selector) {
+                        self.notes.push(note);
+                    }
+                    let (range, new) = replace(f, m.range, text);
                     self.push(index, span, m.file, range, new)?;
                 }
             }
@@ -377,8 +382,9 @@ impl Executor<'_> {
             } => {
                 for m in self.resolve(&implied_body(target, *position))? {
                     let f = &self.files[m.file].file;
-                    let text = separated(f, target, *position, &m.range, text);
-                    let (range, new) = insert(f, m.range, *position, &text);
+                    let range = heredoc_lines(f, target, *position, text, m.range);
+                    let text = separated(f, target, *position, &range, text);
+                    let (range, new) = insert(f, range, *position, &text);
                     self.push(index, span, m.file, range, new)?;
                 }
             }
@@ -763,15 +769,19 @@ impl Executor<'_> {
             let removal = removal(source, from.range.clone());
             let (mut moved, separated) = moved_text(source, &from.range);
             let target = &self.files[to.file].file;
-            if separated && text::is_whole_line(&target.text, &to.range) {
+            let at = heredoc_lines(target, &dest, position, &moved, to.range.clone());
+            // Doc comments and attributes attach to the item they move before.
+            let attaches =
+                matches!(position, Position::Before) && only_leading(target, &moved.value);
+            if separated && !attaches && text::is_whole_line(&target.text, &at) {
                 match position {
                     Position::Before => moved.value.push('\n'),
                     Position::After => moved.value.insert(0, '\n'),
                     Position::Start | Position::End => {}
                 }
             }
-            let moved = with_trailing_comma(target, &to.range, &moved);
-            let (range, new) = insert(target, to.range.clone(), position, &moved);
+            let moved = with_trailing_comma(target, &at, &moved);
+            let (range, new) = insert(target, at, position, &moved);
             if from.file == to.file && removal.start < range.start && range.end < removal.end {
                 let location = format!(
                     "{}:{}",
@@ -1210,8 +1220,6 @@ fn defining_item(f: &SourceFile, offset: usize) -> Option<Range<usize>> {
         .min_by_key(|r| r.len())
 }
 
-/// `target`, with `.body` added when `insert start|end` targets a syntax
-/// step with no parts (§4.2).
 /// For a relative `path`, ` (paths are relative to DIR)`, naming the working
 /// directory; otherwise empty.
 fn relative_note(path: &str) -> String {
@@ -1258,6 +1266,8 @@ fn expand(path: &str, span: Option<&Range<usize>>) -> Result<Vec<String>, ExecEr
     Ok(files)
 }
 
+/// `target`, with `.body` added when `insert start|end` targets a syntax
+/// step with no parts (§4.2).
 fn implied_body(target: &Target, position: Position) -> Cow<'_, Target> {
     let last = target.selector.steps.last();
     let syntax =
@@ -1380,10 +1390,15 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, St
     }
     let t = &f.text;
     let new = &*with_trailing_comma(f, &range, new);
+    let range = without_leading(f, range, new);
     let unit = indent_unit(f);
     if text::is_whole_line(t, &range) {
         let full = text::full_lines(t, range);
-        let mut new = line_oriented(new, text::indent_at(t, full.start), &unit);
+        let indent = match list_anchor(f, full.start, new) {
+            Some(item) => text::indent_at(t, item.range.start),
+            None => text::indent_at(t, full.start),
+        };
+        let mut new = line_oriented(new, indent, &unit);
         if !t[..full.end].ends_with('\n') {
             new.pop();
         }
@@ -1392,6 +1407,109 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, St
         let indent = text::indent_at(t, range.start);
         (range, verbatim(new, indent, &unit))
     }
+}
+
+/// `range` without the leading doc comments and attributes of the syntax item
+/// it is, when `new` doesn't start with its own (§4.2).
+fn without_leading(f: &SourceFile, range: Range<usize>, new: &Text) -> Range<usize> {
+    let t = &f.text;
+    let Some(item) = f
+        .items()
+        .and_then(|items| items.iter().find(|i| i.range == range))
+    else {
+        return range;
+    };
+    let line = t[..item.node.start].rfind('\n').map_or(0, |i| i + 1);
+    // An attribute on the item's own line goes with it.
+    if item.node.start == range.start || !t[line..item.node.start].trim().is_empty() {
+        return range;
+    }
+    if leading_len(f, &new.value) > 0 {
+        return range;
+    }
+    line..range.end
+}
+
+/// The length of the doc comments and attributes that `text` starts with, in
+/// `f`'s language.
+fn leading_len(f: &SourceFile, text: &str) -> usize {
+    let Some((lang, query)) = f.lang.and_then(|l| Some((l, l.selectors()?))) else {
+        return 0;
+    };
+    syntax::leading_len(query, &lang.parse(text), text)
+}
+
+/// Whether `text` is only doc comments and attributes, in `f`'s language.
+fn only_leading(f: &SourceFile, text: &str) -> bool {
+    let len = text.trim_end().len();
+    len > 0 && leading_len(f, text) == len
+}
+
+/// A note when replacing `range` with `new` looks off by one (§4.2): `new`
+/// repeats the line just outside a whole-line span, or the rest of a partial
+/// span's line, which `selector.lines` would have replaced.
+fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) -> Option<String> {
+    let t = &f.text;
+    let counts = |s: &str| s.chars().any(char::is_alphanumeric);
+    let line_of = |offset: usize| f.buffer.byte_to_line(offset).map_or(0, |l| l + 1);
+    let at = format!("{}:{}", f.path, line_of(range.start));
+    let value = new.value.trim_matches(['\n', '\r']);
+    if text::is_whole_line(t, range) {
+        let full = text::full_lines(t, range.clone());
+        let lines: Vec<&str> = t[full.clone()].lines().map(str::trim).collect();
+        let first = value.lines().map(str::trim).find(|l| !l.is_empty())?;
+        let last = value.lines().map(str::trim).rfind(|l| !l.is_empty())?;
+        let above = t[..full.start].strip_suffix('\n').map(|before| {
+            let start = before.rfind('\n').map_or(0, |i| i + 1);
+            (line_of(start), before[start..].trim())
+        });
+        let below = t[full.end..]
+            .lines()
+            .next()
+            .map(|l| (line_of(full.end), l.trim()));
+        if let Some((n, line)) = above
+            && first == line
+            && counts(line)
+            && lines.first() != Some(&line)
+        {
+            return Some(format!(
+                "{at}: the new text starts with a copy of line {n} (`{line}`), just above \
+                 the replaced lines; the range may be off by one"
+            ));
+        }
+        if let Some((n, line)) = below
+            && full.end < t.len()
+            && last == line
+            && counts(line)
+            && lines.last() != Some(&line)
+        {
+            return Some(format!(
+                "{at}: the new text ends with a copy of line {n} (`{line}`), just below \
+                 the replaced lines; the range may be off by one"
+            ));
+        }
+        return None;
+    }
+    let line_start = t[..range.start].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = t[range.end..].find('\n').map_or(t.len(), |i| range.end + i);
+    let (before, after) = (
+        t[line_start..range.start].trim(),
+        t[range.end..line_end].trim(),
+    );
+    let fix = format!("to replace whole lines, select {selector}.lines");
+    if counts(after) && value.trim_end().ends_with(after) {
+        return Some(format!(
+            "{at}: the new text ends with `{after}`, which already follows the replaced \
+             text on its line; {fix}"
+        ));
+    }
+    if counts(before) && value.trim_start().starts_with(before) {
+        return Some(format!(
+            "{at}: the new text starts with `{before}`, which already precedes the \
+             replaced text on its line; {fix}"
+        ));
+    }
+    None
 }
 
 /// `new`, with a `,` appended if the item at `range` ends with one and `new`
@@ -1437,6 +1555,10 @@ fn separated<'t>(
     let mut value = new.value.clone();
     match position {
         Position::After if !blank(new.value.split('\n').next()) => value.insert(0, '\n'),
+        // Doc comments and attributes attach to the item.
+        Position::Before if only_leading(f, &new.value) => {
+            return Cow::Borrowed(new);
+        }
         Position::Before if !blank(new.value.split('\n').next_back()) => value.push('\n'),
         _ => return Cow::Borrowed(new),
     }
@@ -1474,6 +1596,31 @@ fn moved_text(f: &SourceFile, range: &Range<usize>) -> (Text, bool) {
     (text, text::blank_separated(t, full))
 }
 
+/// `range`, widened to its whole lines if it's partial and heredoc `new` is
+/// inserted before or after it, unless `target` ends in an item part (§5.1).
+fn heredoc_lines(
+    f: &SourceFile,
+    target: &Target,
+    position: Position,
+    new: &Text,
+    range: Range<usize>,
+) -> Range<usize> {
+    let item_part = target.selector.steps.last().is_some_and(|s| {
+        s.parts.iter().any(|p| {
+            matches!(
+                p,
+                Part::Body | Part::Params | Part::Name | Part::Sig | Part::Doc
+            )
+        })
+    });
+    let beside = matches!(position, Position::Before | Position::After);
+    if beside && new.kind != TextKind::Str && !item_part && !text::is_whole_line(&f.text, &range) {
+        text::full_lines(&f.text, range)
+    } else {
+        range
+    }
+}
+
 /// The span and text of an insertion at `position` of `range` (§4.2, §5):
 /// an empty span, unless it opens an empty body.
 fn insert(
@@ -1498,6 +1645,13 @@ fn insert(
         );
     }
     let full = text::full_lines(t, range);
+    // List-item text next to a list item's line goes beside the whole item.
+    let anchor = match position {
+        Position::Before => list_anchor(f, full.start, new),
+        Position::After => list_anchor(f, full.end.saturating_sub(1).max(full.start), new),
+        Position::Start | Position::End => None,
+    };
+    let full = anchor.map_or(full, |item| text::full_lines(t, item.range.clone()));
     let first = text::indent_at(t, full.start);
     let inner = text::first_indent(t, full.clone()).unwrap_or(first);
     let (at, indent) = match position {
@@ -1533,6 +1687,33 @@ fn line_oriented(new: &Text, indent: &str, unit: &str) -> String {
     };
     out.push('\n');
     out
+}
+
+/// The Markdown list item that list-item `new` placed on the line holding
+/// `offset` anchors to (§5.2): the innermost item on that line, if it's a list
+/// item that isn't in a block quote.
+fn list_anchor<'f>(f: &'f SourceFile, offset: usize, new: &Text) -> Option<&'f Item> {
+    if f.lang != Some(Language::Markdown) {
+        return None;
+    }
+    let first = new.value.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let digits = first.len() - first.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let marker = match digits {
+        0 => first.strip_prefix(['-', '*', '+']),
+        1..=9 => first[digits..].strip_prefix(['.', ')']),
+        _ => None,
+    };
+    if !marker.is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace)) {
+        return None;
+    }
+    let t = &f.text;
+    let item = f
+        .items()?
+        .iter()
+        .filter(|i| text::full_lines(t, i.range.clone()).contains(&offset))
+        .min_by_key(|i| i.range.len())?;
+    let line = t[..item.range.start].rfind('\n').map_or(0, |i| i + 1);
+    (item.kind == "item" && t[line..item.range.start].trim().is_empty()).then_some(item)
 }
 
 /// `new` inserted into a partial line: later lines re-based (unless raw).
@@ -1801,7 +1982,7 @@ mod tests {
                     .collect()),
                 Err(err) => Err(strip(&err.render(&src))),
             },
-            notes: run.notes,
+            notes: run.notes.iter().map(|n| strip(n)).collect(),
         }
     }
 
@@ -1958,6 +2139,35 @@ mod tests {
         assert_eq!(
             edited(TEXT, "insert start \"y = 2\" \"mut \""),
             TEXT.replace("let y", "let mut y")
+        );
+    }
+
+    #[test]
+    fn heredoc_insert_beside_a_partial_span_takes_whole_lines() {
+        assert_eq!(
+            edited(TEXT, "insert after /let x = 1/ <<END\nlet z = 0;\nEND\n"),
+            TEXT.replace("    let x = 1;\n", "    let x = 1;\n    let z = 0;\n")
+        );
+        assert_eq!(
+            edited(TEXT, "insert before \"y = 2\" <<END\nw();\nEND\n"),
+            TEXT.replace("    let y", "    w();\n    let y")
+        );
+        assert_eq!(
+            edited(TEXT, "insert before /let y/ <<'END'\nraw\nEND\n"),
+            TEXT.replace("    let y", "raw\n    let y")
+        );
+        // An item part stays where it is.
+        assert_eq!(
+            edited("fn f() { x }\n", "insert after fn:f.body <<END\ny\nEND\n"),
+            "fn f() { xy }\n"
+        );
+    }
+
+    #[test]
+    fn move_beside_a_partial_span_takes_whole_lines() {
+        assert_eq!(
+            edited(TEXT, "move 7 after /let x = 1/"),
+            "fn a() {\n    let x = 1;\n    let x = 3;\n    let y = 2;\n}\n\nfn b() {\n}\n"
         );
     }
 
@@ -2123,12 +2333,7 @@ mod tests {
 
     #[test]
     fn markdown_section_bodies() {
-        let md = |script: &str| {
-            let text = "# A\n\nintro\n\n## B\n\nb text\n\n## C\n\n# D";
-            exec_with(&[("a.md", text)], 1, script)
-                .new_text()
-                .to_string()
-        };
+        let md = |script: &str| md("# A\n\nintro\n\n## B\n\nb text\n\n## C\n\n# D", script);
         assert_eq!(
             md("insert end section:B \"more\""),
             "# A\n\nintro\n\n## B\n\nb text\nmore\n\n## C\n\n# D"
@@ -2148,6 +2353,69 @@ mod tests {
         assert_eq!(
             md("insert end section:A <<END\n\n## E\nEND\n"),
             "# A\n\nintro\n\n## B\n\nb text\n\n## C\n\n## E\n\n# D"
+        );
+    }
+
+    fn md(text: &str, script: &str) -> String {
+        exec_with(&[("a.md", text)], 1, script)
+            .new_text()
+            .to_string()
+    }
+
+    const WRAPPED: &str = "- [ ] One item\n      wrapped here\n- [ ] Two\n";
+
+    #[test]
+    fn list_item_text_anchors_to_the_list_item() {
+        let one_new_two = "- [ ] One item\n      wrapped here\n- [ ] New\n- [ ] Two\n";
+        assert_eq!(
+            md(WRAPPED, "insert after 2 <<END\n- [ ] New\nEND\n"),
+            one_new_two
+        );
+        assert_eq!(
+            md(WRAPPED, "insert after 1 <<END\n- [ ] New\nEND\n"),
+            one_new_two
+        );
+        assert_eq!(
+            md(WRAPPED, "insert before 2 <<END\n- [ ] New\nEND\n"),
+            "- [ ] New\n- [ ] One item\n      wrapped here\n- [ ] Two\n"
+        );
+        assert_eq!(
+            md(WRAPPED, "replace 2 with <<END\n- [ ] Replaced\nEND\n"),
+            "- [ ] One item\n- [ ] Replaced\n- [ ] Two\n"
+        );
+        assert_eq!(
+            md(WRAPPED, "insert after 2 <<'END'\n  - raw\nEND\n"),
+            "- [ ] One item\n      wrapped here\n  - raw\n- [ ] Two\n"
+        );
+        // Prose continues the paragraph.
+        assert_eq!(
+            md(WRAPPED, "insert after 2 <<END\nmore words\nEND\n"),
+            "- [ ] One item\n      wrapped here\n      more words\n- [ ] Two\n"
+        );
+    }
+
+    #[test]
+    fn list_item_text_anchors_to_the_innermost_list_item() {
+        let nested = "- a\n  - b\n    wrapped\n- c\n";
+        assert_eq!(
+            md(nested, "insert after 3 <<END\n- new\nEND\n"),
+            "- a\n  - b\n    wrapped\n  - new\n- c\n"
+        );
+        assert_eq!(
+            md(nested, "insert after 1 <<END\n- new\nEND\n"),
+            "- a\n  - b\n    wrapped\n- new\n- c\n"
+        );
+        assert_eq!(
+            md(
+                "1. one\n   more\n2. two\n",
+                "insert after 2 <<END\n1. x\nEND\n"
+            ),
+            "1. one\n   more\n1. x\n2. two\n"
+        );
+        let code = "- a\n\n  ```\n  - y\n  ```\n";
+        assert_eq!(
+            md(code, "insert after 4 <<END\n- z\nEND\n"),
+            "- a\n\n  ```\n  - y\n  - z\n  ```\n"
         );
     }
 
@@ -2400,6 +2668,109 @@ mod tests {
             edited(MOVE, r#"insert after 13 "fn z() {}""#),
             MOVE.replace("fn helper_y() {}\n", "fn helper_y() {}\nfn z() {}\n")
         );
+    }
+
+    const ATTRS: &str = "/// Doc.\n#[test]\nfn a() {\n    old();\n}\n";
+
+    #[test]
+    fn replacing_an_item_keeps_its_attributes_and_docs() {
+        assert_eq!(
+            edited(
+                ATTRS,
+                "replace fn:a with <<END\nfn a() {\n    new();\n}\nEND\n"
+            ),
+            "/// Doc.\n#[test]\nfn a() {\n    new();\n}\n"
+        );
+        assert_eq!(
+            edited(
+                ATTRS,
+                "replace fn:a with <<END\n#[tokio::test]\nasync fn a() {}\nEND\n"
+            ),
+            "#[tokio::test]\nasync fn a() {}\n"
+        );
+        assert_eq!(
+            edited(ATTRS, "replace fn:a with \"/// New.\\nfn a() {}\""),
+            "/// New.\nfn a() {}\n"
+        );
+        assert_eq!(
+            edited(ATTRS, "replace fn:a.lines with \"fn a() {}\""),
+            "fn a() {}\n"
+        );
+        assert_eq!(
+            edited("#[inline] fn a() {}\n", "replace fn:a with \"fn b() {}\""),
+            "fn b() {}\n"
+        );
+    }
+
+    #[test]
+    fn attributes_inserted_before_an_item_attach_to_it() {
+        let text = "fn z() {}\n\n/// Doc.\nfn a() {}\n";
+        assert_eq!(
+            edited(text, "insert before fn:a \"#[inline]\""),
+            "fn z() {}\n\n#[inline]\n/// Doc.\nfn a() {}\n"
+        );
+        assert_eq!(
+            edited(
+                text,
+                "insert before fn:a <<END\n/// More.\n#[must_use]\nEND\n"
+            ),
+            "fn z() {}\n\n/// More.\n#[must_use]\n/// Doc.\nfn a() {}\n"
+        );
+        assert_eq!(
+            edited(text, "insert before fn:a \"// c\""),
+            "fn z() {}\n\n// c\n\n/// Doc.\nfn a() {}\n"
+        );
+    }
+
+    #[test]
+    fn moved_docs_attach_to_the_item_they_move_before() {
+        let text = "/// Doc.\n\nfn a() {}\n\nfn b() {}\n";
+        assert_eq!(
+            edited(text, "move 1 before fn:b"),
+            "fn a() {}\n\n/// Doc.\nfn b() {}\n"
+        );
+    }
+
+    #[test]
+    fn replacing_off_by_one_lines_leaves_a_note() {
+        let notes = |text: &str, script: &str| exec(text, script).notes;
+        assert_eq!(
+            notes(TEXT, "replace 3 with <<END\nlet x = 1;\nlet y = 5;\nEND\n"),
+            [
+                "a.rs:3: the new text starts with a copy of line 2 (`let x = 1;`), \
+              just above the replaced lines; the range may be off by one"
+            ]
+        );
+        assert_eq!(
+            notes(TEXT, "replace 2 with <<END\nlet x = 0;\nlet y = 2;\nEND\n"),
+            [
+                "a.rs:2: the new text ends with a copy of line 3 (`let y = 2;`), \
+              just below the replaced lines; the range may be off by one"
+            ]
+        );
+        // `}` alone doesn't count, nor does repeating the span's own line.
+        assert!(notes(TEXT, "replace 7 with <<END\nlet x = 4;\n}\nEND\n").is_empty());
+        assert!(notes(TEXT, "replace 3 with <<END\nlet y = 2;\nlet z = 2;\nEND\n").is_empty());
+    }
+
+    #[test]
+    fn replacing_part_of_a_line_with_its_rest_leaves_a_note() {
+        let notes = |script: &str| exec("let a = f(b);\n", script).notes;
+        assert_eq!(
+            notes("replace /let a/ with \"let c = f(b);\""),
+            [
+                "a.rs:1: the new text ends with `= f(b);`, which already follows the \
+              replaced text on its line; to replace whole lines, select /let a/.lines"
+            ]
+        );
+        assert_eq!(
+            notes("replace \"f(b)\" with \"let a = g(b)\""),
+            [
+                "a.rs:1: the new text starts with `let a =`, which already precedes the \
+              replaced text on its line; to replace whole lines, select \"f(b)\".lines"
+            ]
+        );
+        assert!(notes("replace \"f(b)\" with \"g(b)\"").is_empty());
     }
 
     #[test]
