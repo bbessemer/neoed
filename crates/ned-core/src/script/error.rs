@@ -27,7 +27,7 @@ pub enum ParseErrorKind {
     #[error("unterminated query; close it with `}}` on the same line")]
     UnterminatedQuery,
     #[error(
-        "unknown part `.{0}`; parts are .body .sig .params .name .doc .attrs .ret .type .value .lines .refs .def"
+        "unknown part `.{0}`; parts are .body .sig .params .name .doc .attrs .ret .type .value .whole .lines .refs .def"
     )]
     UnknownPart(String),
     #[error("line numbers start at 1; use 1 for the first line")]

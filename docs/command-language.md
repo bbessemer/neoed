@@ -193,13 +193,14 @@ selector   = step { ">" step } ;
 step       = primary [ ".." primary ] { part } ;
 context    = "+" digit { digit } ;
 part       = ".body" | ".sig" | ".params" | ".name" | ".doc" | ".attrs"
-           | ".ret" | ".type" | ".value" | ".lines" | ".refs" | ".def" ;
+           | ".ret" | ".type" | ".value" | ".whole" | ".lines" | ".refs"
+           | ".def" ;
 primary    = lines | regex | literal | syntax | query ;
 
 lines      = lineno [ "-" lineno ] ;
 lineno     = digit { digit } | "$" ;
 literal    = string | heredoc ;
-syntax     = kind ":" name ;
+syntax     = kind [ ":" name ] ;
 kind       = ident ;
 name       = name-char { name-char } | string ;   (* name-char: [A-Za-z0-9_:*] *)
 query      = "query{" { any } "}" ;   (* ends at the first unescaped "}"; one line *)
@@ -319,7 +320,9 @@ Regexes see the file's raw text.
 
 `kind:name` selects items of a syntax kind by name. Names are matched exactly.
 `*` matches any run of characters (`fn:test_*`, `fn:*`). A name that has other
-characters, such as `.` or `-`, must be quoted: `import:"os.path"`.
+characters, such as `.` or `-`, must be quoted: `import:"os.path"`. A kind
+without `:name` selects every item of the kind: `fn` is `fn:*`, so
+`impl:Parser>fn` is every method of `Parser`.
 
 Core kinds. Each language maps a subset of these through
 `queries/<lang>/selectors.scm` (JavaScript and TypeScript both start with
@@ -419,7 +422,8 @@ The kinds each language supports, and the items they cover there:
 | `.ret`    | the function's return type                                                                                                       |
 | `.type`   | the declared type of a field, constant or variable                                                                               |
 | `.value`  | the value a constant, variable, field or variant is given; the type a `type` item names                                          |
-| `.lines`  | the span widened to the whole lines it touches (any selector)                                                                    |
+| `.whole`  | the item's default span (§3.3), doc comments, attributes and trailing `,` included, which `replace` replaces whole               |
+| `.lines`  | each whole line the span touches, as a span of its own (any selector)                                                            |
 | `.refs`   | each reference to the symbol at the span (below), without its declaration                                                        |
 | `.def`    | the symbol's definition: the item it names, or its identifier if it names no item                                                |
 
@@ -465,8 +469,11 @@ The kinds each language supports, and the items they cover there:
   same step, and later steps search inside their spans. They spawn the daemon if
   need be.
 - A part the item doesn't have (e.g. `.body` on a Rust `const`) is an error.
-  Parts other than `.lines` need a syntax item: `/x/.body` is an error, and so
-  is a part after another part, as in `.body.name`.
+  Parts other than `.lines` need a syntax item (§3.8): `/x/.body` is an error,
+  and so is a part after another part, as in `.body.name`.
+- `.lines` on a span within one line widens it to that line. On a multi-line
+  span it selects each line separately, so `fn:parse.lines` is many spans: use
+  `all`, or nest a line number (`fn:parse>12`).
 
 ### 3.5 Ambiguity and `all`
 
@@ -491,6 +498,9 @@ The kinds each language supports, and the items they cover there:
 - When the last step is a syntax step with a `*` in its name, each candidate
   names its item instead (`fn:test_*` lists `fn:test_parse`), and is scoped as
   above only among the matches with the same name.
+- A line that `.lines` split from a multi-line span is listed as its step
+  without `.lines` and any parts after it, with its line number nested after the
+  step: `fn:new.lines` lists `fn:new>41`, `fn:new>42`, and so on.
 
 ### 3.6 Raw query
 
@@ -511,12 +521,25 @@ delete all query{(call_expression function: (identifier) @f (#eq? @f "dbg")) @se
 `B` that starts after it: `/^## 6/../^## 7/`, `fn:a..fn:c`, `"BEGIN"..$`.
 
 - Both ends are primaries, without parts. `..` binds tighter than `>`, and parts
-  apply to the whole range: `impl:Parser>fn:new..fn:parse`,
-  `/^## 6/../^## 7/.lines`.
-- The range is whole-line when both ends are, as with lines and syntax items.
-  Add `.lines` to widen a range with regex or literal ends to whole lines.
+  apply to the whole range: `impl:Parser>fn:new..fn:parse`.
+- A range covers whole lines: from the start of `A`'s first line to the end of
+  `B`'s last line, so `/^## 6/../^## 7/` includes the `## 7` heading line. Two
+  ranges on one line are one span.
 - Matches of `A` inside an earlier range are skipped. A match of `A` with no `B`
   after it ends the search.
+
+### 3.8 Types
+
+Every value in a script has a type, which decides the parts it has (§3.4):
+
+- A **span** is a range of a file's text, as a selector resolves to. It is
+  **single-line** if it lies within one line, not counting a line break at its
+  end, and **multi-line** otherwise. Every span has `.lines`.
+- An **item** is a span that a syntax step selects, with its kind (§3.3). It
+  also has `.whole` and the parts its kind has in its language (§3.4). A part's
+  span is a plain span, not an item.
+- **Strings**, **numbers** and **regexes** are values written in a script. They
+  have no parts.
 
 ## 4. Verbs
 
@@ -587,14 +610,14 @@ Notes:
 - `replace` of a syntax item keeps the item's leading doc comments and
   attributes unless `TEXT` starts with its own, so replacing a test function
   keeps its `#[test]`. To replace them too, start `TEXT` with them, or select
-  `ITEM.lines`.
+  `ITEM.whole`.
 - A `replace` that looks off by one gets a note on stderr (never an error),
   ignoring lines without a letter or digit (`}`):
   - a whole-line span whose `TEXT` starts with a copy of the line just above it,
     or ends with a copy of the line just below;
   - a partial span whose `TEXT` ends with the rest of the span's last line, or
-    starts with what precedes the span on its first line. The note suggests
-    selecting whole lines with `.lines`.
+    starts with what precedes the span on its first line. On a single-line span,
+    the note suggests selecting its line with `.lines`.
 - **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
   lines in a row, a blank line right after an opening delimiter (or a line
   ending in `:`, as in Python) or right before a closing one, or a blank line at
@@ -653,11 +676,10 @@ and regex matches are not.
   - If `TEXT` has several lines, the first is inserted as-is. The rest are
     re-based relative to the line the span starts on.
   - Exception: `insert before|after` with heredoc `TEXT` widens a partial-line
-    target to its whole lines, as if `.lines` were given, so
-    `insert after /re/ <<END` adds lines after the match's line. A target that
-    ends in an item part (`.body`, `.params`, `.name`, `.sig`, `.doc`) isn't
-    widened, and string `TEXT` stays verbatim. `move` to such a destination
-    widens the same way when it moves whole lines.
+    target to its whole lines, so `insert after /re/ <<END` adds lines after the
+    match's line. A target that ends in an item part (any part but `.lines`,
+    `.refs` and `.def`) isn't widened, and string `TEXT` stays verbatim. `move`
+    to such a destination widens the same way when it moves whole lines.
 
 Blank or whitespace-only lines in `TEXT` are written as empty lines. Leading and
 trailing blank lines in `TEXT` are kept. This is how an agent adds a separating

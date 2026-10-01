@@ -147,8 +147,8 @@ sub /\bold_name\b/ with "new_name"
 sub fn:parse /\bpos\b/ with "offset"
 ```
 
-Select a run of items or lines with `A..B`, from the start of the first to the
-end of the second:
+Select a run of whole lines with `A..B`, from the start of the first's line to
+the end of the second:
 
 ```ned
 delete fn:helper_a..fn:helper_c
@@ -195,7 +195,7 @@ insert start class:App>fn:handle "metrics.count(req)"
   none is installed and a daemon runs, the language server formats instead
   (`fmt rust-analyzer`). `--no-fmt` skips it.
 - **Replacing an item keeps its doc comments and attributes** (`///`, `#[test]`,
-  decorators) unless TEXT starts with its own; select `ITEM.lines` to replace
+  decorators) unless TEXT starts with its own; select `ITEM.whole` to replace
   them too. A field or variant keeps its trailing `,`: TEXT without one gets it
   back.
 - **Heredoc tags nest like the shell's.** A script heredoc ends at the first
@@ -216,7 +216,10 @@ insert start class:App>fn:handle "metrics.count(req)"
   the span's start or end. A heredoc `insert before|after` goes on lines of its
   own beside the match's lines instead (but in place beside `.body` and other
   item parts). `replace /re/` replaces only the match, so add `.lines` to
-  replace whole lines; a note says so when TEXT repeats the rest of the line.
+  replace its line; a note says so when TEXT repeats the rest of the line. On a
+  span of several lines, `.lines` selects each line: use `all`, or a range for
+  one span. TEXT for a partial span keeps its first line as written and indents
+  the rest by the first line's indentation, so leave that indentation off.
 - **Re-basing follows the target line.** `<<END` text takes the indentation of
   the line it's inserted next to, or of the first line it replaces. In Markdown,
   a new list item (`- ...`) next to any line of a list item goes beside the

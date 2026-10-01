@@ -6,6 +6,7 @@ use super::ast::*;
 use super::error::{COMMANDS, ParseError, ParseErrorKind as E};
 use super::lexer::{Lexer, Token, TokenKind};
 use crate::lsp::Severity;
+use crate::syntax;
 
 pub fn parse(src: &str) -> Result<Script, ParseError> {
     let mut parser = Parser {
@@ -196,7 +197,7 @@ impl Parser<'_> {
     /// After `check`: an optional target, then an optional level.
     fn check(&mut self) -> Result<CommandKind, ParseError> {
         let target = match &self.peek()?.kind {
-            TokenKind::Word(word) if word != "all" => None,
+            TokenKind::Word(word) if word != "all" && syntax::find_kind(word).is_none() => None,
             _ => self.optional_target()?,
         };
         let level = match &self.peek()?.kind {
@@ -423,6 +424,10 @@ fn primary(token: Token) -> Result<Primary, ParseError> {
             "file" => Primary::File(name),
             "refs" | "def" => return Err(ParseError::new(E::PartAsKind(kind), token.span)),
             _ => Primary::Syntax { kind, name },
+        },
+        TokenKind::Word(word) if syntax::find_kind(&word).is_some() => Primary::Syntax {
+            kind: word,
+            name: "*".into(),
         },
         TokenKind::Query(query) => Primary::Query(query),
         kind => match text_from(kind) {
@@ -951,6 +956,44 @@ mod tests {
         assert_eq!(
             one("show query{(x) @sel}"),
             show(vec![step(Primary::Query("(x) @sel".into()))])
+        );
+    }
+
+    #[test]
+    fn bare_kinds_are_wildcard_syntax_steps() {
+        let show = |steps| CommandKind::Show {
+            target: Some(target(steps)),
+            context: 0,
+        };
+        assert_eq!(one("show fn"), show(vec![syntax("fn", "*")]));
+        assert_eq!(
+            one("show impl:Parser>fn.body"),
+            show(vec![
+                syntax("impl", "Parser"),
+                parts(syntax("fn", "*"), &[Part::Body]),
+            ])
+        );
+        let any = |kind: &str| Primary::Syntax {
+            kind: kind.into(),
+            name: "*".into(),
+        };
+        assert_eq!(
+            one("show fn..struct"),
+            show(vec![step(Primary::Range {
+                from: Box::new(any("fn")),
+                to: Box::new(any("struct")),
+            })])
+        );
+        assert_eq!(
+            one("check fn error"),
+            CommandKind::Check {
+                target: Some(target(vec![syntax("fn", "*")])),
+                level: Some(Severity::Error),
+            }
+        );
+        assert_eq!(
+            message("show nope"),
+            "expected a selector, found `nope`; quote literal text: \"nope\""
         );
     }
 

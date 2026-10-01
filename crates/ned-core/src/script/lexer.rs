@@ -327,6 +327,7 @@ impl<'a> Lexer<'a> {
             "ret" => Part::Ret,
             "type" => Part::Type,
             "value" => Part::Value,
+            "whole" => Part::Whole,
             "lines" => Part::Lines,
             "refs" => Part::Refs,
             "def" => Part::Def,
