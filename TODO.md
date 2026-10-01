@@ -5,7 +5,7 @@ too large for one PR: they carry a checklist of coarse chunks to plan with the
 engineer before starting each one; a single-PR item has none, and moves to Done
 when it lands.
 
-Versions follow semver at 0.x (currently 0.1.0): a change to the command
+Versions follow semver at 0.x (currently 0.1.1): a change to the command
 language or any new user-visible feature bumps the minor version, and a release
 that only fixes bugs or adds hints bumps the patch version. Each item below says
 which it is. When to release 1.0 is TBD.
@@ -34,23 +34,16 @@ which it is. When to release 1.0 is TBD.
   benchmark, ranges, `show +N`, `create`, `|` chaining, and the error-message
   review (every error suggests a fix). Open items are below.
 - **Release groundwork**: install instructions, MIT license.
+- **CI and release binaries**: build, test, clippy and fmt on Linux and macOS;
+  PRs to `main` must raise the version, and merging one tags it and publishes
+  binaries.
 
 ## Phase 2
 
-Order matters: CI first, because it protects everything after it; the two
-selector items share the step grammar and `Matcher`, so they land in sequence;
-sessions precede everything that reads a session (commit, REPL, MCP); terminal
-output precedes the REPL. User-supplied grammars and plugins close the phase and
-may slip.
-
-### CI and release binaries
-
-Every push and PR builds, tests, lints (`clippy -D warnings`) and checks
-formatting on Linux and macOS, so a green check is the merge criterion instead
-of a local run. A tag publishes release binaries for both platforms, so users
-without a Rust toolchain can install `ned` from the README.
-
-Version: patch (0.1.1); the first release with binaries changes no behaviour.
+Order matters: the two selector items share the step grammar and `Matcher`, so
+they land in sequence; sessions precede everything that reads a session (commit,
+REPL, MCP); terminal output precedes the REPL. User-supplied grammars and
+plugins close the phase and may slip.
 
 ### Selector filters and more parts
 
