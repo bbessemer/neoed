@@ -5,7 +5,7 @@ too large for one PR: they carry a checklist of coarse chunks to plan with the
 engineer before starting each one; a single-PR item has none, and moves to Done
 when it lands.
 
-Versions follow semver at 0.x (currently 0.3.0): a change to the command
+Versions follow semver at 0.x (currently 0.4.0): a change to the command
 language or any new user-visible feature bumps the minor version, and a release
 that only fixes bugs or adds hints bumps the patch version. Each item below says
 which it is. When to release 1.0 is TBD.
@@ -37,33 +37,16 @@ which it is. When to release 1.0 is TBD.
 - **CI and release binaries**: build, test, clippy and fmt on Linux and macOS;
   PRs to `main` must raise the version, and merging one tags it and publishes
   binaries.
+- **Selector filters and more parts**: `.attrs`, `.ret`, `.type`, `.value` and
+  `.whole`; bare kinds (`fn` = `fn:*`); `.lines` splitting into lines;
+  whole-line ranges; span types; `[...]` filters with `&&`, `||` and
+  parentheses.
 
 ## Phase 2
 
-Order matters: the two selector items share the step grammar and `Matcher`, so
-they land in sequence; sessions precede everything that reads a session (commit,
-REPL, MCP); terminal output precedes the REPL. User-supplied grammars and
-plugins close the phase and may slip.
-
-### Selector filters and more parts _(split)_
-
-An agent narrows a step by a property instead of a name:
-`fn:parse.lines[.len > 80]` selects long lines, `fn[.name ~= /^test_/]` test
-functions, `fn[.doc == ""]` undocumented ones. `[...]` follows a step (after its
-parts) and keeps each span for which the condition holds; a kind without `:name`
-means every item of the kind. Properties are `.len`, `.text` and every part the
-item has, compared with `==`, `!=`, `~=` (regex), `<`, `>`, `<=`, `>=`; strings,
-numbers and regexes are the values.
-
-- [x] New parts: `.ret`, `.attrs`, `.type`, `.value` (aliased type of a `type`
-      item). Minor (0.2.0).
-- [x] Bare kinds (`fn` = `fn:*`) everywhere; `.lines` widens and then splits a
-      multi-line span into one span per line; ranges are always whole-line;
-      value types (number, string, regex, single- and multi-line span, single by
-      extent), with the parts a value has set by its type and, for items, its
-      kind. Minor.
-- [ ] `[...]` filters. `.len` counts characters on a single-line span and lines
-      on a multi-line one. Minor.
+Order matters: sessions precede everything that reads a session (commit, REPL,
+MCP); terminal output precedes the REPL. User-supplied grammars and plugins
+close the phase and may slip.
 
 ### Syntax patterns _(split)_
 

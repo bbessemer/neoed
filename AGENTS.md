@@ -133,22 +133,23 @@ come later.
 
 Spec signed off. `ned-core` has the buffer (`buffer`), edit set (`edit`), atomic
 multi-file write (`fs`), diff rendering (`diff`), the script lexer, parser, and
-error rendering (`script::parse`), selector resolution (`select`),
-whole-line/re-basing text helpers (`text`), the executor (`exec::run`), language
-detection and parsing (`lang`), syntax items and parts from
-`queries/<lang>/selectors.scm` (`syntax`), `outline`, and external formatters
-with `.ned.toml` config (`format`). The CLI supports every selector (including
-`A..B` ranges) and verb (including `create`), `show +N`, globbed file sets, the
-parse-error guard, formatting, `-w` (every workspace file; files are read
-lazily), and `ned help`. Every error ends with a fix. `ned-daemon` has the
-per-workspace daemon (socket, lock, lazy spawn, idle exit) behind `ned daemon`,
-and starts language servers (`lsp`, `servers`; `[lsp]` config in `ned-core`) for
-`open` requests and diagnostics, through the `Lsp` trait in `ned-core`:
-`check [SEL] [LEVEL]`, and edits checked while a daemon runs (introduced errors
-block unless `allow errors`), `rename`, and the `.refs`/`.def` parts (within the
-file set or `-w` workspace); the version names the build commit, and a daemon
-serves only its own build. With a daemon running, language servers format files
-whose formatters aren't installed, and `check` also waits for save-time checks
+error rendering (`script::parse`), selector resolution (`select`), spans, their
+parts and filters (`span`), whole-line/re-basing text helpers (`text`), the
+executor (`exec::run`), language detection and parsing (`lang`), syntax items
+and parts from `queries/<lang>/selectors.scm` (`syntax`), `outline`, and
+external formatters with `.ned.toml` config (`format`). The CLI supports every
+selector (including `A..B` ranges, bare kinds and `[...]` filters) and verb
+(including `create`), `show +N`, globbed file sets, the parse-error guard,
+formatting, `-w` (every workspace file; files are read lazily), and `ned help`.
+Every error ends with a fix. `ned-daemon` has the per-workspace daemon (socket,
+lock, lazy spawn, idle exit) behind `ned daemon`, and starts language servers
+(`lsp`, `servers`; `[lsp]` config in `ned-core`) for `open` requests and
+diagnostics, through the `Lsp` trait in `ned-core`: `check [SEL] [LEVEL]`, and
+edits checked while a daemon runs (introduced errors block unless
+`allow errors`), `rename`, and the `.refs`/`.def` parts (within the file set or
+`-w` workspace); the version names the build commit, and a daemon serves only
+its own build. With a daemon running, language servers format files whose
+formatters aren't installed, and `check` also waits for save-time checks
 (`cargo check`). §9 is done. Syntax selectors cover Rust, Python, Go,
 JavaScript, TypeScript/TSX and Markdown. MIT-licensed; README has install and
 usage; CI (`.github/workflows/`) gates PRs.
