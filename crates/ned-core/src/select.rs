@@ -204,6 +204,9 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
             }
             let line = spans.len() > 1;
             for span in spans {
+                if !span.passes(&step.filters, &f.text)? {
+                    continue;
+                }
                 let m = Match {
                     file: parent.file,
                     range: span.range,

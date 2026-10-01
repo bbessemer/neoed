@@ -549,6 +549,25 @@ impl Executor<'_> {
                         .collect(),
                 };
             }
+            let filters = match split {
+                Some((i, _)) => rest[i].filters.as_slice(),
+                None => &[],
+            };
+            let mut kept = Vec::new();
+            for m in found {
+                let plain = Span {
+                    range: m.range.clone(),
+                    item: None,
+                };
+                let text = &self.files[m.file].file.text;
+                if plain
+                    .passes(filters, text)
+                    .map_err(|kind| ExecError::new(kind, Some(span.clone())))?
+                {
+                    kept.push(m);
+                }
+            }
+            found = kept;
             matches = Some(found);
             rest = match split {
                 Some((i, _)) => &rest[i + 1..],

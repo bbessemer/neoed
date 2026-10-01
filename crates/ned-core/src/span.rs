@@ -3,7 +3,7 @@
 use std::ops::Range;
 
 use crate::exec::ExecErrorKind as E;
-use crate::script::ast::{Filter, Part};
+use crate::script::ast::{Filter, Op, Part, Value};
 use crate::select::part_name;
 use crate::syntax::{self, Item};
 use crate::text::full_lines;
@@ -61,9 +61,76 @@ impl<'a> Span<'a> {
         .join(" ")
     }
 
+    /// Whether every one of a step's `filters` holds for the span.
+    pub fn passes(&self, filters: &[(Filter, Range<usize>)], text: &str) -> Result<bool, E> {
+        self.all_hold(filters.iter().map(|(filter, _)| filter), text)
+    }
+
     /// Whether `filter` holds for the span (§3.9).
     pub fn holds(&self, filter: &Filter, text: &str) -> Result<bool, E> {
-        todo!()
+        let (property, op, value) = match filter {
+            Filter::Or(any) => {
+                for filter in any {
+                    if self.holds(filter, text)? {
+                        return Ok(true);
+                    }
+                }
+                return Ok(false);
+            }
+            Filter::And(all) => return self.all_hold(all, text),
+            Filter::Cond {
+                property,
+                op,
+                value,
+            } => (property, op, value),
+        };
+        // A part the item doesn't have is empty.
+        let range = match property.part {
+            None => Some(self.range.clone()),
+            Some(part) => match self.part(part, text) {
+                Ok(spans) => spans.into_iter().next().map(|s| s.range),
+                Err(E::MissingPart { .. }) => None,
+                Err(e) => return Err(e),
+            },
+        };
+        let shown = range.map_or("", |r| without_break(&text[r]));
+        Ok(match (property.len, op, value) {
+            (true, op, Value::Number(n)) => {
+                let len = match shown.contains('\n') {
+                    true => shown.lines().count(),
+                    false => shown.chars().count(),
+                };
+                match op {
+                    Op::Eq => len == *n,
+                    Op::Ne => len != *n,
+                    Op::Lt => len < *n,
+                    Op::Gt => len > *n,
+                    Op::Le => len <= *n,
+                    Op::Ge => len >= *n,
+                    Op::Match => unreachable!("checked when parsed"),
+                }
+            }
+            (false, Op::Eq, Value::Str(s)) => shown == s,
+            (false, Op::Ne, Value::Str(s)) => shown != s,
+            (false, Op::Match, Value::Regex(pattern)) => pattern
+                .regex()
+                .expect("validated when parsed")
+                .is_match(shown),
+            _ => unreachable!("checked when parsed"),
+        })
+    }
+
+    fn all_hold<'f>(
+        &self,
+        filters: impl IntoIterator<Item = &'f Filter>,
+        text: &str,
+    ) -> Result<bool, E> {
+        for filter in filters {
+            if !self.holds(filter, text)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -82,6 +149,12 @@ fn lines(text: &str, range: Range<usize>) -> impl Iterator<Item = Range<usize>> 
         pieces.push(full);
     }
     pieces.into_iter()
+}
+
+/// `text` without a final line break.
+fn without_break(text: &str) -> &str {
+    let text = text.strip_suffix('\n').unwrap_or(text);
+    text.strip_suffix('\r').unwrap_or(text)
 }
 
 #[cfg(test)]
