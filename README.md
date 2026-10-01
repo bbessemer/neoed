@@ -147,6 +147,8 @@ A selector can be:
 - a range (`fn:a..fn:c`);
 - a filter (`fn[.doc == ""]`, `fn:parse.lines[.len > 80]`);
 - scoped to one file (`file:src/a.rs>fn:new`);
+- a syntax pattern: code with placeholders, matched whatever its spacing and
+  comments (`` `foo(@x, @rest...)` ``);
 - a raw tree-sitter query (`query{...}`).
 
 A selector must match exactly one span unless it starts with `all`. A `|`

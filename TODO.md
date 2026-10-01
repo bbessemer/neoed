@@ -80,7 +80,7 @@ art: ast-grep's metavariables.
       reads tree-sitter query syntax, producing syntax objects with spans
 - [x] Fragment parsing with per-language builders
       (`queries/<lang>/builders.scm`) and containment from `node-types.json`
-- [ ] Pattern matching
+- [x] Pattern matching
 - [ ] Capture substitution in `replace` TEXT
 
 Version: minor once matching works; a further minor if capture substitution

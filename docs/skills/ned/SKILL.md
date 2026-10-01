@@ -158,6 +158,17 @@ delete fn:helper_a..fn:helper_c
 show /^## Usage/../^## License/
 ```
 
+Select code by writing it: a backquoted pattern matches whatever the spacing,
+line breaks and comments. `@name` stands for one node (an expression, a
+statement, a name), `@name...` for a run of them, `@_` for either without a
+name:
+
+```ned
+show all `dbg!(@x)`
+delete all fn:main>`println!(@_...);`
+show `impl Display for @t { @_... }`>fn:fmt
+```
+
 Select by a property instead of a name with a filter: `.text`, `.len`
 (characters on one line, lines on several) or a part, compared with `==`, `!=`,
 `<`, `>`, `<=`, `>=` or `~=` (regex), and combined with `&&` and `||`:
@@ -224,6 +235,9 @@ insert start class:App>fn:handle "metrics.count(req)"
   `show`, not from the diff, or use an item or regex selector.
 - **Keep output small** on big edits with `-q` (summaries only) or
   `--context 0`.
+- **`@` in a pattern is a placeholder.** Double it for a real one, as in a
+  decorator: `` `@@app.route(@path)` ``. A pattern holding backquotes opens and
+  closes with a longer run of them, as in Markdown: ``` `` `${x}` `` ```.
 - **Use `delete` to remove lines.** `replace 12 with ""` leaves an empty line,
   because line-oriented text always ends with a newline.
 - **Partial matches get verbatim text.** `insert after /re/ "x"` inserts right
