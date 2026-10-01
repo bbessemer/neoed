@@ -153,8 +153,10 @@ formatters aren't installed, and `check` also waits for save-time checks
 (`cargo check`). §9 is done. Syntax selectors cover Rust, Python, Go,
 JavaScript, TypeScript/TSX and Markdown. Syntax patterns (spec §3.10) are in
 progress: `ned-scheme` reads the Scheme dialect (tree-sitter query syntax plus
-Scheme data) that builders and, later, plugins are written in. MIT-licensed;
-README has install and usage; CI (`.github/workflows/`) gates PRs.
+Scheme data) that builders and, later, plugins are written in; `template` lexes
+`@` placeholders and `fragment` parses a pattern alone or inside
+`queries/<lang>/builders.scm`. MIT-licensed; README has install and usage; CI
+(`.github/workflows/`) gates PRs.
 
 ## Key Documentation
 

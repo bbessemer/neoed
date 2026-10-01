@@ -67,7 +67,8 @@ art: ast-grep's metavariables.
   `_` is the hole for the fragment, and other symbols are KIND's fields, filled
   with dummy names here and with real text by code generation later. What each
   hole can contain comes from the grammar's `node-types.json`, not from
-  hand-written data.
+  hand-written data. A test keeps only builders some fragment needs: the
+  grammars accept most code at the top level (Rust items, Go statements).
 - **Generation is quasi-quotation, not unparsing.** tree-sitter can't turn a
   tree back into source, and an unparser driven by `grammar.json` would be
   unreliable (external scanners, alternatives). Text comes from templates,
@@ -77,7 +78,7 @@ art: ast-grep's metavariables.
 - [x] Spec: placeholder grammar, capture rules, substitution in `replace`
 - [x] `ned-scheme`: a datum reader (no evaluation) for a Scheme dialect that
       reads tree-sitter query syntax, producing syntax objects with spans
-- [ ] Fragment parsing with per-language builders
+- [x] Fragment parsing with per-language builders
       (`queries/<lang>/builders.scm`) and containment from `node-types.json`
 - [ ] Pattern matching
 - [ ] Capture substitution in `replace` TEXT
