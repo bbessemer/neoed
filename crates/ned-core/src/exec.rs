@@ -501,6 +501,7 @@ impl Executor<'_> {
                     steps.push(Step {
                         primary: rest[i].primary.clone(),
                         parts: rest[i].parts[..j].to_vec(),
+                        filters: Vec::new(),
                         span: rest[i].span.clone(),
                     });
                     (steps, &rest[i].parts[j..])
@@ -1219,6 +1220,7 @@ impl Executor<'_> {
             let step = Step {
                 primary: Primary::Regex(pattern.clone()),
                 parts: Vec::new(),
+                filters: Vec::new(),
                 span: span.clone(),
             };
             let hint = select::hint(&step, &set, &parents, &selector);

@@ -26,6 +26,25 @@ pub enum ParseErrorKind {
     UnknownRegexFlag(char),
     #[error("unterminated query; close it with `}}` on the same line")]
     UnterminatedQuery,
+    #[error("unterminated filter; close it with `]` on the same line")]
+    UnterminatedFilter,
+    #[error("expected {expected} in the filter, found {found}")]
+    InFilter {
+        expected: &'static str,
+        found: String,
+    },
+    #[error(
+        "`.{0}` can't be a filter property; use .text, .len or a part, such as .name or .body.len"
+    )]
+    NotAProperty(String),
+    #[error(
+        "{property} is a number; compare it with == != < > <= >= and a number, e.g. {property} > 80"
+    )]
+    CompareNumber { property: String },
+    #[error(
+        "{property} is text; compare it with == or != and a \"string\", or with ~= and a /regex/"
+    )]
+    CompareText { property: String },
     #[error(
         "unknown part `.{0}`; parts are .body .sig .params .name .doc .attrs .ret .type .value .whole .lines .refs .def"
     )]

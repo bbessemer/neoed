@@ -268,6 +268,7 @@ impl Parser<'_> {
         let mut steps = vec![Step {
             primary: self.range(first)?,
             parts: Vec::new(),
+            filters: Vec::new(),
             span: start..self.last_end,
         }];
         loop {
@@ -293,6 +294,7 @@ impl Parser<'_> {
                     steps.push(Step {
                         primary: self.range(token)?,
                         parts: Vec::new(),
+                        filters: Vec::new(),
                         span: step_start..self.last_end,
                     });
                 }
@@ -509,6 +511,7 @@ fn expected(what: &'static str, token: &Token) -> ParseError {
         TokenKind::Heredoc { .. } => "a heredoc".into(),
         TokenKind::Query(_) => "a query".into(),
         TokenKind::Part(_) => "a part".into(),
+        TokenKind::Filter(_) => "a filter".into(),
         TokenKind::Path(_) => "a path".into(),
         TokenKind::Gt => "`>`".into(),
         TokenKind::DotDot => "`..`".into(),
@@ -572,7 +575,15 @@ mod tests {
             steps: selector
                 .steps
                 .into_iter()
-                .map(|step| Step { span: 0..0, ..step })
+                .map(|step| Step {
+                    filters: step
+                        .filters
+                        .into_iter()
+                        .map(|(filter, _)| (filter, 0..0))
+                        .collect(),
+                    span: 0..0,
+                    ..step
+                })
                 .collect(),
             span: 0..0,
         }
@@ -661,6 +672,7 @@ mod tests {
         Step {
             primary,
             parts: Vec::new(),
+            filters: Vec::new(),
             span: 0..0,
         }
     }

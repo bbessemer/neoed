@@ -3,7 +3,7 @@
 use std::ops::Range;
 
 use crate::exec::ExecErrorKind as E;
-use crate::script::ast::Part;
+use crate::script::ast::{Filter, Part};
 use crate::select::part_name;
 use crate::syntax::{self, Item};
 use crate::text::full_lines;
@@ -59,6 +59,11 @@ impl<'a> Span<'a> {
         .flatten()
         .collect::<Vec<_>>()
         .join(" ")
+    }
+
+    /// Whether `filter` holds for the span (§3.9).
+    pub fn holds(&self, filter: &Filter, text: &str) -> Result<bool, E> {
+        todo!()
     }
 }
 

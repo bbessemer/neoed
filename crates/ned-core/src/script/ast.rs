@@ -97,8 +97,48 @@ pub struct Selector {
 pub struct Step {
     pub primary: Primary,
     pub parts: Vec<Part>,
-    /// The step in the script, parts included.
+    /// The step's filters, each with its span in the script.
+    pub filters: Vec<(Filter, Range<usize>)>,
+    /// The step in the script, parts and filters included.
     pub span: Range<usize>,
+}
+
+/// A filter's condition (§3.9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Filter {
+    Or(Vec<Filter>),
+    And(Vec<Filter>),
+    Cond {
+        property: Property,
+        op: Op,
+        value: Value,
+    },
+}
+
+/// `.text` or `.len` of the span, or of its `part`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Property {
+    pub part: Option<Part>,
+    pub len: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Op {
+    Eq,
+    Ne,
+    /// `~=`
+    Match,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Value {
+    Number(usize),
+    Str(String),
+    Regex(Pattern),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
