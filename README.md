@@ -190,13 +190,25 @@ There are no release binaries or CI yet.
 
 ## Roadmap
 
+In order, with details in [`TODO.md`](TODO.md):
+
 - CI on Linux and macOS, and release binaries
+- Selector filters, `fn[.name ~= /^test_/]` or `.lines[.len > 80]`, and more
+  parts (return type, attributes, a field's type and value)
+- Syntax patterns: select code by writing code in backquotes, matched
+  structurally with `$name` placeholders, so whitespace never has to match
+- Sessions (`-s NAME`): a shared edit history across invocations, with repeat,
+  `undo` and `history`
+- Git: commit exactly an invocation's or a session's edits; edit and resolve
+  files with merge-conflict markers
+- Human-friendly output on a terminal: syntax highlighting, aligned line
+  numbers, coloured diffs
+- `ned-repl`: an interactive session for humans, which can also follow an
+  agent's session
 - `ned-mcp`: an MCP server that exposes scripts, `outline` and `show` as tools
-- `ned-repl`: an interactive session for humans, with undo and explicit writes
-- `check`, `rename`, `.refs` and `.def` after a `|`
-- Smarter re-basing: converting indent widths, and keeping alignment and
-  block-quote markers
-- Smaller ergonomics items, listed in [`TODO.md`](TODO.md)
+- User-supplied tree-sitter grammars and query files, without rebuilding `ned`
+- Later, plugins: a Scheme over tree-sitter queries for new languages, custom
+  commands and syntax-aware code generation
 
 ## Development
 
