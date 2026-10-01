@@ -6,6 +6,7 @@ use super::ast::*;
 use super::error::{COMMANDS, ParseError, ParseErrorKind as E};
 use super::lexer::{Lexer, Token, TokenKind};
 use crate::lsp::Severity;
+use crate::syntax;
 
 pub fn parse(src: &str) -> Result<Script, ParseError> {
     let mut parser = Parser {
@@ -196,7 +197,7 @@ impl Parser<'_> {
     /// After `check`: an optional target, then an optional level.
     fn check(&mut self) -> Result<CommandKind, ParseError> {
         let target = match &self.peek()?.kind {
-            TokenKind::Word(word) if word != "all" => None,
+            TokenKind::Word(word) if word != "all" && syntax::find_kind(word).is_none() => None,
             _ => self.optional_target()?,
         };
         let level = match &self.peek()?.kind {
@@ -423,6 +424,10 @@ fn primary(token: Token) -> Result<Primary, ParseError> {
             "file" => Primary::File(name),
             "refs" | "def" => return Err(ParseError::new(E::PartAsKind(kind), token.span)),
             _ => Primary::Syntax { kind, name },
+        },
+        TokenKind::Word(word) if syntax::find_kind(&word).is_some() => Primary::Syntax {
+            kind: word,
+            name: "*".into(),
         },
         TokenKind::Query(query) => Primary::Query(query),
         kind => match text_from(kind) {
