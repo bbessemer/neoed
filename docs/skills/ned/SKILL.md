@@ -218,7 +218,8 @@ insert start class:App>fn:handle "metrics.count(req)"
   item parts). `replace /re/` replaces only the match, so add `.lines` to
   replace its line; a note says so when TEXT repeats the rest of the line. On a
   span of several lines, `.lines` selects each line: use `all`, or a range for
-  one span.
+  one span. TEXT for a partial span keeps its first line as written and indents
+  the rest by the first line's indentation, so leave that indentation off.
 - **Re-basing follows the target line.** `<<END` text takes the indentation of
   the line it's inserted next to, or of the first line it replaces. In Markdown,
   a new list item (`- ...`) next to any line of a list item goes beside the
