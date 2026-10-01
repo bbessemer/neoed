@@ -141,7 +141,8 @@ are errors.
   stage `c`. A line may end with `|`; the next stage starts on the next line. A
   `|` needs a command on each side.
 - **Comments** start with `#` at the start of a token and run to the end of the
-  line. A `#` inside a string, regex, query, or heredoc body is literal.
+  line. A `#` inside a string, regex, query, pattern, or heredoc body is
+  literal.
 - **Strings** are `"..."`, on a single line, with the escapes `\n`, `\t`, `\"`
   and `\\`. Any other backslash sequence is an error.
 - **Regexes** are `/.../FLAGS`, using Rust [`regex`] syntax. Write `\/` for a
@@ -157,6 +158,8 @@ are errors.
   - `<<TAG` bodies are **re-based** (§5) when inserted, and match
     indentation-insensitively when used as selectors (§3.2).
   - `<<'TAG'` bodies are **verbatim**: no re-basing, and exact matching.
+- **Patterns** are code between backquotes (§3.10), and may span lines. Write
+  `` \` `` for a literal backquote; every other backslash is literal.
 - **Filters** are `[...]` directly after a step (§3.9). Inside the brackets,
   whitespace is allowed, digits are numbers, and `==`, `!=`, `~=`, `<`, `>`,
   `<=`, `>=`, `&&`, `||`, `(` and `)` are operators.
@@ -206,7 +209,7 @@ property   = ".len" | ".text" | part [ ".len" | ".text" ] ;
 op         = "==" | "!=" | "~=" | "<" | ">" | "<=" | ">=" ;
 value      = string | regex | number ;
 number     = digit { digit } ;
-primary    = lines | regex | literal | syntax | query ;
+primary    = lines | regex | literal | syntax | query | pattern ;
 
 lines      = lineno [ "-" lineno ] ;
 lineno     = digit { digit } | "$" ;
@@ -215,6 +218,7 @@ syntax     = kind [ ":" name ] ;
 kind       = ident ;
 name       = name-char { name-char } | string ;   (* name-char: [A-Za-z0-9_:*] *)
 query      = "query{" { any } "}" ;   (* ends at the first unescaped "}"; one line *)
+pattern    = "`" { any | "\`" } "`" ;   (* may span lines; see 3.10 *)
 
 text       = string | heredoc ;
 path       = path-char { path-char } | string ;   (* globs allowed; see 2.4 *)
@@ -224,9 +228,9 @@ heredoc    = "<<" ( ident | "'" ident "'" ) ;
 comment    = "#" { any-but-newline } ;
 ```
 
-No whitespace is allowed inside a selector, except within a filter's brackets:
-`impl:Parser>fn:new.body` is one selector, while `impl:Parser > fn:new` is a
-syntax error.
+No whitespace is allowed inside a selector, except within a filter's brackets or
+a pattern's backquotes: `impl:Parser>fn:new.body` is one selector, while
+`impl:Parser > fn:new` is a syntax error.
 
 In `sub`, the last primary before `with` is the pattern. A preceding selector,
 if present, is the scope: `sub fn:parse /x/ with "y"`.
@@ -582,6 +586,100 @@ filter follows the step's parts and tests the spans they select.
 - A span the filter rejects isn't a match: it doesn't count toward ambiguity
   (§3.5), and a filter that rejects every span is a no-match error.
 
+### 3.10 Syntax patterns
+
+A pattern is code between backquotes. `ned` parses it with each file's grammar
+and matches it against the file's syntax tree, so `` `foo(@a, 1)` `` matches
+every call of `foo` whose second argument is `1`, however the call is spaced,
+wrapped or commented. Whitespace and comments matter only where the grammar
+makes them matter, as Python's indentation does.
+
+```
+show all `dbg!(@x)`
+delete all fn:main>`println!(@_...);`
+show `impl Display for @t { @_... }`>fn:fmt
+```
+
+**Writing.** A pattern may span lines. Write `` \` `` for a backquote inside it
+(a JavaScript template literal, a Go raw string); every other backslash is
+literal, so `` `"\n"` `` is the source text `"\n"`. Indentation common to the
+pattern's lines is ignored.
+
+**Placeholders** stand for the parts of the code that vary:
+
+| Placeholder      | Matches                                         | Captures |
+| ---------------- | ----------------------------------------------- | -------- |
+| `@name`          | any one node: an expression, statement, name... | yes      |
+| `@name...`       | a run of zero or more sibling nodes             | yes      |
+| `@_` and `@_...` | the same                                        | no       |
+| `@@`             | a literal `@`                                   | -        |
+
+- A name is a letter or `_` followed by letters, digits and `_`. An `@` before
+  anything else is literal: `a @ b`.
+- A placeholder must stand for a whole node. One inside a string or comment is
+  literal text: `` `log("user@host")` ``. Anywhere else, as part of a keyword or
+  operator, it's a script error (exit 2).
+- Python and TypeScript decorators start with `@`, so double it to match one:
+  `` `@@app.route(@path)` ``.
+- `@name...` matches as few siblings as it can while the rest of the pattern
+  still matches: in `` `foo(@first, @rest...)` ``, `@first` is the first
+  argument and `@rest` the others.
+- A name used twice in a pattern matches only equal code, ignoring whitespace
+  and comments: `` `@x == @x` ``.
+
+**Parsing.** Many fragments only parse inside some other code: a method inside
+an `impl` or a class, a match arm inside a `match`, a field inside a struct.
+`ned` parses the pattern alone, then inside each such construct its language
+defines, and keeps every reading that parses without errors. The pattern matches
+any of them: `` `x: u32` `` matches a struct field or a parameter.
+
+- A file whose language can't parse the pattern is skipped, and so are files
+  without a language and Markdown files. If no searched file's language parses
+  the pattern, it's a script error (exit 2) that shows where parsing failed.
+- The pattern's root is the deepest node spanning all of its code, so
+  `` `foo(@a)` `` is a call and matches calls in expressions as well as in
+  statements. A pattern of several statements or items matches any run of
+  consecutive siblings.
+
+**Matching.** Two nodes match when they have the same kind and their children
+match in order; leaves (names, numbers, string contents) must have the same
+text. Comments are skipped on both sides. Punctuation and keyword tokens in the
+file that the pattern leaves out are skipped too, so `` `foo(@a, @b)` `` matches
+`foo(x, y,)`; tokens the pattern has must be there, so `` `@a + @b` `` doesn't
+match `x - y`. Every other node must match: `` `fn @name() {}` `` doesn't match
+`pub fn f() {}`.
+
+**Matches.** A match is a span (§3.8) from the start of the matched node or run
+to its end, with `.lines` but no other parts. It works as any step, like
+`query{}`, and its ambiguity and candidates are a literal's (§3.5). Matches are
+found in source order and don't overlap: a match inside an earlier one is
+skipped, so `foo(foo(1))` matches `` `foo(@a)` `` once.
+
+**Captures.** Each named placeholder captures what it matched, from its first
+character to its last, comments inside included. A span's captures come from
+every pattern step of its selector, so each name may appear in only one step;
+`` `impl @t { @_... }`>fn:new `` captures `@t` for each `new`.
+
+**Substitution.** When `replace`'s target has captures, `@name` in `TEXT`
+expands to the selected span's capture (`@name...` is the same), and `@@` to
+`@`. An `@name` that nothing captured is a script error.
+
+- A capture spanning several lines keeps the indentation of its later lines
+  relative to its first, under the indentation of the `TEXT` line where `@name`
+  sits.
+- `TEXT` is then line-oriented or verbatim, and re-based, as usual (§5).
+- Without pattern steps, `replace` expands nothing.
+
+```
+replace all `assert_eq!(@a, true)` with "assert!(@a)"
+replace fn:load>`if let Some(@x) = @e { @body... }` with <<END
+let Some(@x) = @e else {
+    return;
+};
+@body
+END
+```
+
 ## 4. Verbs
 
 ### 4.1 Reads
@@ -628,7 +726,8 @@ filter follows the step's parts and tests the spans they select.
 
 Notes:
 
-- `replace` never expands `$`. Only `sub` does.
+- `replace` never expands `$`. Only `sub` does. `replace` expands `@name` only
+  when its target has pattern captures (§3.10).
 - `sub` inserts its replacement verbatim after `$` expansion; the whole-line
   rules of §5.1 don't apply.
 - The `all` prefix belongs to the target: `delete all fn:test_*`. In `sub`, the
@@ -937,6 +1036,12 @@ Errors go to stderr, in the form `error: LOC: message`.
 | Ambiguous selector                                        | Candidate selectors (§3.5), or longer text for matches that share a line                                                                                                                                                                                                                                |
 | Missing part, part on a non-syntax step                   | The parts the item has, or an example                                                                                                                                                                                                                                                                   |
 | Invalid query                                             | The closest node type or field name in the grammar                                                                                                                                                                                                                                                      |
+| Unterminated pattern                                      | Ending it with `` ` ``, and `` \` `` for a backquote inside it                                                                                                                                                                                                                                          |
+| Pattern that no searched file's language parses           | The first syntax error in it; adding the code around it, or `query{}`                                                                                                                                                                                                                                   |
+| Placeholder that isn't a whole node                       | `@@` for a literal `@`                                                                                                                                                                                                                                                                                  |
+| Capture name in two pattern steps                         | Renaming one of them                                                                                                                                                                                                                                                                                    |
+| `@name` in `replace` TEXT that nothing captured           | The names captured, or `@@name` for a literal                                                                                                                                                                                                                                                           |
+| Pattern searching only files without a code language      | A regex or literal, or `--lang`                                                                                                                                                                                                                                                                         |
 | Syntax step or `outline` in a file without a language     | `--lang`                                                                                                                                                                                                                                                                                                |
 | Kind the language doesn't have                            | The kinds it has                                                                                                                                                                                                                                                                                        |
 | Line past the end                                         | `$` for the last line                                                                                                                                                                                                                                                                                   |
@@ -973,7 +1078,7 @@ error: script:2:28: unterminated heredoc <<END (started here); end it with a lin
 | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 0    | Success, including dry runs and skipped formatters                                                                                                                                                                                                                                                                    |
 | 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unknown kind, no language, line past the end, file not in the set, `create` of an existing file, parse-error guard, introduced diagnostics, move into its own source, rename refused, reaching outside the file set, ambiguous `.refs`/`.def` result |
-| 2    | Usage error (bad flags or arguments, a command's name given as a `FILE`, no script on a terminal, no files to edit), script syntax error, invalid query or config, or no language server                                                                                                                              |
+| 2    | Usage error (bad flags or arguments, a command's name given as a `FILE`, no script on a terminal, no files to edit), script syntax error, invalid query, pattern or config, or no language server                                                                                                                     |
 | 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, write failure, or language server failure                                                                                                                                                                                                              |
 
 On any non-zero exit, no file is modified. Reads that ran before the failure

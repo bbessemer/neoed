@@ -50,26 +50,40 @@ close the phase and may slip.
 
 ### Syntax patterns _(split)_
 
-An agent selects code by writing code: a backquoted literal such as
-`` fn:parse>`if name == "foo" { $body... }` `` is parsed with the file's grammar
-and matched against the syntax tree, so runs of whitespace, line breaks and
-comments never have to be reproduced. Plain code is accepted as written; `$name`
-matches any one node and `$name...` any run of sibling nodes, and either
-captures what it matched for use as `$name` in the `replace` text, as `sub` uses
-`$1`. The pattern compiles to a tree-sitter query and runs on the `query{}`
-path, so it works in every supported language. The risk is parsing a fragment:
-an `if` in Rust only parses inside a function, so each language needs wrapping
-contexts to try. Matching and simple substitution are the scope here; procedural
-generation belongs to Plugins. Prior art: ast-grep's metavariables.
+An agent selects code by writing code: a backquoted pattern such as
+`` fn:parse>`if name == "foo" { @body... }` `` is parsed with the file's grammar
+and matched against the syntax tree, so whitespace, line breaks and comments
+never have to be reproduced (spec §3.10). `@name` matches one node and
+`@name...` a run of siblings; `replace` substitutes what they captured. Prior
+art: ast-grep's metavariables.
 
-- [ ] Spec: placeholder grammar, capture rules, substitution in `replace`
-- [ ] Fragment parsing with per-language contexts
-      (`queries/<lang>/contexts.scm`)
-- [ ] Pattern-to-query compilation and matching
+- **Direct tree matching**, not compilation to queries: query anchors can't skip
+  comments between siblings, and unanchored children allow gaps.
+- **Fragments parse inside builders.** tree-sitter has no alternate start
+  symbol, so a fragment that only parses inside other code (a method, an arm, a
+  field) is tried inside each of its language's builders:
+  `queries/<lang>/builders.scm`, Scheme data read by `ned-scheme` and never
+  evaluated. `(build KIND PART...)` gives the text of KIND: strings are literal,
+  `_` is the hole for the fragment, and other symbols are KIND's fields, filled
+  with dummy names here and with real text by code generation later. What each
+  hole can contain comes from the grammar's `node-types.json`, not from
+  hand-written data.
+- **Generation is quasi-quotation, not unparsing.** tree-sitter can't turn a
+  tree back into source, and an unparser driven by `grammar.json` would be
+  unreliable (external scanners, alternatives). Text comes from templates,
+  captured source and re-basing, plus the formatter; trees only validate it.
+  Plugins build on the same templates and builders.
+
+- [x] Spec: placeholder grammar, capture rules, substitution in `replace`
+- [ ] `ned-scheme`: a datum reader (no evaluation) for a Scheme dialect that
+      reads tree-sitter query syntax, producing syntax objects with spans
+- [ ] Fragment parsing with per-language builders
+      (`queries/<lang>/builders.scm`) and containment from `node-types.json`
+- [ ] Pattern matching
 - [ ] Capture substitution in `replace` TEXT
 
 Version: minor once matching works; a further minor if capture substitution
-ships separately. The spec and context chunks alone release nothing.
+ships separately. The spec, reader and builder chunks alone release nothing.
 
 ### Sessions _(split)_
 
@@ -164,7 +178,12 @@ hand-rolled R5RS, for new languages whose items need logic, custom commands,
 complex tree manipulations and procedural code generation: a language-generic
 but syntax-aware macro system. Not for external processes, I/O outside the
 editing core, or Emacs-style scope creep; `ned` stays a focused tool. First step
-is a spike comparing Steel with a hand-rolled interpreter on one real use case.
+is a spike comparing Steel with a hand-rolled evaluator on one real use case;
+`ned-scheme`'s reader (from syntax patterns) is the front end either way. It
+reads tree-sitter query syntax natively (`@capture`, `[...]` alternation, `#eq?`
+predicates, `.` anchors, so no dotted pairs), which counts toward a hand-rolled
+evaluator unless Steel's reader can be made to read it too (to check in the
+spike).
 
 Version: minor when a first plugin can load; the spike releases nothing.
 
