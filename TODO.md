@@ -45,19 +45,25 @@ they land in sequence; sessions precede everything that reads a session (commit,
 REPL, MCP); terminal output precedes the REPL. User-supplied grammars and
 plugins close the phase and may slip.
 
-### Selector filters and more parts
+### Selector filters and more parts _(split)_
 
-An agent narrows a step by a property instead of a name: `.lines[.len > 80]`
-selects long lines, `fn[.name ~= /^test_/]` test functions, `fn[.doc == ""]`
-undocumented ones. `[...]` follows a step (after its parts) and keeps each span
-for which the condition holds; a kind without `:name` means every item of the
-kind. Properties are `.len`, `.text` and every part the item has, compared with
-`==`, `!=`, `~=` (regex), `<`, `>`, `<=`, `>=`; strings, numbers and regexes are
-the values. The spec step also settles which new parts to add; candidates are
-`.ret` (return type), `.attrs` (attributes and decorators), `.type` and `.value`
-(of a field, const or var). Spec §2.2 and §3.4 change first.
+An agent narrows a step by a property instead of a name:
+`fn:parse.lines[.len > 80]` selects long lines, `fn[.name ~= /^test_/]` test
+functions, `fn[.doc == ""]` undocumented ones. `[...]` follows a step (after its
+parts) and keeps each span for which the condition holds; a kind without `:name`
+means every item of the kind. Properties are `.len`, `.text` and every part the
+item has, compared with `==`, `!=`, `~=` (regex), `<`, `>`, `<=`, `>=`; strings,
+numbers and regexes are the values.
 
-Version: minor (0.2.0); new selector grammar and parts.
+- [ ] New parts: `.ret`, `.attrs`, `.type`, `.value` (aliased type of a `type`
+      item). Minor (0.2.0).
+- [ ] Bare kinds (`fn` = `fn:*`) everywhere; `.lines` widens and then splits a
+      multi-line span into one span per line; ranges are always whole-line;
+      value types (number, string, regex, single- and multi-line span, single by
+      extent), with the parts a value has set by its type and, for items, its
+      kind. Minor.
+- [ ] `[...]` filters. `.len` counts characters on a single-line span and lines
+      on a multi-line one. Minor.
 
 ### Syntax patterns _(split)_
 
