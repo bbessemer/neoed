@@ -2,7 +2,8 @@
 //! from as semver build metadata, plus `.dirty` and the build time for
 //! uncommitted changes: `0.1.0+a2faeba`, `0.1.0+a2faeba.dirty.1790698892`. A
 //! daemon serves only its own build (command-language spec §1.1), so every
-//! build needs a distinct version.
+//! development build needs a distinct version. A release build (`NED_RELEASE`
+//! set) or a build outside git gets the package version alone.
 
 use std::path::Path;
 use std::process::Command;
@@ -33,13 +34,18 @@ fn main() {
         ":(top)",
         ":(top,exclude).cargo-ok",
     ];
-    let build = match git(&["rev-parse", "--short", "HEAD"]) {
-        Some(commit) if git(&status).is_some_and(|s| s.is_empty()) => commit,
-        Some(commit) => format!("{commit}.dirty.{now}"),
-        None => format!("unknown.{now}"),
-    };
     let version = std::env::var("CARGO_PKG_VERSION").unwrap();
-    println!("cargo:rustc-env=NED_VERSION={version}+{build}");
+    println!("cargo:rerun-if-env-changed=NED_RELEASE");
+    let build = match git(&["rev-parse", "--short", "HEAD"]) {
+        _ if std::env::var_os("NED_RELEASE").is_some() => None,
+        Some(commit) if git(&status).is_some_and(|s| s.is_empty()) => Some(commit),
+        Some(commit) => Some(format!("{commit}.dirty.{now}")),
+        None => None,
+    };
+    match build {
+        Some(build) => println!("cargo:rustc-env=NED_VERSION={version}+{build}"),
+        None => println!("cargo:rustc-env=NED_VERSION={version}"),
+    }
 
     println!("cargo:rerun-if-changed=../../crates");
     println!("cargo:rerun-if-changed=../../queries");

@@ -12,16 +12,16 @@ ned help [TOPIC]
 ned daemon start|status|stop [DIR]
 ```
 
-`ned help` prints a summary of the language, sized to fit in an agent's
-context. `ned help TOPIC` details one verb (`show`, `outline`, `check`,
-`allow`, `replace`, `insert`, `delete`, `sub`, `move`, `rename`, `file`,
-`create`), or `selectors`, `text` or `config`.
-An unknown topic is a usage error that lists the topics. `help` must be the
-first argument; write a file named `help` as `./help`.
+`ned help` prints a summary of the language, sized to fit in an agent's context.
+`ned help TOPIC` details one verb (`show`, `outline`, `check`, `allow`,
+`replace`, `insert`, `delete`, `sub`, `move`, `rename`, `file`, `create`), or
+`selectors`, `text` or `config`. An unknown topic is a usage error that lists
+the topics. `help` must be the first argument; write a file named `help` as
+`./help`.
 
 - `-e SCRIPT` may be repeated; the scripts are joined with newlines, in order.
-- Without `-e`, the script is read from stdin. If stdin is a terminal, that's
-  a usage error instead of a wait for input.
+- Without `-e`, the script is read from stdin. If stdin is a terminal, that's a
+  usage error instead of a wait for input.
 - A `FILE` that doesn't exist but is a command's name (`ned outline a.rs`) is a
   usage error suggesting the `-e` form (`ned a.rs -e 'outline'`).
 - `FILE...` sets the initial **file set** (§2.4). A script may also name files
@@ -30,17 +30,17 @@ first argument; write a file named `help` as `./help`.
 - Files must be UTF-8. Line endings are detected per file (LF or CRLF), and
   inserted text is converted to match.
 
-| Flag                      | Effect                                                                                                        |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `-n`, `--dry-run`         | Resolve and apply edits in memory, print the output, write nothing.                                           |
-| `-q`, `--quiet`           | Print only the per-file summary lines on success (§6.3).                                                      |
-| `--force`                 | Skip the parse-error guard (§4.3) and blocking on introduced diagnostics (§6.5).                              |
-| `--no-check`              | Don't check edits with language servers (§6.5).                                                               |
-| `-w`, `--workspace [DIR]` | Start with every file in the workspace, `DIR` or the one detected (§1.1), instead of `FILE` arguments (§2.4). |
-| `--no-fmt`                | Don't run formatters (§6.4).                                                                                  |
-| `--lang LANG`             | Use this language for every file: `rust`, `python`, `typescript`, `tsx`, `javascript`, `go`, `markdown`.      |
-| `--context N`             | Context lines around diff hunks (default 1).                                                                  |
-| `-V`, `--version`         | Print the version: the package version and the build's git commit.                                            |
+| Flag                      | Effect                                                                                                                               |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `-n`, `--dry-run`         | Resolve and apply edits in memory, print the output, write nothing.                                                                  |
+| `-q`, `--quiet`           | Print only the per-file summary lines on success (§6.3).                                                                             |
+| `--force`                 | Skip the parse-error guard (§4.3) and blocking on introduced diagnostics (§6.5).                                                     |
+| `--no-check`              | Don't check edits with language servers (§6.5).                                                                                      |
+| `-w`, `--workspace [DIR]` | Start with every file in the workspace, `DIR` or the one detected (§1.1), instead of `FILE` arguments (§2.4).                        |
+| `--no-fmt`                | Don't run formatters (§6.4).                                                                                                         |
+| `--lang LANG`             | Use this language for every file: `rust`, `python`, `typescript`, `tsx`, `javascript`, `go`, `markdown`.                             |
+| `--context N`             | Context lines around diff hunks (default 1).                                                                                         |
+| `-V`, `--version`         | Print the version: the package version and the build's git commit (the version alone for a release build, or one built without git). |
 
 Otherwise, a file's language is detected from its extension, then from its
 shebang (`python…` or `node`, directly or through `env`). Extensions are
@@ -61,14 +61,14 @@ language.
 
 ### 1.1 Daemon
 
-Language-server features run through a daemon, one per workspace, that keeps
-the servers warm between invocations. A workspace is the nearest directory,
-from the working directory up, that holds `.git`, `.hg` or `.jj`; without one,
-it's the working directory. `-w DIR` makes `DIR` the workspace instead, for the
-file set and the daemon alike. `check`, `rename`, `.refs` and `.def` spawn the
-daemon on demand; checking edits (§6.5) and formatting through a server (§6.4)
-use it only if it's already running. It exits after 10 minutes without a
-request (see `idle_timeout` below). Everything else works without it.
+Language-server features run through a daemon, one per workspace, that keeps the
+servers warm between invocations. A workspace is the nearest directory, from the
+working directory up, that holds `.git`, `.hg` or `.jj`; without one, it's the
+working directory. `-w DIR` makes `DIR` the workspace instead, for the file set
+and the daemon alike. `check`, `rename`, `.refs` and `.def` spawn the daemon on
+demand; checking edits (§6.5) and formatting through a server (§6.4) use it only
+if it's already running. It exits after 10 minutes without a request (see
+`idle_timeout` below). Everything else works without it.
 
 `ned daemon start`, `status` and `stop` manage the daemon for the workspace
 containing `DIR` (default: the working directory). `start` spawns it if it isn't
@@ -86,9 +86,9 @@ no daemon for /home/me/proj
 
 The daemon starts a language's server the first time a feature needs it, and
 keeps each server's view of the files in sync with the text `ned` sends it.
-`status` lists each server with its state (`indexing`, `ready` or `exited`)
-and the number of files it has open. A server that exits is started again when
-next needed. Servers are shut down with the daemon.
+`status` lists each server with its state (`indexing`, `ready` or `exited`) and
+the number of files it has open. A server that exits is started again when next
+needed. Servers are shut down with the daemon.
 
 Servers are configured per language under `[lsp]`, like formatters (§6.4): the
 same files, merging and program lookup, read from the workspace root up. A value
@@ -159,8 +159,8 @@ are errors.
   - `<<'TAG'` bodies are **verbatim**: no re-basing, and exact matching.
 - **Keywords**: the verbs, `all`, `with`, `to`, `before`, `after`, `start`,
   `end`, and `file`; after `check`, its levels (`error`, `warning`, `info`,
-  `hint`), and after `allow`, `errors` and `warnings`. Any other bare word is
-  an error.
+  `hint`), and after `allow`, `errors` and `warnings`. Any other bare word is an
+  error.
 
 [`regex`]: https://docs.rs/regex/latest/regex/#syntax
 
@@ -220,9 +220,9 @@ if present, is the scope: `sub fn:parse /x/ with "y"`.
 
 ### 2.3 Snapshot semantics
 
-A script is one transaction. `|` splits it into **stages**, each over a
-snapshot of its files as the stage before left them; a script without `|` is
-one stage over the files as they are:
+A script is one transaction. `|` splits it into **stages**, each over a snapshot
+of its files as the stage before left them; a script without `|` is one stage
+over the files as they are:
 
 1. Every selector resolves against the contents at the start of its stage (the
    original contents, in the first stage). Line numbers printed by an earlier
@@ -354,16 +354,16 @@ The kinds each language supports, and the items they cover there:
 - **Markdown**: `section`, `item`, `table`, `code`.
 - **Python**: `fn` (functions and methods, `async` too), `class`, `field`
   (assignments and annotations directly in a class body), `const` (module-level
-  assignments to an `UPPER_SNAKE` name), `var` (other module-level
-  assignments), `import` (named by the module: `import:"os.path"`;
-  `from a.b import c` is `import:"a.b"`).
+  assignments to an `UPPER_SNAKE` name), `var` (other module-level assignments),
+  `import` (named by the module: `import:"os.path"`; `from a.b import c` is
+  `import:"a.b"`).
 - **Go**: `fn` (functions, interface methods, and methods, named
   `RECEIVER.NAME`: `fn:"Parser.Parse"`; `fn:Parse` matches every `Parse`),
   `struct`, `interface` and `type` (other type declarations and aliases),
   `field` (named by its first name; an embedded field by its type), `const`,
   `var`, `import` (named by the path without quotes: `import:fmt`,
-  `import:"net/http"`). In a grouped declaration (`const ( ... )`) each spec
-  is an item; a declaration with one spec includes its keyword. Every comment
+  `import:"net/http"`). In a grouped declaration (`const ( ... )`) each spec is
+  an item; a declaration with one spec includes its keyword. Every comment
   directly above an item is its doc.
 - **JavaScript** and **TypeScript** (TSX too): `fn` (function declarations,
   generators, class methods, and a variable declared as an arrow function or
@@ -381,15 +381,15 @@ The kinds each language supports, and the items they cover there:
   `TRAIT for TYPE` (`impl:"Display for Parser"`), each the last path segment
   without generic arguments (`impl<T> fmt::Display for Foo<T>` is
   `"Display for Foo"`). `impl:TYPE` also matches every trait impl of the type.
-- A syntax step skips files whose language doesn't support its kind, as it
-  skips files without a language, so `fn:parse` works in a set that also holds
+- A syntax step skips files whose language doesn't support its kind, as it skips
+  files without a language, so `fn:parse` works in a set that also holds
   Markdown. If no searched file supports the kind, the step is an error that
   lists the kinds the first such language does support.
 - A syntax item's default span is the **whole item as a reader sees it**,
   including its leading doc comments and attributes or decorators, up to the
-  first blank line above it. A `,` directly after the item, on the same line,
-  is part of the span too (fields, variants). When `replace` targets such an
-  item and `TEXT` doesn't end with `,`, one is appended.
+  first blank line above it. A `,` directly after the item, on the same line, is
+  part of the span too (fields, variants). When `replace` targets such an item
+  and `TEXT` doesn't end with `,`, one is appended.
 - Syntax steps skip files without a language. If no searched file has one, the
   selector is an error that suggests `--lang`.
 - `file:PATH` is a special step that selects the whole of one file in the
@@ -404,8 +404,8 @@ The kinds each language supports, and the items they cover there:
   (such as a syntax item) if it lies within those lines, so `fn:new>12` can
   select the item's first or last line, `fn:new>"    fn new"` can include its
   indentation, and `^` in a nested regex is a line start; `sub`'s scopes work
-  the same way. Any kinds of primaries can be mixed:
-  `impl:Parser>fn:new`, `fn:main>/unwrap\(\)/`, `100-200>fn:new`.
+  the same way. Any kinds of primaries can be mixed: `impl:Parser>fn:new`,
+  `fn:main>/unwrap\(\)/`, `100-200>fn:new`.
 - A **part** narrows each span of its step:
 
 | Part      | Span                                                                                                                             |
@@ -425,10 +425,10 @@ The kinds each language supports, and the items they cover there:
   trimmed.
 - A Markdown section's `.body` runs from the first non-blank line after its
   heading to the end of its content, subsections included, so
-  `insert end section:"3. Selectors"` adds after the last subsection. It's
-  empty if the heading has no content; text put there goes on the lines right
-  after the heading. `ned` adds no blank lines between Markdown blocks: put
-  them in the text. `.sig` is the heading line.
+  `insert end section:"3. Selectors"` adds after the last subsection. It's empty
+  if the heading has no content; text put there goes on the lines right after
+  the heading. `ned` adds no blank lines between Markdown blocks: put them in
+  the text. `.sig` is the heading line.
 - `.doc` covers whole lines. On an item with no body (such as a trait method
   declaration), `.sig` is the whole item.
 - In Python, `.doc` is the docstring, and `.body` is the block's whole lines
@@ -439,8 +439,8 @@ The kinds each language supports, and the items they cover there:
   on any step: `fn:parse.refs`, `fn:main>"helper(".def`. Their spans may be in
   other files: in the file set, or with `-w` in any workspace file, which then
   joins it; any other file is an error. Only `.lines` may follow them in the
-  same step, and later steps search inside their spans. They spawn the daemon
-  if need be.
+  same step, and later steps search inside their spans. They spawn the daemon if
+  need be.
 - A part the item doesn't have (e.g. `.body` on a Rust `const`) is an error.
   Parts other than `.lines` need a syntax item: `/x/.body` is an error, and so
   is a part after another part, as in `.body.name`.
@@ -458,12 +458,12 @@ The kinds each language supports, and the items they cover there:
   scope by lines (`40-80>fn:new`), or scope by file (`file:src/a.rs>fn:new`).
   Error messages list the candidates in exactly these forms (§7): nested in the
   match's nearest enclosing item (within the previous step's span) if that's
-  unique among the matches, otherwise scoped by file if that's unique,
-  otherwise by lines. A `file:` scope goes first; an item or line scope goes
-  just before the selector's last step (`impl:Lexer>fn:new>40-44>/x/`), and a
-  line scope covers the whole matched item, even when a part follows it.
-- Every listed candidate picks exactly one match. Matches that share a line
-  with another match can't be picked by scope, so they aren't listed; the error
+  unique among the matches, otherwise scoped by file if that's unique, otherwise
+  by lines. A `file:` scope goes first; an item or line scope goes just before
+  the selector's last step (`impl:Lexer>fn:new>40-44>/x/`), and a line scope
+  covers the whole matched item, even when a part follows it.
+- Every listed candidate picks exactly one match. Matches that share a line with
+  another match can't be picked by scope, so they aren't listed; the error
   counts them and suggests selecting longer text, or `all`.
 - When the last step is a syntax step with a `*` in its name, each candidate
   names its item instead (`fn:test_*` lists `fn:test_parse`), and is scoped as
@@ -475,8 +475,8 @@ The kinds each language supports, and the items they cover there:
 in every language `ned` detects. The span is taken from the `@sel` capture if
 there is one, and otherwise from the outermost capture of each match. Files
 without a language are skipped, as for syntax steps. A query that doesn't
-compile is a script error (exit 2). Write
-`\}` for a literal `}` in the query. The query must fit on one line.
+compile is a script error (exit 2). Write `\}` for a literal `}` in the query.
+The query must fit on one line.
 
 ```
 delete all query{(call_expression function: (identifier) @f (#eq? @f "dbg")) @sel}
@@ -487,21 +487,21 @@ delete all query{(call_expression function: (identifier) @f (#eq? @f "dbg")) @se
 `A..B` selects from the start of a match of `A` to the end of the first match of
 `B` that starts after it: `/^## 6/../^## 7/`, `fn:a..fn:c`, `"BEGIN"..$`.
 
-- Both ends are primaries, without parts. `..` binds tighter than `>`, and
-  parts apply to the whole range: `impl:Parser>fn:new..fn:parse`,
+- Both ends are primaries, without parts. `..` binds tighter than `>`, and parts
+  apply to the whole range: `impl:Parser>fn:new..fn:parse`,
   `/^## 6/../^## 7/.lines`.
 - The range is whole-line when both ends are, as with lines and syntax items.
   Add `.lines` to widen a range with regex or literal ends to whole lines.
-- Matches of `A` inside an earlier range are skipped. A match of `A` with no
-  `B` after it ends the search.
+- Matches of `A` inside an earlier range are skipped. A match of `A` with no `B`
+  after it ends the search.
 
 ## 4. Verbs
 
 ### 4.1 Reads
 
-- **`show [SEL [+N]]`** prints the lines containing each selected span,
-  numbered (§6.1), with `N` lines of context around each. Without a selector,
-  it prints each whole file in the set.
+- **`show [SEL [+N]]`** prints the lines containing each selected span, numbered
+  (§6.1), with `N` lines of context around each. Without a selector, it prints
+  each whole file in the set.
 - **`outline [SEL]`** prints the symbol tree (§6.2) of each file, or of the
   items inside `SEL`.
 - **`check [SEL] [LEVEL]`** prints the language server's diagnostics for each
@@ -552,45 +552,45 @@ Notes:
   arrive in source order. When the destination item ends with `,` (a field or
   variant) and the moved text doesn't, one is appended, as for `replace`. A
   destination inside a moved span is an error.
-- If a moved whole-line span had a blank line directly above or below it, and
-  it moves `before` or `after` a whole-line destination, one blank line
-  separates it from the destination.
-- `insert before|after` on a syntax item other than an import or a Markdown
-  list item, when the item has a blank line directly above or below it,
-  separates the new text from it with one blank line, unless the text already
-  starts (for `after`) or ends (for `before`) with a blank line. Text inserted
-  before an item that is only doc comments and attributes (`#[inline]`,
-  `/// ...`) gets no blank line: it attaches to the item.
+- If a moved whole-line span had a blank line directly above or below it, and it
+  moves `before` or `after` a whole-line destination, one blank line separates
+  it from the destination.
+- `insert before|after` on a syntax item other than an import or a Markdown list
+  item, when the item has a blank line directly above or below it, separates the
+  new text from it with one blank line, unless the text already starts (for
+  `after`) or ends (for `before`) with a blank line. Text inserted before an
+  item that is only doc comments and attributes (`#[inline]`, `/// ...`) gets no
+  blank line: it attaches to the item.
 - `replace` of a syntax item keeps the item's leading doc comments and
   attributes unless `TEXT` starts with its own, so replacing a test function
   keeps its `#[test]`. To replace them too, start `TEXT` with them, or select
   `ITEM.lines`.
 - A `replace` that looks off by one gets a note on stderr (never an error),
   ignoring lines without a letter or digit (`}`):
-  - a whole-line span whose `TEXT` starts with a copy of the line just above
-    it, or ends with a copy of the line just below;
+  - a whole-line span whose `TEXT` starts with a copy of the line just above it,
+    or ends with a copy of the line just below;
   - a partial span whose `TEXT` ends with the rest of the span's last line, or
     starts with what precedes the span on its first line. The note suggests
     selecting whole lines with `.lines`.
 - **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
   lines in a row, a blank line right after an opening delimiter (or a line
-  ending in `:`, as in Python) or right before a closing one, or a blank line
-  at the start or end of the file, one blank line is removed. Merged deletions
+  ending in `:`, as in Python) or right before a closing one, or a blank line at
+  the start or end of the file, one blank line is removed. Merged deletions
   (§2.3) are tidied as one span.
 - Text that `replace`, `insert` or `move` puts into an empty `.body` is always
   line-oriented, re-based to the enclosing item's indentation plus one indent
   unit (§5.2). An empty single-line body such as `fn f() {}` is opened onto
   separate lines.
 
-`rename SEL to NAME` asks the language server (§1.1) to rename the symbol at
-the start of `SEL`'s `.name` (for a syntax item) or of its span, and applies the
+`rename SEL to NAME` asks the language server (§1.1) to rename the symbol at the
+start of `SEL`'s `.name` (for a syntax item) or of its span, and applies the
 edits it returns like any other edit: under snapshot semantics (§2.3), together
 with the script's other edits, then formatted and checked (§6.5). Each edit the
-server makes counts as one. The edits may reach only the file set, or with
-`-w` any workspace file, which then joins it; an edit to any other file, or a
-rename that would create, rename or delete files, rejects the script.
-`rename` spawns the daemon if need be, and waits up to `[lsp] timeout` for
-the server to be ready.
+server makes counts as one. The edits may reach only the file set, or with `-w`
+any workspace file, which then joins it; an edit to any other file, or a rename
+that would create, rename or delete files, rejects the script. `rename` spawns
+the daemon if need be, and waits up to `[lsp] timeout` for the server to be
+ready.
 
 ```
 rename fn:parse to parse_all
@@ -657,11 +657,11 @@ Every line-oriented `TEXT` is re-based, except a `<<'TAG'` heredoc.
 
 In Markdown, when `TEXT` starts with a list item (`-`, `*`, `+`, `1.` or `1)`)
 and the target line lies in a list item (not in a code block inside it), the
-edit anchors to that innermost list item: the target indentation is its
-marker's column, `insert after` (and `move ... after`) goes after the whole
-item, its wrapped lines and nested items included, and `insert before` goes
-before its first line. So a new item next to a wrapped item's continuation line
-becomes its sibling. `<<'TAG'` text is placed the same way but not re-based.
+edit anchors to that innermost list item: the target indentation is its marker's
+column, `insert after` (and `move ... after`) goes after the whole item, its
+wrapped lines and nested items included, and `insert before` goes before its
+first line. So a new item next to a wrapped item's continuation line becomes its
+sibling. `<<'TAG'` text is placed the same way but not re-based.
 
 The file's **indent unit** is the smallest non-zero increase in indentation
 between consecutive non-blank lines. If the file has none, it's the language
@@ -706,8 +706,8 @@ straight back. The line range covers the item's default span.
 - `field` and `variant` items, and Markdown `item`, `table` and `code` items,
   are listed only when `outline SEL` targets their parent. In Markdown, the
   outline is the tree of sections.
-- `outline SEL` lists the items strictly inside each span of `SEL`, starting
-  at the left margin, under one header per file.
+- `outline SEL` lists the items strictly inside each span of `SEL`, starting at
+  the left margin, under one header per file.
 - Like syntax steps, `outline` skips files without a language, and is an error
   if no file in the set has one.
 
@@ -758,12 +758,11 @@ formatted.
   The file is written unformatted and the exit code stays 0.
 - `--dry-run` still runs formatters, on in-memory copies.
 
-When no formatter for the language is installed and a daemon is running
-(§6.5), the file's language server formats it instead
-(`textDocument/formatting`), if it supports that: the header names the server,
-`fmt rust-analyzer: +0 -1`. A server that fails keeps the note, with its reason
-added. The daemon isn't started for this, and `false` disables the fallback
-too.
+When no formatter for the language is installed and a daemon is running (§6.5),
+the file's language server formats it instead (`textDocument/formatting`), if it
+supports that: the header names the server, `fmt rust-analyzer: +0 -1`. A server
+that fails keeps the note, with its reason added. The daemon isn't started for
+this, and `false` disables the fallback too.
 
 A formatter gets the file's text on stdin and prints the formatted text on
 stdout. It runs in the file's directory (or, for a file `create` makes in a new
@@ -784,16 +783,16 @@ python = false
   then the user config (`$XDG_CONFIG_HOME/ned/config.toml`, or
   `~/.config/ned/config.toml`), then every `.ned.toml` from the filesystem root
   down to the file's directory.
-- In a command, `{path}` is the file's absolute path, and `{edition}` is the Rust
-  edition from the nearest `Cargo.toml` (following `edition.workspace = true`),
-  or `2015` if there is none.
+- In a command, `{path}` is the file's absolute path, and `{edition}` is the
+  Rust edition from the nearest `Cargo.toml` (following
+  `edition.workspace = true`), or `2015` if there is none.
 - A bare program name is looked up in `node_modules/.bin` in the file's
   directory and each one above it, then on `PATH`. A program path containing `/`
   is relative to the config file that sets it.
 - An unknown key or a value of the wrong type is an error at its location:
-  `error: .ned.toml:2:1: invalid config: ...`. Formatting reads `[format]`
-  only when it runs, so `--no-fmt` skips it; `check`, `rename` and edit checks
-  read `[check]` and `[lsp]` through the daemon.
+  `error: .ned.toml:2:1: invalid config: ...`. Formatting reads `[format]` only
+  when it runs, so `--no-fmt` skips it; `check`, `rename` and edit checks read
+  `[check]` and `[lsp]` through the daemon.
 
 | Language                    | Default formatter                                                                                         |
 | --------------------------- | --------------------------------------------------------------------------------------------------------- |
@@ -805,18 +804,18 @@ python = false
 
 ### 6.5 Checking
 
-After formatting, if a daemon is running for the workspace (§1.1), each
-modified file whose language has a server is checked: the server diagnoses the
-original text (empty for a created file) and the final text. Edits never start
-a daemon; `ned daemon start` or a `check` does. `--no-check` skips checking.
+After formatting, if a daemon is running for the workspace (§1.1), each modified
+file whose language has a server is checked: the server diagnoses the original
+text (empty for a created file) and the final text. Edits never start a daemon;
+`ned daemon start` or a `check` does. `--no-check` skips checking.
 
 A diagnostic in the final text is **introduced** unless the original has an
 identical one left to match it: the same severity, source, code and message.
 Positions don't count, since edits move them.
 
-- Introduced diagnostics at `[check] show` or above are printed after the
-  file's hunks and `fmt` lines, in `check`'s format (§4.1), with positions in
-  the final text. `--quiet` keeps them.
+- Introduced diagnostics at `[check] show` or above are printed after the file's
+  hunks and `fmt` lines, in `check`'s format (§4.1), with positions in the final
+  text. `--quiet` keeps them.
 - Introduced diagnostics at `[check] block` or above (default `error`) reject
   the script (exit 1), and nothing is written, even with `--dry-run`. `allow`
   (§4.4) and `--force` let them through.
@@ -826,12 +825,12 @@ Positions don't count, since edits move them.
   src/parser.rs:15:9: error: mismatched types [rust-analyzer E0308]
   ```
 
-- A server that fails or doesn't report in time (`[lsp] timeout`) skips
-  checking with a note, and the edit applies:
+- A server that fails or doesn't report in time (`[lsp] timeout`) skips checking
+  with a note, and the edit applies:
   `note: rust-analyzer didn't answer diagnostics within 30s; it may still be indexing, so rerun in a few seconds; skipped checking src/parser.rs`.
 - If the edit isn't written, the servers are sent the original text again.
-- Checks a server runs on save (rust-analyzer's `cargo check`) don't run,
-  since the edit isn't written yet; run `check` after the edit for those.
+- Checks a server runs on save (rust-analyzer's `cargo check`) don't run, since
+  the edit isn't written yet; run `check` after the edit for those.
 
 ## 7. Errors and exit codes
 

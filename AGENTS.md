@@ -79,12 +79,12 @@ in this section unless explicitly told to.
 ## Development Workflow
 
 **Use `ned` for all work on this project.** Read code with `ned outline` and
-`ned show`, make every edit to an existing file with the installed `ned`
-(usage: the project skill, `.claude/skills/ned`, and `ned help`), not the Edit
-tool, sed or inline Python, and create new files with `ned`'s `create`. If
-`ned` can't make an edit, makes it wrongly, or gives an unhelpful error, fall
-back for that edit only and report the gap to the engineer. After changing
-`ned`, reinstall it: `cargo install --path crates/ned-cli`.
+`ned show`, make every edit to an existing file with the installed `ned` (usage:
+the project skill, `.claude/skills/ned`, and `ned help`), not the Edit tool, sed
+or inline Python, and create new files with `ned`'s `create`. If `ned` can't
+make an edit, makes it wrongly, or gives an unhelpful error, fall back for that
+edit only and report the gap to the engineer. After changing `ned`, reinstall
+it: `cargo install --path crates/ned-cli`.
 
 Non-trivial implementation work follows a strict TDD cycle in small chunks. Each
 chunk is one cohesive unit (a module, a protocol message, a service behaviour).
@@ -115,52 +115,52 @@ Other commit prefixes: `docs:` (documentation), `todo:` (TODO.md only), and
 `format:` (formatting only).
 
 **At the end of every session**, review the traps and bugs you hit while using
-`ned`. Add every bug to TODO.md (Bugs). For a trap a new feature would
-prevent, propose the feature to the engineer and add it to TODO.md once
-approved; otherwise add guidance to `docs/skills/ned/SKILL.md`. Commit these
-to the current feature branch (prefix `todo:`), not a new branch.
+`ned`. Add every bug to TODO.md (Bugs). For a trap a new feature would prevent,
+propose the feature to the engineer and add it to TODO.md once approved;
+otherwise add guidance to `docs/skills/ned/SKILL.md`. Commit these to the
+current feature branch (prefix `todo:`), not a new branch.
 
 ## Project Overview
 
 Neoed (`ned`) is a line editor for AI coding agents, replacing `sed`/ad-hoc
 Python. LLMs, like teletypes, work over an append-only text stream where every
-token costs, so `ned` offers a concise, word-based command language, syntax-aware
-addressing (tree-sitter, plus LSP through a per-workspace daemon), and
-automatic formatting. MVP is a one-shot CLI; a human REPL and an MCP server
+token costs, so `ned` offers a concise, word-based command language,
+syntax-aware addressing (tree-sitter, plus LSP through a per-workspace daemon),
+and automatic formatting. MVP is a one-shot CLI; a human REPL and an MCP server
 come later.
 
 ## Status
 
-Spec signed off. `ned-core` has the buffer (`buffer`), edit set (`edit`),
-atomic multi-file write (`fs`), diff rendering (`diff`), the script lexer,
-parser, and error rendering (`script::parse`), selector resolution (`select`),
-whole-line/re-basing text helpers (`text`), the executor (`exec::run`),
-language detection and parsing (`lang`), syntax items and parts from
-`queries/<lang>/selectors.scm` (`syntax`),
-`outline`, and external formatters with `.ned.toml` config (`format`). The CLI
-supports every selector (including `A..B` ranges) and verb (including
-`create`), `show +N`, globbed file sets, the parse-error guard, formatting, `-w`
-(every workspace file; files are read lazily), and `ned help`. Every error ends with a fix. `ned-daemon` has the per-workspace
-daemon (socket, lock, lazy spawn, idle exit) behind `ned daemon`, and starts
-language servers (`lsp`, `servers`; `[lsp]` config in `ned-core`) for `open`
-requests and diagnostics, through the `Lsp` trait in `ned-core`: `check [SEL]
-[LEVEL]`, and edits checked while a daemon runs (introduced errors block
-unless `allow errors`), `rename`, and the `.refs`/`.def` parts (within the file
-set or `-w` workspace); the version names the build commit, and a daemon serves
-only its own build. With a daemon running, language servers format files whose
-formatters aren't installed, and `check` also waits for save-time checks
+Spec signed off. `ned-core` has the buffer (`buffer`), edit set (`edit`), atomic
+multi-file write (`fs`), diff rendering (`diff`), the script lexer, parser, and
+error rendering (`script::parse`), selector resolution (`select`),
+whole-line/re-basing text helpers (`text`), the executor (`exec::run`), language
+detection and parsing (`lang`), syntax items and parts from
+`queries/<lang>/selectors.scm` (`syntax`), `outline`, and external formatters
+with `.ned.toml` config (`format`). The CLI supports every selector (including
+`A..B` ranges) and verb (including `create`), `show +N`, globbed file sets, the
+parse-error guard, formatting, `-w` (every workspace file; files are read
+lazily), and `ned help`. Every error ends with a fix. `ned-daemon` has the
+per-workspace daemon (socket, lock, lazy spawn, idle exit) behind `ned daemon`,
+and starts language servers (`lsp`, `servers`; `[lsp]` config in `ned-core`) for
+`open` requests and diagnostics, through the `Lsp` trait in `ned-core`:
+`check [SEL] [LEVEL]`, and edits checked while a daemon runs (introduced errors
+block unless `allow errors`), `rename`, and the `.refs`/`.def` parts (within the
+file set or `-w` workspace); the version names the build commit, and a daemon
+serves only its own build. With a daemon running, language servers format files
+whose formatters aren't installed, and `check` also waits for save-time checks
 (`cargo check`). §9 is done. Syntax selectors cover Rust, Python, Go,
 JavaScript, TypeScript/TSX and Markdown. MIT-licensed; README has install and
-usage; CI and release binaries are still open (§12).
+usage; CI (`.github/workflows/`) gates PRs.
 
 ## Key Documentation
 
 - `TODO.md` — milestone plan; check items off as they land.
-- `docs/command-language.md` — authoritative spec for syntax,
-  selectors, verbs, output, and exit codes. Tests are written against it;
-  update it _before_ changing behaviour.
-- `docs/agent-guide.md`, `docs/skills/ned/SKILL.md` — how agents use `ned`;
-  keep in step with behaviour (every ```ned block is parsed by a test).
+- `docs/command-language.md` — authoritative spec for syntax, selectors, verbs,
+  output, and exit codes. Tests are written against it; update it _before_
+  changing behaviour.
+- `docs/agent-guide.md`, `docs/skills/ned/SKILL.md` — how agents use `ned`; keep
+  in step with behaviour (every ```ned block is parsed by a test).
 
 ## Tech Stack / Dependencies
 
@@ -191,15 +191,15 @@ docs/              specs, agent guide, Claude Code skill
 bench/             token-cost benchmark (uv project; cases/ back spec §8's table)
 ```
 
-Planned crates: `ned-repl`, `ned-mcp`. All logic lives in
-`ned-core` so frontends stay thin.
+Planned crates: `ned-repl`, `ned-mcp`. All logic lives in `ned-core` so
+frontends stay thin.
 
 ## Design Decisions
 
 - **One-shot, stateless CLI.** `ned FILE... -e SCRIPT` (or script on stdin).
   Startup latency matters, so grammars are statically linked. LSP features go
-  through a lazily-spawned per-workspace daemon that keeps servers warm;
-  the CLI must work fully without it.
+  through a lazily-spawned per-workspace daemon that keeps servers warm; the CLI
+  must work fully without it.
 - **Tokens, not characters.** Verbs are short words (`show`, `replace`,
   `insert after`, `delete`, `sub`, `outline`), not sigils. Output is terse:
   per-file summary plus minimal diff hunks.
@@ -211,8 +211,8 @@ Planned crates: `ned-repl`, `ned-mcp`. All logic lives in
 - **Transactional scripts.** All commands in a script apply or none do; files
   are written atomically. Edits that introduce new tree-sitter parse errors are
   rejected unless `--force`.
-- **Indentation re-basing.** Inserted text blocks are re-indented to the
-  target site; agents need not reproduce indentation.
+- **Indentation re-basing.** Inserted text blocks are re-indented to the target
+  site; agents need not reproduce indentation.
 - **Formatting** runs configured external formatters (per language, via
   `.ned.toml`/user config) after edits; LSP formatting is a fallback when the
   daemon is available. Missing formatters are skipped with a note, not an error.
@@ -227,24 +227,28 @@ Planned crates: `ned-repl`, `ned-mcp`. All logic lives in
   language.
 - Keep `.ned.toml` organized by what a setting configures: a setting several
   features use belongs in the section they share (`[lsp] timeout` covers every
-  server request), not the section of the feature that first needed it. Move
-  it when its use widens; no aliases before 1.0.
+  server request), not the section of the feature that first needed it. Move it
+  when its use widens; no aliases before 1.0.
 
 ## Local Development
 
-| Target / Script                             | Description                 |
-| ------------------------------------------- | --------------------------- |
-| `cargo build`                               | Build workspace             |
-| `cargo test`                                | Run all tests               |
-| `cargo clippy --all-targets -- -D warnings` | Lint                        |
-| `cargo fmt --check`                         | Format check                |
-| `cargo run -q -p ned-cli -- ARGS`           | Run `ned` from source       |
-| `cargo test -p ned-daemon -- --ignored`     | Smoke test real LSP servers |
-| `cd bench && uv run bench.py --check`       | Token benchmark vs spec §8  |
-| `cd bench && uv run pytest`                 | Benchmark unit tests        |
+| Target / Script                             | Description                       |
+| ------------------------------------------- | --------------------------------- |
+| `cargo build`                               | Build workspace                   |
+| `cargo test`                                | Run all tests                     |
+| `cargo clippy --all-targets -- -D warnings` | Lint                              |
+| `cargo fmt --check`                         | Format check                      |
+| `prettier --check '**/*.md'`                | Docs format check (`.prettierrc`) |
+| `cargo run -q -p ned-cli -- ARGS`           | Run `ned` from source             |
+| `cargo test -p ned-daemon -- --ignored`     | Smoke test real LSP servers       |
+| `cd bench && uv run bench.py --check`       | Token benchmark vs spec §8        |
+| `cd bench && uv run pytest`                 | Benchmark unit tests              |
 
 ## Deployment Notes
 
-Install: `cargo install --locked --git https://github.com/bbessemer/neoed
-ned-cli`; from a checkout, `cargo install --path crates/ned-cli`. Release
-binaries TBD (TODO.md §12).
+Every PR to `main` must raise `[workspace.package] version` (CI checks; which
+part per TODO.md). Merging tags `vX.Y.Z` and publishes Linux (musl) and macOS
+binaries (`release.yml`, built with `NED_RELEASE` set for a metadata-free
+version). Install from source:
+`cargo install --locked --git https://github.com/bbessemer/neoed ned-cli`; from
+a checkout, `cargo install --path crates/ned-cli`.

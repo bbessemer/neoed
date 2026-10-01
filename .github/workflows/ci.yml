@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npx --yes prettier@3.8.4 --check '**/*.md'
+
+  version:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version is greater than the target branch's
+        run: |
+          read_version() {
+            python3 -c 'import sys, tomllib; print(tomllib.load(sys.stdin.buffer)["workspace"]["package"]["version"])'
+          }
+          git fetch --depth=1 origin "$GITHUB_BASE_REF"
+          head=$(read_version < Cargo.toml)
+          base=$(git show FETCH_HEAD:Cargo.toml | read_version)
+          for v in "$head" "$base"; do
+            if ! [[ $v =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error file=Cargo.toml::version $v isn't MAJOR.MINOR.PATCH"
+              exit 1
+            fi
+          done
+          newest=$(printf '%s\n' "$base" "$head" | sort -V | tail -n 1)
+          if [[ $head == "$base" || $newest != "$head" ]]; then
+            echo "::error file=Cargo.toml::version $head must be greater than $base on $GITHUB_BASE_REF; bump [workspace.package] version as TODO.md says"
+            exit 1
+          fi
+          echo "version $base -> $head"
