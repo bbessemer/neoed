@@ -13,13 +13,14 @@ Syntax: kind:name, with * as a wildcard; quote other names: import:"os.path".
   A syntax item includes its doc comments and attributes (decorators, and in
   JS/TS its export); a Python item's .doc is its docstring, and its .body the
   lines after it. In JS/TS, const f = () => {} is both fn:f and const:f.
-Parts: .body .params (inside the delimiters) .name .sig .doc .lines.
+Parts: .body .params (inside the delimiters) .name .sig .doc .whole (with docs).
+  .lines: each line on its own (all fn:f.lines; fn:f>12 for one).
   .attrs, .ret (return type), .type and .value (of a field, const or var).
   Via the language server, on any step: .refs (each use), .def (the defining
   item): all fn:parse.refs, "helper(".def. With -w they reach every file.
 Nest with > (no spaces): impl:Parser>fn:new>"x". Scope: 40-80>fn:new,
 file:src/a.rs>fn:new. Raw: query{(node) @sel}.
 Range: A..B runs from a match of A to the end of the next match of B:
-/^## 6/../^## 7/, fn:a..fn:c. Add .lines for whole lines.
+/^## 6/../^## 7/, fn:a..fn:c, always as whole lines.
 Ambiguous matches are errors listing selectors to paste; `all SEL` takes every
 match.

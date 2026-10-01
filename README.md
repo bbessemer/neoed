@@ -139,11 +139,11 @@ A selector can be:
 
 - a line number or range (`12-20`, `$`);
 - a regex (`/re/i`) or a literal (`"text"`);
-- a syntax item (`fn:parse`, `fn:test_*`);
+- a syntax item (`fn:parse`, `fn:test_*`, or `fn` for every function);
 - a nested step (`impl:Parser>fn:new>"x"`);
 - a part: `.body`, `.sig`, `.params`, `.name`, `.doc`, `.attrs`, `.ret`,
-  `.type`, `.value`, `.lines`, and `.refs` and `.def` through the language
-  server;
+  `.type`, `.value`, `.whole`, `.lines`, and `.refs` and `.def` through the
+  language server;
 - a range (`fn:a..fn:c`);
 - scoped to one file (`file:src/a.rs>fn:new`);
 - a raw tree-sitter query (`query{...}`).
