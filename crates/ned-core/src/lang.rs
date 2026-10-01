@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use tree_sitter::{Parser, Query, Tree};
 
+use crate::fragment::{Builder, NodeTypes};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
@@ -103,6 +105,18 @@ impl Language {
         QUERIES[self as usize].get_or_init(|| {
             Query::new(&self.grammar(), source).expect("selector queries are valid")
         })
+    }
+
+    /// The builders of fragments that only parse inside other code,
+    /// `queries/<lang>/builders.scm` (§3.10).
+    pub fn builders(self) -> &'static [Builder] {
+        unimplemented!()
+    }
+
+    /// Which node kinds each kind has as fields and can contain, from the
+    /// grammar's `node-types.json`.
+    pub fn node_types(self) -> &'static NodeTypes {
+        unimplemented!()
     }
 
     pub fn parse(self, text: &str) -> Tree {
