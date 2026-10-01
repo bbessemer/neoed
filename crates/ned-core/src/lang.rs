@@ -260,4 +260,17 @@ mod tests {
             assert!(!lang.parse("").root_node().has_error(), "{lang}");
         }
     }
+
+    #[test]
+    fn builders_and_node_types_load() {
+        for lang in Language::ALL {
+            assert!(
+                lang.node_types()
+                    .has_kind(lang.parse("").root_node().kind()),
+                "{lang}"
+            );
+            let builders = lang.builders();
+            assert_eq!(builders.is_empty(), lang == Language::Markdown, "{lang}");
+        }
+    }
 }

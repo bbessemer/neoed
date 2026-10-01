@@ -74,3 +74,92 @@ impl Source {
         unimplemented!()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hole(name: Option<&str>, many: bool, span: Range<usize>) -> Piece {
+        Piece::Hole(Hole {
+            name: name.map(String::from),
+            many,
+            span,
+        })
+    }
+
+    fn text(text: &str, span: Range<usize>) -> Piece {
+        Piece::Text {
+            text: text.into(),
+            span,
+        }
+    }
+
+    #[test]
+    fn placeholders() {
+        let t = Template::parse("f(@a, @rest...) @_ @_...");
+        assert_eq!(
+            t.pieces,
+            [
+                text("f(", 0..2),
+                hole(Some("a"), false, 2..4),
+                text(", ", 4..6),
+                hole(Some("rest"), true, 6..14),
+                text(") ", 14..16),
+                hole(None, false, 16..18),
+                text(" ", 18..19),
+                hole(None, true, 19..24),
+            ]
+        );
+    }
+
+    #[test]
+    fn literal_ats() {
+        let t = Template::parse("@@x a @ b @1 x@");
+        assert_eq!(t.pieces, [text("@", 0..2), text("x a @ b @1 x@", 2..15),]);
+        assert_eq!(t.holes().count(), 0);
+    }
+
+    #[test]
+    fn names_take_letters_digits_and_underscores() {
+        let t = Template::parse("@a_1b.c @_x");
+        let names: Vec<_> = t.holes().map(|h| h.name.clone()).collect();
+        assert_eq!(names, [Some("a_1b".into()), Some("_x".into())]);
+    }
+
+    #[test]
+    fn placeholder_identifiers() {
+        let t = Template::parse("@a @rest... @_");
+        let ids: Vec<_> = t.holes().map(Hole::placeholder).collect();
+        assert_eq!(ids, ["__ned_a", "__ned_rest", "__ned__"]);
+    }
+
+    #[test]
+    fn source_replaces_holes() {
+        let t = Template::parse("f(@a, @@b) @x...");
+        let s = t.source(|_| false);
+        assert_eq!(s.text, "f(__ned_a, @b) __ned_x");
+        assert_eq!(s.holes, [2..9, 15..22]);
+    }
+
+    #[test]
+    fn literal_holes_keep_their_text() {
+        let t = Template::parse("log(\"@who\", @x)");
+        let s = t.source(|i| i == 0);
+        assert_eq!(s.text, "log(\"@who\", __ned_x)");
+        assert_eq!(s.holes, [5..9, 12..19]);
+    }
+
+    #[test]
+    fn source_offsets_map_back() {
+        let t = Template::parse("f(@a, @@b) z");
+        let s = t.source(|_| false);
+        // `f(__ned_a, @b) z`
+        assert_eq!(s.to_template(0), 0);
+        assert_eq!(s.to_template(2), 2);
+        assert_eq!(s.to_template(9), 4);
+        assert_eq!(s.to_template(11), 6);
+        assert_eq!(s.to_template(12), 8);
+        assert_eq!(s.to_template(15), 11);
+        assert_eq!(s.to_template(16), 12);
+    }
+}
