@@ -5,3 +5,4 @@
 (build object "({" _ "})")                                  ; properties
 (build function_declaration "function " name "(" _ ") {}")  ; parameters
 (build switch_statement "switch (" value ") {" _ "}")       ; cases
+(build class_declaration "" _ "\nclass C {}")                 ; decorators

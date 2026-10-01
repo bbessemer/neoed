@@ -600,6 +600,7 @@ mod tests {
         has_reading(Language::Python, "\"a\": @v", "pair");
         has_reading(Language::Python, "@x: int", "typed_parameter");
         has_reading(Language::Python, "@x = 1", "assignment");
+        has_reading(Language::Python, "@@app.route(@path)", "decorator");
     }
 
     #[test]
@@ -725,6 +726,7 @@ mod tests {
         (Language::Python, "x: int = 0, *args"),
         (Language::Python, "case [@x]:\n    pass"),
         (Language::Python, "\"a\": @v"),
+        (Language::Python, "@@app.route(@path)"),
         (Language::Go, "Name string"),
         (Language::Go, "Close() error"),
         (Language::Go, "case 1:\n\t@x"),
@@ -733,10 +735,12 @@ mod tests {
         (Language::JavaScript, "a: @v, b"),
         (Language::JavaScript, "a, ...rest"),
         (Language::JavaScript, "case 1: @x;"),
+        (Language::JavaScript, "@@sealed"),
         (Language::TypeScript, "render(): void {}"),
         (Language::TypeScript, "a: @v, b"),
         (Language::TypeScript, "a: string, ...rest"),
         (Language::TypeScript, "case 1: @x;"),
+        (Language::TypeScript, "@@Component(@x)"),
         (Language::TypeScript, "name: string;"),
         (Language::TypeScript, "@a | @b"),
     ];
