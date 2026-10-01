@@ -205,6 +205,11 @@ of either kind.
 - [ ] `sub all /re/ with "x"` says "`sub` needs a regex before `with`", since
       `all /re/` parses as the scope; say instead that `sub` already replaces
       every match, so `all` goes: `sub /re/ with "x"`
+- [ ] `-e` plus a script on stdin runs both: the `-e` scripts first, then stdin,
+      joined with newlines as several `-e`s are (today stdin is ignored
+      silently, so `ned -e 'file X' <<'EOF' ... EOF` drops the heredoc). A
+      minor, since §1 changes. Decide how not to wait on an open pipe that never
+      closes, which `-e` alone doesn't read today
 
 ## Bugs
 
@@ -254,3 +259,7 @@ change is a minor, because it lifts a documented error.
 - [ ] `check`, `rename`, `.refs` and `.def` after a `|`: send the daemon each
       changed file's stage text instead of relying on the files on disk, and
       lift the syntax error
+- [ ] Re-basing keeps a Markdown list item's hanging indent for verbatim text: a
+      multi-line string replacing part of an item gives its later lines the
+      item's continuation indent, as line-oriented text gets (§5.2), not the
+      indentation of the line the span starts on (column 0 for a top-level item)
