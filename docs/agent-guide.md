@@ -49,8 +49,8 @@ errors are rejected. `ned help` and `ned help TOPIC` document the rest.
 
 ## Example
 
-A typical agent edit: read one function, then change it and add a method, in
-one call.
+A typical agent edit: read one function, then change it and add a method, in one
+call.
 
 ```ned
 show fn:parse

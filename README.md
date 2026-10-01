@@ -1,9 +1,9 @@
 # neoed
 
 `ned` is a line editor for AI coding agents. It replaces `sed`, inline Python
-and whole-file rewrites with a short, word-based command language that
-addresses code by its syntax (`fn:parse`, `impl:Parser>fn:new`,
-`fn:parse.body`) instead of by line numbers or repeated source text.
+and whole-file rewrites with a short, word-based command language that addresses
+code by its syntax (`fn:parse`, `impl:Parser>fn:new`, `fn:parse.body`) instead
+of by line numbers or repeated source text.
 
 - **Cheap in tokens.** Commands are short words, and every edit prints a diff,
   so the agent doesn't have to read the file back to check it.
@@ -99,8 +99,8 @@ cp -r neoed/docs/skills/ned ~/.claude/skills/
 Claude then uses ned when it reads, searches or edits files.
 
 **Other agents:** add the system-prompt snippet from
-[`docs/agent-guide.md`](docs/agent-guide.md). It points the agent at
-`ned help` for the rest.
+[`docs/agent-guide.md`](docs/agent-guide.md). It points the agent at `ned help`
+for the rest.
 
 ## Usage
 
@@ -132,8 +132,8 @@ A selector can be:
 - a regex (`/re/i`) or a literal (`"text"`);
 - a syntax item (`fn:parse`, `fn:test_*`);
 - a nested step (`impl:Parser>fn:new>"x"`);
-- a part: `.body`, `.sig`, `.params`, `.name`, `.doc`, `.lines`, and `.refs`
-  and `.def` through the language server;
+- a part: `.body`, `.sig`, `.params`, `.name`, `.doc`, `.lines`, and `.refs` and
+  `.def` through the language server;
 - a range (`fn:a..fn:c`);
 - scoped to one file (`file:src/a.rs>fn:new`);
 - a raw tree-sitter query (`query{...}`).
@@ -161,16 +161,16 @@ Line, regex and literal selectors work in any UTF-8 file.
 ## Language servers
 
 `check`, `rename`, `.refs` and `.def` go through a per-workspace daemon. `ned`
-starts it on demand, it keeps the servers warm between calls, and it exits
-after 10 minutes idle. While a daemon runs (`ned daemon start`), every edit is
-checked too, and an edit that introduces errors is rejected unless the script
-says `allow errors`. The daemon is Unix-only for now, and everything else works
+starts it on demand, it keeps the servers warm between calls, and it exits after
+10 minutes idle. While a daemon runs (`ned daemon start`), every edit is checked
+too, and an edit that introduces errors is rejected unless the script says
+`allow errors`. The daemon is Unix-only for now, and everything else works
 without it.
 
 ## Token cost
 
-Tokens are counted with tiktoken's `o200k_base` over the full command text.
-The table comes from spec §8, and `bench/` reproduces it:
+Tokens are counted with tiktoken's `o200k_base` over the full command text. The
+table comes from spec §8, and `bench/` reproduces it:
 
 | Task                            | ned | sed | Python | str_replace |
 | ------------------------------- | --: | --: | -----: | ----------: |
@@ -179,14 +179,14 @@ The table comes from spec §8, and `bench/` reproduces it:
 | Delete a function               |  13 |  18 |     70 |          44 |
 | Replace a function body         |  38 |   — |     93 |          62 |
 
-`sed` can't do some of these at all. Both `sed` and Python also need a
-read-back to verify the edit, and ned's diff replaces it.
+`sed` can't do some of these at all. Both `sed` and Python also need a read-back
+to verify the edit, and ned's diff replaces it.
 
 ## Status
 
-`ned` 0.1.0 is an MVP. The command language is specified, and ned is used day
-to day to develop ned itself, but the language may still change before 1.0.
-There are no release binaries or CI yet.
+`ned` 0.1.0 is an MVP. The command language is specified, and ned is used day to
+day to develop ned itself, but the language may still change before 1.0. There
+are no release binaries or CI yet.
 
 ## Roadmap
 
