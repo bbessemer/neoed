@@ -1647,12 +1647,9 @@ fn heredoc_lines(
     range: Range<usize>,
 ) -> Range<usize> {
     let item_part = target.selector.steps.last().is_some_and(|s| {
-        s.parts.iter().any(|p| {
-            matches!(
-                p,
-                Part::Body | Part::Params | Part::Name | Part::Sig | Part::Doc
-            )
-        })
+        s.parts
+            .iter()
+            .any(|p| !matches!(p, Part::Lines | Part::Refs | Part::Def))
     });
     let beside = matches!(position, Position::Before | Position::After);
     if beside && new.kind != TextKind::Str && !item_part && !text::is_whole_line(&f.text, &range) {

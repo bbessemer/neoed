@@ -136,6 +136,13 @@ pub struct Item {
     pub sig_end: Option<usize>,
     /// The leading doc comments, or the docstring.
     pub doc: Option<Range<usize>>,
+    /// The leading attributes or decorators, from the first to the last.
+    pub attrs: Option<Range<usize>>,
+    /// The `@ret`, `@ty` and `@value` nodes: return type, declared type and
+    /// value.
+    pub ret: Option<Range<usize>>,
+    pub ty: Option<Range<usize>>,
+    pub value: Option<Range<usize>>,
 }
 
 /// Every item `query` finds in `tree`, ordered by start, outer items first.
@@ -314,6 +321,10 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                     undelimited: head.is_some() || block.is_some(),
                     sig_end,
                     doc: inner_doc.or(doc),
+                    attrs: None,
+                    ret: None,
+                    ty: None,
+                    value: None,
                 }
             },
         )
@@ -458,6 +469,7 @@ pub fn part(item: &Item, part: Part, text: &str) -> Option<Range<usize>> {
             None => item.node.clone(),
         }),
         Part::Doc => item.doc.clone().map(|r| full_lines(text, r)),
+        Part::Attrs | Part::Ret | Part::Type | Part::Value => None,
         Part::Lines | Part::Refs | Part::Def => None,
     }
 }

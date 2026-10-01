@@ -568,6 +568,10 @@ fn parts_of(item: &Item) -> String {
         item.params.is_some().then_some(".params"),
         Some(".name"),
         item.doc.is_some().then_some(".doc"),
+        item.attrs.is_some().then_some(".attrs"),
+        item.ret.is_some().then_some(".ret"),
+        item.ty.is_some().then_some(".type"),
+        item.value.is_some().then_some(".value"),
         Some(".lines"),
     ]
     .into_iter()
@@ -938,6 +942,10 @@ pub(crate) fn part_name(part: Part) -> &'static str {
         Part::Params => "params",
         Part::Name => "name",
         Part::Doc => "doc",
+        Part::Attrs => "attrs",
+        Part::Ret => "ret",
+        Part::Type => "type",
+        Part::Value => "value",
         Part::Lines => "lines",
         Part::Refs => "refs",
         Part::Def => "def",
