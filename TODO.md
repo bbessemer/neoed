@@ -213,6 +213,11 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       `outline | show 1` is a parse error ("expected a selector, found '|'"),
       because `optional_target` (`script/parser.rs`) doesn't treat `|` as the
       end of the command
+- [ ] Re-basing a `<<END` heredoc into `crates/ned-core/src/syntax.rs` indented
+      its nested lines with tabs, though the file's Rust code is indented with
+      spaces (rustfmt fixed it). The indent unit seems to come from tab-indented
+      lines elsewhere in the file (the Go test fixtures in raw strings), not
+      from the lines around the target
 
 ## Future improvements
 

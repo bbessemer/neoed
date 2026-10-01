@@ -50,8 +50,8 @@ ned 'crates/**/*.rs' -e 'show all /fn with_published/'
 ned -w -e 'show all "SAVE_GRACE" +2'
 ```
 
-Read with `outline` and `show SEL` instead of cat, and make new files with
-`create` (see `ned help create`).
+Read with `outline` and `show SEL` instead of cat (`show all 1-$` for several
+whole files), and make new files with `create` (see `ned help create`).
 
 ## Workflow
 
