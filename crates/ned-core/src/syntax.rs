@@ -136,6 +136,13 @@ pub struct Item {
     pub sig_end: Option<usize>,
     /// The leading doc comments, or the docstring.
     pub doc: Option<Range<usize>>,
+    /// The leading attributes or decorators, from the first to the last.
+    pub attrs: Option<Range<usize>>,
+    /// The `@ret`, `@ty` and `@value` nodes: return type, declared type and
+    /// value.
+    pub ret: Option<Range<usize>>,
+    pub ty: Option<Range<usize>>,
+    pub value: Option<Range<usize>>,
 }
 
 /// Every item `query` finds in `tree`, ordered by start, outer items first.
@@ -150,12 +157,16 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
     while let Some(m) = matches.next() {
         let (mut item, mut name, mut body, mut params, mut head, mut block) =
             (None, None, None, None, None, None);
+        let (mut ret, mut ty, mut value) = (None, None, None);
         let mut docs = Vec::new();
         for capture in m.captures() {
             match names[capture.index as usize] {
                 "name" => name = Some(capture.node),
                 "body" => body = Some(capture.node.byte_range()),
                 "params" => params = Some(capture.node.byte_range()),
+                "ret" => ret = Some(capture.node.byte_range()),
+                "ty" => ty = Some(capture.node.byte_range()),
+                "value" => value = Some(capture.node.byte_range()),
                 "head" => head = Some(capture.node.byte_range()),
                 "block" => block = Some(capture.node),
                 "doc" => docs.push(capture.node.byte_range()),
@@ -198,6 +209,9 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                 params,
                 templated,
                 head,
+                ret,
+                ty,
+                value,
             });
         }
     }
@@ -223,7 +237,13 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
             Reverse(f.node.end_byte()),
         )
     });
-    found.dedup_by(|b, a| a.kind == b.kind && a.name.is_some() && a.name == b.name);
+    found.dedup_by(|b, a| {
+        let same = a.kind == b.kind && a.name.is_some() && a.name == b.name;
+        if same {
+            a.absorb(b);
+        }
+        same
+    });
     // One item per node, under its first name if it has one.
     found.sort_by_key(|f| {
         (
@@ -235,7 +255,13 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
             f.inner_doc.is_none(),
         )
     });
-    found.dedup_by(|b, a| a.kind == b.kind && a.node == b.node);
+    found.dedup_by(|b, a| {
+        let same = a.kind == b.kind && a.node == b.node;
+        if same {
+            a.absorb(b);
+        }
+        same
+    });
 
     let name_text = |name: Option<Node>| name.map_or(String::new(), |n| first_line(text, n));
 
@@ -251,6 +277,9 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                  templated,
 
                  head,
+                 ret,
+                 ty,
+                 value,
                  block,
                  inner_doc,
              }| {
@@ -269,6 +298,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                     range.end = comma.end_byte();
                 }
                 let mut doc: Option<Range<usize>> = None;
+                let mut attrs: Option<Range<usize>> = None;
                 // Only the nearest node can be directly before: any earlier one has
                 // it in between.
                 while let Some((l, is_doc)) = leading
@@ -281,6 +311,8 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                     range.start = l.start;
                     if *is_doc {
                         doc = Some(l.start..doc.map_or(l.end, |d| d.end));
+                    } else {
+                        attrs = Some(l.start..attrs.map_or(l.end, |a| a.end));
                     }
                 }
                 let (body, sig_end) = match (&head, block) {
@@ -298,6 +330,11 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                     }
                     (None, None) => (body, None),
                 };
+                let (item_node, inner_attrs) = after_attrs(text, node.byte_range(), &leading);
+                let attrs = match (attrs, inner_attrs) {
+                    (Some(outer), Some(inner)) => Some(outer.start..inner.end),
+                    (outer, inner) => outer.or(inner),
+                };
                 Item {
                     kind,
                     base_name: name
@@ -306,7 +343,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                     name: templated.unwrap_or_else(|| name_text(name)),
                     range,
                     trailing_comma: comma.is_some(),
-                    node: after_attrs(text, node.byte_range(), &leading),
+                    node: item_node,
                     name_range: name
                         .map_or(node.start_byte()..node.start_byte(), |n| n.byte_range()),
                     body,
@@ -314,6 +351,10 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                     undelimited: head.is_some() || block.is_some(),
                     sig_end,
                     doc: inner_doc.or(doc),
+                    attrs,
+                    ret,
+                    ty,
+                    value,
                 }
             },
         )
@@ -324,9 +365,14 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
 
 /// `node` without the attributes it starts with (JS decorators), which
 /// belong to the item's leading attributes, as they do in languages that put
-/// them before the item's node.
-fn after_attrs(text: &str, node: Range<usize>, leading: &[(Range<usize>, bool)]) -> Range<usize> {
+/// them before the item's node; and the span of those attributes.
+fn after_attrs(
+    text: &str,
+    node: Range<usize>,
+    leading: &[(Range<usize>, bool)],
+) -> (Range<usize>, Option<Range<usize>>) {
     let mut start = node.start;
+    let mut attrs: Option<Range<usize>> = None;
     for (attr, _) in leading
         .iter()
         .filter(|(l, is_doc)| !is_doc && node.start <= l.start && l.end <= node.end)
@@ -335,11 +381,12 @@ fn after_attrs(text: &str, node: Range<usize>, leading: &[(Range<usize>, bool)])
             break;
         }
         start = attr.end;
+        attrs = Some(attrs.map_or(attr.start, |a| a.start)..attr.end);
     }
     if start > node.start {
         start += text[start..].len() - text[start..].trim_start().len();
     }
-    start..node.end
+    (start..node.end, attrs)
 }
 
 /// An item pattern's captures.
@@ -355,6 +402,25 @@ struct Found<'t> {
     block: Option<Node<'t>>,
     /// A `@doc` inside the item (a docstring).
     inner_doc: Option<Range<usize>>,
+    ret: Option<Range<usize>>,
+    ty: Option<Range<usize>>,
+    value: Option<Range<usize>>,
+}
+
+impl<'t> Found<'t> {
+    /// Takes the captures `self` lacks from `other`, another match of the same
+    /// item (such as a pattern that only some grammars can compile).
+    fn absorb(&mut self, other: &mut Found<'t>) {
+        self.body = self.body.take().or(other.body.take());
+        self.params = self.params.take().or(other.params.take());
+        self.templated = self.templated.take().or(other.templated.take());
+        self.head = self.head.take().or(other.head.take());
+        self.block = self.block.take().or(other.block.take());
+        self.inner_doc = self.inner_doc.take().or(other.inner_doc.take());
+        self.ret = self.ret.take().or(other.ret.take());
+        self.ty = self.ty.take().or(other.ty.take());
+        self.value = self.value.take().or(other.value.take());
+    }
 }
 
 /// Where the `:` that opens `block`, a child of `node`, starts.
@@ -458,6 +524,15 @@ pub fn part(item: &Item, part: Part, text: &str) -> Option<Range<usize>> {
             None => item.node.clone(),
         }),
         Part::Doc => item.doc.clone().map(|r| full_lines(text, r)),
+        Part::Attrs => item.attrs.clone().map(|r| {
+            let lines = full_lines(text, r.clone());
+            let alone = text[lines.start..r.start].trim().is_empty()
+                && text[r.end..lines.end].trim().is_empty();
+            if alone { lines } else { r }
+        }),
+        Part::Ret => item.ret.clone(),
+        Part::Type => item.ty.clone(),
+        Part::Value => item.value.clone(),
         Part::Lines | Part::Refs | Part::Def => None,
     }
 }
@@ -726,8 +801,8 @@ mod tests {}
 
     #[test]
     fn selector_queries_use_only_known_captures() {
-        const CAPTURES: [&str; 8] = [
-            "name", "body", "block", "params", "head", "doc", "attr", "wrap",
+        const CAPTURES: [&str; 11] = [
+            "name", "body", "block", "params", "head", "doc", "attr", "wrap", "ret", "ty", "value",
         ];
         for lang in Language::ALL {
             let query = lang.selectors();
@@ -1066,6 +1141,84 @@ const C: u8 = 1;
         assert_eq!(part_of(Rust, "variant", "B", Part::Body, PARTS), None);
     }
 
+    const TYPED: &str = r#"/// Doc.
+#[derive(Debug)]
+#[serde(default)]
+struct S {
+    #[serde(rename = "x")]
+    x: Vec<u8>,
+}
+
+fn f(a: u8) -> Result<u8, E> {
+    let x: u32 = 2;
+    let y = 3;
+    Ok(a)
+}
+
+fn g() {}
+
+#[a]
+/// Between.
+#[b]
+fn k() {}
+
+#[inline] fn m() {}
+
+const C: u8 = 1;
+static D: &str = "s";
+type Alias = Vec<u8>;
+
+enum E {
+    A = 1,
+    B,
+}
+"#;
+
+    #[test]
+    fn rust_ret_type_value_and_attrs() {
+        let part = |kind, name, p| part_of(Rust, kind, name, p, TYPED);
+        assert_eq!(part("fn", "f", Part::Ret), Some("Result<u8, E>"));
+        assert_eq!(part("fn", "g", Part::Ret), None);
+        assert_eq!(part("field", "x", Part::Type), Some("Vec<u8>"));
+        assert_eq!(part("field", "x", Part::Value), None);
+        assert_eq!(part("const", "C", Part::Type), Some("u8"));
+        assert_eq!(part("const", "C", Part::Value), Some("1"));
+        assert_eq!(part("const", "D", Part::Type), Some("&str"));
+        assert_eq!(part("const", "D", Part::Value), Some("\"s\""));
+        assert_eq!(part("var", "x", Part::Type), Some("u32"));
+        assert_eq!(part("var", "x", Part::Value), Some("2"));
+        assert_eq!(part("var", "y", Part::Type), None);
+        assert_eq!(part("var", "y", Part::Value), Some("3"));
+        assert_eq!(part("type", "Alias", Part::Value), Some("Vec<u8>"));
+        assert_eq!(part("type", "Alias", Part::Type), None);
+        assert_eq!(part("variant", "A", Part::Value), Some("1"));
+        assert_eq!(part("variant", "B", Part::Value), None);
+        assert_eq!(part("fn", "f", Part::Type), None);
+        assert_eq!(part("fn", "f", Part::Value), None);
+    }
+
+    #[test]
+    fn rust_attrs() {
+        let part = |kind, name, p| part_of(Rust, kind, name, p, TYPED);
+        assert_eq!(
+            part("struct", "S", Part::Attrs),
+            Some("#[derive(Debug)]\n#[serde(default)]\n")
+        );
+        assert_eq!(
+            part("field", "x", Part::Attrs),
+            Some("    #[serde(rename = \"x\")]\n")
+        );
+        assert_eq!(part("struct", "S", Part::Doc), Some("/// Doc.\n"));
+        assert_eq!(
+            part("fn", "k", Part::Attrs),
+            Some("#[a]\n/// Between.\n#[b]\n")
+        );
+        assert_eq!(part("fn", "m", Part::Attrs), Some("#[inline]"));
+        assert_eq!(part("fn", "m", Part::Sig), Some("fn m()"));
+        assert_eq!(part("fn", "g", Part::Attrs), None);
+        assert_eq!(part("const", "C", Part::Attrs), None);
+    }
+
     const PYTHON: &str = r#""""Module doc."""
 from __future__ import annotations
 import os.path
@@ -1178,6 +1331,47 @@ def short(): return 1
         assert_eq!(part("field", "x", Part::Body), None);
     }
 
+    const PYTHON_TYPED: &str = r#"@dataclass
+@other(1)
+class C:
+    x: int
+    y: int = 0
+
+
+@cache
+def f(a) -> list[int]:
+    return [a]
+
+
+def g():
+    pass
+
+
+MAX: int = 3
+name = "n"
+"#;
+
+    #[test]
+    fn python_ret_type_value_and_attrs() {
+        let part = |kind, name, p| part_of(Python, kind, name, p, PYTHON_TYPED);
+        assert_eq!(
+            part("class", "C", Part::Attrs),
+            Some("@dataclass\n@other(1)\n")
+        );
+        assert_eq!(part("fn", "f", Part::Attrs), Some("@cache\n"));
+        assert_eq!(part("fn", "f", Part::Ret), Some("list[int]"));
+        assert_eq!(part("fn", "g", Part::Ret), None);
+        assert_eq!(part("fn", "g", Part::Attrs), None);
+        assert_eq!(part("field", "x", Part::Type), Some("int"));
+        assert_eq!(part("field", "x", Part::Value), None);
+        assert_eq!(part("field", "y", Part::Type), Some("int"));
+        assert_eq!(part("field", "y", Part::Value), Some("0"));
+        assert_eq!(part("const", "MAX", Part::Type), Some("int"));
+        assert_eq!(part("const", "MAX", Part::Value), Some("3"));
+        assert_eq!(part("var", "name", Part::Type), None);
+        assert_eq!(part("var", "name", Part::Value), Some("\"n\""));
+    }
+
     #[test]
     fn go_items_of_every_kind() {
         let expected = [
@@ -1270,6 +1464,48 @@ def short(): return 1
             part("struct", "Parser", Part::Doc),
             Some("// Parser parses.\n")
         );
+    }
+
+    const GO_TYPED: &str = "package p
+
+type S struct {
+\tX int
+}
+
+type Alias = []int
+
+type N int
+
+func F() (int, error) { return 0, nil }
+
+func G() int { return 0 }
+
+func H() {}
+
+const C int = 1
+
+var (
+\tV = 2
+\tW string
+)
+";
+
+    #[test]
+    fn go_ret_type_and_value() {
+        let part = |kind, name, p| part_of(Go, kind, name, p, GO_TYPED);
+        assert_eq!(part("fn", "F", Part::Ret), Some("(int, error)"));
+        assert_eq!(part("fn", "G", Part::Ret), Some("int"));
+        assert_eq!(part("fn", "H", Part::Ret), None);
+        assert_eq!(part("field", "X", Part::Type), Some("int"));
+        assert_eq!(part("type", "Alias", Part::Value), Some("[]int"));
+        assert_eq!(part("type", "N", Part::Value), Some("int"));
+        assert_eq!(part("const", "C", Part::Type), Some("int"));
+        assert_eq!(part("const", "C", Part::Value), Some("1"));
+        assert_eq!(part("var", "V", Part::Type), None);
+        assert_eq!(part("var", "V", Part::Value), Some("2"));
+        assert_eq!(part("var", "W", Part::Type), Some("string"));
+        assert_eq!(part("var", "W", Part::Value), None);
+        assert_eq!(part("fn", "F", Part::Attrs), None);
     }
 
     const GO: &str = r#"// Package a does things.
@@ -1448,6 +1684,79 @@ func (s Size) Parse() {}
             ts("interface", "Shape", Part::Body),
             Some("  area(): number;\n  label: string;\n")
         );
+    }
+
+    const TS_TYPED: &str = r#"@Component({})
+class App {
+  @Input() name: string = "x";
+  count = 0;
+
+  @HostListener("click")
+  render(): void {}
+}
+
+function f(a: number): Promise<number> {
+  return a;
+}
+
+const g = (x: number): string => "";
+
+function h() {}
+
+const C: number = 1;
+let v = 2;
+
+type Alias = string | number;
+
+enum E {
+  A = 1,
+  B,
+}
+
+interface I {
+  p: string;
+  m(): void;
+}
+"#;
+
+    #[test]
+    fn typescript_ret_type_value_and_attrs() {
+        let part = |kind, name, p| part_of(TypeScript, kind, name, p, TS_TYPED);
+        assert_eq!(part("class", "App", Part::Attrs), Some("@Component({})\n"));
+        assert_eq!(part("field", "name", Part::Attrs), Some("@Input()"));
+        assert_eq!(part("field", "name", Part::Type), Some("string"));
+        assert_eq!(part("field", "name", Part::Value), Some("\"x\""));
+        assert_eq!(part("field", "count", Part::Type), None);
+        assert_eq!(part("field", "count", Part::Value), Some("0"));
+        assert_eq!(
+            part("fn", "render", Part::Attrs),
+            Some("  @HostListener(\"click\")\n")
+        );
+        assert_eq!(part("fn", "render", Part::Ret), Some("void"));
+        assert_eq!(part("fn", "f", Part::Ret), Some("Promise<number>"));
+        assert_eq!(part("fn", "g", Part::Ret), Some("string"));
+        assert_eq!(part("fn", "h", Part::Ret), None);
+        assert_eq!(part("const", "C", Part::Type), Some("number"));
+        assert_eq!(part("const", "C", Part::Value), Some("1"));
+        assert_eq!(part("var", "v", Part::Type), None);
+        assert_eq!(part("var", "v", Part::Value), Some("2"));
+        assert_eq!(part("type", "Alias", Part::Value), Some("string | number"));
+        assert_eq!(part("variant", "A", Part::Value), Some("1"));
+        assert_eq!(part("variant", "B", Part::Value), None);
+        assert_eq!(part("field", "p", Part::Type), Some("string"));
+        assert_eq!(part("fn", "m", Part::Ret), Some("void"));
+    }
+
+    #[test]
+    fn javascript_value_and_attrs() {
+        const JS: &str = "@dec\nclass K {\n  @f x = 1;\n}\n\nconst C = 1;\nlet v = 2;\n";
+        let part = |kind, name, p| part_of(JavaScript, kind, name, p, JS);
+        assert_eq!(part("class", "K", Part::Attrs), Some("@dec\n"));
+        assert_eq!(part("field", "x", Part::Attrs), Some("@f"));
+        assert_eq!(part("field", "x", Part::Value), Some("1"));
+        assert_eq!(part("const", "C", Part::Value), Some("1"));
+        assert_eq!(part("var", "v", Part::Value), Some("2"));
+        assert_eq!(part("const", "C", Part::Type), None);
     }
 
     const JS: &str = r#"import fs from "fs";

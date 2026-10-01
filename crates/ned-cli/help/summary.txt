@@ -26,6 +26,7 @@ Selectors (a selector must match exactly one span unless prefixed with `all`):
   fn:parse  impl:Parser  fn:test_*    syntax items, kind:name
   impl:Parser>fn:new            nest: search inside the previous step
   fn:parse.body                 parts: .body .sig .params .name .doc .lines
+  const:C.value                 .attrs .ret .type .value
   all fn:parse.refs  "f(".def    uses and definition, via the language server
   file:src/a.rs>fn:new          scope to one file
   query{(call_expression) @sel} raw tree-sitter query

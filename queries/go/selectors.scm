@@ -5,6 +5,7 @@
 (function_declaration
   name: (identifier) @name
   parameters: (parameter_list) @params
+  result: (_)? @ret
   body: (block)? @body) @fn
 
 ; A method is named `RECEIVER.NAME`.
@@ -19,12 +20,14 @@
   ]))
   name: (field_identifier) @name
   parameters: (parameter_list) @params
+  result: (_)? @ret
   body: (block)? @body
   (#set! name "{receiver}.{name}")) @fn
 
 (method_elem
   name: (field_identifier) @name
-  parameters: (parameter_list) @params) @fn
+  parameters: (parameter_list) @params
+  result: (_)? @ret) @fn
 
 (type_declaration . (type_spec
   name: (type_identifier) @name
@@ -41,21 +44,21 @@
 (type_declaration . (type_spec name: (type_identifier) @name type: [
   (type_identifier) (qualified_type) (generic_type) (pointer_type) (slice_type)
   (array_type) (map_type) (channel_type) (function_type)
-]) .) @type
+] @value) .) @type
 (type_spec name: (type_identifier) @name type: [
   (type_identifier) (qualified_type) (generic_type) (pointer_type) (slice_type)
   (array_type) (map_type) (channel_type) (function_type)
-]) @type
-(type_declaration . (type_alias name: (type_identifier) @name) .) @type
-(type_alias name: (type_identifier) @name) @type
+] @value) @type
+(type_declaration . (type_alias name: (type_identifier) @name type: (_) @value) .) @type
+(type_alias name: (type_identifier) @name type: (_) @value) @type
 
-(field_declaration name: (field_identifier) @name) @field
+(field_declaration name: (field_identifier) @name type: (_) @ty) @field
 (field_declaration !name type: (_) @name) @field
 
-(const_declaration . (const_spec name: (identifier) @name) .) @const
-(const_spec name: (identifier) @name) @const
-(var_declaration . (var_spec name: (identifier) @name) .) @var
-(var_spec name: (identifier) @name) @var
+(const_declaration . (const_spec name: (identifier) @name type: (_)? @ty value: (_)? @value) .) @const
+(const_spec name: (identifier) @name type: (_)? @ty value: (_)? @value) @const
+(var_declaration . (var_spec name: (identifier) @name type: (_)? @ty value: (_)? @value) .) @var
+(var_spec name: (identifier) @name type: (_)? @ty value: (_)? @value) @var
 
 (import_declaration . (import_spec
   path: (_ (interpreted_string_literal_content) @name)) .) @import

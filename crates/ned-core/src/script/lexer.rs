@@ -323,6 +323,10 @@ impl<'a> Lexer<'a> {
             "params" => Part::Params,
             "name" => Part::Name,
             "doc" => Part::Doc,
+            "attrs" => Part::Attrs,
+            "ret" => Part::Ret,
+            "type" => Part::Type,
+            "value" => Part::Value,
             "lines" => Part::Lines,
             "refs" => Part::Refs,
             "def" => Part::Def,
@@ -662,7 +666,7 @@ mod tests {
     #[test]
     fn parts() {
         assert_eq!(
-            kinds("fn:f.body.sig.params.name.doc.lines"),
+            kinds("fn:f.body.sig.params.name.doc.attrs.ret.type.value.lines"),
             [
                 syntax("fn", "f"),
                 T::Part(Part::Body),
@@ -670,6 +674,10 @@ mod tests {
                 T::Part(Part::Params),
                 T::Part(Part::Name),
                 T::Part(Part::Doc),
+                T::Part(Part::Attrs),
+                T::Part(Part::Ret),
+                T::Part(Part::Type),
+                T::Part(Part::Value),
                 T::Part(Part::Lines),
             ]
         );

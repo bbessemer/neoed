@@ -50,8 +50,8 @@ ned 'crates/**/*.rs' -e 'show all /fn with_published/'
 ned -w -e 'show all "SAVE_GRACE" +2'
 ```
 
-Read with `outline` and `show SEL` instead of cat, and make new files with
-`create` (see `ned help create`).
+Read with `outline` and `show SEL` instead of cat (`show all 1-$` for several
+whole files), and make new files with `create` (see `ned help create`).
 
 ## Workflow
 
@@ -88,7 +88,7 @@ fn peek(&self) -> Option<char> {
 END
 ```
 
-Replace a function body, or its parameters:
+Replace a function body, its parameters, or its return type:
 
 ```ned
 replace fn:parse.body with <<END
@@ -96,6 +96,7 @@ let tok = self.next()?;
 self.parse_expr(tok)
 END
 replace fn:new.params with "src: impl Into<String>"
+replace fn:new.ret with "Result<Self, Error>"
 ```
 
 Add an import, delete a function, and move one:

@@ -192,8 +192,8 @@ target     = [ "all" ] selector ;
 selector   = step { ">" step } ;
 step       = primary [ ".." primary ] { part } ;
 context    = "+" digit { digit } ;
-part       = ".body" | ".sig" | ".params" | ".name" | ".doc" | ".lines"
-           | ".refs" | ".def" ;
+part       = ".body" | ".sig" | ".params" | ".name" | ".doc" | ".attrs"
+           | ".ret" | ".type" | ".value" | ".lines" | ".refs" | ".def" ;
 primary    = lines | regex | literal | syntax | query ;
 
 lines      = lineno [ "-" lineno ] ;
@@ -415,6 +415,10 @@ The kinds each language supports, and the items they cover there:
 | `.params` | the parameter list, between its parentheses                                                                                      |
 | `.name`   | the item's name identifier                                                                                                       |
 | `.doc`    | the item's leading doc comment lines; a Python docstring                                                                         |
+| `.attrs`  | the item's attributes or decorators, from the first to the last                                                                  |
+| `.ret`    | the function's return type                                                                                                       |
+| `.type`   | the declared type of a field, constant or variable                                                                               |
+| `.value`  | the value a constant, variable, field or variant is given; the type a `type` item names                                          |
 | `.lines`  | the span widened to the whole lines it touches (any selector)                                                                    |
 | `.refs`   | each reference to the symbol at the span (below), without its declaration                                                        |
 | `.def`    | the symbol's definition: the item it names, or its identifier if it names no item                                                |
@@ -431,6 +435,25 @@ The kinds each language supports, and the items they cover there:
   the text. `.sig` is the heading line.
 - `.doc` covers whole lines. On an item with no body (such as a trait method
   declaration), `.sig` is the whole item.
+- `.attrs` covers whole lines when its attributes stand on lines of their own,
+  as `.body` does; otherwise it's the text from the first attribute to the end
+  of the last. Doc comments between attributes are inside it.
+- `.ret`, `.type` and `.value` leave out the punctuation before them (`->`, `:`,
+  `=`) and cover the type or expression as written; a Go `.ret` keeps its
+  parentheses (`(int, error)`). An item without one, such as a Rust `fn` that
+  returns `()` or a field without an initializer, doesn't have the part. Where
+  each one exists:
+  - **Rust**: `.ret` on `fn`; `.type` on `field`, `const` and `var`; `.value` on
+    `const`, `var`, `type` and a `variant` with a discriminant; `.attrs` on any
+    item.
+  - **Python**: `.ret` on `fn`; `.type` and `.value` on `field`, `const` and
+    `var`; `.attrs` (decorators) on `fn` and `class`.
+  - **Go**: `.ret` on `fn`; `.type` on `field`, `const` and `var`; `.value` on
+    `const`, `var` and `type`.
+  - **JavaScript** and **TypeScript**: `.value` on `const`, `var` and `field`;
+    `.attrs` (decorators) on `class`, `fn` and `field`. TypeScript adds `.ret`
+    on `fn`, `.type` on `const`, `var` and `field`, and `.value` on `type` and
+    `variant`.
 - In Python, `.doc` is the docstring, and `.body` is the block's whole lines
   after it, so `insert start fn:f` goes after the docstring. `.sig` runs from
   `def` or `class` up to the `:` (decorators are attributes).
