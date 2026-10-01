@@ -184,7 +184,9 @@ insert start class:App>fn:handle "metrics.count(req)"
   moved or renamed, put a `|` between them. `|` binds more loosely than `;` and
   newlines, unlike a shell's: `a; b | c` is `a; b`, then `c`. After a `|`,
   `check`, `rename`, `.refs` and `.def` are errors, because they read the files
-  on disk; run them before the first `|` or in another `ned` call.
+  on disk; run them before the first `|` or in another `ned` call. The syntax
+  guard checks every stage, so each must leave the file parseable: to change
+  both ends of a construct, replace it whole in one stage.
 - **Indentation is automatic.** `<<END` text is re-indented to fit its target,
   and so is a one-line string inserted or replaced on lines of its own: its
   leading spaces don't survive. Use `<<'END'` for text that must stay exactly as

@@ -201,6 +201,11 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       spaces (rustfmt fixed it). The indent unit seems to come from tab-indented
       lines elsewhere in the file (the Go test fixtures in raw strings), not
       from the lines around the target
+- [ ] `insert end mod:tests <<END` in a Rust file put the text at column 0, not
+      at the module body's indentation (`insert end fn:...` re-bases correctly)
+- [ ] `insert after "LINE1\n...LASTLINE" <<END` re-based the text to the
+      literal's first line's indentation, not its last line's, though the text
+      goes after the last line
 
 ## Future improvements
 
