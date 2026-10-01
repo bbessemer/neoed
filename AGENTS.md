@@ -156,8 +156,8 @@ code by writing it: `ned-scheme` reads the Scheme dialect (tree-sitter query
 syntax plus Scheme data) that builders and, later, plugins are written in;
 `template` lexes `@` placeholders, `fragment` parses a pattern alone or inside
 `queries/<lang>/builders.scm`, and `pattern` matches it against the tree;
-`replace` doesn't substitute captures yet. MIT-licensed; README has install and
-usage; CI (`.github/workflows/`) gates PRs.
+`replace` substitutes its captures. MIT-licensed; README has install and usage;
+CI (`.github/workflows/`) gates PRs.
 
 ## Key Documentation
 

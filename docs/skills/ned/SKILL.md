@@ -164,9 +164,22 @@ statement, a name), `@name...` for a run of them, `@_` for either without a
 name:
 
 ```ned
-show all `dbg!(@x)`
+show all `dbg!(@x...)`
 delete all fn:main>`println!(@_...);`
 show `impl Display for @t { @_... }`>fn:fmt
+```
+
+`replace` puts what a pattern captured where TEXT names it; a capture's later
+lines are re-indented to fit:
+
+```ned
+replace all `assert_eq!(@a..., true)` with "assert!(@a)"
+replace fn:load>`if let Some(@x) = @e { @body... }` with <<END
+let Some(@x) = @e else {
+    return;
+};
+@body
+END
 ```
 
 Select by a property instead of a name with a filter: `.text`, `.len`
@@ -237,7 +250,8 @@ insert start class:App>fn:handle "metrics.count(req)"
   `--context 0`.
 - **`@` in a pattern is a placeholder.** Double it for a real one, as in a
   decorator: `` `@@app.route(@path)` ``. A pattern holding backquotes opens and
-  closes with a longer run of them, as in Markdown: ``` `` `${x}` `` ```.
+  closes with a longer run of them, as in Markdown: ``` `` `${x}` `` ```. A Rust
+  macro's arguments are tokens, so match one with a run: `` `dbg!(@x...)` ``.
 - **Use `delete` to remove lines.** `replace 12 with ""` leaves an empty line,
   because line-oriented text always ends with a newline.
 - **Partial matches get verbatim text.** `insert after /re/ "x"` inserts right

@@ -596,7 +596,7 @@ wrapped or commented. Whitespace and comments matter only where the grammar
 makes them matter, as Python's indentation does.
 
 ```
-show all `dbg!(@x)`
+show all `dbg!(@x...)`
 delete all fn:main>`println!(@_...);`
 show `impl Display for @t { @_... }`>fn:fmt
 ```
@@ -630,6 +630,10 @@ common to the pattern's lines is ignored.
   argument and `@rest` the others.
 - A name used twice in a pattern matches only equal code, ignoring whitespace
   and comments: `` `@x == @x` ``.
+- A Rust macro's arguments are tokens, not expressions, so a placeholder there
+  matches one token; write a run for an argument: `` `dbg!(@x...)` ``.
+- A run may stand where no name would parse, as among an impl's items:
+  `` `impl Display for @t { @_... }` ``.
 
 **Parsing.** Many fragments only parse inside some other code: a method inside
 an `impl` or a class, a match arm inside a `match`, a field inside a struct.
@@ -675,7 +679,7 @@ expands to the selected span's capture (`@name...` is the same), and `@@` to
 - Without pattern steps, `replace` expands nothing.
 
 ```
-replace all `assert_eq!(@a, true)` with "assert!(@a)"
+replace all `assert_eq!(@a..., true)` with "assert!(@a)"
 replace fn:load>`if let Some(@x) = @e { @body... }` with <<END
 let Some(@x) = @e else {
     return;

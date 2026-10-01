@@ -81,7 +81,7 @@ art: ast-grep's metavariables.
 - [x] Fragment parsing with per-language builders
       (`queries/<lang>/builders.scm`) and containment from `node-types.json`
 - [x] Pattern matching
-- [ ] Capture substitution in `replace` TEXT
+- [x] Capture substitution in `replace` TEXT
 
 Version: minor once matching works; a further minor if capture substitution
 ships separately. The spec, reader and builder chunks alone release nothing.
