@@ -3,7 +3,7 @@ selectors
 Lines: 12, 12-20, 12-$, $ (last line).
 Regex: /re/ with flags i, s. Literal: "text" (escapes \n \t \" \\).
 Block: <<END heredoc matches whole lines, ignoring indentation.
-Syntax: kind:name, with * as a wildcard; quote other names: import:"os.path".
+Syntax: kind:name, * a wildcard (fn alone is fn:*); quote others: import:"a.b".
   Kinds: fn class struct enum variant trait interface impl type const var
   field mod import, and in Markdown section item table code (which depend on
   the language; outline shows them). section:"Intro" is a # heading and its
@@ -13,14 +13,13 @@ Syntax: kind:name, with * as a wildcard; quote other names: import:"os.path".
   A syntax item includes its doc comments and attributes (decorators, and in
   JS/TS its export); a Python item's .doc is its docstring, and its .body the
   lines after it. In JS/TS, const f = () => {} is both fn:f and const:f.
-Parts: .body .params (inside the delimiters) .name .sig .doc .whole (with docs).
-  .lines: each line on its own (all fn:f.lines; fn:f>12 for one).
-  .attrs, .ret (return type), .type and .value (of a field, const or var).
+Parts: .body .params (inside delimiters) .name .sig .doc .attrs .ret .type
+  .value .whole (with docs); .lines splits into lines (fn:f>12 picks one).
   Via the language server, on any step: .refs (each use), .def (the defining
   item): all fn:parse.refs, "helper(".def. With -w they reach every file.
 Nest with > (no spaces): impl:Parser>fn:new>"x". Scope: 40-80>fn:new,
 file:src/a.rs>fn:new. Raw: query{(node) @sel}.
-Range: A..B runs from a match of A to the end of the next match of B:
-/^## 6/../^## 7/, fn:a..fn:c, always as whole lines.
+Range: A..B, whole lines from a match of A to the next match of B:
+/^## 6/../^## 7/, fn:a..fn:c.
 Ambiguous matches are errors listing selectors to paste; `all SEL` takes every
 match.
