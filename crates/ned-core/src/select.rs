@@ -1,7 +1,7 @@
 //! Resolving selectors to spans of files (command-language spec, §3).
 
 use std::cell::OnceCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use regex::Regex;
@@ -16,6 +16,7 @@ use crate::pattern;
 use crate::script::ast::{LineNo, Part, Pattern, Primary, Selector, Step, Target, TextKind};
 use crate::span::Span;
 use crate::syntax::{self, Item};
+use crate::template::Template;
 use crate::text::{full_lines, is_whole_line, strip_indent};
 
 const MAX_CANDIDATES: usize = 10;
@@ -121,6 +122,21 @@ pub fn resolve_within(
 ) -> Result<Vec<Match>, ExecError> {
     let span = &target.selector.span;
     let error = |kind| ExecError::new(kind, Some(span.clone()));
+    // A name may repeat within a pattern, but not across steps (§3.10).
+    let mut named = HashSet::new();
+    for step in &target.selector.steps {
+        let Primary::Code(code) = &step.primary else {
+            continue;
+        };
+        let template = Template::parse(code);
+        let names: HashSet<&str> = template.holes().filter_map(|h| h.name.as_deref()).collect();
+        if let Some(name) = names.iter().find(|n| named.contains(**n)) {
+            return Err(error(E::DuplicateCapture {
+                name: name.to_string(),
+            }));
+        }
+        named.extend(names.into_iter().map(String::from));
+    }
     let mut matches = start;
     let mut parents = Vec::new();
     let mut found = Vec::new();
@@ -191,7 +207,9 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
     let mut out: Vec<Found> = Vec::new();
     for (p, parent) in parents.iter().enumerate() {
         let f = &files[parent.file];
-        for range in matcher.find(f, parent.range.clone()) {
+        for (range, captured) in matcher.find(f, parent.range.clone()) {
+            let mut captures = parent.captures.clone();
+            captures.extend(captured);
             let core = range.clone();
             let item = match &step.primary {
                 Primary::Syntax { kind, .. } => f
@@ -217,7 +235,7 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
                 let m = Match {
                     file: parent.file,
                     range: span.range,
-                    captures: parent.captures.clone(),
+                    captures: captures.clone(),
                 };
                 if out.last().map(|f| &f.m) != Some(&m) {
                     out.push(Found {
@@ -304,7 +322,29 @@ impl<'a> Matcher<'a> {
         })
     }
 
-    fn find(&self, f: &SourceFile, parent: Range<usize>) -> Vec<Range<usize>> {
+    /// The step's matches in `parent`, with what a pattern captured.
+    fn find(&self, f: &SourceFile, parent: Range<usize>) -> Vec<(Range<usize>, Captures)> {
+        let Matcher::Code(patterns) = self else {
+            return self
+                .ranges(f, parent)
+                .into_iter()
+                .map(|r| (r, Vec::new()))
+                .collect();
+        };
+        let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
+            return Vec::new();
+        };
+        let Some((_, pattern)) = patterns.iter().find(|(l, _)| *l == lang) else {
+            return Vec::new();
+        };
+        pattern
+            .find(tree, &f.text, parent)
+            .into_iter()
+            .map(|m| (m.range, m.captures))
+            .collect()
+    }
+
+    fn ranges(&self, f: &SourceFile, parent: Range<usize>) -> Vec<Range<usize>> {
         let within = |r: &Range<usize>| parent.start <= r.start && r.end <= parent.end;
         let scope = scope(&f.text, &parent);
         let in_scope = |r: &Range<usize>| scope.start <= r.start && r.end <= scope.end;
@@ -377,10 +417,10 @@ impl<'a> Matcher<'a> {
                 }
             }
             Matcher::Range(from, to) => {
-                let ends = to.find(f, parent.clone());
+                let ends = to.ranges(f, parent.clone());
                 let mut ranges = Vec::new();
                 let mut searched_to = parent.start;
-                for start in from.find(f, parent.clone()) {
+                for start in from.ranges(f, parent.clone()) {
                     if start.start < searched_to {
                         continue;
                     }
@@ -423,19 +463,7 @@ impl<'a> Matcher<'a> {
                 out.dedup();
                 out
             }
-            Matcher::Code(patterns) => {
-                let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
-                    return Vec::new();
-                };
-                let Some((_, pattern)) = patterns.iter().find(|(l, _)| *l == lang) else {
-                    return Vec::new();
-                };
-                pattern
-                    .find(tree, &f.text, parent.clone())
-                    .into_iter()
-                    .map(|m| m.range)
-                    .collect()
-            }
+            Matcher::Code(_) => self.find(f, parent).into_iter().map(|(r, _)| r).collect(),
             Matcher::Syntax { kind, name } => f
                 .items()
                 .unwrap_or_default()
@@ -1908,7 +1936,7 @@ mod tests {
             [Match {
                 file: 0,
                 range: 13..23,
-                captures: vec![],
+                captures: vec![("x".into(), 17..18), ("e".into(), 21..22)],
             }]
         );
     }

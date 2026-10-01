@@ -9,7 +9,7 @@ use std::cmp::Reverse;
 
 use tree_sitter::{Node, Tree};
 
-use crate::fragment::{self, Fragment, FragmentError};
+use crate::fragment::{self, Fragment, FragmentError, children_of};
 use crate::lang::Language;
 use crate::template::Template;
 use crate::text::strip_indent;
@@ -26,6 +26,9 @@ struct Reading {
     /// The holes' nodes, by node id: the hole's name (`None` for `@_`), and
     /// whether it's a run.
     holes: HashMap<usize, (Option<String>, bool)>,
+    /// The runs left out of the text, by the id of the node whose children
+    /// they lie among: how many children come before each, and its name.
+    gaps: HashMap<usize, Vec<(usize, Option<String>)>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,7 +69,19 @@ impl Pattern {
                     .enumerate()
                     .filter_map(|(i, h)| Some((fragment.hole(i)?.id(), (h.name.clone(), h.many))))
                     .collect();
-                Reading { fragment, holes }
+                let mut gaps: HashMap<usize, Vec<(usize, Option<String>)>> = HashMap::new();
+                for (i, h) in template.holes().enumerate() {
+                    if let Some((node, before)) = fragment.gap(i) {
+                        gaps.entry(node.id())
+                            .or_default()
+                            .push((before, h.name.clone()));
+                    }
+                }
+                Reading {
+                    fragment,
+                    holes,
+                    gaps,
+                }
             })
             .collect();
         Ok(Pattern { readings })
@@ -129,12 +144,13 @@ impl Reading {
                 }
             }
         } else {
-            let children = children(node);
+            let children = children_of(node);
             for (i, start) in children.iter().enumerate() {
                 if !start.is_named() || !inside(&start.byte_range()) {
                     continue;
                 }
                 let mut m = Matcher::new(self, text);
+                let roots: Vec<Elem> = roots.iter().copied().map(Elem::Node).collect();
                 if let Some(end) = m.seq(&roots, &children[i..], false) {
                     let r = start.start_byte()..children[i + end - 1].end_byte();
                     if inside(&r) {
@@ -143,18 +159,18 @@ impl Reading {
                 }
             }
         }
-        for child in children(node) {
+        for child in children_of(node) {
             self.find(child, text, range, out);
         }
     }
 }
 
-/// A node's children, without comments.
-fn children(node: Node<'_>) -> Vec<Node<'_>> {
-    let mut cursor = node.walk();
-    node.children(&mut cursor)
-        .filter(|c| !c.is_extra())
-        .collect()
+/// An element of a pattern node's children: a node, or a run left out of
+/// the text (a gap).
+#[derive(Clone, Copy)]
+enum Elem<'p> {
+    Node(Node<'p>),
+    Run(&'p Option<String>),
 }
 
 /// A match of one reading in progress: what its placeholders have bound.
@@ -194,15 +210,32 @@ impl<'p, 't> Matcher<'p, 't> {
         &self.reading.fragment.text[p.byte_range()]
     }
 
+    /// The elements of pattern node `p`'s children: its children, with its gaps
+    /// among them.
+    fn elems(&self, p: Node<'p>) -> Vec<Elem<'p>> {
+        let mut elems: Vec<Elem<'p>> = children_of(p).into_iter().map(Elem::Node).collect();
+        for (k, (before, name)) in self
+            .reading
+            .gaps
+            .get(&p.id())
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            elems.insert(before + k, Elem::Run(name));
+        }
+        elems
+    }
+
     /// Whether pattern node `p` matches target node `t`.
-    fn node(&mut self, p: Node<'_>, t: Node<'t>) -> bool {
+    fn node(&mut self, p: Node<'p>, t: Node<'t>) -> bool {
         if let Some((name, _)) = self.hole(p) {
             return self.bind(name, vec![t], t.byte_range());
         }
         if p.kind_id() != t.kind_id() {
             return false;
         }
-        let (pc, tc) = (children(p), children(t));
+        let (pc, tc) = (self.elems(p), children_of(t));
         if pc.is_empty() && tc.is_empty() {
             return !p.is_named() || self.pattern_text(p) == &self.text[t.byte_range()];
         }
@@ -212,12 +245,19 @@ impl<'p, 't> Matcher<'p, 't> {
     /// Matches the pattern nodes `ps` against a prefix of the target nodes
     /// `ts`, or all of them if `all`, skipping target tokens the pattern
     /// leaves out. The number of target nodes matched, if they match.
-    fn seq(&mut self, ps: &[Node<'_>], ts: &[Node<'t>], all: bool) -> Option<usize> {
+    fn seq(&mut self, ps: &[Elem<'p>], ts: &[Node<'t>], all: bool) -> Option<usize> {
         let Some((&p, rest)) = ps.split_first() else {
             return (!all || ts.iter().all(|t| !t.is_named())).then_some(0);
         };
         let saved = self.binds.len();
-        if let Some((name, true)) = self.hole(p) {
+        let run = match p {
+            Elem::Run(name) => Some(name),
+            Elem::Node(n) => match self.hole(n) {
+                Some((name, true)) => Some(name),
+                _ => None,
+            },
+        };
+        if let Some(name) = run {
             // A run takes as few siblings as it can.
             let mut end = 0;
             loop {
@@ -239,6 +279,9 @@ impl<'p, 't> Matcher<'p, 't> {
                 end += ts[end..].iter().position(|n| n.is_named())? + 1;
             }
         }
+        let Elem::Node(p) = p else {
+            unreachable!("a gap is a run");
+        };
         for (i, &t) in ts.iter().enumerate() {
             let matched = if p.is_named() || self.hole(p).is_some() {
                 t.is_named() && self.node(p, t)
@@ -285,7 +328,7 @@ impl<'p, 't> Matcher<'p, 't> {
     /// Whether two target nodes are the same code, ignoring whitespace and
     /// comments.
     fn equal(&self, a: Node<'t>, b: Node<'t>) -> bool {
-        let (ac, bc) = (children(a), children(b));
+        let (ac, bc) = (children_of(a), children_of(b));
         a.kind_id() == b.kind_id()
             && ac.len() == bc.len()
             && if ac.is_empty() {

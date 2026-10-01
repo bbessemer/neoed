@@ -20,6 +20,7 @@ use crate::script::error::{excerpt, location};
 use crate::select::{self, Match, SourceFile, line_numbers, same_path};
 use crate::span::Span;
 use crate::syntax::{self, Item};
+use crate::template::Template;
 use crate::text;
 use crate::workspace;
 
@@ -397,8 +398,23 @@ impl Executor<'_> {
                     .steps
                     .last()
                     .is_some_and(|s| s.parts.last() == Some(&Part::Whole));
+                let patterns = target
+                    .selector
+                    .steps
+                    .iter()
+                    .any(|s| matches!(s.primary, Primary::Code(_)));
                 for m in self.resolve(target)? {
                     let f = &self.files[m.file].file;
+                    let filled;
+                    let text = match patterns {
+                        true => {
+                            filled = substitute(f, &m.captures, text).map_err(|kind| {
+                                ExecError::new(kind, Some(target.selector.span.clone()))
+                            })?;
+                            &filled
+                        }
+                        false => text,
+                    };
                     let selector = &self.src[target.selector.span.clone()];
                     if let Some(note) = off_by_one(f, &m.range, text, selector) {
                         self.notes.push(note);
@@ -1463,6 +1479,35 @@ fn indent_unit(f: &SourceFile) -> String {
     text::indent_unit(&f.text, f.lang.map_or("    ", Language::default_indent))
 }
 
+/// `text` with the pattern captures of a match in `f` substituted (§3.10).
+fn substitute(
+    f: &SourceFile,
+    captures: &select::Captures,
+    text: &Text,
+) -> Result<Text, ExecErrorKind> {
+    let capture = |name: &str| {
+        let (_, range) = captures.iter().find(|(n, _)| n == name)?;
+        Some((
+            &f.text[range.clone()],
+            text::indent_at(&f.text, range.start),
+        ))
+    };
+    let value = Template::parse(&text.value).fill(capture).map_err(|name| {
+        let mut names: Vec<String> = captures.iter().map(|(n, _)| format!("@{n}")).collect();
+        names.dedup();
+        let literal = format!("write `@@{name}` for a literal `@`");
+        let fix = match names.is_empty() {
+            true => literal,
+            false => format!("use {}, or {literal}", names.join(", ")),
+        };
+        ExecErrorKind::UnknownCapture { name, fix }
+    })?;
+    Ok(Text {
+        value,
+        kind: text.kind,
+    })
+}
+
 /// The span and text that replace `range` (§5.1). Unless `whole` (`.whole`),
 /// a syntax item keeps its leading docs and attributes.
 fn replace(f: &SourceFile, range: Range<usize>, new: &Text, whole: bool) -> (Range<usize>, String) {
@@ -2298,7 +2343,7 @@ mod tests {
         assert_eq!(
             edited(
                 text,
-                "replace all `assert_eq!(@a, true)` with \"assert!(@a)\""
+                "replace all `assert_eq!(@a..., true)` with \"assert!(@a)\""
             ),
             "fn main() {\n    assert!(x);\n    assert!(f(y));\n}\n"
         );

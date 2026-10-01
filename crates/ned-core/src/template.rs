@@ -41,6 +41,17 @@ pub struct Source {
     pieces: Vec<(Range<usize>, Range<usize>)>,
 }
 
+/// How [`Template::source`] writes a hole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoleText {
+    /// Its placeholder identifier.
+    Placeholder,
+    /// Its own text, `@name`: inside a string or comment.
+    Own,
+    /// Nothing: a run where no identifier parses, as among an impl's items.
+    Empty,
+}
+
 impl Template {
     pub fn parse(src: &str) -> Template {
         let mut pieces = Vec::new();
@@ -102,33 +113,32 @@ impl Template {
         })
     }
 
-    /// The text to parse; the holes for which `literal(i)` holds keep their
-    /// own text.
-    pub fn source(&self, literal: impl Fn(usize) -> bool) -> Source {
-        let mut text = String::new();
+    /// The text to parse, with each hole `i` written as `text(i)` says.
+    pub fn source(&self, text: impl Fn(usize) -> HoleText) -> Source {
+        let mut out = String::new();
         let mut holes = Vec::new();
         let mut pieces = Vec::new();
         for piece in &self.pieces {
-            let start = text.len();
+            let start = out.len();
             let span = match piece {
                 Piece::Text { text: t, span } => {
-                    text.push_str(t);
+                    out.push_str(t);
                     span
                 }
                 Piece::Hole(hole) => {
-                    if literal(holes.len()) {
-                        text.push_str(&self.src[hole.span.clone()]);
-                    } else {
-                        text.push_str(&hole.placeholder());
+                    match text(holes.len()) {
+                        HoleText::Placeholder => out.push_str(&hole.placeholder()),
+                        HoleText::Own => out.push_str(&self.src[hole.span.clone()]),
+                        HoleText::Empty => {}
                     }
-                    holes.push(start..text.len());
+                    holes.push(start..out.len());
                     &hole.span
                 }
             };
-            pieces.push((start..text.len(), span.clone()));
+            pieces.push((start..out.len(), span.clone()));
         }
         Source {
-            text,
+            text: out,
             holes,
             pieces,
         }
@@ -140,9 +150,38 @@ impl Template {
     /// name of a hole that nothing captured (`_` for `@_`).
     pub fn fill<'c>(
         &self,
-        _capture: impl Fn(&str) -> Option<(&'c str, &'c str)>,
+        capture: impl Fn(&str) -> Option<(&'c str, &'c str)>,
     ) -> Result<String, String> {
-        unimplemented!()
+        let mut out = String::new();
+        for piece in &self.pieces {
+            let hole = match piece {
+                Piece::Text { text, .. } => {
+                    out.push_str(text);
+                    continue;
+                }
+                Piece::Hole(hole) => hole,
+            };
+            let name = hole.name.as_deref().unwrap_or("_");
+            let (text, indent) = capture(name).ok_or_else(|| name.to_string())?;
+            let line = &out[out.rfind('\n').map_or(0, |i| i + 1)..];
+            let under = line[..line.len() - line.trim_start().len()].to_string();
+            for (i, l) in text.split('\n').enumerate() {
+                if i > 0 {
+                    out.push('\n');
+                    match l.strip_prefix(indent) {
+                        _ if l.trim().is_empty() => {}
+                        Some(rest) => {
+                            out.push_str(&under);
+                            out.push_str(rest);
+                        }
+                        None => out.push_str(l),
+                    }
+                } else {
+                    out.push_str(l);
+                }
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -228,7 +267,7 @@ mod tests {
     #[test]
     fn source_replaces_holes() {
         let t = Template::parse("f(@a, @@b) @x...");
-        let s = t.source(|_| false);
+        let s = t.source(|_| HoleText::Placeholder);
         assert_eq!(s.text, "f(__ned_a, @b) __ned_x");
         assert_eq!(s.holes, [2..9, 15..22]);
     }
@@ -236,15 +275,35 @@ mod tests {
     #[test]
     fn literal_holes_keep_their_text() {
         let t = Template::parse("log(\"@who\", @x)");
-        let s = t.source(|i| i == 0);
+        let s = t.source(|i| {
+            if i == 0 {
+                HoleText::Own
+            } else {
+                HoleText::Placeholder
+            }
+        });
         assert_eq!(s.text, "log(\"@who\", __ned_x)");
         assert_eq!(s.holes, [5..9, 12..19]);
     }
 
     #[test]
+    fn empty_holes_leave_nothing() {
+        let t = Template::parse("impl @t { @_... }");
+        let s = t.source(|i| {
+            if i == 1 {
+                HoleText::Empty
+            } else {
+                HoleText::Placeholder
+            }
+        });
+        assert_eq!(s.text, "impl __ned_t {  }");
+        assert_eq!(s.holes, [5..12, 15..15]);
+    }
+
+    #[test]
     fn source_offsets_map_back() {
         let t = Template::parse("f(@a, @@b) z");
-        let s = t.source(|_| false);
+        let s = t.source(|_| HoleText::Placeholder);
         // `f(__ned_a, @b) z`
         assert_eq!(s.to_template(0), 0);
         assert_eq!(s.to_template(2), 2);

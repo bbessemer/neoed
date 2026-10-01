@@ -11,7 +11,7 @@ use serde::Deserialize;
 use tree_sitter::{Node, Tree};
 
 use crate::lang::Language;
-use crate::template::Template;
+use crate::template::{HoleText, Template};
 
 /// How to build a node of `kind` around a fragment: `(build KIND PART...)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,11 +54,23 @@ pub struct Fragment {
     /// The byte range of the fragment's root node, or of its run of root
     /// nodes.
     pub roots: Range<usize>,
-    /// Each hole's range in `text`, or `None` where it's literal text (in a
-    /// string or comment).
-    pub holes: Vec<Option<Range<usize>>>,
+    /// Where each hole is in `text`.
+    pub holes: Vec<Slot>,
+
     /// The index of the builder it parsed in, or `None` if it parsed alone.
     pub builder: Option<usize>,
+}
+
+/// Where a hole is in a reading.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Slot {
+    /// Literal text, in a string or comment.
+    Literal,
+    /// The range of its placeholder.
+    Node(Range<usize>),
+    /// A run left out of the text, as among an impl's items where no
+    /// identifier parses: the offset between the siblings it stands for.
+    Gap(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -259,9 +271,11 @@ impl Fragment {
     }
 
     /// Hole `i`'s node: the outermost node spanning exactly its placeholder,
-    /// within the roots. `None` if the hole is literal.
+    /// within the roots. `None` unless the hole is a node.
     pub fn hole(&self, i: usize) -> Option<Node<'_>> {
-        let range = self.holes[i].as_ref()?;
+        let Slot::Node(range) = &self.holes[i] else {
+            return None;
+        };
         let container = self.container().map(|c| c.id());
         let mut node = self.spanning(range);
         while let Some(parent) = node.parent() {
@@ -271,6 +285,23 @@ impl Fragment {
             node = parent;
         }
         Some(node)
+    }
+
+    /// Hole `i`'s gap: the node whose children it lies among, and how many of
+    /// them come before it. `None` unless the hole is a gap.
+    pub fn gap(&self, i: usize) -> Option<(Node<'_>, usize)> {
+        let Slot::Gap(at) = self.holes[i] else {
+            return None;
+        };
+        let mut node = self.tree.root_node().descendant_for_byte_range(at, at)?;
+        while !(node.start_byte() < at && at < node.end_byte() && node.child_count() > 0) {
+            node = node.parent()?;
+        }
+        let before = children_of(node)
+            .iter()
+            .filter(|c| c.end_byte() <= at)
+            .count();
+        Some((node, before))
     }
 
     /// The node the roots are children of.
@@ -303,29 +334,41 @@ impl Fragment {
 /// Every reading of `template` in `lang` that parses without errors: alone,
 /// then inside each builder. Readings with the same root kinds count once.
 pub fn parse(lang: Language, template: &Template) -> Result<Vec<Fragment>, FragmentError> {
-    let wraps = std::iter::once(None).chain(lang.builders().iter().enumerate().map(Some));
+    let runs: HashSet<usize> = template
+        .holes()
+        .enumerate()
+        .filter_map(|(i, h)| h.many.then_some(i))
+        .collect();
     let mut readings: Vec<Fragment> = Vec::new();
     let mut fused = None;
-    for wrap in wraps {
-        match reading(lang, template, wrap) {
-            Ok(Some(f)) => {
-                let kinds =
-                    |f: &Fragment| f.roots().iter().map(|n| n.kind_id()).collect::<Vec<_>>();
-                if !readings.iter().any(|r| kinds(r) == kinds(&f)) {
-                    readings.push(f);
+    // Runs are left out of the text only if nothing parses with them in.
+    for gaps in [HashSet::new(), runs] {
+        if !readings.is_empty() || (gaps.is_empty() && fused.is_some()) {
+            break;
+        }
+        let wraps = std::iter::once(None).chain(lang.builders().iter().enumerate().map(Some));
+        for wrap in wraps {
+            match reading(lang, template, wrap, &gaps) {
+                Ok(Some(f)) => {
+                    let kinds =
+                        |f: &Fragment| f.roots().iter().map(|n| n.kind_id()).collect::<Vec<_>>();
+                    if !readings.iter().any(|r| kinds(r) == kinds(&f)) {
+                        readings.push(f);
+                    }
                 }
+                Ok(None) => {}
+                Err(e) => fused = fused.or(Some(e)),
             }
-            Ok(None) => {}
-            Err(e) => fused = fused.or(Some(e)),
         }
     }
+
     if !readings.is_empty() {
         return Ok(readings);
     }
     if let Some(e) = fused {
         return Err(e);
     }
-    let bare = template.source(|_| false);
+    let bare = template.source(|_| HoleText::Placeholder);
     let tree = lang.parse(&bare.text);
     let at = first_error(tree.root_node()).map_or(0, |n| n.start_byte());
     Err(FragmentError::NoParse {
@@ -340,16 +383,13 @@ fn reading(
     lang: Language,
     template: &Template,
     wrap: Option<(usize, &Builder)>,
+    gaps: &HashSet<usize>,
 ) -> Result<Option<Fragment>, FragmentError> {
-    let Some(f) = build(lang, template, wrap, &HashSet::new()) else {
+    let Some(f) = build(lang, template, wrap, &HashSet::new(), gaps) else {
         return Ok(None);
     };
     let partial: HashSet<usize> = (0..f.holes.len())
-        .filter(|&i| {
-            f.holes[i]
-                .as_ref()
-                .is_some_and(|r| f.span(f.spanning(r)) != *r)
-        })
+        .filter(|&i| matches!(&f.holes[i], Slot::Node(r) if f.span(f.spanning(r)) != *r))
         .collect();
     if partial.is_empty() {
         return Ok(Some(f));
@@ -357,7 +397,7 @@ fn reading(
     // Holes inside a string or comment keep their text, which leaves the
     // tree's shape unchanged; any other hole that isn't a whole node is
     // fused into a neighbouring token.
-    match build(lang, template, wrap, &partial) {
+    match build(lang, template, wrap, &partial, gaps) {
         Some(literal) if shape(&literal.tree) == shape(&f.tree) => Ok(Some(literal)),
         _ => {
             let i = *partial.iter().min().expect("not empty");
@@ -380,8 +420,13 @@ fn build(
     template: &Template,
     wrap: Option<(usize, &Builder)>,
     literal: &HashSet<usize>,
+    gaps: &HashSet<usize>,
 ) -> Option<Fragment> {
-    let source = template.source(|i| literal.contains(&i));
+    let source = template.source(|i| match (literal.contains(&i), gaps.contains(&i)) {
+        (true, _) => HoleText::Own,
+        (_, true) => HoleText::Empty,
+        _ => HoleText::Placeholder,
+    });
     // Alone, the fragment ends with a newline: Go ends a statement with one.
     let (before, after) = wrap.map_or_else(|| (String::new(), "\n".into()), |(_, b)| b.text());
     // Later lines of the fragment take the indentation the prefix ends at.
@@ -407,7 +452,11 @@ fn build(
         .holes
         .iter()
         .enumerate()
-        .map(|(i, r)| (!literal.contains(&i)).then(|| at(r.start)..at(r.end)))
+        .map(|(i, r)| match (literal.contains(&i), gaps.contains(&i)) {
+            (true, _) => Slot::Literal,
+            (_, true) => Slot::Gap(at(r.start)),
+            _ => Slot::Node(at(r.start)..at(r.end)),
+        })
         .collect();
     let f = Fragment {
         text,
@@ -437,17 +486,20 @@ fn build(
 /// `,`.
 fn covers(f: &Fragment, node: Node<'_>) -> bool {
     let range = &f.roots;
-    let mut cursor = node.walk();
-    let children: Vec<_> = node
-        .children(&mut cursor)
-        .filter(|c| !c.is_extra())
-        .map(|c| f.span(c))
-        .collect();
+    let children: Vec<_> = children_of(node).into_iter().map(|c| f.span(c)).collect();
     let straddles = |at: usize| children.iter().any(|c| c.start < at && at < c.end);
     children.iter().any(|c| c.start == range.start)
         && children.iter().any(|c| c.end == range.end)
         && !straddles(range.start)
         && !straddles(range.end)
+}
+
+/// A node's children, without comments.
+pub fn children_of(node: Node<'_>) -> Vec<Node<'_>> {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .filter(|c| !c.is_extra())
+        .collect()
 }
 
 /// The tree's node kinds, in order.
@@ -595,8 +647,12 @@ mod tests {
     fn holes_are_whole_nodes() {
         let f = &readings(Language::Rust, "foo(@a, @rest...)")[0];
         assert_eq!(hole_kind(f, 0), Some("identifier"));
-        assert_eq!(&f.text[f.holes[0].clone().unwrap()], "__ned_a");
-        assert_eq!(&f.text[f.holes[1].clone().unwrap()], "__ned_rest");
+        let text = |i: usize| match &f.holes[i] {
+            Slot::Node(r) => &f.text[r.clone()],
+            slot => panic!("{slot:?}"),
+        };
+        assert_eq!(text(0), "__ned_a");
+        assert_eq!(text(1), "__ned_rest");
     }
 
     #[test]
@@ -612,14 +668,24 @@ mod tests {
     #[test]
     fn holes_in_strings_and_comments_are_literal() {
         let f = &readings(Language::Rust, "log(\"user@host\", /* @x */ @y)")[0];
-        assert_eq!(f.holes[0], None);
-        assert_eq!(f.holes[1], None);
+        assert_eq!(f.holes[0], Slot::Literal);
+        assert_eq!(f.holes[1], Slot::Literal);
         assert_eq!(hole_kind(f, 2), Some("identifier"));
         assert!(
             f.text.contains("\"user@host\", /* @x */ __ned_y"),
             "{}",
             f.text
         );
+    }
+
+    #[test]
+    fn a_run_where_no_name_parses_is_a_gap() {
+        let readings = readings(Language::Rust, "impl Display for @t { @_... }");
+        let f = &readings[0];
+        assert_eq!(f.roots()[0].kind(), "impl_item");
+        assert_eq!(hole_kind(f, 0), Some("type_identifier"));
+        let (node, before) = f.gap(1).unwrap();
+        assert_eq!((node.kind(), before), ("declaration_list", 1));
     }
 
     #[test]
