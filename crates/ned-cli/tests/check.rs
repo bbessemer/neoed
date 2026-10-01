@@ -3,6 +3,8 @@
 
 use std::fs;
 use std::process::Output;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use tempfile::TempDir;
@@ -77,12 +79,26 @@ impl Workspace {
         assert!(out.status.success(), "{out:?}");
     }
 
-    /// The texts the fake server was last sent for each document.
+    /// The texts the fake server was last sent for each document, once the
+    /// last is `text` or five seconds have passed: the daemon answers once it
+    /// has sent a change, before the server has logged it.
+    fn texts_ending(&self, text: &str) -> Vec<String> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let texts = self.last_texts();
+            if texts.last().is_some_and(|last| last == text) || Instant::now() > deadline {
+                return texts;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     fn last_texts(&self) -> Vec<String> {
-        let log = fs::read_to_string(self.dir.path().join("lsp.log")).unwrap();
+        let log = fs::read_to_string(self.dir.path().join("lsp.log")).unwrap_or_default();
         log.lines()
             .filter_map(|line| {
-                let message: serde_json::Value = serde_json::from_str(line).unwrap();
+                // The server may be writing the last line.
+                let message: serde_json::Value = serde_json::from_str(line).ok()?;
                 match message["method"].as_str()? {
                     "textDocument/didOpen" => message["params"]["textDocument"]["text"]
                         .as_str()
@@ -225,7 +241,7 @@ fn an_edit_that_introduces_an_error_is_rejected() {
     );
     assert_eq!(text(&out.stdout), "");
     assert_eq!(ws.read("a.rs"), CLEAN);
-    let texts = ws.last_texts();
+    let texts = ws.texts_ending(CLEAN);
     assert_eq!(
         texts.last().unwrap(),
         CLEAN,
@@ -352,7 +368,7 @@ fn a_blocked_dry_run_exits_1() {
     ws.start();
     let out = ws.ned(&["a.rs", "-n", "-e", "insert after 2 \"// ERROR\""]);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
-    assert_eq!(ws.last_texts().last().unwrap(), CLEAN);
+    assert_eq!(ws.texts_ending(CLEAN).last().unwrap(), CLEAN);
 }
 
 /// gopls blocks an edit that breaks the types: `cargo test -- --ignored`.
