@@ -45,6 +45,8 @@ pub enum ParseErrorKind {
         "{property} is text; compare it with == or != and a \"string\", or with ~= and a /regex/"
     )]
     CompareText { property: String },
+    #[error("a part can't follow a filter; put it first: fn.body[...]")]
+    PartAfterFilter,
     #[error(
         "unknown part `.{0}`; parts are .body .sig .params .name .doc .attrs .ret .type .value .whole .lines .refs .def"
     )]

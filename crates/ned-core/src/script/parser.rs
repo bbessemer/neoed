@@ -274,13 +274,26 @@ impl Parser<'_> {
         loop {
             let next = self.peek()?;
             match next.kind {
-                TokenKind::Gt | TokenKind::Part(_) if next.space_before => {
+                TokenKind::Gt | TokenKind::Part(_) | TokenKind::Filter(_) if next.space_before => {
                     return Err(ParseError::new(E::SpaceInSelector, next.span.clone()));
                 }
                 TokenKind::Part(part) => {
-                    self.bump()?;
+                    let token = self.bump()?;
                     if let Some(step) = steps.last_mut() {
+                        if !step.filters.is_empty() {
+                            return Err(ParseError::new(E::PartAfterFilter, token.span));
+                        }
                         step.parts.push(part);
+                        step.span.end = self.last_end;
+                    }
+                }
+                TokenKind::Filter(_) => {
+                    let token = self.bump()?;
+                    let TokenKind::Filter(filter) = token.kind else {
+                        unreachable!("peeked a filter");
+                    };
+                    if let Some(step) = steps.last_mut() {
+                        step.filters.push((filter, token.span));
                         step.span.end = self.last_end;
                     }
                 }
