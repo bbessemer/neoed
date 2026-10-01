@@ -30,17 +30,17 @@ the topics. `help` must be the first argument; write a file named `help` as
 - Files must be UTF-8. Line endings are detected per file (LF or CRLF), and
   inserted text is converted to match.
 
-| Flag                      | Effect                                                                                                        |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `-n`, `--dry-run`         | Resolve and apply edits in memory, print the output, write nothing.                                           |
-| `-q`, `--quiet`           | Print only the per-file summary lines on success (§6.3).                                                      |
-| `--force`                 | Skip the parse-error guard (§4.3) and blocking on introduced diagnostics (§6.5).                              |
-| `--no-check`              | Don't check edits with language servers (§6.5).                                                               |
-| `-w`, `--workspace [DIR]` | Start with every file in the workspace, `DIR` or the one detected (§1.1), instead of `FILE` arguments (§2.4). |
-| `--no-fmt`                | Don't run formatters (§6.4).                                                                                  |
-| `--lang LANG`             | Use this language for every file: `rust`, `python`, `typescript`, `tsx`, `javascript`, `go`, `markdown`.      |
-| `--context N`             | Context lines around diff hunks (default 1).                                                                  |
-| `-V`, `--version`         | Print the version: the package version and the build's git commit.                                            |
+| Flag                      | Effect                                                                                                                               |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `-n`, `--dry-run`         | Resolve and apply edits in memory, print the output, write nothing.                                                                  |
+| `-q`, `--quiet`           | Print only the per-file summary lines on success (§6.3).                                                                             |
+| `--force`                 | Skip the parse-error guard (§4.3) and blocking on introduced diagnostics (§6.5).                                                     |
+| `--no-check`              | Don't check edits with language servers (§6.5).                                                                                      |
+| `-w`, `--workspace [DIR]` | Start with every file in the workspace, `DIR` or the one detected (§1.1), instead of `FILE` arguments (§2.4).                        |
+| `--no-fmt`                | Don't run formatters (§6.4).                                                                                                         |
+| `--lang LANG`             | Use this language for every file: `rust`, `python`, `typescript`, `tsx`, `javascript`, `go`, `markdown`.                             |
+| `--context N`             | Context lines around diff hunks (default 1).                                                                                         |
+| `-V`, `--version`         | Print the version: the package version and the build's git commit (the version alone for a release build, or one built without git). |
 
 Otherwise, a file's language is detected from its extension, then from its
 shebang (`python…` or `node`, directly or through `env`). Extensions are
