@@ -158,8 +158,9 @@ are errors.
   - `<<TAG` bodies are **re-based** (§5) when inserted, and match
     indentation-insensitively when used as selectors (§3.2).
   - `<<'TAG'` bodies are **verbatim**: no re-basing, and exact matching.
-- **Patterns** are code between backquotes (§3.10), and may span lines. Write
-  `` \` `` for a literal backquote; every other backslash is literal.
+- **Patterns** are code between backquotes (§3.10), and may span lines. As in
+  Markdown, a pattern holding backquotes opens and closes with a longer run of
+  them: ``` `` `${x}` `` ```. The code inside is verbatim, backslashes included.
 - **Filters** are `[...]` directly after a step (§3.9). Inside the brackets,
   whitespace is allowed, digits are numbers, and `==`, `!=`, `~=`, `<`, `>`,
   `<=`, `>=`, `&&`, `||`, `(` and `)` are operators.
@@ -218,7 +219,7 @@ syntax     = kind [ ":" name ] ;
 kind       = ident ;
 name       = name-char { name-char } | string ;   (* name-char: [A-Za-z0-9_:*] *)
 query      = "query{" { any } "}" ;   (* ends at the first unescaped "}"; one line *)
-pattern    = "`" { any | "\`" } "`" ;   (* may span lines; see 3.10 *)
+pattern    = "`"+ { any } "`"+ ;   (* runs of equal length; may span lines; see 3.10 *)
 
 text       = string | heredoc ;
 path       = path-char { path-char } | string ;   (* globs allowed; see 2.4 *)
@@ -600,10 +601,13 @@ delete all fn:main>`println!(@_...);`
 show `impl Display for @t { @_... }`>fn:fmt
 ```
 
-**Writing.** A pattern may span lines. Write `` \` `` for a backquote inside it
-(a JavaScript template literal, a Go raw string); every other backslash is
-literal, so `` `"\n"` `` is the source text `"\n"`. Indentation common to the
-pattern's lines is ignored.
+**Writing.** A pattern may span lines, and its code is verbatim: `` `"\n"` `` is
+the source text `"\n"`. A pattern that holds backquotes (a JavaScript template
+literal, a Go raw string) opens with a run of backquotes longer than any inside
+it, and closes with a run of the same length, as in Markdown:
+``` `` `${name}` `` ```. One space just inside each end is dropped when both
+ends have one, so a pattern can start or end with a backquote. Indentation
+common to the pattern's lines is ignored.
 
 **Placeholders** stand for the parts of the code that vary:
 
@@ -1036,7 +1040,7 @@ Errors go to stderr, in the form `error: LOC: message`.
 | Ambiguous selector                                        | Candidate selectors (§3.5), or longer text for matches that share a line                                                                                                                                                                                                                                |
 | Missing part, part on a non-syntax step                   | The parts the item has, or an example                                                                                                                                                                                                                                                                   |
 | Invalid query                                             | The closest node type or field name in the grammar                                                                                                                                                                                                                                                      |
-| Unterminated pattern                                      | Ending it with `` ` ``, and `` \` `` for a backquote inside it                                                                                                                                                                                                                                          |
+| Unterminated pattern                                      | Ending it with as many backquotes as opened it                                                                                                                                                                                                                                                          |
 | Pattern that no searched file's language parses           | The first syntax error in it; adding the code around it, or `query{}`                                                                                                                                                                                                                                   |
 | Placeholder that isn't a whole node                       | `@@` for a literal `@`                                                                                                                                                                                                                                                                                  |
 | Capture name in two pattern steps                         | Renaming one of them                                                                                                                                                                                                                                                                                    |
