@@ -4,6 +4,7 @@
 (function_definition
   name: (identifier) @name
   parameters: (parameters) @params
+  return_type: (_)? @ret
   body: (block . (expression_statement (string) @doc)?) @block) @fn
 
 (class_definition
@@ -12,13 +13,13 @@
 
 (class_definition
   body: (block
-    (expression_statement (assignment left: (identifier) @name)) @field))
+    (expression_statement (assignment left: (identifier) @name type: (_)? @ty right: (_)? @value)) @field))
 
 (module
-  (expression_statement (assignment left: (identifier) @name)) @const
+  (expression_statement (assignment left: (identifier) @name type: (_)? @ty right: (_)? @value)) @const
   (#match? @name "^[A-Z][A-Z0-9_]*$"))
 (module
-  (expression_statement (assignment left: (identifier) @name)) @var
+  (expression_statement (assignment left: (identifier) @name type: (_)? @ty right: (_)? @value)) @var
   (#not-match? @name "^[A-Z][A-Z0-9_]*$"))
 
 (import_statement name: [

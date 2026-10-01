@@ -30,9 +30,9 @@
 
 (class_declaration name: (_) @name body: (class_body) @body) @class
 
-(lexical_declaration kind: "const" (variable_declarator name: (identifier) @name)) @const
-(lexical_declaration kind: "let" (variable_declarator name: (identifier) @name)) @var
-(variable_declaration (variable_declarator name: (identifier) @name)) @var
+(lexical_declaration kind: "const" (variable_declarator name: (identifier) @name value: (_)? @value)) @const
+(lexical_declaration kind: "let" (variable_declarator name: (identifier) @name value: (_)? @value)) @var
+(variable_declaration (variable_declarator name: (identifier) @name value: (_)? @value)) @var
 
 (import_statement source: (string (string_fragment) @name)) @import
 

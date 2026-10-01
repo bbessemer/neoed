@@ -4,16 +4,18 @@
 (function_item
   name: (identifier) @name
   parameters: (parameters) @params
+  return_type: (_)? @ret
   body: (block) @body) @fn
 (function_signature_item
   name: (identifier) @name
-  parameters: (parameters) @params) @fn
+  parameters: (parameters) @params
+  return_type: (_)? @ret) @fn
 
 (struct_item name: (type_identifier) @name body: (_)? @body) @struct
-(field_declaration name: (field_identifier) @name) @field
+(field_declaration name: (field_identifier) @name type: (_) @ty) @field
 
 (enum_item name: (type_identifier) @name body: (enum_variant_list) @body) @enum
-(enum_variant name: (identifier) @name body: (_)? @body) @variant
+(enum_variant name: (identifier) @name body: (_)? @body value: (_)? @value) @variant
 
 (trait_item name: (type_identifier) @name body: (declaration_list) @body) @trait
 
@@ -41,13 +43,13 @@
   body: (declaration_list)? @body
   (#set! name "{trait_name} for {name}")) @impl
 
-(type_item name: (type_identifier) @name) @type
+(type_item name: (type_identifier) @name type: (_) @value) @type
 (associated_type name: (type_identifier) @name) @type
 
-(const_item name: (identifier) @name) @const
-(static_item name: (identifier) @name) @const
+(const_item name: (identifier) @name type: (_)? @ty value: (_)? @value) @const
+(static_item name: (identifier) @name type: (_)? @ty value: (_)? @value) @const
 
-(let_declaration pattern: (identifier) @name) @var
+(let_declaration pattern: (identifier) @name type: (_)? @ty value: (_)? @value) @var
 
 (mod_item name: (identifier) @name body: (declaration_list)? @body) @mod
 
