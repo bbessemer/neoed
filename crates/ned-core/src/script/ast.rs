@@ -183,6 +183,7 @@ pub enum Part {
     Ret,
     Type,
     Value,
+    Whole,
     Lines,
     Refs,
     Def,

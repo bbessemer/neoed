@@ -946,6 +946,7 @@ pub(crate) fn part_name(part: Part) -> &'static str {
         Part::Ret => "ret",
         Part::Type => "type",
         Part::Value => "value",
+        Part::Whole => "whole",
         Part::Lines => "lines",
         Part::Refs => "refs",
         Part::Def => "def",

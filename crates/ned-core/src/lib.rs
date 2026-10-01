@@ -12,6 +12,7 @@ pub mod lsp;
 pub mod outline;
 pub mod script;
 pub mod select;
+pub mod span;
 pub mod syntax;
 pub mod text;
 pub mod workspace;
