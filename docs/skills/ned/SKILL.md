@@ -88,7 +88,7 @@ fn peek(&self) -> Option<char> {
 END
 ```
 
-Replace a function body, or its parameters:
+Replace a function body, its parameters, or its return type:
 
 ```ned
 replace fn:parse.body with <<END
@@ -96,6 +96,7 @@ let tok = self.next()?;
 self.parse_expr(tok)
 END
 replace fn:new.params with "src: impl Into<String>"
+replace fn:new.ret with "Result<Self, Error>"
 ```
 
 Add an import, delete a function, and move one:

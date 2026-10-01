@@ -141,8 +141,9 @@ A selector can be:
 - a regex (`/re/i`) or a literal (`"text"`);
 - a syntax item (`fn:parse`, `fn:test_*`);
 - a nested step (`impl:Parser>fn:new>"x"`);
-- a part: `.body`, `.sig`, `.params`, `.name`, `.doc`, `.lines`, and `.refs` and
-  `.def` through the language server;
+- a part: `.body`, `.sig`, `.params`, `.name`, `.doc`, `.attrs`, `.ret`,
+  `.type`, `.value`, `.lines`, and `.refs` and `.def` through the language
+  server;
 - a range (`fn:a..fn:c`);
 - scoped to one file (`file:src/a.rs>fn:new`);
 - a raw tree-sitter query (`query{...}`).
@@ -200,8 +201,7 @@ day to develop ned itself, but the language may still change before 1.0.
 
 In order, with details in [`TODO.md`](TODO.md):
 
-- Selector filters, `fn[.name ~= /^test_/]` or `.lines[.len > 80]`, and more
-  parts (return type, attributes, a field's type and value)
+- Selector filters: `fn[.name ~= /^test_/]` or `fn:parse.lines[.len > 80]`
 - Syntax patterns: select code by writing code in backquotes, matched
   structurally with `$name` placeholders, so whitespace never has to match
 - Sessions (`-s NAME`): a shared edit history across invocations, with repeat,

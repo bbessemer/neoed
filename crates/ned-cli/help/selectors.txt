@@ -14,6 +14,7 @@ Syntax: kind:name, with * as a wildcard; quote other names: import:"os.path".
   JS/TS its export); a Python item's .doc is its docstring, and its .body the
   lines after it. In JS/TS, const f = () => {} is both fn:f and const:f.
 Parts: .body .params (inside the delimiters) .name .sig .doc .lines.
+  .attrs, .ret (return type), .type and .value (of a field, const or var).
   Via the language server, on any step: .refs (each use), .def (the defining
   item): all fn:parse.refs, "helper(".def. With -w they reach every file.
 Nest with > (no spaces): impl:Parser>fn:new>"x". Scope: 40-80>fn:new,
