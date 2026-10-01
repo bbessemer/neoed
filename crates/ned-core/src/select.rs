@@ -568,7 +568,7 @@ fn compile_pattern(
             Err(e) => failed.push((lang, e)),
         }
     }
-    let selector = format!("`{}`", code.replace('`', "\\`"));
+    let selector = fenced(code);
     if !patterns.is_empty() || searched.is_empty() {
         return Ok(patterns);
     }
@@ -587,6 +587,15 @@ fn compile_pattern(
             ),
         }),
     }
+}
+
+/// `code` as a pattern step: between runs of backquotes longer than any it
+/// holds (§3.10).
+fn fenced(code: &str) -> String {
+    let longest = code.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat(longest + 1);
+    let pad = if longest > 0 { " " } else { "" };
+    format!("{fence}{pad}{code}{pad}{fence}")
 }
 
 fn query_error(err: &QueryError, grammar: &tree_sitter::Language) -> String {
@@ -1888,6 +1897,13 @@ mod tests {
             "error: script:1:8: `foo(@x)` needs a programming language, but a.md, b.txt has \
              none; use a regex or literal, or --lang"
         );
+    }
+
+    #[test]
+    fn errors_fence_patterns_that_hold_backquotes() {
+        assert_eq!(fenced("f(@x)"), "`f(@x)`");
+        assert_eq!(fenced("f(`a`)"), "`` f(`a`) ``");
+        assert_eq!(fenced("``"), "``` `` ```");
     }
 
     #[test]
