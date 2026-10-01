@@ -978,7 +978,9 @@ fn candidates(
         .iter()
         .zip(found)
         .map(|(chosen, c)| {
-            let last = match (chosen, last) {
+            // The last step's filters, as written.
+            let filters = last.and_then(|step| Some(step.filters.first()?.1.start..step.span.end));
+            let text = match (chosen, last) {
                 (Some((name, item, true)), Some(step)) => {
                     let parts: String = step
                         .parts
@@ -987,12 +989,13 @@ fn candidates(
                         .collect();
                     format!("{}{parts}", syntax::selector(item.kind, name))
                 }
-                _ => src[split..selector.span.end].to_string(),
+                _ => src[split..filters.clone().map_or(selector.span.end, |f| f.start)].to_string(),
             };
-            // A line split from a span is scoped by its number, after the span.
+            // A line split from a span is scoped by its number, after the
+            // span, instead of by `.lines` and filters.
             match c.line {
-                true => last.trim_end_matches(".lines").to_string(),
-                false => last,
+                true => text.trim_end_matches(".lines").to_string(),
+                false => format!("{text}{}", filters.map_or("", |f| &src[f])),
             }
         })
         .collect();
