@@ -21,5 +21,5 @@ Nest with > (no spaces): impl:Parser>fn:new>"x". Scope: 40-80>fn:new,
 file:src/a.rs>fn:new. Raw: query{(node) @sel}.
 Range: A..B, whole lines from a match of A to the next match of B:
 /^## 6/../^## 7/, fn:a..fn:c.
-Ambiguous matches are errors listing selectors to paste; `all SEL` takes every
-match.
+Filter: fn[.name ~= /^test_/] (ned help filters). Ambiguous matches are errors
+listing selectors to paste; `all SEL` takes every match.

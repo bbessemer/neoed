@@ -155,6 +155,16 @@ delete fn:helper_a..fn:helper_c
 show /^## Usage/../^## License/
 ```
 
+Select by a property instead of a name with a filter: `.text`, `.len`
+(characters on one line, lines on several) or a part, compared with `==`, `!=`,
+`<`, `>`, `<=`, `>=` or `~=` (regex), and combined with `&&` and `||`:
+
+```ned
+show all fn[.doc == ""]
+delete all impl:Parser>fn[.name ~= /^old_/ || .body.len == 0]
+show all fn:parse.lines[.len > 100]
+```
+
 Add a statement at the start of a Python method, after its docstring; ned
 indents it to the block:
 

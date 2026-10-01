@@ -157,6 +157,9 @@ are errors.
   - `<<TAG` bodies are **re-based** (§5) when inserted, and match
     indentation-insensitively when used as selectors (§3.2).
   - `<<'TAG'` bodies are **verbatim**: no re-basing, and exact matching.
+- **Filters** are `[...]` directly after a step (§3.9). Inside the brackets,
+  whitespace is allowed, digits are numbers, and `==`, `!=`, `~=`, `<`, `>`,
+  `<=`, `>=`, `&&`, `||`, `(` and `)` are operators.
 - **Keywords**: the verbs, `all`, `with`, `to`, `before`, `after`, `start`,
   `end`, and `file`; after `check`, its levels (`error`, `warning`, `info`,
   `hint`), and after `allow`, `errors` and `warnings`. Any other bare word is an
@@ -190,11 +193,19 @@ allow      = "allow" ( "errors" | "warnings" ) ;
 position   = "before" | "after" | "start" | "end" ;
 target     = [ "all" ] selector ;
 selector   = step { ">" step } ;
-step       = primary [ ".." primary ] { part } ;
+step       = primary [ ".." primary ] { part } { filter } ;
 context    = "+" digit { digit } ;
 part       = ".body" | ".sig" | ".params" | ".name" | ".doc" | ".attrs"
            | ".ret" | ".type" | ".value" | ".whole" | ".lines" | ".refs"
            | ".def" ;
+filter     = "[" or "]" ;   (* whitespace allowed inside *)
+or         = and { "||" and } ;
+and        = cond { "&&" cond } ;
+cond       = property op value | "(" or ")" ;
+property   = ".len" | ".text" | part [ ".len" | ".text" ] ;
+op         = "==" | "!=" | "~=" | "<" | ">" | "<=" | ">=" ;
+value      = string | regex | number ;
+number     = digit { digit } ;
 primary    = lines | regex | literal | syntax | query ;
 
 lines      = lineno [ "-" lineno ] ;
@@ -213,8 +224,9 @@ heredoc    = "<<" ( ident | "'" ident "'" ) ;
 comment    = "#" { any-but-newline } ;
 ```
 
-No whitespace is allowed inside a selector: `impl:Parser>fn:new.body` is one
-selector, while `impl:Parser > fn:new` is a syntax error.
+No whitespace is allowed inside a selector, except within a filter's brackets:
+`impl:Parser>fn:new.body` is one selector, while `impl:Parser > fn:new` is a
+syntax error.
 
 In `sub`, the last primary before `with` is the pattern. A preceding selector,
 if present, is the scope: `sub fn:parse /x/ with "y"`.
@@ -499,8 +511,11 @@ The kinds each language supports, and the items they cover there:
   names its item instead (`fn:test_*` lists `fn:test_parse`), and is scoped as
   above only among the matches with the same name.
 - A line that `.lines` split from a multi-line span is listed as its step
-  without `.lines` and any parts after it, with its line number nested after the
-  step: `fn:new.lines` lists `fn:new>41`, `fn:new>42`, and so on.
+  without `.lines` and any parts or filters after it, with its line number
+  nested after the step: `fn:new.lines` lists `fn:new>41`, `fn:new>42`, and so
+  on.
+- A candidate keeps its steps' filters (§3.9), also when it names the item:
+  `fn[.doc == ""]` lists `fn:parse[.doc == ""]`.
 
 ### 3.6 Raw query
 
@@ -538,8 +553,34 @@ Every value in a script has a type, which decides the parts it has (§3.4):
 - An **item** is a span that a syntax step selects, with its kind (§3.3). It
   also has `.whole` and the parts its kind has in its language (§3.4). A part's
   span is a plain span, not an item.
-- **Strings**, **numbers** and **regexes** are values written in a script. They
-  have no parts.
+- **Strings**, **numbers** and **regexes** are values written in a script: a
+  filter (§3.9) compares a span's property with one. They have no parts.
+
+### 3.9 Filters
+
+`[...]` after a step keeps each of the step's spans for which a condition holds:
+`fn[.name ~= /^test_/]` is every test function, `fn[.doc == ""]` every
+undocumented one, and `fn:parse.lines[.len > 80]` each long line of `parse`. A
+filter follows the step's parts and tests the spans they select.
+
+- A condition compares a **property** of the span with a value:
+  - `.text`: the span's text, without a final line break.
+  - `.len`: on a single-line span, the number of characters in `.text`; on a
+    multi-line span, its number of lines (§3.8).
+  - A part (§3.4), such as `.name` or `.doc`: the part's text. Add `.len` or
+    `.text` after it for its length or text: `fn[.body.len > 50]`. An item
+    without the part, such as a function without doc comments, has `""` there,
+    with length 0. A part needs an item: `/x/[.name == "a"]` is an error, as
+    `/x/.name` is. `.lines`, `.refs` and `.def` can't be properties.
+- `.len` is a number, compared with `==`, `!=`, `<`, `>`, `<=` or `>=` and a
+  number. Text is compared with `==` or `!=` and a string, or with `~=` and a
+  regex, which matches anywhere in it unless anchored (`~= /^test_/`). Any other
+  pairing is a script error (exit 2).
+- `&&` and `||` combine conditions, `&&` binding tighter, and parentheses group
+  them: `fn[.name ~= /^test_/ && (.doc == "" || .body.len > 50)]`. Several
+  filters must all hold: `fn[A][B]` is `fn[A && B]`.
+- A span the filter rejects isn't a match: it doesn't count toward ambiguity
+  (§3.5), and a filter that rejects every span is a no-match error.
 
 ## 4. Verbs
 
