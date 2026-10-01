@@ -2293,6 +2293,51 @@ mod tests {
     }
 
     #[test]
+    fn replace_substitutes_pattern_captures() {
+        let text = "fn main() {\n    assert_eq!(x, true);\n    assert_eq!(f(y), true);\n}\n";
+        assert_eq!(
+            edited(
+                text,
+                "replace all `assert_eq!(@a, true)` with \"assert!(@a)\""
+            ),
+            "fn main() {\n    assert!(x);\n    assert!(f(y));\n}\n"
+        );
+    }
+
+    #[test]
+    fn replace_reindents_multi_line_captures() {
+        let text = "fn load() {\n    if let Some(x) = get() {\n        use_it(x);\n        if x > 1 {\n            more();\n        }\n    }\n}\n";
+        let script = "replace fn:load>`if let Some(@x) = @e { @body... }` with <<END\nlet Some(@x) = @e else {\n    return;\n};\n@body\nEND\n";
+        assert_eq!(
+            edited(text, script),
+            "fn load() {\n    let Some(x) = get() else {\n        return;\n    };\n    use_it(x);\n    if x > 1 {\n        more();\n    }\n}\n"
+        );
+    }
+
+    #[test]
+    fn replace_without_patterns_keeps_ats() {
+        assert_eq!(
+            edited(TEXT, "replace \"= 1\" with \"= @a\""),
+            TEXT.replace("= 1", "= @a")
+        );
+    }
+
+    #[test]
+    fn an_uncaptured_name_in_replace_is_an_error() {
+        let text = "fn main() {\n    foo(1);\n}\n";
+        let out = exec_with(&[("a.rs", text)], 1, "replace `foo(@a)` with \"bar(@b)\"");
+        assert_eq!(
+            out.error(),
+            "error: script:1:9: `@b` is nothing the target captured; use @a, or write `@@b` for a literal `@`"
+        );
+        let none = exec_with(&[("a.rs", text)], 1, "replace `foo(@_)` with \"@app\"");
+        assert_eq!(
+            none.error(),
+            "error: script:1:9: `@app` is nothing the target captured; write `@@app` for a literal `@`"
+        );
+    }
+
+    #[test]
     fn insert_around_whole_lines() {
         assert_eq!(
             edited(TEXT, "insert after 2 \"let w = 0;\""),

@@ -1856,6 +1856,33 @@ mod tests {
     }
 
     #[test]
+    fn matches_carry_captures_from_every_pattern_step() {
+        let text = "impl Parser {\n    fn new() {\n        foo(1);\n    }\n}\n";
+        let found = resolve_in(
+            "delete `impl @t { @_... }`>fn:new>`foo(@x)`",
+            &files(&[("a.rs", text)]),
+        )
+        .unwrap();
+        let captures: Vec<(&str, &str)> = found[0]
+            .captures
+            .iter()
+            .map(|(n, r)| (n.as_str(), &text[r.clone()]))
+            .collect();
+        assert_eq!(captures, [("t", "Parser"), ("x", "1")]);
+        let parts = resolve_in("delete `foo(@x)`.lines", &files(&[("a.rs", text)])).unwrap();
+        assert_eq!(parts[0].captures.len(), 1);
+    }
+
+    #[test]
+    fn a_capture_name_in_two_steps_is_an_error() {
+        let text = "fn f() {\n    foo(bar(1));\n}\n";
+        assert_eq!(
+            error("delete `foo(@x)`>`bar(@x)`", &[("a.rs", text)]),
+            "error: script:1:8: `@x` is captured by two pattern steps; rename one of them"
+        );
+    }
+
+    #[test]
     fn ambiguous_patterns_list_candidates() {
         let text = "fn a() {\n    foo(1);\n}\n\nfn b() {\n    foo(2);\n}\n";
         assert_eq!(

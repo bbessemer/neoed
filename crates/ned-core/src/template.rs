@@ -254,4 +254,50 @@ mod tests {
         assert_eq!(s.to_template(15), 11);
         assert_eq!(s.to_template(16), 12);
     }
+
+    /// Fills `template` from `(name, text, indent)` captures.
+    fn filled(template: &str, captures: &[(&str, &str, &str)]) -> Result<String, String> {
+        Template::parse(template).fill(|name| {
+            captures
+                .iter()
+                .find(|(n, _, _)| *n == name)
+                .map(|(_, text, indent)| (*text, *indent))
+        })
+    }
+
+    #[test]
+    fn fill_substitutes_captures() {
+        let caps = [("a", "x", ""), ("b", "y + 1", "")];
+        assert_eq!(filled("foo(@b, @a)", &caps), Ok("foo(y + 1, x)".into()));
+        assert_eq!(filled("foo(@a...)", &caps), Ok("foo(x)".into()));
+        assert_eq!(filled("@@a and a @ b", &caps), Ok("@a and a @ b".into()));
+    }
+
+    #[test]
+    fn fill_needs_every_name_captured() {
+        assert_eq!(filled("foo(@c)", &[("a", "x", "")]), Err("c".into()));
+        assert_eq!(filled("foo(@_)", &[("a", "x", "")]), Err("_".into()));
+    }
+
+    #[test]
+    fn fill_reindents_multi_line_captures() {
+        // A capture whose first line is indented 8, now under a hole at 4.
+        let body = [(
+            "body",
+            "a();\n        if x {\n            b();\n        }",
+            "        ",
+        )];
+        assert_eq!(
+            filled("fn f() {\n    @body\n}", &body),
+            Ok("fn f() {\n    a();\n    if x {\n        b();\n    }\n}".into())
+        );
+        assert_eq!(
+            filled("@body", &body),
+            Ok("a();\nif x {\n    b();\n}".into())
+        );
+        // Lines less indented than the capture's first keep their indentation,
+        // and blank lines stay empty.
+        let odd = [("s", "\"a\n  b\n\nc\"", "    ")];
+        assert_eq!(filled("  x = @s", &odd), Ok("  x = \"a\n  b\n\nc\"".into()));
+    }
 }
