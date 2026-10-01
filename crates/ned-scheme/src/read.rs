@@ -1,10 +1,257 @@
 //! The reader: source text to [`Syntax`].
 
-use crate::{ReadError, Syntax};
+use crate::{Datum, ReadError, ReadErrorKind, Syntax};
 
 /// Reads every datum in `src`.
-pub fn read_all(_src: &str) -> Result<Vec<Syntax>, ReadError> {
-    unimplemented!()
+pub fn read_all(src: &str) -> Result<Vec<Syntax>, ReadError> {
+    let mut reader = Reader { src, pos: 0 };
+    let mut out = Vec::new();
+    loop {
+        match reader.next()? {
+            Item::Datum(s) => out.push(s),
+            Item::Close(c, at) => {
+                return Err(error(ReadErrorKind::UnexpectedCloser(c), at..at + 1));
+            }
+            Item::End => return Ok(out),
+        }
+    }
+}
+
+enum Item {
+    Datum(Syntax),
+    /// A closing `)` or `]`, at its offset.
+    Close(char, usize),
+    End,
+}
+
+struct Reader<'a> {
+    src: &'a str,
+    pos: usize,
+}
+
+fn error(kind: ReadErrorKind, span: std::ops::Range<usize>) -> ReadError {
+    ReadError { kind, span }
+}
+
+fn is_delimiter(c: char) -> bool {
+    c.is_whitespace() || "()[]\";'`,".contains(c)
+}
+
+impl<'a> Reader<'a> {
+    fn rest(&self) -> &'a str {
+        &self.src[self.pos..]
+    }
+
+    fn next(&mut self) -> Result<Item, ReadError> {
+        self.skip_atmosphere()?;
+        let start = self.pos;
+        let rest = self.rest();
+        let Some(c) = rest.chars().next() else {
+            return Ok(Item::End);
+        };
+        let datum = |datum, end| {
+            Ok(Item::Datum(Syntax {
+                datum,
+                span: start..end,
+            }))
+        };
+        match c {
+            '(' | '[' => {
+                self.pos += 1;
+                self.sequence(c, start)
+            }
+            ')' | ']' => {
+                self.pos += 1;
+                Ok(Item::Close(c, start))
+            }
+            '"' => {
+                let s = self.string()?;
+                datum(Datum::Str(s), self.pos)
+            }
+            '\'' | '`' | ',' => {
+                let (prefix, name) = match (c, rest.starts_with(",@")) {
+                    ('\'', _) => ("'", "quote"),
+                    ('`', _) => ("`", "quasiquote"),
+                    (_, true) => (",@", "unquote-splicing"),
+                    _ => (",", "unquote"),
+                };
+                self.pos += prefix.len();
+                let prefix_span = start..self.pos;
+                let Item::Datum(quoted) = self.next()? else {
+                    return Err(error(ReadErrorKind::MissingDatum(prefix), prefix_span));
+                };
+                let end = quoted.span.end;
+                let head = Syntax {
+                    datum: Datum::Symbol(name.into()),
+                    span: prefix_span,
+                };
+                datum(Datum::List(vec![head, quoted]), end)
+            }
+            '#' if rest.starts_with("#;") => {
+                self.pos += 2;
+                match self.next()? {
+                    Item::Datum(_) => self.next(),
+                    _ => Err(error(ReadErrorKind::MissingDatum("#;"), start..start + 2)),
+                }
+            }
+            '#' if rest.starts_with("#\\") || rest.starts_with("#(") => Err(error(
+                ReadErrorKind::Unsupported(rest[..2].into()),
+                start..start + 2,
+            )),
+            '@' => {
+                self.pos += 1;
+                let name = self.token();
+                if name.is_empty() {
+                    return Err(error(ReadErrorKind::EmptyCapture, start..start + 1));
+                }
+                datum(Datum::Capture(name.into()), self.pos)
+            }
+            _ => {
+                let token = self.token();
+                let d = atom(token, self.rest()).map_err(|kind| {
+                    let len = match &kind {
+                        ReadErrorKind::Unsupported(form) => form.len(),
+                        _ => token.len(),
+                    };
+                    error(kind, start..start + len)
+                })?;
+                datum(d, self.pos)
+            }
+        }
+    }
+
+    /// The items of a list or alternation whose opener `open` is at `start`.
+    fn sequence(&mut self, open: char, start: usize) -> Result<Item, ReadError> {
+        let mut items = Vec::new();
+        loop {
+            match self.next()? {
+                Item::Datum(s) => items.push(s),
+                Item::Close(close, at) if close == crate::closer(open) => {
+                    let datum = if open == '(' {
+                        Datum::List(items)
+                    } else {
+                        Datum::Alternation(items)
+                    };
+                    return Ok(Item::Datum(Syntax {
+                        datum,
+                        span: start..at + 1,
+                    }));
+                }
+                Item::Close(close, at) => {
+                    return Err(error(
+                        ReadErrorKind::MismatchedCloser { open, close },
+                        at..at + 1,
+                    ));
+                }
+                Item::End => {
+                    return Err(error(ReadErrorKind::Unterminated(open), start..start + 1));
+                }
+            }
+        }
+    }
+
+    /// Skips whitespace, `;` comments and nested `#|...|#` comments.
+    fn skip_atmosphere(&mut self) -> Result<(), ReadError> {
+        loop {
+            let rest = self.rest();
+            let trimmed = rest.trim_start();
+            self.pos += rest.len() - trimmed.len();
+            if trimmed.starts_with(';') {
+                self.pos += trimmed.find('\n').unwrap_or(trimmed.len());
+            } else if trimmed.starts_with("#|") {
+                self.block_comment()?;
+            } else {
+                return Ok(());
+            }
+        }
+    }
+
+    fn block_comment(&mut self) -> Result<(), ReadError> {
+        let start = self.pos;
+        let mut depth = 0;
+        while self.pos < self.src.len() {
+            let rest = self.rest();
+            if rest.starts_with("#|") {
+                depth += 1;
+                self.pos += 2;
+            } else if rest.starts_with("|#") {
+                depth -= 1;
+                self.pos += 2;
+                if depth == 0 {
+                    return Ok(());
+                }
+            } else {
+                self.pos += rest.chars().next().map_or(1, char::len_utf8);
+            }
+        }
+        Err(error(ReadErrorKind::UnterminatedComment, start..start + 2))
+    }
+
+    /// The string starting at the current `"`, with tree-sitter's query escapes:
+    /// `\n`, `\r`, `\t` and `\0`, and any other escaped character for itself.
+    fn string(&mut self) -> Result<String, ReadError> {
+        let start = self.pos;
+        let mut out = String::new();
+        let mut chars = self.src[start + 1..].char_indices();
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '"' => {
+                    self.pos = start + 1 + i + 1;
+                    return Ok(out);
+                }
+                '\\' => match chars.next() {
+                    Some((_, e)) => out.push(match e {
+                        'n' => '\n',
+                        'r' => '\r',
+                        't' => '\t',
+                        '0' => '\0',
+                        e => e,
+                    }),
+                    None => break,
+                },
+                c => out.push(c),
+            }
+        }
+        Err(error(ReadErrorKind::UnterminatedString, start..start + 1))
+    }
+
+    /// The run of non-delimiter characters at the current position.
+    fn token(&mut self) -> &'a str {
+        let rest = self.rest();
+        let len = rest.find(is_delimiter).unwrap_or(rest.len());
+        self.pos += len;
+        &rest[..len]
+    }
+}
+
+/// The datum a token stands for; `after` is the source after it.
+fn atom(token: &str, after: &str) -> Result<Datum, ReadErrorKind> {
+    Ok(match token {
+        "." => Datum::Anchor,
+        "#" => return Err(ReadErrorKind::Unsupported("#".into())),
+        "#u8" if after.starts_with('(') => return Err(ReadErrorKind::Unsupported("#u8(".into())),
+        "#t" | "#true" => Datum::Bool(true),
+        "#f" | "#false" => Datum::Bool(false),
+        _ if is_number(token) => match token.parse() {
+            Ok(n) => Datum::Int(n),
+            Err(_) if token.contains('.') => Datum::Real(token.parse().expect("digits.digits")),
+            Err(_) => return Err(ReadErrorKind::IntOutOfRange(token.into())),
+        },
+        _ => match token.strip_suffix(':') {
+            Some(name) if !name.is_empty() => Datum::Keyword(name.into()),
+            _ => Datum::Symbol(token.into()),
+        },
+    })
+}
+
+/// Whether `token` is `[+-]?digits(.digits)?`.
+fn is_number(token: &str) -> bool {
+    let digits = token.strip_prefix(['+', '-']).unwrap_or(token);
+    let all_digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    match digits.split_once('.') {
+        Some((int, frac)) => all_digits(int) && all_digits(frac),
+        None => all_digits(digits),
+    }
 }
 
 #[cfg(test)]

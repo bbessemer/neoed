@@ -38,8 +38,52 @@ pub enum Datum {
 
 /// Writes the datum back in the syntax [`read_all`] reads.
 impl fmt::Display for Datum {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        unimplemented!()
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let items = |f: &mut fmt::Formatter<'_>, items: &[Syntax]| {
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(" ")?;
+                }
+                write!(f, "{}", item.datum)?;
+            }
+            Ok(())
+        };
+        match self {
+            Datum::Bool(b) => f.write_str(if *b { "#t" } else { "#f" }),
+            Datum::Int(n) => write!(f, "{n}"),
+            // Keeps the decimal point, so the number reads back as a Real.
+            Datum::Real(x) if x.fract() == 0.0 => write!(f, "{x:.1}"),
+            Datum::Real(x) => write!(f, "{x}"),
+            Datum::Str(s) => {
+                f.write_str("\"")?;
+                for c in s.chars() {
+                    match c {
+                        '"' => f.write_str("\\\"")?,
+                        '\\' => f.write_str("\\\\")?,
+                        '\n' => f.write_str("\\n")?,
+                        '\r' => f.write_str("\\r")?,
+                        '\t' => f.write_str("\\t")?,
+                        '\0' => f.write_str("\\0")?,
+                        c => write!(f, "{c}")?,
+                    }
+                }
+                f.write_str("\"")
+            }
+            Datum::Symbol(s) => f.write_str(s),
+            Datum::Keyword(name) => write!(f, "{name}:"),
+            Datum::Capture(name) => write!(f, "@{name}"),
+            Datum::List(v) => {
+                f.write_str("(")?;
+                items(f, v)?;
+                f.write_str(")")
+            }
+            Datum::Alternation(v) => {
+                f.write_str("[")?;
+                items(f, v)?;
+                f.write_str("]")
+            }
+            Datum::Anchor => f.write_str("."),
+        }
     }
 }
 
@@ -74,17 +118,9 @@ pub enum ReadErrorKind {
 }
 
 fn closer(open: char) -> char {
-    if open == '[' {
-        ']'
-    } else {
-        ')'
-    }
+    if open == '[' { ']' } else { ')' }
 }
 
 fn opener(close: char) -> char {
-    if close == ']' {
-        '['
-    } else {
-        '('
-    }
+    if close == ']' { '[' } else { '(' }
 }
