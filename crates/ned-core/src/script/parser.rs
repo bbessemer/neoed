@@ -984,6 +984,13 @@ mod tests {
             one("show query{(x) @sel}"),
             show(vec![step(Primary::Query("(x) @sel".into()))])
         );
+        assert_eq!(
+            one("show fn:main>`foo(@a, 1)`"),
+            show(vec![
+                syntax("fn", "main"),
+                step(Primary::Code("foo(@a, 1)".into()))
+            ])
+        );
     }
 
     #[test]

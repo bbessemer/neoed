@@ -678,6 +678,21 @@ mod tests {
     }
 
     #[test]
+    fn patterns() {
+        assert_eq!(
+            kinds("`foo(@a)`>fn:x"),
+            [T::Code("foo(@a)".into()), T::Gt, syntax("fn", "x")]
+        );
+        assert_eq!(kinds("`if c:\n    x`"), [T::Code("if c:\n    x".into())]);
+        assert_eq!(kinds(r"`a\`b`"), [T::Code("a`b".into())]);
+        assert_eq!(kinds(r#"`"\n" \\`"#), [T::Code(r#""\n" \\"#.into())]);
+        assert_eq!(kinds("`a # b`"), [T::Code("a # b".into())]);
+        let e = error("show `foo(");
+        assert_eq!(e.kind, E::UnterminatedPattern);
+        assert_eq!(e.span, 5..10);
+    }
+
+    #[test]
     fn parts() {
         assert_eq!(
             kinds("fn:f.body.sig.params.name.doc.attrs.ret.type.value.lines"),

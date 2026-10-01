@@ -1785,6 +1785,78 @@ mod tests {
     }
 
     #[test]
+    fn patterns_select_matching_code() {
+        let text = "fn a() {\n    foo(1);\n}\n\nfn b() {\n    foo(2);\n    bar(3);\n}\n";
+        assert_eq!(select("delete all `foo(@x)`", text), ["foo(1)", "foo(2)"]);
+        assert_eq!(select("delete fn:b>`foo(@x)`", text), ["foo(2)"]);
+        assert_eq!(
+            select("delete all `foo(@x)`.lines", text),
+            ["    foo(1);\n", "    foo(2);\n"]
+        );
+    }
+
+    #[test]
+    fn ambiguous_patterns_list_candidates() {
+        let text = "fn a() {\n    foo(1);\n}\n\nfn b() {\n    foo(2);\n}\n";
+        assert_eq!(
+            error("delete `foo(@x)`", &[("a.rs", text)]),
+            "error: script:1:8: `foo(@x)` matches 2 spans; add `all` or use one of:\n  \
+             fn:a>`foo(@x)`   2\n  fn:b>`foo(@x)`   6"
+        );
+    }
+
+    #[test]
+    fn patterns_skip_files_whose_language_cannot_parse_them() {
+        let found = resolve_in(
+            "delete all `let @x = @e;`",
+            &files(&[
+                ("a.rs", "fn f() {\n    let x = 1;\n}\n"),
+                ("b.py", "x = 1\n"),
+                ("c.md", "# x\n"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            found,
+            [Match {
+                file: 0,
+                range: 13..23
+            }]
+        );
+    }
+
+    #[test]
+    fn invalid_patterns_are_errors() {
+        assert_eq!(
+            error("delete `foo@bar(1)`", &[("a.rs", TEXT)]),
+            "error: script:1:8: `foo@bar(1)` has `@bar` where a whole node must be; \
+             write `@@` for a literal `@`"
+        );
+        let err = resolve_in("delete `fn (@a`", &files(&[("a.rs", TEXT)])).unwrap_err();
+        assert!(
+            matches!(err.kind, ExecErrorKind::InvalidPattern { .. }),
+            "{err:?}"
+        );
+        assert!(
+            err.render("delete `fn (@a`")
+                .contains("doesn't parse as rust"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn patterns_need_a_programming_language() {
+        assert_eq!(
+            error(
+                "delete `foo(@x)`",
+                &[("a.md", "# foo(1)\n"), ("b.txt", "foo(1)\n")]
+            ),
+            "error: script:1:8: `foo(@x)` needs a programming language, but a.md, b.txt has \
+             none; use a regex or literal, or --lang"
+        );
+    }
+
+    #[test]
     fn query_works_in_every_detected_language() {
         let py = "def main():\n    return 1\n";
         assert_eq!(
