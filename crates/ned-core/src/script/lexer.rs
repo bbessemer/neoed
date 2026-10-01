@@ -699,13 +699,25 @@ mod tests {
             [T::Code("foo(@a)".into()), T::Gt, syntax("fn", "x")]
         );
         assert_eq!(kinds("`if c:\n    x`"), [T::Code("if c:\n    x".into())]);
-        assert_eq!(kinds(r"`a\`b`"), [T::Code("a`b".into())]);
-        assert_eq!(kinds(r#"`"\n" \\ x`"#), [T::Code(r#""\n" \\ x"#.into())]);
-        assert_eq!(kinds(r"`\\``"), [T::Code(r"\`".into())]);
+        assert_eq!(kinds(r#"`"\n" \`"#), [T::Code(r#""\n" \"#.into())]);
         assert_eq!(kinds("`a # b`"), [T::Code("a # b".into())]);
         let e = error("show `foo(");
         assert_eq!(e.kind, E::UnterminatedPattern);
         assert_eq!(e.span, 5..10);
+    }
+
+    #[test]
+    fn patterns_with_backquotes() {
+        assert_eq!(kinds("``a`b``"), [T::Code("a`b".into())]);
+        assert_eq!(kinds("``a```b``"), [T::Code("a```b".into())]);
+        // One space just inside each end is dropped, if both ends have one.
+        assert_eq!(kinds("`` `${x}` ``"), [T::Code("`${x}`".into())]);
+        assert_eq!(kinds("`` a ``"), [T::Code("a".into())]);
+        assert_eq!(kinds("` a`"), [T::Code(" a".into())]);
+        assert_eq!(kinds("`  `"), [T::Code("  ".into())]);
+        let e = error("show ``foo`");
+        assert_eq!(e.kind, E::UnterminatedPattern);
+        assert_eq!(e.span, 5..11);
     }
 
     #[test]
