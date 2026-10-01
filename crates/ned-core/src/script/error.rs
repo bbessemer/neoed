@@ -26,7 +26,7 @@ pub enum ParseErrorKind {
     UnknownRegexFlag(char),
     #[error("unterminated query; close it with `}}` on the same line")]
     UnterminatedQuery,
-    #[error("unterminated pattern; close it with a backquote (write \\` for one inside it)")]
+    #[error("unterminated pattern; close it with as many backquotes as opened it")]
     UnterminatedPattern,
     #[error("unterminated filter; close it with `]` on the same line")]
     UnterminatedFilter,

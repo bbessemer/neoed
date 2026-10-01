@@ -397,25 +397,35 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Lexes a pattern from its opening backquote: it may span lines, and
-    /// `` \` `` is its only escape.
+    /// Lexes a pattern from its opening run of backquotes to the next run of the
+    /// same length, as Markdown does code spans. It may span lines, and its code
+    /// is verbatim, but for one space just inside each end when both have one.
     fn code(&mut self, start: usize) -> Result<TokenKind, ParseError> {
-        self.pos += 1;
-        let mut code = String::new();
-        loop {
-            let Some(c) = self.peek() else {
-                return Err(ParseError::new(E::UnterminatedPattern, start..self.pos));
-            };
-            self.pos += c.len_utf8();
-            match c {
-                '`' => return Ok(TokenKind::Code(code)),
-                '\\' if self.peek() == Some('`') => {
-                    code.push('`');
-                    self.pos += 1;
-                }
-                c => code.push(c),
+        let run = |at: usize| self.src[at..].len() - self.src[at..].trim_start_matches('`').len();
+        let fence = run(start);
+        let body = start + fence;
+        let mut at = body;
+        while let Some(offset) = self.src[at..].find('`') {
+            at += offset;
+            let len = run(at);
+            if len == fence {
+                self.pos = at + len;
+                let code = &self.src[body..at];
+                let padded = code.len() >= 2 && code.starts_with(' ') && code.ends_with(' ');
+                let code = if padded && !code.trim().is_empty() {
+                    &code[1..code.len() - 1]
+                } else {
+                    code
+                };
+                return Ok(TokenKind::Code(code.to_string()));
             }
+            at += len;
         }
+        self.pos = self.src.len();
+        Err(ParseError::new(
+            E::UnterminatedPattern,
+            start..self.src.len(),
+        ))
     }
 
     /// Lexes `<<TAG` and reads its body from the lines after the command line
