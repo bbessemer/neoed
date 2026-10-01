@@ -133,6 +133,17 @@ impl Template {
             pieces,
         }
     }
+
+    /// The text with each hole replaced by its capture. `capture(name)` is the
+    /// captured text and the indentation of the line it starts on; a capture's
+    /// later lines move under the indentation of the hole's line. Err with the
+    /// name of a hole that nothing captured (`_` for `@_`).
+    pub fn fill<'c>(
+        &self,
+        _capture: impl Fn(&str) -> Option<(&'c str, &'c str)>,
+    ) -> Result<String, String> {
+        unimplemented!()
+    }
 }
 
 impl Hole {

@@ -303,6 +303,8 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         ExecErrorKind::NoFiles
         | ExecErrorKind::InvalidQuery { .. }
         | ExecErrorKind::InvalidPattern { .. }
+        | ExecErrorKind::DuplicateCapture { .. }
+        | ExecErrorKind::UnknownCapture { .. }
         | ExecErrorKind::NoServer { .. } => 2,
         ExecErrorKind::Io { .. } | ExecErrorKind::NoGlobMatch { .. } | ExecErrorKind::Lsp(_) => 3,
     }

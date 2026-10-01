@@ -84,12 +84,17 @@ impl SourceFile {
     }
 }
 
-/// A selected span of `files[file]`.
+/// A selected span of `files[file]`, with what its selector's pattern steps
+/// captured (§3.10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Match {
     pub file: usize,
     pub range: Range<usize>,
+    pub captures: Captures,
 }
+
+/// Each named placeholder and the range it matched.
+pub type Captures = Vec<(String, Range<usize>)>;
 
 /// Resolves `target` against every file in `files`, enforcing the ambiguity
 /// rules of §3.5. `src` is the script, for error messages.
@@ -100,6 +105,7 @@ pub fn resolve(target: &Target, files: &[&SourceFile], src: &str) -> Result<Vec<
         .map(|(file, f)| Match {
             file,
             range: 0..f.text.len(),
+            captures: Vec::new(),
         })
         .collect();
     resolve_within(target, files, whole, src)
@@ -211,6 +217,7 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
                 let m = Match {
                     file: parent.file,
                     range: span.range,
+                    captures: parent.captures.clone(),
                 };
                 if out.last().map(|f| &f.m) != Some(&m) {
                     out.push(Found {
@@ -703,6 +710,7 @@ pub(crate) fn hint(
         .map(|p| Match {
             file: p.file,
             range: scope(&files[p.file].text, &p.range),
+            captures: Vec::new(),
         })
         .collect();
     match &step.primary {
@@ -765,6 +773,7 @@ fn near_literal(needle: &str, files: &[&SourceFile], parents: &[Match]) -> Optio
         Some(Match {
             file: p.file,
             range: start..end,
+            captures: Vec::new(),
         })
     })
 }
@@ -791,6 +800,7 @@ fn escaped_literal(
         Some(Match {
             file: p.file,
             range: start..start + escaped.len(),
+            captures: Vec::new(),
         })
     })?;
     Some((escaped, found))
@@ -811,6 +821,7 @@ fn case_insensitive_match(
         Some(Match {
             file: p.file,
             range: start..(start + found.len()).max(start + 1),
+            captures: Vec::new(),
         })
     })
 }
@@ -1365,7 +1376,8 @@ mod tests {
             m,
             [Match {
                 file: 0,
-                range: TEXT.rfind("let x").unwrap()..TEXT.rfind(" = 3").unwrap()
+                range: TEXT.rfind("let x").unwrap()..TEXT.rfind(" = 3").unwrap(),
+                captures: vec![],
             }]
         );
         let m = resolve_in("delete /fn b[^}]*/>\"x\"", &set).unwrap();
@@ -1374,7 +1386,8 @@ mod tests {
             m,
             [Match {
                 file: 0,
-                range: x..x + 1
+                range: x..x + 1,
+                captures: vec![],
             }]
         );
         assert_eq!(
@@ -1644,7 +1657,8 @@ mod tests {
             m,
             [Match {
                 file: 1,
-                range: 2..3
+                range: 2..3,
+                captures: vec![],
             }]
         );
         assert_eq!(
@@ -1663,15 +1677,18 @@ mod tests {
             [
                 Match {
                     file: 0,
-                    range: 0..1
+                    range: 0..1,
+                    captures: vec![],
                 },
                 Match {
                     file: 0,
-                    range: 2..3
+                    range: 2..3,
+                    captures: vec![],
                 },
                 Match {
                     file: 1,
-                    range: 0..1
+                    range: 0..1,
+                    captures: vec![],
                 },
             ]
         );
@@ -1863,7 +1880,8 @@ mod tests {
             found,
             [Match {
                 file: 0,
-                range: 13..23
+                range: 13..23,
+                captures: vec![],
             }]
         );
     }

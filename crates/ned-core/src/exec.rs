@@ -477,6 +477,7 @@ impl Executor<'_> {
             .map(|m| Match {
                 file: indices[m.file],
                 range: m.range,
+                captures: m.captures,
             })
             .collect())
     }
@@ -537,9 +538,11 @@ impl Executor<'_> {
                                 item: None,
                             };
                             let spans = plain.part(*part, &self.files[m.file].file.text)?;
+                            let (file, captures) = (m.file, m.captures);
                             Ok(spans.into_iter().map(move |s| Match {
-                                file: m.file,
+                                file,
                                 range: s.range,
+                                captures: captures.clone(),
                             }))
                         })
                         .collect::<Result<Vec<_>, _>>()
@@ -646,7 +649,11 @@ impl Executor<'_> {
                     Locate::References => start..end,
                     Locate::Definition => defining_item(f, start).unwrap_or(start..end),
                 };
-                Match { file, range }
+                Match {
+                    file,
+                    range,
+                    captures: Vec::new(),
+                }
             })
             .collect();
         let rank = |m: &Match| {
@@ -1193,6 +1200,7 @@ impl Executor<'_> {
                 .map(|file| Match {
                     file,
                     range: 0..self.files[file].file.text.len(),
+                    captures: Vec::new(),
                 })
                 .collect(),
         };
@@ -1234,6 +1242,7 @@ impl Executor<'_> {
                         .position(|&i| i == m.file)
                         .expect("scopes are searched"),
                     range: m.range.clone(),
+                    captures: Vec::new(),
                 })
                 .collect();
             let step = Step {
@@ -1832,6 +1841,10 @@ pub enum ExecErrorKind {
     InvalidQuery { lang: String, message: String },
     #[error("{selector} {message}")]
     InvalidPattern { selector: String, message: String },
+    #[error("`@{name}` is captured by two pattern steps; rename one of them")]
+    DuplicateCapture { name: String },
+    #[error("`@{name}` is nothing the target captured; {fix}")]
+    UnknownCapture { name: String, fix: String },
     #[error(
         "{selector} needs a programming language, but {files} has none; use a regex or literal, or --lang"
     )]
