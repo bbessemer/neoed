@@ -12,6 +12,7 @@ use tree_sitter::{Query, QueryCursor, QueryError, QueryErrorKind, StreamingItera
 use crate::buffer::{Buffer, LineEnding};
 use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
 use crate::lang::Language;
+use crate::pattern;
 use crate::script::ast::{LineNo, Part, Pattern, Primary, Selector, Step, Target, TextKind};
 use crate::span::Span;
 use crate::syntax::{self, Item};
@@ -243,6 +244,8 @@ enum Matcher<'a> {
     },
     /// The query compiled for each searched language.
     Query(Vec<(Language, Query)>),
+    /// The pattern compiled for each searched language it parses in.
+    Code(Vec<(Language, pattern::Pattern)>),
     Range(Box<Matcher<'a>>, Box<Matcher<'a>>),
 }
 
@@ -286,6 +289,7 @@ impl<'a> Matcher<'a> {
                 Matcher::Syntax { kind, name }
             }
             Primary::Query(source) => Matcher::Query(compile_query(source, files, parents)?),
+            Primary::Code(code) => Matcher::Code(compile_pattern(code, files, parents)?),
             Primary::Range { from, to } => Matcher::Range(
                 Box::new(Matcher::new(from, files, parents)?),
                 Box::new(Matcher::new(to, files, parents)?),
@@ -412,6 +416,19 @@ impl<'a> Matcher<'a> {
                 out.dedup();
                 out
             }
+            Matcher::Code(patterns) => {
+                let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
+                    return Vec::new();
+                };
+                let Some((_, pattern)) = patterns.iter().find(|(l, _)| *l == lang) else {
+                    return Vec::new();
+                };
+                pattern
+                    .find(tree, &f.text, parent.clone())
+                    .into_iter()
+                    .map(|m| m.range)
+                    .collect()
+            }
             Matcher::Syntax { kind, name } => f
                 .items()
                 .unwrap_or_default()
@@ -526,6 +543,16 @@ fn compile_query(
         });
     }
     Ok(queries)
+}
+
+/// The pattern `code` compiled for each code language among the searched
+/// files that it parses in.
+fn compile_pattern(
+    _code: &str,
+    _files: &[&SourceFile],
+    _parents: &[Match],
+) -> Result<Vec<(Language, pattern::Pattern)>, E> {
+    unimplemented!()
 }
 
 fn query_error(err: &QueryError, grammar: &tree_sitter::Language) -> String {

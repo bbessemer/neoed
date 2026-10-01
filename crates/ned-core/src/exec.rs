@@ -1830,6 +1830,12 @@ pub enum ExecErrorKind {
     PartNeedsItem { part: String },
     #[error("invalid {lang} query: {message}")]
     InvalidQuery { lang: String, message: String },
+    #[error("{selector} {message}")]
+    InvalidPattern { selector: String, message: String },
+    #[error(
+        "{selector} needs a programming language, but {files} has none; use a regex or literal, or --lang"
+    )]
+    NoCodeLanguage { selector: String, files: String },
     #[error("{lang} has no `{kind}` items; use one of: {kinds}")]
     UnknownKind {
         kind: String,

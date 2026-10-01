@@ -46,6 +46,8 @@ pub enum TokenKind {
         raw: bool,
     },
     Query(String),
+    /// A syntax pattern, `` `CODE` `` (§3.10).
+    Code(String),
     Part(Part),
     Filter(Filter),
     /// A `file` command argument, from [`Lexer::path`].
@@ -122,6 +124,7 @@ impl<'a> Lexer<'a> {
             }
             '.' => TokenKind::Part(self.part()?),
             '[' => TokenKind::Filter(self.filter()?),
+            '`' => self.code(start)?,
             c if c.is_ascii_alphabetic() || c == '_' => self.word()?,
             c => {
                 return Err(ParseError::new(
@@ -392,6 +395,12 @@ impl<'a> Lexer<'a> {
                 c => query.push(c),
             }
         }
+    }
+
+    /// Lexes a pattern from its opening backquote: it may span lines, and
+    /// `` \` `` is its only escape.
+    fn code(&mut self, _start: usize) -> Result<TokenKind, ParseError> {
+        unimplemented!()
     }
 
     /// Lexes `<<TAG` and reads its body from the lines after the command line

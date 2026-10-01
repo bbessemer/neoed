@@ -156,6 +156,8 @@ pub enum Primary {
     /// `file:PATH`
     File(String),
     Query(String),
+    /// A syntax pattern's code (§3.10).
+    Code(String),
     /// `from..to`: from the start of a match of `from` to the end of the next
     /// match of `to` (§3.8).
     Range {

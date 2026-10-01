@@ -11,6 +11,7 @@ pub mod fs;
 pub mod lang;
 pub mod lsp;
 pub mod outline;
+pub mod pattern;
 pub mod script;
 pub mod select;
 pub mod span;
