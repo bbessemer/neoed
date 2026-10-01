@@ -4,7 +4,9 @@ use std::ops::Range;
 
 use crate::exec::ExecErrorKind as E;
 use crate::script::ast::Part;
-use crate::syntax::Item;
+use crate::select::part_name;
+use crate::syntax::{self, Item};
+use crate::text::full_lines;
 
 /// A span of a file's text, and the item it is if a syntax step selected it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,13 +19,64 @@ impl<'a> Span<'a> {
     /// The spans `part` selects in `text`, the span's file. A part's spans
     /// are plain spans, not items. `.refs` and `.def` are the executor's.
     pub fn part(&self, part: Part, text: &str) -> Result<Vec<Span<'a>>, E> {
-        todo!()
+        let plain = |range| Span { range, item: None };
+        match (part, self.item) {
+            (Part::Lines, _) => Ok(lines(text, self.range.clone()).map(plain).collect()),
+            (Part::Refs | Part::Def, _) => unreachable!("resolved by the executor"),
+            (part, None) => Err(E::PartNeedsItem {
+                part: part_name(part).into(),
+            }),
+            (Part::Whole, Some(item)) => Ok(vec![plain(item.range.clone())]),
+            (part, Some(item)) => syntax::part(item, part, text)
+                .map(|range| vec![plain(range)])
+                .ok_or_else(|| E::MissingPart {
+                    item: syntax::selector(item.kind, &item.name),
+                    part: part_name(part).into(),
+                    has: self.parts(),
+                }),
+        }
     }
 
     /// The parts the span has, as `.body .sig ...`.
     pub fn parts(&self) -> String {
-        todo!()
+        let Some(item) = self.item else {
+            return ".lines".into();
+        };
+        [
+            item.body.is_some().then_some(".body"),
+            Some(".sig"),
+            item.params.is_some().then_some(".params"),
+            Some(".name"),
+            item.doc.is_some().then_some(".doc"),
+            item.attrs.is_some().then_some(".attrs"),
+            item.ret.is_some().then_some(".ret"),
+            item.ty.is_some().then_some(".type"),
+            item.value.is_some().then_some(".value"),
+            Some(".whole"),
+            Some(".lines"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ")
     }
+}
+
+/// Each whole line `range` touches, with its line ending.
+fn lines(text: &str, range: Range<usize>) -> impl Iterator<Item = Range<usize>> {
+    let full = full_lines(text, range);
+    let mut start = full.start;
+    let mut pieces: Vec<Range<usize>> = text[full.clone()]
+        .split_inclusive('\n')
+        .map(|line| {
+            start += line.len();
+            start - line.len()..start
+        })
+        .collect();
+    if pieces.is_empty() {
+        pieces.push(full);
+    }
+    pieces.into_iter()
 }
 
 #[cfg(test)]

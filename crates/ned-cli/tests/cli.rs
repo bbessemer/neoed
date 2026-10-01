@@ -731,7 +731,7 @@ fn missing_part_exits_1() {
     exit: 1
     --- stdout
     --- stderr
-    error: script:1:6: fn:new has no .doc; it has .body .sig .params .name .ret .lines
+    error: script:1:6: fn:new has no .doc; it has .body .sig .params .name .ret .whole .lines
     ");
 }
 

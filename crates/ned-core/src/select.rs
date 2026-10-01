@@ -13,6 +13,7 @@ use crate::buffer::{Buffer, LineEnding};
 use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
 use crate::lang::Language;
 use crate::script::ast::{LineNo, Part, Pattern, Primary, Selector, Step, Target, TextKind};
+use crate::span::Span;
 use crate::syntax::{self, Item};
 use crate::text::{full_lines, is_whole_line, strip_indent};
 
@@ -163,6 +164,8 @@ struct Found {
     core: Range<usize>,
     /// The index of the parent match it lies in.
     parent: usize,
+    /// Whether it's one of the lines `.lines` split a multi-line span into.
+    line: bool,
 }
 
 fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result<Vec<Found>, E> {
@@ -181,9 +184,9 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
     let mut out: Vec<Found> = Vec::new();
     for (p, parent) in parents.iter().enumerate() {
         let f = &files[parent.file];
-        for mut range in matcher.find(f, parent.range.clone()) {
+        for range in matcher.find(f, parent.range.clone()) {
             let core = range.clone();
-            let mut item = match &step.primary {
+            let item = match &step.primary {
                 Primary::Syntax { kind, .. } => f
                     .items()
                     .unwrap_or_default()
@@ -191,26 +194,28 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
                     .find(|i| i.kind == kind && i.range == range),
                 _ => None,
             };
+            let mut spans = vec![Span { range, item }];
             for part in &step.parts {
-                range = match (part, item.take()) {
-                    (Part::Lines, _) => full_lines(&f.text, range),
-                    (part, Some(item)) => {
-                        syntax::part(item, *part, &f.text).ok_or_else(|| E::MissingPart {
-                            item: syntax::selector(item.kind, &item.name),
-                            part: part_name(*part).into(),
-                            has: parts_of(item),
-                        })?
-                    }
-                    (Part::Refs | Part::Def, _) => unreachable!("resolved by the executor"),
-                    (_, None) => unreachable!("checked above"),
-                };
+                spans = spans
+                    .iter()
+                    .map(|s| s.part(*part, &f.text))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .concat();
             }
-            let m = Match {
-                file: parent.file,
-                range,
-            };
-            if out.last().map(|f| &f.m) != Some(&m) {
-                out.push(Found { m, core, parent: p });
+            let line = spans.len() > 1;
+            for span in spans {
+                let m = Match {
+                    file: parent.file,
+                    range: span.range,
+                };
+                if out.last().map(|f| &f.m) != Some(&m) {
+                    out.push(Found {
+                        m,
+                        core: core.clone(),
+                        parent: p,
+                        line,
+                    });
+                }
             }
         }
     }
@@ -368,8 +373,9 @@ impl<'a> Matcher<'a> {
                     let Some(end) = ends.iter().find(|e| e.start >= start.end) else {
                         break;
                     };
-                    searched_to = end.end;
-                    ranges.push(start.start..end.end);
+                    let range = full_lines(&f.text, start.start..end.end);
+                    searched_to = range.end;
+                    ranges.push(range);
                 }
                 ranges
             }
@@ -558,26 +564,6 @@ fn query_error(err: &QueryError, grammar: &tree_sitter::Language) -> String {
         QueryErrorKind::Language => return message.clone(),
     };
     format!("{what} at column {}{hint}", err.column + 1)
-}
-
-/// The parts `item` has, as `.body .sig ...`.
-fn parts_of(item: &Item) -> String {
-    [
-        item.body.is_some().then_some(".body"),
-        Some(".sig"),
-        item.params.is_some().then_some(".params"),
-        Some(".name"),
-        item.doc.is_some().then_some(".doc"),
-        item.attrs.is_some().then_some(".attrs"),
-        item.ret.is_some().then_some(".ret"),
-        item.ty.is_some().then_some(".type"),
-        item.value.is_some().then_some(".value"),
-        Some(".lines"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(" ")
 }
 
 /// The hint for a range whose end repeats the steps before it, as in
@@ -987,16 +973,24 @@ fn candidates(
         .collect();
     let named: Vec<String> = chosen
         .iter()
-        .map(|chosen| match (chosen, last) {
-            (Some((name, item, true)), Some(step)) => {
-                let parts: String = step
-                    .parts
-                    .iter()
-                    .map(|&p| format!(".{}", part_name(p)))
-                    .collect();
-                format!("{}{parts}", syntax::selector(item.kind, name))
+        .zip(found)
+        .map(|(chosen, c)| {
+            let last = match (chosen, last) {
+                (Some((name, item, true)), Some(step)) => {
+                    let parts: String = step
+                        .parts
+                        .iter()
+                        .map(|&p| format!(".{}", part_name(p)))
+                        .collect();
+                    format!("{}{parts}", syntax::selector(item.kind, name))
+                }
+                _ => src[split..selector.span.end].to_string(),
+            };
+            // A line split from a span is scoped by its number, after the span.
+            match c.line {
+                true => last.trim_end_matches(".lines").to_string(),
+                false => last,
             }
-            _ => src[split..selector.span.end].to_string(),
         })
         .collect();
     let enclosing: Vec<Option<String>> = found
@@ -1013,12 +1007,14 @@ fn candidates(
             let covered = full_lines(&f.text, c.core.clone());
             let lines_fit = scope.start <= covered.start && covered.end <= scope.end;
             // The matches this candidate's last step also selects.
-            let peers: Vec<usize> = (0..found.len())
+            let mut peers: Vec<usize> = (0..found.len())
                 .filter(|&j| match (&chosen[i], &chosen[j]) {
                     (Some((name, ..)), Some((_, item, _))) => syntax::item_matches(name, item),
                     _ => named[j] == *last,
                 })
                 .collect();
+            // The lines of one span count once.
+            peers.dedup_by_key(|&mut j| (found[j].m.file, found[j].core.clone()));
             let unique_item = enclosing[i].as_ref().filter(|&item| {
                 peers
                     .iter()
@@ -1040,10 +1036,12 @@ fn candidates(
                 None if one_in_file => Some(format!("file:{}>{prefix}{last}", f.path)),
                 None => lines_fit.then(|| format!("file:{}>{prefix}{lines}>{last}", f.path)),
             };
-            (
-                candidate,
-                format!("{}:{}", f.path, line_numbers(&f.buffer, &c.m.range)),
-            )
+            let at = line_numbers(&f.buffer, &c.m.range);
+            let candidate = match c.line {
+                true => candidate.map(|candidate| format!("{candidate}>{at}")),
+                false => candidate,
+            };
+            (candidate, format!("{}:{at}", f.path))
         })
         .collect();
     // Matches on one line get the same line-scoped selector, which picks none
@@ -1727,11 +1725,11 @@ mod tests {
     fn parts_need_syntax_items_that_have_them() {
         assert_eq!(
             error("delete fn:main.doc", &[("a.rs", RUST)]),
-            "error: script:1:8: fn:main has no .doc; it has .body .sig .params .name .lines"
+            "error: script:1:8: fn:main has no .doc; it has .body .sig .params .name .whole .lines"
         );
         assert_eq!(
             error("delete import:std::fmt.body", &[("a.rs", RUST)]),
-            "error: script:1:8: import:std::fmt has no .body; it has .sig .name .lines"
+            "error: script:1:8: import:std::fmt has no .body; it has .sig .name .whole .lines"
         );
         assert_eq!(
             error("delete /x/.body", &[("a.rs", RUST)]),
@@ -1747,7 +1745,7 @@ mod tests {
         );
         assert_eq!(
             error("delete fn:main.ret", &[("a.rs", RUST)]),
-            "error: script:1:8: fn:main has no .ret; it has .body .sig .params .name .lines"
+            "error: script:1:8: fn:main has no .ret; it has .body .sig .params .name .whole .lines"
         );
         assert_eq!(
             error("delete /x/.type", &[("a.rs", RUST)]),

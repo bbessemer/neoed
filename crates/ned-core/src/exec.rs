@@ -18,6 +18,7 @@ use crate::script::ast::{
 };
 use crate::script::error::{excerpt, location};
 use crate::select::{self, Match, SourceFile, line_numbers, same_path};
+use crate::span::Span;
 use crate::syntax::{self, Item};
 use crate::text;
 use crate::workspace;
@@ -391,13 +392,18 @@ impl Executor<'_> {
             CommandKind::Show { target, context } => self.show(target.as_ref(), *context)?,
             CommandKind::Outline(target) => self.outline(span, target.as_ref())?,
             CommandKind::Replace { target, text } => {
+                let whole = target
+                    .selector
+                    .steps
+                    .last()
+                    .is_some_and(|s| s.parts.last() == Some(&Part::Whole));
                 for m in self.resolve(target)? {
                     let f = &self.files[m.file].file;
                     let selector = &self.src[target.selector.span.clone()];
                     if let Some(note) = off_by_one(f, &m.range, text, selector) {
                         self.notes.push(note);
                     }
-                    let (range, new) = replace(f, m.range, text);
+                    let (range, new) = replace(f, m.range, text, whole);
                     self.push(index, span, m.file, range, new)?;
                 }
             }
@@ -522,21 +528,24 @@ impl Executor<'_> {
                 found = match part {
                     Part::Refs => self.locate(Locate::References, &found, what, &span)?,
                     Part::Def => self.locate(Locate::Definition, &found, what, &span)?,
-                    Part::Lines => found
+                    part => found
                         .into_iter()
-                        .map(|m| Match {
-                            range: text::full_lines(&self.files[m.file].file.text, m.range),
-                            ..m
+                        .map(|m| {
+                            let plain = Span {
+                                range: m.range,
+                                item: None,
+                            };
+                            let spans = plain.part(*part, &self.files[m.file].file.text)?;
+                            Ok(spans.into_iter().map(move |s| Match {
+                                file: m.file,
+                                range: s.range,
+                            }))
                         })
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|kind| ExecError::new(kind, Some(span.clone())))?
+                        .into_iter()
+                        .flatten()
                         .collect(),
-                    part => {
-                        return Err(ExecError::new(
-                            ExecErrorKind::PartNeedsItem {
-                                part: select::part_name(*part).into(),
-                            },
-                            Some(span.clone()),
-                        ));
-                    }
                 };
             }
             matches = Some(found);
@@ -1424,14 +1433,18 @@ fn indent_unit(f: &SourceFile) -> String {
     text::indent_unit(&f.text, f.lang.map_or("    ", Language::default_indent))
 }
 
-/// The span and text that replace `range` (§5.1).
-fn replace(f: &SourceFile, range: Range<usize>, new: &Text) -> (Range<usize>, String) {
+/// The span and text that replace `range` (§5.1). Unless `whole` (`.whole`),
+/// a syntax item keeps its leading docs and attributes.
+fn replace(f: &SourceFile, range: Range<usize>, new: &Text, whole: bool) -> (Range<usize>, String) {
     if let Some(item) = empty_body(f, &range) {
         return fill_body(f, item, range, new);
     }
     let t = &f.text;
     let new = &*with_trailing_comma(f, &range, new);
-    let range = without_leading(f, range, new);
+    let range = match whole {
+        true => range,
+        false => without_leading(f, range, new),
+    };
     let unit = indent_unit(f);
     if text::is_whole_line(t, &range) {
         let full = text::full_lines(t, range);
@@ -1537,17 +1550,21 @@ fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) 
         t[line_start..range.start].trim(),
         t[range.end..line_end].trim(),
     );
-    let fix = format!("to replace whole lines, select {selector}.lines");
+    // Across lines, `.lines` would select each line.
+    let fix = match t[range.clone()].trim_end_matches('\n').contains('\n') {
+        true => String::new(),
+        false => format!("; to replace whole lines, select {selector}.lines"),
+    };
     if counts(after) && value.trim_end().ends_with(after) {
         return Some(format!(
             "{at}: the new text ends with `{after}`, which already follows the replaced \
-             text on its line; {fix}"
+             text on its line{fix}"
         ));
     }
     if counts(before) && value.trim_start().starts_with(before) {
         return Some(format!(
             "{at}: the new text starts with `{before}`, which already precedes the \
-             replaced text on its line; {fix}"
+             replaced text on its line{fix}"
         ));
     }
     None
@@ -3070,6 +3087,18 @@ mod tests {
             ]
         );
         assert!(notes("replace \"f(b)\" with \"g(b)\"").is_empty());
+        // Across lines, `.lines` would select each line, so no fix is suggested.
+        assert_eq!(
+            exec(
+                "let a = f(\n    b) + c;\n",
+                r#"replace /f\(\n    b\)/ with "g(\n    b) + c;""#
+            )
+            .notes,
+            [
+                "a.rs:1: the new text ends with `+ c;`, which already follows the \
+              replaced text on its line"
+            ]
+        );
     }
 
     #[test]
