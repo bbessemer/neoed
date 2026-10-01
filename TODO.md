@@ -75,7 +75,7 @@ art: ast-grep's metavariables.
   Plugins build on the same templates and builders.
 
 - [x] Spec: placeholder grammar, capture rules, substitution in `replace`
-- [ ] `ned-scheme`: a datum reader (no evaluation) for a Scheme dialect that
+- [x] `ned-scheme`: a datum reader (no evaluation) for a Scheme dialect that
       reads tree-sitter query syntax, producing syntax objects with spans
 - [ ] Fragment parsing with per-language builders
       (`queries/<lang>/builders.scm`) and containment from `node-types.json`
