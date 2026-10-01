@@ -268,18 +268,32 @@ impl Parser<'_> {
         let mut steps = vec![Step {
             primary: self.range(first)?,
             parts: Vec::new(),
+            filters: Vec::new(),
             span: start..self.last_end,
         }];
         loop {
             let next = self.peek()?;
             match next.kind {
-                TokenKind::Gt | TokenKind::Part(_) if next.space_before => {
+                TokenKind::Gt | TokenKind::Part(_) | TokenKind::Filter(_) if next.space_before => {
                     return Err(ParseError::new(E::SpaceInSelector, next.span.clone()));
                 }
                 TokenKind::Part(part) => {
-                    self.bump()?;
+                    let token = self.bump()?;
                     if let Some(step) = steps.last_mut() {
+                        if !step.filters.is_empty() {
+                            return Err(ParseError::new(E::PartAfterFilter, token.span));
+                        }
                         step.parts.push(part);
+                        step.span.end = self.last_end;
+                    }
+                }
+                TokenKind::Filter(_) => {
+                    let token = self.bump()?;
+                    let TokenKind::Filter(filter) = token.kind else {
+                        unreachable!("peeked a filter");
+                    };
+                    if let Some(step) = steps.last_mut() {
+                        step.filters.push((filter, token.span));
                         step.span.end = self.last_end;
                     }
                 }
@@ -293,6 +307,7 @@ impl Parser<'_> {
                     steps.push(Step {
                         primary: self.range(token)?,
                         parts: Vec::new(),
+                        filters: Vec::new(),
                         span: step_start..self.last_end,
                     });
                 }
@@ -457,7 +472,7 @@ fn text_from(kind: TokenKind) -> Result<Text, TokenKind> {
     }
 }
 
-fn validate_regex(
+pub(super) fn validate_regex(
     source: String,
     flags: RegexFlags,
     span: Range<usize>,
@@ -509,6 +524,7 @@ fn expected(what: &'static str, token: &Token) -> ParseError {
         TokenKind::Heredoc { .. } => "a heredoc".into(),
         TokenKind::Query(_) => "a query".into(),
         TokenKind::Part(_) => "a part".into(),
+        TokenKind::Filter(_) => "a filter".into(),
         TokenKind::Path(_) => "a path".into(),
         TokenKind::Gt => "`>`".into(),
         TokenKind::DotDot => "`..`".into(),
@@ -572,7 +588,15 @@ mod tests {
             steps: selector
                 .steps
                 .into_iter()
-                .map(|step| Step { span: 0..0, ..step })
+                .map(|step| Step {
+                    filters: step
+                        .filters
+                        .into_iter()
+                        .map(|(filter, _)| (filter, 0..0))
+                        .collect(),
+                    span: 0..0,
+                    ..step
+                })
                 .collect(),
             span: 0..0,
         }
@@ -661,6 +685,7 @@ mod tests {
         Step {
             primary,
             parts: Vec::new(),
+            filters: Vec::new(),
             span: 0..0,
         }
     }
@@ -994,6 +1019,74 @@ mod tests {
         assert_eq!(
             message("show nope"),
             "expected a selector, found `nope`; quote literal text: \"nope\""
+        );
+    }
+
+    #[test]
+    fn filters_follow_a_step_and_its_parts() {
+        let show = |steps| CommandKind::Show {
+            target: Some(target(steps)),
+            context: 0,
+        };
+        let long = Filter::Cond {
+            property: Property {
+                part: None,
+                len: true,
+            },
+            op: Op::Gt,
+            value: Value::Number(1),
+        };
+        let filtered = |step: Step, filters: Vec<Filter>| Step {
+            filters: filters.into_iter().map(|f| (f, 0..0)).collect(),
+            ..step
+        };
+        assert_eq!(
+            one("show fn.body[.len > 1]"),
+            show(vec![filtered(
+                parts(syntax("fn", "*"), &[Part::Body]),
+                vec![long.clone()]
+            )])
+        );
+        assert_eq!(
+            one("show impl:P>fn[.len > 1][.len > 1]"),
+            show(vec![
+                syntax("impl", "P"),
+                filtered(syntax("fn", "*"), vec![long.clone(), long.clone()]),
+            ])
+        );
+        let any = |kind: &str| Primary::Syntax {
+            kind: kind.into(),
+            name: "*".into(),
+        };
+        assert_eq!(
+            one("show fn..struct[.len > 1]"),
+            show(vec![filtered(
+                step(Primary::Range {
+                    from: Box::new(any("fn")),
+                    to: Box::new(any("struct")),
+                }),
+                vec![long]
+            )])
+        );
+        let Ok(script) = parse("show fn[.len > 1]>/x/") else {
+            panic!("filter before a nested step");
+        };
+        let CommandKind::Show {
+            target: Some(target),
+            ..
+        } = &script.commands[0].kind
+        else {
+            panic!("{script:?}");
+        };
+        assert_eq!(target.selector.steps[0].span, 5..17);
+        assert_eq!(target.selector.steps[0].filters[0].1, 7..17);
+        assert_eq!(
+            message("show fn [.len > 1]"),
+            E::SpaceInSelector.to_string()
+        );
+        assert_eq!(
+            message("show fn[.len > 1].body"),
+            "a part can't follow a filter; put it first: fn.body[...]"
         );
     }
 

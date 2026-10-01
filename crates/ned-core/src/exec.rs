@@ -501,6 +501,7 @@ impl Executor<'_> {
                     steps.push(Step {
                         primary: rest[i].primary.clone(),
                         parts: rest[i].parts[..j].to_vec(),
+                        filters: Vec::new(),
                         span: rest[i].span.clone(),
                     });
                     (steps, &rest[i].parts[j..])
@@ -548,6 +549,25 @@ impl Executor<'_> {
                         .collect(),
                 };
             }
+            let filters = match split {
+                Some((i, _)) => rest[i].filters.as_slice(),
+                None => &[],
+            };
+            let mut kept = Vec::new();
+            for m in found {
+                let plain = Span {
+                    range: m.range.clone(),
+                    item: None,
+                };
+                let text = &self.files[m.file].file.text;
+                if plain
+                    .passes(filters, text)
+                    .map_err(|kind| ExecError::new(kind, Some(span.clone())))?
+                {
+                    kept.push(m);
+                }
+            }
+            found = kept;
             matches = Some(found);
             rest = match split {
                 Some((i, _)) => &rest[i + 1..],
@@ -1219,6 +1239,7 @@ impl Executor<'_> {
             let step = Step {
                 primary: Primary::Regex(pattern.clone()),
                 parts: Vec::new(),
+                filters: Vec::new(),
                 span: span.clone(),
             };
             let hint = select::hint(&step, &set, &parents, &selector);
@@ -4416,6 +4437,24 @@ fn main() {}
         let out = served(&FOO_FILES, Some(2), script, &mut foo_server());
         let changes = out.result.unwrap();
         assert!(changes[1].new.contains("crate::f0();"), "{changes:?}");
+    }
+
+    #[test]
+    fn filters_after_refs_test_each_use() {
+        let script = "delete all fn:foo.refs.lines[.text ~= /crate/]";
+        let out = served(&FOO_FILES, Some(2), script, &mut foo_server());
+        let changes = out.result.unwrap();
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(changes[0].new, "fn g() {\n}\n");
+    }
+
+    #[test]
+    fn deleting_filtered_items() {
+        let text = "fn test_a() {}\n\nfn main() {}\n\nfn test_b() {}\n";
+        assert_eq!(
+            edited(text, "delete all fn[.name ~= /^test_/]"),
+            "fn main() {}\n"
+        );
     }
 
     #[test]

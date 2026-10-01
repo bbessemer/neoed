@@ -50,6 +50,9 @@ ned 'crates/**/*.rs' -e 'show all /fn with_published/'
 ned -w -e 'show all "SAVE_GRACE" +2'
 ```
 
+ned is for files of code and docs. To search or filter a command's output (test
+results, logs), pipe it to grep as usual.
+
 Read with `outline` and `show SEL` instead of cat (`show all 1-$` for several
 whole files), and make new files with `create` (see `ned help create`).
 
@@ -155,6 +158,16 @@ delete fn:helper_a..fn:helper_c
 show /^## Usage/../^## License/
 ```
 
+Select by a property instead of a name with a filter: `.text`, `.len`
+(characters on one line, lines on several) or a part, compared with `==`, `!=`,
+`<`, `>`, `<=`, `>=` or `~=` (regex), and combined with `&&` and `||`:
+
+```ned
+show all fn[.doc == ""]
+delete all impl:Parser>fn[.name ~= /^old_/ || .body.len == 0]
+show all fn:parse.lines[.len > 100]
+```
+
 Add a statement at the start of a Python method, after its docstring; ned
 indents it to the block:
 
@@ -174,7 +187,9 @@ insert start class:App>fn:handle "metrics.count(req)"
   moved or renamed, put a `|` between them. `|` binds more loosely than `;` and
   newlines, unlike a shell's: `a; b | c` is `a; b`, then `c`. After a `|`,
   `check`, `rename`, `.refs` and `.def` are errors, because they read the files
-  on disk; run them before the first `|` or in another `ned` call.
+  on disk; run them before the first `|` or in another `ned` call. The syntax
+  guard checks every stage, so each must leave the file parseable: to change
+  both ends of a construct, replace it whole in one stage.
 - **Indentation is automatic.** `<<END` text is re-indented to fit its target,
   and so is a one-line string inserted or replaced on lines of its own: its
   leading spaces don't survive. Use `<<'END'` for text that must stay exactly as

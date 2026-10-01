@@ -7,8 +7,10 @@
 
 use std::ops::Range;
 
-use super::ast::{LineNo, Part, RegexFlags};
+use super::ast::{Filter, LineNo, Part, RegexFlags};
 use super::error::{ParseError, ParseErrorKind as E};
+
+mod filter;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
@@ -45,6 +47,7 @@ pub enum TokenKind {
     },
     Query(String),
     Part(Part),
+    Filter(Filter),
     /// A `file` command argument, from [`Lexer::path`].
     Path(String),
     Gt,
@@ -118,6 +121,7 @@ impl<'a> Lexer<'a> {
                 TokenKind::DotDot
             }
             '.' => TokenKind::Part(self.part()?),
+            '[' => TokenKind::Filter(self.filter()?),
             c if c.is_ascii_alphabetic() || c == '_' => self.word()?,
             c => {
                 return Err(ParseError::new(

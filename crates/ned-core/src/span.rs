@@ -3,7 +3,7 @@
 use std::ops::Range;
 
 use crate::exec::ExecErrorKind as E;
-use crate::script::ast::Part;
+use crate::script::ast::{Filter, Op, Part, Value};
 use crate::select::part_name;
 use crate::syntax::{self, Item};
 use crate::text::full_lines;
@@ -60,6 +60,78 @@ impl<'a> Span<'a> {
         .collect::<Vec<_>>()
         .join(" ")
     }
+
+    /// Whether every one of a step's `filters` holds for the span.
+    pub fn passes(&self, filters: &[(Filter, Range<usize>)], text: &str) -> Result<bool, E> {
+        self.all_hold(filters.iter().map(|(filter, _)| filter), text)
+    }
+
+    /// Whether `filter` holds for the span (§3.9).
+    pub fn holds(&self, filter: &Filter, text: &str) -> Result<bool, E> {
+        let (property, op, value) = match filter {
+            Filter::Or(any) => {
+                for filter in any {
+                    if self.holds(filter, text)? {
+                        return Ok(true);
+                    }
+                }
+                return Ok(false);
+            }
+            Filter::And(all) => return self.all_hold(all, text),
+            Filter::Cond {
+                property,
+                op,
+                value,
+            } => (property, op, value),
+        };
+        // A part the item doesn't have is empty.
+        let range = match property.part {
+            None => Some(self.range.clone()),
+            Some(part) => match self.part(part, text) {
+                Ok(spans) => spans.into_iter().next().map(|s| s.range),
+                Err(E::MissingPart { .. }) => None,
+                Err(e) => return Err(e),
+            },
+        };
+        let shown = range.map_or("", |r| without_break(&text[r]));
+        Ok(match (property.len, op, value) {
+            (true, op, Value::Number(n)) => {
+                let len = match shown.contains('\n') {
+                    true => shown.lines().count(),
+                    false => shown.chars().count(),
+                };
+                match op {
+                    Op::Eq => len == *n,
+                    Op::Ne => len != *n,
+                    Op::Lt => len < *n,
+                    Op::Gt => len > *n,
+                    Op::Le => len <= *n,
+                    Op::Ge => len >= *n,
+                    Op::Match => unreachable!("checked when parsed"),
+                }
+            }
+            (false, Op::Eq, Value::Str(s)) => shown == s,
+            (false, Op::Ne, Value::Str(s)) => shown != s,
+            (false, Op::Match, Value::Regex(pattern)) => pattern
+                .regex()
+                .expect("validated when parsed")
+                .is_match(shown),
+            _ => unreachable!("checked when parsed"),
+        })
+    }
+
+    fn all_hold<'f>(
+        &self,
+        filters: impl IntoIterator<Item = &'f Filter>,
+        text: &str,
+    ) -> Result<bool, E> {
+        for filter in filters {
+            if !self.holds(filter, text)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 }
 
 /// Each whole line `range` touches, with its line ending.
@@ -77,6 +149,12 @@ fn lines(text: &str, range: Range<usize>) -> impl Iterator<Item = Range<usize>> 
         pieces.push(full);
     }
     pieces.into_iter()
+}
+
+/// `text` without a final line break.
+fn without_break(text: &str) -> &str {
+    let text = text.strip_suffix('\n').unwrap_or(text);
+    text.strip_suffix('\r').unwrap_or(text)
 }
 
 #[cfg(test)]
@@ -117,6 +195,64 @@ mod tests {
         assert!(matches!(
             span.part(Part::Body, TEXT),
             Err(E::PartNeedsItem { part }) if part == "body"
+        ));
+    }
+
+    /// The first filter of `show /x/FILTERS`.
+    fn filter(filters: &str) -> Filter {
+        let script = format!("show /x/{filters}");
+        let parsed = crate::script::parse(&script).unwrap();
+        let crate::script::ast::CommandKind::Show {
+            target: Some(target),
+            ..
+        } = &parsed.commands[0].kind
+        else {
+            panic!("{script}");
+        };
+        target.selector.steps[0].filters[0].0.clone()
+    }
+
+    fn holds(range: Range<usize>, filters: &str) -> bool {
+        Span { range, item: None }
+            .holds(&filter(filters), TEXT)
+            .unwrap()
+    }
+
+    #[test]
+    fn text_leaves_out_the_final_line_break() {
+        assert!(holds(9..18, r#"[.text == "    x();"]"#));
+        assert!(holds(9..18, r#"[.text ~= /x\(\);$/]"#));
+        assert!(holds(9..18, r#"[.text != "x"]"#));
+        assert!(!holds(9..18, r#"[.text ~= /^x/]"#));
+    }
+
+    #[test]
+    fn len_counts_characters_on_one_line_and_lines_on_several() {
+        assert!(holds(9..18, "[.len == 8]"));
+        assert!(holds(0..9, "[.len == 8]"));
+        assert!(holds(0..20, "[.len == 3]"));
+        assert!(holds(4..12, "[.len == 2]"));
+        assert!(holds(20..24, "[.len < 5]"));
+        assert!(holds(20..24, "[.len >= 4 && .len <= 4]"));
+        assert!(!holds(20..24, "[.len > 4]"));
+    }
+
+    #[test]
+    fn and_and_or_combine_conditions() {
+        assert!(holds(20..24, r#"[.len > 9 || .text == "last"]"#));
+        assert!(!holds(20..24, r#"[.len > 9 && .text == "last"]"#));
+        assert!(holds(20..24, r#"[(.len > 9 || .len < 5) && .text ~= /l/]"#));
+    }
+
+    #[test]
+    fn parts_in_a_filter_need_an_item() {
+        let span = Span {
+            range: 0..2,
+            item: None,
+        };
+        assert!(matches!(
+            span.holds(&filter(r#"[.name == ""]"#), TEXT),
+            Err(E::PartNeedsItem { part }) if part == "name"
         ));
     }
 }

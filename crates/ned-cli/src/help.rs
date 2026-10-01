@@ -18,6 +18,7 @@ pub enum Topic {
     File,
     Create,
     Selectors,
+    Filters,
     Text,
     Config,
 }
@@ -40,6 +41,7 @@ pub fn text(topic: Option<Topic>) -> &'static str {
         Some(Topic::File) => include_str!("../help/file.txt"),
         Some(Topic::Create) => include_str!("../help/create.txt"),
         Some(Topic::Selectors) => include_str!("../help/selectors.txt"),
+        Some(Topic::Filters) => include_str!("../help/filters.txt"),
         Some(Topic::Text) => include_str!("../help/text.txt"),
         Some(Topic::Config) => include_str!("../help/config.txt"),
     }

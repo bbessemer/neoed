@@ -1,0 +1,24 @@
+filters
+
+STEP[COND] keeps each span of a step, after its parts, for which COND holds:
+    fn[.name ~= /^test_/]        test functions
+    fn[.doc == ""]               functions without doc comments
+    fn:parse.lines[.len > 80]    long lines of parse
+    fn[.body.len > 50]           functions with long bodies
+
+A condition is PROPERTY OP VALUE. Properties:
+  .text   the span's text, without a final line break
+  .len    characters on one line; the number of lines on several
+  .PART   a part's text (.name, .doc, .body, ...); "" if the item has none.
+          Add .len or .text: .body.len. Parts need a syntax item.
+.len takes == != < > <= >= and a number. Text takes == != and a "string",
+or ~= and a /regex/ (unanchored unless the regex says so).
+
+Combine with && and || (&& binds tighter) and (...); fn[A][B] is fn[A && B].
+Spaces are fine inside [ ], but [ must follow the step directly. Rejected
+spans don't count toward ambiguity, and candidates keep their filters.
+
+Examples:
+    show all fn[.doc == ""]
+    delete all impl:T>fn[.name ~= /^old_/ || .body.len == 0]
+    show all file:src/a.rs>fn.lines[.len > 100]
