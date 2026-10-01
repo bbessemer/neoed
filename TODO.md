@@ -5,6 +5,11 @@ too large for one PR: they carry a checklist of coarse chunks to plan with the
 engineer before starting each one; a single-PR item has none, and moves to
 Done when it lands.
 
+Versions follow semver at 0.x (currently 0.1.0): a change to the command
+language or any new user-visible feature bumps the minor version, and a
+release that only fixes bugs or adds hints bumps the patch version. Each item
+below says which it is. When to release 1.0 is TBD.
+
 ## Done
 
 - **Bootstrap**: Rust workspace (`ned-core`, `ned-cli`), AGENTS.md, this plan.
@@ -44,6 +49,8 @@ formatting on Linux and macOS, so a green check is the merge criterion instead
 of a local run. A tag publishes release binaries for both platforms, so users
 without a Rust toolchain can install `ned` from the README.
 
+Version: patch (0.1.1); the first release with binaries changes no behaviour.
+
 ### Selector filters and more parts
 
 An agent narrows a step by a property instead of a name: `.lines[.len > 80]`
@@ -55,6 +62,8 @@ kind. Properties are `.len`, `.text` and every part the item has, compared with
 are the values. The spec step also settles which new parts to add; candidates
 are `.ret` (return type), `.attrs` (attributes and decorators), `.type` and
 `.value` (of a field, const or var). Spec §2.2 and §3.4 change first.
+
+Version: minor (0.2.0); new selector grammar and parts.
 
 ### Syntax patterns _(split)_
 
@@ -76,6 +85,9 @@ metavariables.
 - [ ] Pattern-to-query compilation and matching
 - [ ] Capture substitution in `replace` TEXT
 
+Version: minor once matching works; a further minor if capture substitution
+ships separately. The spec and context chunks alone release nothing.
+
 ### Sessions _(split)_
 
 With `-s, --session [NAME]` or `NED_SESSION`, `ned` records each invocation
@@ -92,6 +104,10 @@ and needs no daemon; the CLI keeps working without one.
 - [ ] `-s`/`NED_SESSION`, `history` and `undo`
 - [ ] Repeat-with-correction shorthand
 
+Version: minor for the flag and store; the log format is versioned, and a
+format change before 1.0 is another minor. The shorthand is a minor if it
+ships after.
+
 ### Commit from ned
 
 An agent turns its edits into one git commit without touching anything else in
@@ -99,6 +115,8 @@ the working tree: `--commit MSG` commits exactly the invocation's edits, and
 with `-s` the session's edits so far. `ned` patches the index directly rather
 than staging paths, so other staged or unstaged changes are never swept into
 the commit. Depends on Sessions for the session case.
+
+Version: minor; a new flag.
 
 ### Merge conflicts
 
@@ -111,6 +129,9 @@ with `.ours`, `.theirs` and `.base` parts, and `resolve conflict:2 ours`
 or new text. The marker tolerance is independent; the resolution verb depends
 on the parts work above.
 
+Version: patch for marker tolerance (existing scripts start working on
+conflicted files); minor for the `conflict` kind, its parts and `resolve`.
+
 ### Terminal output
 
 When stdout is a terminal, `ned` formats for a human: syntax-highlighted code
@@ -119,6 +140,9 @@ from code by colour instead of `:`, coloured diffs. `--color auto|always|never`
 and `NO_COLOR` control it. Output to a pipe or file is unchanged, so agents
 keep the terse form that §6 of the spec defines. Prerequisite to the REPL.
 
+Version: minor; `--color` is new and terminal output changes, though piped
+output doesn't.
+
 ### REPL
 
 `ned-repl`: a human edits interactively with persistent buffers, undo and an
@@ -126,12 +150,16 @@ explicit write, using the same command language, and can attach to an agent's
 session to watch and correct its work. Depends on Sessions and Terminal
 output.
 
+Version: minor; a new binary.
+
 ### MCP server
 
 `ned-mcp`: an MCP server exposes script execution, `outline` and `show` as
 tools, so agent frameworks call `ned` without a shell. It is a thin client of
 `ned-core` and the session store, with no logic of its own. Depends on
 Sessions.
+
+Version: minor; a new binary.
 
 ### User-supplied grammars _(split)_
 
@@ -146,6 +174,9 @@ plugin system: a grammar plus queries is data, as the built-in languages are.
 - [ ] Dynamic grammar loading and query-file lookup
 - [ ] Guide to writing selector and highlight queries
 
+Version: minor when loading works; the registry refactor alone is a patch if
+released on its own, since nothing visible changes.
+
 ### Plugins
 
 Later. A Scheme extending tree-sitter's query syntax, embedded with Steel or a
@@ -156,7 +187,12 @@ editing core, or Emacs-style scope creep; `ned` stays a focused tool. First
 step is a spike comparing Steel with a hand-rolled interpreter on one real
 use case.
 
+Version: minor when a first plugin can load; the spike releases nothing.
+
 ## Agent ergonomics
+
+Hints and relaxed errors: each is a patch, and they batch into the next
+release of either kind.
 
 - [ ] A `sub` replacement that names a group its regex doesn't have is an
       error, not an empty expansion: `$1deletions` is the group `1deletions`,
@@ -170,6 +206,8 @@ use case.
 
 ## Bugs
 
+Each fix is a patch; a fix that changes documented behaviour is a minor.
+
 - [ ] `create a.rs "fn a() {}\n"` followed by `insert after fn:a ...` in the
       same script leaves a trailing blank line (rustfmt removes it)
 - [ ] The did-you-mean-another-kind hint only fires for a selector's last
@@ -181,6 +219,9 @@ use case.
       `|` as the end of the command
 
 ## Future improvements
+
+Re-basing changes are patches, since the spec leaves their details open; the
+`|` change is a minor, because it lifts a documented error.
 
 - [ ] Smarter indent conversion in re-basing: normalize space widths (e.g.
       2-space text into a 4-space file), detect alignment (continuation lines
