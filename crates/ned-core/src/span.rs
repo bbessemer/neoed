@@ -124,4 +124,62 @@ mod tests {
             Err(E::PartNeedsItem { part }) if part == "body"
         ));
     }
+
+    /// The first filter of `show /x/FILTERS`.
+    fn filter(filters: &str) -> Filter {
+        let script = format!("show /x/{filters}");
+        let parsed = crate::script::parse(&script).unwrap();
+        let crate::script::ast::CommandKind::Show {
+            target: Some(target),
+            ..
+        } = &parsed.commands[0].kind
+        else {
+            panic!("{script}");
+        };
+        target.selector.steps[0].filters[0].0.clone()
+    }
+
+    fn holds(range: Range<usize>, filters: &str) -> bool {
+        Span { range, item: None }
+            .holds(&filter(filters), TEXT)
+            .unwrap()
+    }
+
+    #[test]
+    fn text_leaves_out_the_final_line_break() {
+        assert!(holds(9..18, r#"[.text == "    x();"]"#));
+        assert!(holds(9..18, r#"[.text ~= /x\(\);$/]"#));
+        assert!(holds(9..18, r#"[.text != "x"]"#));
+        assert!(!holds(9..18, r#"[.text ~= /^x/]"#));
+    }
+
+    #[test]
+    fn len_counts_characters_on_one_line_and_lines_on_several() {
+        assert!(holds(9..18, "[.len == 8]"));
+        assert!(holds(0..9, "[.len == 8]"));
+        assert!(holds(0..20, "[.len == 3]"));
+        assert!(holds(4..12, "[.len == 2]"));
+        assert!(holds(20..24, "[.len < 5]"));
+        assert!(holds(20..24, "[.len >= 4 && .len <= 4]"));
+        assert!(!holds(20..24, "[.len > 4]"));
+    }
+
+    #[test]
+    fn and_and_or_combine_conditions() {
+        assert!(holds(20..24, r#"[.len > 9 || .text == "last"]"#));
+        assert!(!holds(20..24, r#"[.len > 9 && .text == "last"]"#));
+        assert!(holds(20..24, r#"[(.len > 9 || .len < 5) && .text ~= /l/]"#));
+    }
+
+    #[test]
+    fn parts_in_a_filter_need_an_item() {
+        let span = Span {
+            range: 0..2,
+            item: None,
+        };
+        assert!(matches!(
+            span.holds(&filter(r#"[.name == ""]"#), TEXT),
+            Err(E::PartNeedsItem { part }) if part == "name"
+        ));
+    }
 }

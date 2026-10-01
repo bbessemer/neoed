@@ -1010,6 +1010,74 @@ mod tests {
     }
 
     #[test]
+    fn filters_follow_a_step_and_its_parts() {
+        let show = |steps| CommandKind::Show {
+            target: Some(target(steps)),
+            context: 0,
+        };
+        let long = Filter::Cond {
+            property: Property {
+                part: None,
+                len: true,
+            },
+            op: Op::Gt,
+            value: Value::Number(1),
+        };
+        let filtered = |step: Step, filters: Vec<Filter>| Step {
+            filters: filters.into_iter().map(|f| (f, 0..0)).collect(),
+            ..step
+        };
+        assert_eq!(
+            one("show fn.body[.len > 1]"),
+            show(vec![filtered(
+                parts(syntax("fn", "*"), &[Part::Body]),
+                vec![long.clone()]
+            )])
+        );
+        assert_eq!(
+            one("show impl:P>fn[.len > 1][.len > 1]"),
+            show(vec![
+                syntax("impl", "P"),
+                filtered(syntax("fn", "*"), vec![long.clone(), long.clone()]),
+            ])
+        );
+        let any = |kind: &str| Primary::Syntax {
+            kind: kind.into(),
+            name: "*".into(),
+        };
+        assert_eq!(
+            one("show fn..struct[.len > 1]"),
+            show(vec![filtered(
+                step(Primary::Range {
+                    from: Box::new(any("fn")),
+                    to: Box::new(any("struct")),
+                }),
+                vec![long]
+            )])
+        );
+        let Ok(script) = parse("show fn[.len > 1]>/x/") else {
+            panic!("filter before a nested step");
+        };
+        let CommandKind::Show {
+            target: Some(target),
+            ..
+        } = &script.commands[0].kind
+        else {
+            panic!("{script:?}");
+        };
+        assert_eq!(target.selector.steps[0].span, 5..17);
+        assert_eq!(target.selector.steps[0].filters[0].1, 7..17);
+        assert_eq!(
+            message("show fn [.len > 1]"),
+            E::SpaceInSelector.to_string()
+        );
+        assert_eq!(
+            message("show fn[.len > 1].body"),
+            "a part can't follow a filter; put it first: fn.body[...]"
+        );
+    }
+
+    #[test]
     fn ranges() {
         let show = |steps| CommandKind::Show {
             target: Some(target(steps)),

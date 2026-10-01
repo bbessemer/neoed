@@ -4421,6 +4421,24 @@ fn main() {}
     }
 
     #[test]
+    fn filters_after_refs_test_each_use() {
+        let script = "delete all fn:foo.refs.lines[.text ~= /crate/]";
+        let out = served(&FOO_FILES, Some(2), script, &mut foo_server());
+        let changes = out.result.unwrap();
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(changes[0].new, "fn g() {\n}\n");
+    }
+
+    #[test]
+    fn deleting_filtered_items() {
+        let text = "fn test_a() {}\n\nfn main() {}\n\nfn test_b() {}\n";
+        assert_eq!(
+            edited(text, "delete all fn[.name ~= /^test_/]"),
+            "fn main() {}\n"
+        );
+    }
+
+    #[test]
     fn refs_reach_only_the_file_set_or_workspace() {
         let out = served(
             &FOO_FILES,

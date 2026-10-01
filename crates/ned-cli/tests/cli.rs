@@ -633,6 +633,37 @@ fn lines_of_an_item_are_listed_by_line_number() {
 }
 
 #[test]
+fn ambiguous_filter_lists_filtered_candidates() {
+    let dir = dir_with(&[(
+        "a.rs",
+        "fn a() {}\n\nfn b() {\n    x();\n}\n\nfn c() {\n}\n",
+    )]);
+    let out = ned(dir.path(), &["a.rs", "-e", r#"show fn[.name != "a"]"#], "");
+    assert_snapshot!(out, @r#"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: script:1:6: fn[.name != "a"] matches 2 items; add `all` or use one of:
+      fn:b[.name != "a"]   a.rs:3-5
+      fn:c[.name != "a"]   a.rs:7-8
+    "#);
+}
+
+#[test]
+fn filter_type_error_exits_2_with_caret() {
+    let dir = dir_with(&[("a.rs", "fn a() {}\n")]);
+    let out = ned(dir.path(), &["a.rs", "-e", "show fn[.len ~= /x/]"], "");
+    assert_snapshot!(out, @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:14: .len is a number; compare it with == != < > <= >= and a number, e.g. .len > 80
+    1:show fn[.len ~= /x/]
+                   ^
+    ");
+}
+
+#[test]
 fn insert_method_at_end_of_impl() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
     let script = "insert end impl:Parser <<END\n\nfn peek(&self) -> Option<char> {\n    self.src[self.pos..].chars().next()\n}\nEND\n";

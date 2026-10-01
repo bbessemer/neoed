@@ -1417,6 +1417,67 @@ mod tests {
         );
     }
 
+    const FILTERED: &str = "/// Doc.\nfn test_a() {\n    one();\n}\n\nfn test_b() {}\n\nfn main() {\n    let long_name = 1;\n    two();\n}\n";
+
+    #[test]
+    fn filters_keep_the_spans_where_they_hold() {
+        let a = "/// Doc.\nfn test_a() {\n    one();\n}";
+        let main = "fn main() {\n    let long_name = 1;\n    two();\n}";
+        assert_eq!(
+            select("delete all fn[.name ~= /^test_/]", FILTERED),
+            [a, "fn test_b() {}"]
+        );
+        assert_eq!(
+            select("delete all fn[.doc == \"\"]", FILTERED),
+            ["fn test_b() {}", main]
+        );
+        assert_eq!(
+            select("delete all fn:main.lines[.len > 12]", FILTERED),
+            ["    let long_name = 1;\n"]
+        );
+        assert_eq!(select("delete fn[.body.len == 2]", FILTERED), [main]);
+        assert_eq!(
+            select("delete fn[.name ~= /^test_/ && .doc == \"\"]", FILTERED),
+            ["fn test_b() {}"]
+        );
+        assert_eq!(
+            select("delete all fn[.name == \"main\" || .doc != \"\"]", FILTERED),
+            [a, main]
+        );
+        assert_eq!(
+            select("delete fn[.name ~= /^test_/][.doc == \"\"]", FILTERED),
+            ["fn test_b() {}"]
+        );
+        assert_eq!(select("delete fn[.len == 4]>/one/", FILTERED), ["one"]);
+    }
+
+    #[test]
+    fn filtered_candidates_keep_their_filters() {
+        assert_eq!(
+            error("delete fn[.name ~= /^test_/]", &[("a.rs", FILTERED)]),
+            "error: script:1:8: fn[.name ~= /^test_/] matches 2 items; add `all` or use one of:\n  \
+             fn:test_a[.name ~= /^test_/]   a.rs:1-4\n  \
+             fn:test_b[.name ~= /^test_/]   a.rs:6"
+        );
+        assert_eq!(
+            error("delete fn:main.lines[.len < 12]", &[("a.rs", FILTERED)]),
+            "error: script:1:8: fn:main.lines[.len < 12] matches 3 items; add `all` or use one of:\n  \
+             fn:main>8    a.rs:8\n  \
+             fn:main>10   a.rs:10\n  \
+             fn:main>11   a.rs:11"
+        );
+    }
+
+    #[test]
+    fn a_filter_can_reject_every_match() {
+        let e = error("delete fn[.name == \"zzz\"]", &[("a.rs", FILTERED)]);
+        assert!(e.contains("matches nothing"), "{e}");
+        assert_eq!(
+            error("delete /one/[.name == \"\"]", &[("a.rs", FILTERED)]),
+            "error: script:1:8: .name needs a syntax item, e.g. fn:NAME.name"
+        );
+    }
+
     #[test]
     fn heredoc_matches_whole_lines_at_any_indentation() {
         let body = "    let x = 1;\n    let y = 2;\n";
