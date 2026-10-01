@@ -459,7 +459,7 @@ fn text_from(kind: TokenKind) -> Result<Text, TokenKind> {
     }
 }
 
-fn validate_regex(
+pub(super) fn validate_regex(
     source: String,
     flags: RegexFlags,
     span: Range<usize>,
