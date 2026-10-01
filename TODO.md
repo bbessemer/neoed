@@ -182,6 +182,9 @@ of either kind.
 - [ ] `show` with a line range past the end of the file shows up to the last
       line, with a note, instead of an error (`show 1-60` on a 57-line file);
       edits keep the error
+- [ ] `sub all /re/ with "x"` says "`sub` needs a regex before `with`", since
+      `all /re/` parses as the scope; say instead that `sub` already replaces
+      every match, so `all` goes: `sub /re/ with "x"`
 
 ## Bugs
 

@@ -50,6 +50,9 @@ ned 'crates/**/*.rs' -e 'show all /fn with_published/'
 ned -w -e 'show all "SAVE_GRACE" +2'
 ```
 
+ned is for files of code and docs. To search or filter a command's output (test
+results, logs), pipe it to grep as usual.
+
 Read with `outline` and `show SEL` instead of cat (`show all 1-$` for several
 whole files), and make new files with `create` (see `ned help create`).
 
