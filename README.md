@@ -64,15 +64,24 @@ src/parser.rs: 3 edits, +3 -3
 
 ## Install
 
-You need Rust 1.90 or later and a C compiler, because the tree-sitter grammars
-are compiled in:
+Download a release binary for Linux or macOS from
+[GitHub Releases](https://github.com/bbessemer/neoed/releases/latest), and put
+`ned` on your `PATH`:
+
+```sh
+target=aarch64-apple-darwin  # or x86_64-apple-darwin, x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
+curl -fsSL "https://github.com/bbessemer/neoed/releases/latest/download/ned-$target.tar.gz" | tar xz
+mv "ned-$target/ned" ~/.local/bin/
+```
+
+To build from source instead, you need Rust 1.90 or later and a C compiler,
+because the tree-sitter grammars are compiled in:
 
 ```sh
 cargo install --locked --git https://github.com/bbessemer/neoed ned-cli
 ```
 
-This installs one binary, `ned`. From a clone, run
-`cargo install --path crates/ned-cli` instead.
+From a clone, run `cargo install --path crates/ned-cli` instead.
 
 Formatters and language servers are optional, and ned uses them when they're
 installed:
@@ -184,15 +193,13 @@ to verify the edit, and ned's diff replaces it.
 
 ## Status
 
-`ned` 0.1.0 is an MVP. The command language is specified, and ned is used day to
-day to develop ned itself, but the language may still change before 1.0. There
-are no release binaries or CI yet.
+`ned` 0.1 is an MVP. The command language is specified, and ned is used day to
+day to develop ned itself, but the language may still change before 1.0.
 
 ## Roadmap
 
 In order, with details in [`TODO.md`](TODO.md):
 
-- CI on Linux and macOS, and release binaries
 - Selector filters, `fn[.name ~= /^test_/]` or `.lines[.len > 80]`, and more
   parts (return type, attributes, a field's type and value)
 - Syntax patterns: select code by writing code in backquotes, matched
@@ -216,10 +223,15 @@ In order, with details in [`TODO.md`](TODO.md):
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
+prettier --check '**/*.md'
 cargo run -q -p ned-cli -- FILE -e SCRIPT
 ```
 
 See [`AGENTS.md`](AGENTS.md) for the project's conventions and layout.
+
+CI runs these on Linux and macOS. Every pull request to `main` must raise
+`[workspace.package] version` in `Cargo.toml` (see `TODO.md` for which part to
+bump); merging it tags that version and publishes its release binaries.
 
 ## License
 

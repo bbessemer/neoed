@@ -151,7 +151,7 @@ serves only its own build. With a daemon running, language servers format files
 whose formatters aren't installed, and `check` also waits for save-time checks
 (`cargo check`). §9 is done. Syntax selectors cover Rust, Python, Go,
 JavaScript, TypeScript/TSX and Markdown. MIT-licensed; README has install and
-usage; CI and release binaries are still open (§12).
+usage; CI (`.github/workflows/`) gates PRs.
 
 ## Key Documentation
 
@@ -232,20 +232,23 @@ frontends stay thin.
 
 ## Local Development
 
-| Target / Script                             | Description                 |
-| ------------------------------------------- | --------------------------- |
-| `cargo build`                               | Build workspace             |
-| `cargo test`                                | Run all tests               |
-| `cargo clippy --all-targets -- -D warnings` | Lint                        |
-| `cargo fmt --check`                         | Format check                |
-| `cargo run -q -p ned-cli -- ARGS`           | Run `ned` from source       |
-| `cargo test -p ned-daemon -- --ignored`     | Smoke test real LSP servers |
-| `cd bench && uv run bench.py --check`       | Token benchmark vs spec §8  |
-| `cd bench && uv run pytest`                 | Benchmark unit tests        |
+| Target / Script                             | Description                       |
+| ------------------------------------------- | --------------------------------- |
+| `cargo build`                               | Build workspace                   |
+| `cargo test`                                | Run all tests                     |
+| `cargo clippy --all-targets -- -D warnings` | Lint                              |
+| `cargo fmt --check`                         | Format check                      |
+| `prettier --check '**/*.md'`                | Docs format check (`.prettierrc`) |
+| `cargo run -q -p ned-cli -- ARGS`           | Run `ned` from source             |
+| `cargo test -p ned-daemon -- --ignored`     | Smoke test real LSP servers       |
+| `cd bench && uv run bench.py --check`       | Token benchmark vs spec §8        |
+| `cd bench && uv run pytest`                 | Benchmark unit tests              |
 
 ## Deployment Notes
 
-Install:
+Every PR to `main` must raise `[workspace.package] version` (CI checks; which
+part per TODO.md). Merging tags `vX.Y.Z` and publishes Linux (musl) and macOS
+binaries (`release.yml`, built with `NED_RELEASE` set for a metadata-free
+version). Install from source:
 `cargo install --locked --git https://github.com/bbessemer/neoed ned-cli`; from
-a checkout, `cargo install --path crates/ned-cli`. Release binaries TBD (TODO.md
-§12).
+a checkout, `cargo install --path crates/ned-cli`.
