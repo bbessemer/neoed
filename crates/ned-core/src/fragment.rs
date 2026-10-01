@@ -382,7 +382,8 @@ fn build(
     literal: &HashSet<usize>,
 ) -> Option<Fragment> {
     let source = template.source(|i| literal.contains(&i));
-    let (before, after) = wrap.map(|(_, b)| b.text()).unwrap_or_default();
+    // Alone, the fragment ends with a newline: Go ends a statement with one.
+    let (before, after) = wrap.map_or_else(|| (String::new(), "\n".into()), |(_, b)| b.text());
     // Later lines of the fragment take the indentation the prefix ends at.
     let last_line = &before[before.rfind('\n').map_or(0, |i| i + 1)..];
     let indent = &last_line[..last_line.len() - last_line.trim_start().len()];

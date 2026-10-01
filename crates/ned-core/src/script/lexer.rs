@@ -399,8 +399,23 @@ impl<'a> Lexer<'a> {
 
     /// Lexes a pattern from its opening backquote: it may span lines, and
     /// `` \` `` is its only escape.
-    fn code(&mut self, _start: usize) -> Result<TokenKind, ParseError> {
-        unimplemented!()
+    fn code(&mut self, start: usize) -> Result<TokenKind, ParseError> {
+        self.pos += 1;
+        let mut code = String::new();
+        loop {
+            let Some(c) = self.peek() else {
+                return Err(ParseError::new(E::UnterminatedPattern, start..self.pos));
+            };
+            self.pos += c.len_utf8();
+            match c {
+                '`' => return Ok(TokenKind::Code(code)),
+                '\\' if self.peek() == Some('`') => {
+                    code.push('`');
+                    self.pos += 1;
+                }
+                c => code.push(c),
+            }
+        }
     }
 
     /// Lexes `<<TAG` and reads its body from the lines after the command line
@@ -685,7 +700,8 @@ mod tests {
         );
         assert_eq!(kinds("`if c:\n    x`"), [T::Code("if c:\n    x".into())]);
         assert_eq!(kinds(r"`a\`b`"), [T::Code("a`b".into())]);
-        assert_eq!(kinds(r#"`"\n" \\`"#), [T::Code(r#""\n" \\"#.into())]);
+        assert_eq!(kinds(r#"`"\n" \\ x`"#), [T::Code(r#""\n" \\ x"#.into())]);
+        assert_eq!(kinds(r"`\\``"), [T::Code(r"\`".into())]);
         assert_eq!(kinds("`a # b`"), [T::Code("a # b".into())]);
         let e = error("show `foo(");
         assert_eq!(e.kind, E::UnterminatedPattern);

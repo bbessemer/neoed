@@ -5,10 +5,14 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use tree_sitter::Tree;
+use std::cmp::Reverse;
 
-use crate::fragment::Fragment;
+use tree_sitter::{Node, Tree};
+
+use crate::fragment::{self, Fragment, FragmentError};
 use crate::lang::Language;
+use crate::template::Template;
+use crate::text::strip_indent;
 
 /// A pattern compiled for one language: each of its readings.
 #[derive(Debug)]
@@ -42,14 +46,253 @@ pub enum PatternError {
 impl Pattern {
     /// Compiles the pattern `src` for `lang`, ignoring the common indentation
     /// of its lines.
-    pub fn compile(_lang: Language, _src: &str) -> Result<Pattern, PatternError> {
-        unimplemented!()
+    pub fn compile(lang: Language, src: &str) -> Result<Pattern, PatternError> {
+        let code = strip_indent(src).join("\n");
+        let template = Template::parse(&code);
+        let fragments = fragment::parse(lang, &template).map_err(|e| match e {
+            FragmentError::NoParse { lang, at } => PatternError::NoParse {
+                lang,
+                at: excerpt(&code, at),
+            },
+            FragmentError::Fused { span } => PatternError::Fused {
+                placeholder: code[span].to_string(),
+            },
+        })?;
+        let readings = fragments
+            .into_iter()
+            .map(|fragment| {
+                let holes = template
+                    .holes()
+                    .enumerate()
+                    .filter_map(|(i, h)| Some((fragment.hole(i)?.id(), (h.name.clone(), h.many))))
+                    .collect();
+                Reading { fragment, holes }
+            })
+            .collect();
+        Ok(Pattern { readings })
     }
 
     /// The matches in `tree`, the tree of `text`, that lie within `range`, in
     /// source order. A match inside an earlier one is skipped.
-    pub fn find(&self, _tree: &Tree, _text: &str, _range: Range<usize>) -> Vec<PatternMatch> {
-        unimplemented!()
+    pub fn find(&self, tree: &Tree, text: &str, range: Range<usize>) -> Vec<PatternMatch> {
+        let mut all = Vec::new();
+        for reading in &self.readings {
+            reading.find(tree.root_node(), text, &range, &mut all);
+        }
+        all.sort_by_key(|m| (m.range.start, Reverse(m.range.end)));
+        let mut out: Vec<PatternMatch> = Vec::new();
+        for m in all {
+            if out
+                .last()
+                .is_none_or(|last| m.range.start >= last.range.end)
+            {
+                out.push(m);
+            }
+        }
+        out
+    }
+}
+
+/// The rest of the line of `code` at `at`, where parsing failed.
+fn excerpt(code: &str, at: usize) -> String {
+    let at = if at < code.trim_end().len() {
+        at
+    } else {
+        code.trim_end().rfind('\n').map_or(0, |i| i + 1)
+    };
+    let line = code[at..].lines().next().unwrap_or_default().trim_end();
+    line.chars().take(30).collect()
+}
+
+impl Reading {
+    /// Pushes the matches in `node`'s subtree that lie within `range`.
+    fn find<'t>(
+        &self,
+        node: Node<'t>,
+        text: &'t str,
+        range: &Range<usize>,
+        out: &mut Vec<PatternMatch>,
+    ) {
+        if node.end_byte() <= range.start || node.start_byte() >= range.end {
+            return;
+        }
+        let roots = self.fragment.roots();
+        let inside = |r: &Range<usize>| range.start <= r.start && r.end <= range.end;
+        if let [root] = roots.as_slice() {
+            let candidate = node.is_named()
+                && !node.is_extra()
+                && (self.holes.contains_key(&root.id()) || root.kind_id() == node.kind_id());
+            if candidate && inside(&node.byte_range()) {
+                let mut m = Matcher::new(self, text);
+                if m.node(*root, node) {
+                    out.push(m.matched(node.byte_range()));
+                }
+            }
+        } else {
+            let children = children(node);
+            for (i, start) in children.iter().enumerate() {
+                if !start.is_named() || !inside(&start.byte_range()) {
+                    continue;
+                }
+                let mut m = Matcher::new(self, text);
+                if let Some(end) = m.seq(&roots, &children[i..], false) {
+                    let r = start.start_byte()..children[i + end - 1].end_byte();
+                    if inside(&r) {
+                        out.push(m.matched(r));
+                    }
+                }
+            }
+        }
+        for child in children(node) {
+            self.find(child, text, range, out);
+        }
+    }
+}
+
+/// A node's children, without comments.
+fn children(node: Node<'_>) -> Vec<Node<'_>> {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .filter(|c| !c.is_extra())
+        .collect()
+}
+
+/// A match of one reading in progress: what its placeholders have bound.
+struct Matcher<'p, 't> {
+    reading: &'p Reading,
+    text: &'t str,
+    binds: Vec<Bind<'t>>,
+}
+
+struct Bind<'t> {
+    name: String,
+    nodes: Vec<Node<'t>>,
+    range: Range<usize>,
+}
+
+impl<'p, 't> Matcher<'p, 't> {
+    fn new(reading: &'p Reading, text: &'t str) -> Self {
+        Matcher {
+            reading,
+            text,
+            binds: Vec::new(),
+        }
+    }
+
+    fn matched(self, range: Range<usize>) -> PatternMatch {
+        PatternMatch {
+            range,
+            captures: self.binds.into_iter().map(|b| (b.name, b.range)).collect(),
+        }
+    }
+
+    fn hole(&self, p: Node<'_>) -> Option<&'p (Option<String>, bool)> {
+        self.reading.holes.get(&p.id())
+    }
+
+    fn pattern_text(&self, p: Node<'_>) -> &'p str {
+        &self.reading.fragment.text[p.byte_range()]
+    }
+
+    /// Whether pattern node `p` matches target node `t`.
+    fn node(&mut self, p: Node<'_>, t: Node<'t>) -> bool {
+        if let Some((name, _)) = self.hole(p) {
+            return self.bind(name, vec![t], t.byte_range());
+        }
+        if p.kind_id() != t.kind_id() {
+            return false;
+        }
+        let (pc, tc) = (children(p), children(t));
+        if pc.is_empty() && tc.is_empty() {
+            return !p.is_named() || self.pattern_text(p) == &self.text[t.byte_range()];
+        }
+        self.seq(&pc, &tc, true).is_some()
+    }
+
+    /// Matches the pattern nodes `ps` against a prefix of the target nodes
+    /// `ts`, or all of them if `all`, skipping target tokens the pattern
+    /// leaves out. The number of target nodes matched, if they match.
+    fn seq(&mut self, ps: &[Node<'_>], ts: &[Node<'t>], all: bool) -> Option<usize> {
+        let Some((&p, rest)) = ps.split_first() else {
+            return (!all || ts.iter().all(|t| !t.is_named())).then_some(0);
+        };
+        let saved = self.binds.len();
+        if let Some((name, true)) = self.hole(p) {
+            // A run takes as few siblings as it can.
+            let mut end = 0;
+            loop {
+                let run: Vec<Node<'t>> =
+                    ts[..end].iter().copied().filter(|n| n.is_named()).collect();
+                let range = match (run.first(), run.last()) {
+                    (Some(first), Some(last)) => first.start_byte()..last.end_byte(),
+                    _ => {
+                        let at = ts.get(end).map_or(0, |t| t.start_byte());
+                        at..at
+                    }
+                };
+                if self.bind(name, run, range)
+                    && let Some(n) = self.seq(rest, &ts[end..], all)
+                {
+                    return Some(end + n);
+                }
+                self.binds.truncate(saved);
+                end += ts[end..].iter().position(|n| n.is_named())? + 1;
+            }
+        }
+        for (i, &t) in ts.iter().enumerate() {
+            let matched = if p.is_named() || self.hole(p).is_some() {
+                t.is_named() && self.node(p, t)
+            } else {
+                !t.is_named() && p.kind_id() == t.kind_id()
+            };
+            if matched {
+                let n = self.seq(rest, &ts[i + 1..], all);
+                if n.is_none() {
+                    self.binds.truncate(saved);
+                }
+                return n.map(|n| i + 1 + n);
+            }
+            self.binds.truncate(saved);
+            // Only a token the pattern leaves out can be skipped.
+            if t.is_named() {
+                return None;
+            }
+        }
+        None
+    }
+
+    /// Binds `name` to `nodes`, or checks them against its earlier binding.
+    fn bind(&mut self, name: &Option<String>, nodes: Vec<Node<'t>>, range: Range<usize>) -> bool {
+        let Some(name) = name else {
+            return true;
+        };
+        if let Some(earlier) = self.binds.iter().find(|b| b.name == *name) {
+            return earlier.nodes.len() == nodes.len()
+                && earlier
+                    .nodes
+                    .iter()
+                    .zip(&nodes)
+                    .all(|(a, b)| self.equal(*a, *b));
+        }
+        self.binds.push(Bind {
+            name: name.clone(),
+            nodes,
+            range,
+        });
+        true
+    }
+
+    /// Whether two target nodes are the same code, ignoring whitespace and
+    /// comments.
+    fn equal(&self, a: Node<'t>, b: Node<'t>) -> bool {
+        let (ac, bc) = (children(a), children(b));
+        a.kind_id() == b.kind_id()
+            && ac.len() == bc.len()
+            && if ac.is_empty() {
+                self.text[a.byte_range()] == self.text[b.byte_range()]
+            } else {
+                ac.iter().zip(&bc).all(|(x, y)| self.equal(*x, *y))
+            }
     }
 }
 

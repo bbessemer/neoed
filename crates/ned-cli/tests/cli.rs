@@ -867,7 +867,7 @@ fn pattern_selector_edits_matches() {
     exit: 0
     --- stdout
     parser.rs: 1 edit, +0 -1
-    @@ -31,3 +31,2 @@
+    @@ -19,3 +19,2 @@
          fn debug_dump(&self) {
     -        eprintln!("{}", self.src);
          }
@@ -883,7 +883,7 @@ fn invalid_pattern_exits_2() {
     exit: 2
     --- stdout
     --- stderr
-    error: script:1:6: `fn (@a` doesn't parse as rust at `(@a`; add the code around it, or use query{}
+    error: script:1:6: `fn (@a` doesn't parse as rust at `fn (@a`; add the code around it, or use query{}
     ");
 }
 

@@ -548,11 +548,45 @@ fn compile_query(
 /// The pattern `code` compiled for each code language among the searched
 /// files that it parses in.
 fn compile_pattern(
-    _code: &str,
-    _files: &[&SourceFile],
-    _parents: &[Match],
+    code: &str,
+    files: &[&SourceFile],
+    parents: &[Match],
 ) -> Result<Vec<(Language, pattern::Pattern)>, E> {
-    unimplemented!()
+    let mut searched: Vec<usize> = parents.iter().map(|m| m.file).collect();
+    searched.dedup();
+    let mut patterns: Vec<(Language, pattern::Pattern)> = Vec::new();
+    let mut failed: Vec<(Language, pattern::PatternError)> = Vec::new();
+    for &i in &searched {
+        let Some(lang) = files[i].lang.filter(|l| *l != Language::Markdown) else {
+            continue;
+        };
+        if patterns.iter().any(|(l, _)| *l == lang) || failed.iter().any(|(l, _)| *l == lang) {
+            continue;
+        }
+        match pattern::Pattern::compile(lang, code) {
+            Ok(p) => patterns.push((lang, p)),
+            Err(e) => failed.push((lang, e)),
+        }
+    }
+    let selector = format!("`{}`", code.replace('`', "\\`"));
+    if !patterns.is_empty() || searched.is_empty() {
+        return Ok(patterns);
+    }
+    match failed.into_iter().next() {
+        Some((_, e)) => Err(E::InvalidPattern {
+            selector,
+            message: e.to_string(),
+        }),
+        None => Err(E::NoCodeLanguage {
+            selector,
+            files: file_list(
+                &searched
+                    .iter()
+                    .map(|&i| files[i].path.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+        }),
+    }
 }
 
 fn query_error(err: &QueryError, grammar: &tree_sitter::Language) -> String {
@@ -1800,8 +1834,8 @@ mod tests {
         let text = "fn a() {\n    foo(1);\n}\n\nfn b() {\n    foo(2);\n}\n";
         assert_eq!(
             error("delete `foo(@x)`", &[("a.rs", text)]),
-            "error: script:1:8: `foo(@x)` matches 2 spans; add `all` or use one of:\n  \
-             fn:a>`foo(@x)`   2\n  fn:b>`foo(@x)`   6"
+            "error: script:1:8: `foo(@x)` matches 2 items; add `all` or use one of:\n  \
+            fn:a>`foo(@x)`   a.rs:2\n  fn:b>`foo(@x)`   a.rs:6"
         );
     }
 
