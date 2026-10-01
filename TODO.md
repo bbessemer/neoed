@@ -5,7 +5,7 @@ too large for one PR: they carry a checklist of coarse chunks to plan with the
 engineer before starting each one; a single-PR item has none, and moves to Done
 when it lands.
 
-Versions follow semver at 0.x (currently 0.1.1): a change to the command
+Versions follow semver at 0.x (currently 0.2.0): a change to the command
 language or any new user-visible feature bumps the minor version, and a release
 that only fixes bugs or adds hints bumps the patch version. Each item below says
 which it is. When to release 1.0 is TBD.
@@ -55,7 +55,7 @@ means every item of the kind. Properties are `.len`, `.text` and every part the
 item has, compared with `==`, `!=`, `~=` (regex), `<`, `>`, `<=`, `>=`; strings,
 numbers and regexes are the values.
 
-- [ ] New parts: `.ret`, `.attrs`, `.type`, `.value` (aliased type of a `type`
+- [x] New parts: `.ret`, `.attrs`, `.type`, `.value` (aliased type of a `type`
       item). Minor (0.2.0).
 - [ ] Bare kinds (`fn` = `fn:*`) everywhere; `.lines` widens and then splits a
       multi-line span into one span per line; ranges are always whole-line;
