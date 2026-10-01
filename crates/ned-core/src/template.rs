@@ -42,8 +42,57 @@ pub struct Source {
 }
 
 impl Template {
-    pub fn parse(_src: &str) -> Template {
-        unimplemented!()
+    pub fn parse(src: &str) -> Template {
+        let mut pieces = Vec::new();
+        let mut text_start = 0;
+        let flush = |pieces: &mut Vec<Piece>, from: usize, to: usize| {
+            if from < to {
+                pieces.push(Piece::Text {
+                    text: src[from..to].to_string(),
+                    span: from..to,
+                });
+            }
+        };
+        let mut i = 0;
+        while let Some(at) = src[i..].find('@').map(|n| i + n) {
+            let rest = &src[at + 1..];
+            if rest.starts_with('@') {
+                flush(&mut pieces, text_start, at);
+                pieces.push(Piece::Text {
+                    text: "@".into(),
+                    span: at..at + 2,
+                });
+                i = at + 2;
+                text_start = i;
+                continue;
+            }
+            let name_len = rest
+                .char_indices()
+                .find(|&(j, c)| {
+                    !(c == '_' || c.is_ascii_alphabetic() || (j > 0 && c.is_ascii_digit()))
+                })
+                .map_or(rest.len(), |(j, _)| j);
+            if name_len == 0 {
+                i = at + 1;
+                continue;
+            }
+            let name = &rest[..name_len];
+            let many = rest[name_len..].starts_with("...");
+            let end = at + 1 + name_len + if many { 3 } else { 0 };
+            flush(&mut pieces, text_start, at);
+            pieces.push(Piece::Hole(Hole {
+                name: (name != "_").then(|| name.to_string()),
+                many,
+                span: at..end,
+            }));
+            i = end;
+            text_start = end;
+        }
+        flush(&mut pieces, text_start, src.len());
+        Template {
+            src: src.to_string(),
+            pieces,
+        }
     }
 
     pub fn holes(&self) -> impl Iterator<Item = &Hole> {
@@ -55,8 +104,34 @@ impl Template {
 
     /// The text to parse; the holes for which `literal(i)` holds keep their
     /// own text.
-    pub fn source(&self, _literal: impl Fn(usize) -> bool) -> Source {
-        unimplemented!()
+    pub fn source(&self, literal: impl Fn(usize) -> bool) -> Source {
+        let mut text = String::new();
+        let mut holes = Vec::new();
+        let mut pieces = Vec::new();
+        for piece in &self.pieces {
+            let start = text.len();
+            let span = match piece {
+                Piece::Text { text: t, span } => {
+                    text.push_str(t);
+                    span
+                }
+                Piece::Hole(hole) => {
+                    if literal(holes.len()) {
+                        text.push_str(&self.src[hole.span.clone()]);
+                    } else {
+                        text.push_str(&hole.placeholder());
+                    }
+                    holes.push(start..text.len());
+                    &hole.span
+                }
+            };
+            pieces.push((start..text.len(), span.clone()));
+        }
+        Source {
+            text,
+            holes,
+            pieces,
+        }
     }
 }
 
@@ -64,14 +139,20 @@ impl Hole {
     /// The identifier that stands for the hole in parsed code: `__ned_NAME`,
     /// or `__ned__` for `@_`.
     pub fn placeholder(&self) -> String {
-        unimplemented!()
+        format!("__ned_{}", self.name.as_deref().unwrap_or("_"))
     }
 }
 
 impl Source {
     /// The offset in the template's text that `offset` in `text` comes from.
-    pub fn to_template(&self, _offset: usize) -> usize {
-        unimplemented!()
+    pub fn to_template(&self, offset: usize) -> usize {
+        match self.pieces.iter().find(|(text, _)| offset < text.end) {
+            Some((text, template)) => {
+                let into = offset - text.start;
+                template.start + into.min(template.len() - 1)
+            }
+            None => self.pieces.last().map_or(0, |(_, template)| template.end),
+        }
     }
 }
 

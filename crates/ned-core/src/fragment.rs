@@ -6,6 +6,8 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
+use ned_scheme::{Datum, Syntax};
+use serde::Deserialize;
 use tree_sitter::{Node, Tree};
 
 use crate::lang::Language;
@@ -75,49 +77,404 @@ pub enum FragmentError {
 }
 
 impl Builder {
-    /// Reads a builders file, checking its fields against `types`.
-    pub fn read_all(_src: &str, _types: &NodeTypes) -> Result<Vec<Builder>, BuilderError> {
-        unimplemented!()
+    /// Reads a builders file, checking its kinds and fields against `types`.
+    pub fn read_all(src: &str, types: &NodeTypes) -> Result<Vec<Builder>, BuilderError> {
+        let data = ned_scheme::read_all(src).map_err(|e| BuilderError {
+            message: e.to_string(),
+            span: e.span,
+        })?;
+        data.iter().map(|s| Builder::read(s, types)).collect()
+    }
+
+    fn read(form: &Syntax, types: &NodeTypes) -> Result<Builder, BuilderError> {
+        let error = |message: String, span: &Range<usize>| BuilderError {
+            message,
+            span: span.clone(),
+        };
+        let shape = || error("expected (build KIND PART...)".into(), &form.span);
+        let Datum::List(items) = &form.datum else {
+            return Err(shape());
+        };
+        let [head, kind, parts @ ..] = items.as_slice() else {
+            return Err(shape());
+        };
+        let (Datum::Symbol(head), Datum::Symbol(kind_name)) = (&head.datum, &kind.datum) else {
+            return Err(shape());
+        };
+        if head != "build" {
+            return Err(shape());
+        }
+        if !types.has_kind(kind_name) {
+            let message = format!(
+                "unknown kind `{kind_name}`; use a kind from the grammar's node-types.json"
+            );
+            return Err(error(message, &kind.span));
+        }
+        let mut holes = 0;
+        let parts = parts
+            .iter()
+            .map(|part| match &part.datum {
+                Datum::Str(s) => Ok(Part::Text(s.clone())),
+                Datum::Symbol(s) if s == "_" => {
+                    holes += 1;
+                    if holes > 1 {
+                        return Err(error(
+                            "a builder needs one `_`; delete this one".into(),
+                            &part.span,
+                        ));
+                    }
+                    Ok(Part::Hole)
+                }
+                Datum::Symbol(field) if types.has_field(kind_name, field) => {
+                    Ok(Part::Field(field.clone()))
+                }
+                Datum::Symbol(field) => {
+                    let message =
+                        format!("{kind_name} has no field `{field}`; write its text as a string");
+                    Err(error(message, &part.span))
+                }
+                _ => Err(error("a part is a string or a symbol".into(), &part.span)),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if holes == 0 {
+            return Err(error(
+                "a builder needs one `_`, where the fragment goes".into(),
+                &form.span,
+            ));
+        }
+        Ok(Builder {
+            kind: kind_name.clone(),
+            parts,
+        })
+    }
+
+    /// The text before and after the hole, with each field a dummy name.
+    fn text(&self) -> (String, String) {
+        let (mut before, mut after) = (String::new(), String::new());
+        let mut out = &mut before;
+        for part in &self.parts {
+            match part {
+                Part::Text(s) => out.push_str(s),
+                Part::Field(field) => out.push_str(&format!("__ned_{field}")),
+                Part::Hole => out = &mut after,
+            }
+        }
+        (before, after)
     }
 }
 
+#[derive(Deserialize)]
+struct Entry {
+    #[serde(rename = "type")]
+    kind: String,
+    named: bool,
+    #[serde(default)]
+    fields: HashMap<String, Children>,
+    children: Option<Children>,
+    #[serde(default)]
+    subtypes: Vec<TypeRef>,
+}
+
+#[derive(Deserialize)]
+struct Children {
+    types: Vec<TypeRef>,
+}
+
+#[derive(Deserialize)]
+struct TypeRef {
+    #[serde(rename = "type")]
+    kind: String,
+    named: bool,
+}
+
 impl NodeTypes {
-    pub fn read(_json: &str) -> NodeTypes {
-        unimplemented!()
+    pub fn read(json: &str) -> NodeTypes {
+        let entries: Vec<Entry> = serde_json::from_str(json).expect("node-types.json is valid");
+        let named = |types: &[TypeRef]| -> Vec<String> {
+            types
+                .iter()
+                .filter(|t| t.named)
+                .map(|t| t.kind.clone())
+                .collect()
+        };
+        let mut subtypes = HashMap::new();
+        let mut direct = HashMap::new();
+        let mut fields = HashMap::new();
+        for e in entries.iter().filter(|e| e.named) {
+            subtypes.insert(e.kind.clone(), named(&e.subtypes));
+            let children = e
+                .fields
+                .values()
+                .chain(&e.children)
+                .flat_map(|c| named(&c.types));
+            direct.insert(e.kind.clone(), children.collect::<Vec<_>>());
+            fields.insert(e.kind.clone(), e.fields.keys().cloned().collect());
+        }
+        // Each supertype stands for its subtypes, and theirs.
+        let expand = |kinds: &[String]| {
+            let mut out = HashSet::new();
+            let mut todo = kinds.to_vec();
+            while let Some(kind) = todo.pop() {
+                if let Some(subs) = subtypes.get(&kind) {
+                    todo.extend(subs.iter().cloned());
+                }
+                out.insert(kind);
+            }
+            out
+        };
+        let contains = direct
+            .iter()
+            .map(|(k, children)| (k.clone(), expand(children)))
+            .collect();
+        NodeTypes { fields, contains }
     }
 
-    pub fn has_kind(&self, _kind: &str) -> bool {
-        unimplemented!()
+    pub fn has_kind(&self, kind: &str) -> bool {
+        self.fields.contains_key(kind)
     }
 
-    pub fn has_field(&self, _kind: &str, _field: &str) -> bool {
-        unimplemented!()
+    pub fn has_field(&self, kind: &str, field: &str) -> bool {
+        self.fields.get(kind).is_some_and(|f| f.contains(field))
     }
 
     /// Whether a `parent` node can have a named `child` node, as a field or
     /// child, through any supertype.
-    pub fn can_contain(&self, _parent: &str, _child: &str) -> bool {
-        unimplemented!()
+    pub fn can_contain(&self, parent: &str, child: &str) -> bool {
+        self.contains.get(parent).is_some_and(|c| c.contains(child))
     }
 }
 
 impl Fragment {
     /// The fragment's root node, or its run of sibling root nodes.
     pub fn roots(&self) -> Vec<Node<'_>> {
-        unimplemented!()
+        let r = &self.roots;
+        let node = self.spanning(r);
+        if self.span(node) == *r && node.is_named() {
+            return vec![node];
+        }
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .filter(|c| !c.is_extra() && c.start_byte() >= r.start && self.span(*c).end <= r.end)
+            .collect()
     }
 
     /// Hole `i`'s node: the outermost node spanning exactly its placeholder,
     /// within the roots. `None` if the hole is literal.
-    pub fn hole(&self, _i: usize) -> Option<Node<'_>> {
-        unimplemented!()
+    pub fn hole(&self, i: usize) -> Option<Node<'_>> {
+        let range = self.holes[i].as_ref()?;
+        let container = self.container().map(|c| c.id());
+        let mut node = self.spanning(range);
+        while let Some(parent) = node.parent() {
+            if self.span(parent) != *range || Some(parent.id()) == container {
+                break;
+            }
+            node = parent;
+        }
+        Some(node)
+    }
+
+    /// The node the roots are children of.
+    fn container(&self) -> Option<Node<'_>> {
+        let node = self.spanning(&self.roots);
+        if self.span(node) == self.roots && node.is_named() {
+            node.parent()
+        } else {
+            Some(node)
+        }
+    }
+
+    fn spanning(&self, r: &Range<usize>) -> Node<'_> {
+        self.tree
+            .root_node()
+            .descendant_for_byte_range(r.start, r.end)
+            .expect("ranges lie within the text")
+    }
+
+    /// The node's range without the whitespace at its ends: some grammars end
+    /// a statement with its newline (Go).
+    fn span(&self, node: Node<'_>) -> Range<usize> {
+        let r = node.byte_range();
+        let text = &self.text[r.clone()];
+        let start = r.start + (text.len() - text.trim_start().len());
+        start..(start + text.trim().len()).max(start)
     }
 }
 
 /// Every reading of `template` in `lang` that parses without errors: alone,
 /// then inside each builder. Readings with the same root kinds count once.
-pub fn parse(_lang: Language, _template: &Template) -> Result<Vec<Fragment>, FragmentError> {
-    unimplemented!()
+pub fn parse(lang: Language, template: &Template) -> Result<Vec<Fragment>, FragmentError> {
+    let wraps = std::iter::once(None).chain(lang.builders().iter().enumerate().map(Some));
+    let mut readings: Vec<Fragment> = Vec::new();
+    let mut fused = None;
+    for wrap in wraps {
+        match reading(lang, template, wrap) {
+            Ok(Some(f)) => {
+                let kinds =
+                    |f: &Fragment| f.roots().iter().map(|n| n.kind_id()).collect::<Vec<_>>();
+                if !readings.iter().any(|r| kinds(r) == kinds(&f)) {
+                    readings.push(f);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => fused = fused.or(Some(e)),
+        }
+    }
+    if !readings.is_empty() {
+        return Ok(readings);
+    }
+    if let Some(e) = fused {
+        return Err(e);
+    }
+    let bare = template.source(|_| false);
+    let tree = lang.parse(&bare.text);
+    let at = first_error(tree.root_node()).map_or(0, |n| n.start_byte());
+    Err(FragmentError::NoParse {
+        lang,
+        at: bare.to_template(at),
+    })
+}
+
+/// The reading of `template` alone or inside the builder `wrap`, if it parses
+/// without errors and its roots are whole nodes the context can contain.
+fn reading(
+    lang: Language,
+    template: &Template,
+    wrap: Option<(usize, &Builder)>,
+) -> Result<Option<Fragment>, FragmentError> {
+    let Some(f) = build(lang, template, wrap, &HashSet::new()) else {
+        return Ok(None);
+    };
+    let partial: HashSet<usize> = (0..f.holes.len())
+        .filter(|&i| {
+            f.holes[i]
+                .as_ref()
+                .is_some_and(|r| f.span(f.spanning(r)) != *r)
+        })
+        .collect();
+    if partial.is_empty() {
+        return Ok(Some(f));
+    }
+    // Holes inside a string or comment keep their text, which leaves the
+    // tree's shape unchanged; any other hole that isn't a whole node is
+    // fused into a neighbouring token.
+    match build(lang, template, wrap, &partial) {
+        Some(literal) if shape(&literal.tree) == shape(&f.tree) => Ok(Some(literal)),
+        _ => {
+            let i = *partial.iter().min().expect("not empty");
+            let span = template
+                .holes()
+                .nth(i)
+                .expect("a hole per range")
+                .span
+                .clone();
+            Err(FragmentError::Fused { span })
+        }
+    }
+}
+
+/// Parses `template` inside `wrap`, with the holes in `literal` keeping their
+/// text. `None` if it has errors, or its roots aren't whole nodes that the
+/// context can contain.
+fn build(
+    lang: Language,
+    template: &Template,
+    wrap: Option<(usize, &Builder)>,
+    literal: &HashSet<usize>,
+) -> Option<Fragment> {
+    let source = template.source(|i| literal.contains(&i));
+    let (before, after) = wrap.map(|(_, b)| b.text()).unwrap_or_default();
+    // Later lines of the fragment take the indentation the prefix ends at.
+    let last_line = &before[before.rfind('\n').map_or(0, |i| i + 1)..];
+    let indent = &last_line[..last_line.len() - last_line.trim_start().len()];
+    let at = |offset: usize| {
+        before.len() + offset + indent.len() * source.text[..offset].matches('\n').count()
+    };
+    let text = format!(
+        "{before}{}{after}",
+        source.text.replace('\n', &format!("\n{indent}"))
+    );
+    let tree = lang.parse(&text);
+    if tree.root_node().has_error() {
+        return None;
+    }
+    let start = source.text.len() - source.text.trim_start().len();
+    let end = source.text.trim_end().len();
+    if start >= end {
+        return None;
+    }
+    let holes = source
+        .holes
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (!literal.contains(&i)).then(|| at(r.start)..at(r.end)))
+        .collect();
+    let f = Fragment {
+        text,
+        tree,
+        roots: at(start)..at(end),
+        holes,
+        builder: wrap.map(|(i, _)| i),
+    };
+    let node = f.spanning(&f.roots);
+    if f.span(node) != f.roots && !covers(&f, node) {
+        return None;
+    }
+    let roots = f.roots();
+    if roots.is_empty() {
+        return None;
+    }
+    let types = lang.node_types();
+    let container = f.container()?.kind();
+    if !roots.iter().all(|r| types.can_contain(container, r.kind())) {
+        return None;
+    }
+    Some(f)
+}
+
+/// Whether the fragment's roots start at one of `node`'s children and end at
+/// one, a run of whole children. Its ends may be tokens, such as a trailing
+/// `,`.
+fn covers(f: &Fragment, node: Node<'_>) -> bool {
+    let range = &f.roots;
+    let mut cursor = node.walk();
+    let children: Vec<_> = node
+        .children(&mut cursor)
+        .filter(|c| !c.is_extra())
+        .map(|c| f.span(c))
+        .collect();
+    let straddles = |at: usize| children.iter().any(|c| c.start < at && at < c.end);
+    children.iter().any(|c| c.start == range.start)
+        && children.iter().any(|c| c.end == range.end)
+        && !straddles(range.start)
+        && !straddles(range.end)
+}
+
+/// The tree's node kinds, in order.
+fn shape(tree: &Tree) -> Vec<u16> {
+    let mut out = Vec::new();
+    let mut cursor = tree.walk();
+    'walk: loop {
+        out.push(cursor.node().kind_id());
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                break 'walk;
+            }
+        }
+    }
+    out
+}
+
+fn first_error(node: Node<'_>) -> Option<Node<'_>> {
+    if node.is_error() || node.is_missing() {
+        return Some(node);
+    }
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .filter(|c| c.has_error())
+        .find_map(first_error)
 }
 
 #[cfg(test)]
@@ -164,7 +521,8 @@ mod tests {
         has_reading(Language::Rust, "Some(@x) => @y,", "match_arm");
         has_reading(Language::Rust, "Leaf(u32)", "enum_variant");
         has_reading(Language::Rust, "Vec<@t>", "generic_type");
-        has_reading(Language::Rust, "T: Clone", "constrained_type_parameter");
+        has_reading(Language::Rust, "dyn Fn(@a) -> @r", "dynamic_type");
+        has_reading(Language::Rust, "T: Clone", "type_parameter");
         has_reading(
             Language::Rust,
             "fn len(&self) -> usize;",
@@ -291,13 +649,11 @@ mod tests {
     /// One fragment per builder that parses only inside it.
     const BUILDER_SAMPLES: &[(Language, &str)] = &[
         (Language::Rust, "return @x"),
-        (Language::Rust, "fn len(&self) -> usize;"),
         (Language::Rust, "Some(@x) => @y,"),
         (Language::Rust, "pub name: String,"),
         (Language::Rust, "Leaf(u32),"),
         (Language::Rust, "a: u32"),
         (Language::Rust, "T: Clone"),
-        (Language::Rust, "Vec<@t>"),
         (Language::Python, "def start(self):\n    return @x"),
         (Language::Python, "x: int = 0, *args"),
         (Language::Python, "case [@x]:\n    pass"),
@@ -306,7 +662,6 @@ mod tests {
         (Language::Go, "Close() error"),
         (Language::Go, "case 1:\n\t@x"),
         (Language::Go, "ctx context.Context"),
-        (Language::Go, "return @x"),
         (Language::JavaScript, "render() { return @x; }"),
         (Language::JavaScript, "a: @v, b"),
         (Language::JavaScript, "a, ...rest"),

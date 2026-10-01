@@ -110,13 +110,39 @@ impl Language {
     /// The builders of fragments that only parse inside other code,
     /// `queries/<lang>/builders.scm` (§3.10).
     pub fn builders(self) -> &'static [Builder] {
-        unimplemented!()
+        static BUILDERS: [OnceLock<Vec<Builder>>; 7] = [const { OnceLock::new() }; 7];
+        let source = match self {
+            Language::Rust => include_str!("../../../queries/rust/builders.scm"),
+            Language::Python => include_str!("../../../queries/python/builders.scm"),
+            Language::Go => include_str!("../../../queries/go/builders.scm"),
+            Language::JavaScript => include_str!("../../../queries/ecma/builders.scm"),
+            Language::TypeScript | Language::Tsx => concat!(
+                include_str!("../../../queries/ecma/builders.scm"),
+                include_str!("../../../queries/typescript/builders.scm")
+            ),
+            Language::Markdown => "",
+        };
+        BUILDERS[self as usize].get_or_init(|| {
+            Builder::read_all(source, self.node_types())
+                .unwrap_or_else(|e| panic!("{self} builders, bytes {:?}: {e}", e.span))
+        })
     }
 
     /// Which node kinds each kind has as fields and can contain, from the
     /// grammar's `node-types.json`.
     pub fn node_types(self) -> &'static NodeTypes {
-        unimplemented!()
+        static TYPES: [OnceLock<NodeTypes>; 7] = [const { OnceLock::new() }; 7];
+        TYPES[self as usize].get_or_init(|| {
+            NodeTypes::read(match self {
+                Language::Rust => tree_sitter_rust::NODE_TYPES,
+                Language::Python => tree_sitter_python::NODE_TYPES,
+                Language::TypeScript => tree_sitter_typescript::TYPESCRIPT_NODE_TYPES,
+                Language::Tsx => tree_sitter_typescript::TSX_NODE_TYPES,
+                Language::JavaScript => tree_sitter_javascript::NODE_TYPES,
+                Language::Go => tree_sitter_go::NODE_TYPES,
+                Language::Markdown => tree_sitter_md::NODE_TYPES_BLOCK,
+            })
+        })
     }
 
     pub fn parse(self, text: &str) -> Tree {
