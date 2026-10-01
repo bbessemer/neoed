@@ -1,136 +1,199 @@
 # Neoed TODO
 
-Each milestone follows the TDD cycle in AGENTS.md. Milestones marked _(split)_
-are too large for one PR; plan sub-tasks with the engineer before starting.
+Each work item follows the TDD cycle in AGENTS.md. Items marked _(split)_ are
+too large for one PR: they carry a checklist of coarse chunks to plan with the
+engineer before starting each one; a single-PR item has none, and moves to
+Done when it lands.
 
-## 0. Bootstrap
+Versions follow semver at 0.x (currently 0.1.0): a change to the command
+language or any new user-visible feature bumps the minor version, and a
+release that only fixes bugs or adds hints bumps the patch version. Each item
+below says which it is. When to release 1.0 is TBD.
 
-- [x] Choose tech stack (Rust, tree-sitter, external formatters, LSP daemon later)
-- [x] Cargo workspace: `ned-core` (lib), `ned-cli` (bin `ned`), core deps
-- [x] Fill in AGENTS.md; write this plan
+## Done
 
-## 1. Command-language spec
+- **Bootstrap**: Rust workspace (`ned-core`, `ned-cli`), AGENTS.md, this plan.
+- **Command-language spec**: `docs/command-language.md`, signed off; tests
+  are written against it.
+- **Buffer and transactions**: rope buffer, overlap-checked edit set, atomic
+  multi-file write, diff rendering.
+- **Script parser**: lexer, AST, errors with a caret excerpt and a fix.
+- **Line-based editing**: line, range, regex and literal selectors; `show`,
+  `replace`, `insert`, `delete`, `sub`; re-basing; CLI wiring; E2E snapshots.
+- **Tree-sitter integration**: language detection, `queries/<lang>/selectors.scm`
+  for Rust, Python, Go, JavaScript, TypeScript/TSX and Markdown, syntax
+  selectors and parts, `outline`, the parse-error guard, raw `query{}`.
+- **Formatting**: `.ned.toml` over user config, per-language formatters,
+  formatter changes reported apart from the agent's edits.
+- **Multi-file and advanced edits**: globs, per-file scoping, `move` across
+  files, `--dry-run`.
+- **LSP daemon**: per-workspace daemon, `check` (including save-time checks),
+  edit checking, `rename`, `.refs`/`.def`, LSP formatting fallback.
+- **Agent ergonomics, phase 1**: `ned help`, agent guide and skill, token
+  benchmark, ranges, `show +N`, `create`, `|` chaining, and the error-message
+  review (every error suggests a fix). Open items are below.
+- **Release groundwork**: install instructions, MIT license.
 
-- [x] `docs/command-language.md`: invocation (`-e`, stdin, file args), script
-      grammar (EBNF), comments, quoting/escaping
-- [x] Selectors: lines/ranges/`$`, regex, literal, syntax kinds, nesting (`>`),
-      parts (`.body`, `.sig`, `.params`, `.doc`), `all`, raw query escape hatch
-- [x] Verbs: `show`, `outline`, `replace`, `insert before|after`, `delete`,
-      `sub`, `move`; reserved: `rename`, `check`, `refs:`
-- [x] Text blocks (heredoc) and indentation re-basing rules
-- [x] Output format (summary, diff hunks, `show` line numbering), errors,
-      exit codes, `--dry-run`/`--quiet`/`--force`/`--no-fmt`
-- [x] Worked examples comparing token cost against `sed`/Python equivalents
-- [x] Engineer review and sign-off
+## Phase 2
 
-## 2. Buffer and transactions
+Order matters: CI first, because it protects everything after it; the two
+selector items share the step grammar and `Matcher`, so they land in sequence;
+sessions precede everything that reads a session (commit, REPL, MCP); terminal
+output precedes the REPL. User-supplied grammars and plugins close the phase
+and may slip.
 
-- [x] Rope-backed buffer with byte/line/point conversions
-- [x] Edit set: collect edits against original coordinates, reject overlaps,
-      apply in one pass
-- [x] Atomic file write (temp file + rename, preserve permissions and line endings)
-- [x] Diff summary rendering (`similar`)
+### CI and release binaries
 
-## 3. Script parser
+Every push and PR builds, tests, lints (`clippy -D warnings`) and checks
+formatting on Linux and macOS, so a green check is the merge criterion instead
+of a local run. A tag publishes release binaries for both platforms, so users
+without a Rust toolchain can install `ned` from the README.
 
-- [x] Lexer with source positions
-- [x] Parser to AST (commands, selectors, text blocks)
-- [x] Error messages with line/column and a caret excerpt
+Version: patch (0.1.1); the first release with binaries changes no behaviour.
 
-## 4. Line-based editing, end to end
+### Selector filters and more parts
 
-- [x] Line/range/regex/literal selector resolution
-- [x] Verbs: `show`, `replace`, `insert`, `delete`, `sub`
-- [x] Indentation re-basing for inserted/replaced blocks
-- [x] CLI wiring: args, stdin script, multiple files, exit codes
-- [x] E2E snapshot tests in `crates/ned-cli/tests/`
+An agent narrows a step by a property instead of a name: `.lines[.len > 80]`
+selects long lines, `fn[.name ~= /^test_/]` test functions, `fn[.doc == ""]`
+undocumented ones. `[...]` follows a step (after its parts) and keeps each span
+for which the condition holds; a kind without `:name` means every item of the
+kind. Properties are `.len`, `.text` and every part the item has, compared with
+`==`, `!=`, `~=` (regex), `<`, `>`, `<=`, `>=`; strings, numbers and regexes
+are the values. The spec step also settles which new parts to add; candidates
+are `.ret` (return type), `.attrs` (attributes and decorators), `.type` and
+`.value` (of a field, const or var). Spec §2.2 and §3.4 change first.
 
-## 5. Tree-sitter integration _(split)_
+Version: minor (0.2.0); new selector grammar and parts.
 
-- [x] Language detection (extension, shebang, `--lang`) and grammar registry
-- [x] `queries/<lang>/selectors.scm` for every language (§12)
-- [x] Syntax selectors and nesting; ambiguity errors with candidates
-- [x] Parts (`.body`, `.sig`, `.params`, `.name`, `.doc`); `insert start|end`
-      on an item implies `.body`
-- [x] `outline` verb (compact symbol tree with line numbers)
-- [x] Parse-error guard (reject new ERROR/MISSING nodes unless `--force`)
-- [x] Go tab default for re-basing
-- [x] Re-basing empty spans (enclosing item's indent)
-- [x] Raw tree-sitter query selector
+### Syntax patterns _(split)_
 
-## 6. Formatting
+An agent selects code by writing code: a backquoted literal such as
+`` fn:parse>`if name == "foo" { $body... }` `` is parsed with the file's grammar
+and matched against the syntax tree, so runs of whitespace, line breaks and
+comments never have to be reproduced. Plain code is accepted as written;
+`$name` matches any one node and `$name...` any run of sibling nodes, and
+either captures what it matched for use as `$name` in the `replace` text, as
+`sub` uses `$1`. The pattern compiles to a tree-sitter query and runs on the
+`query{}` path, so it works in every supported language. The risk is parsing a
+fragment: an `if` in Rust only parses inside a function, so each language
+needs wrapping contexts to try. Matching and simple substitution are the
+scope here; procedural generation belongs to Plugins. Prior art: ast-grep's
+metavariables.
 
-- [x] Config: `.ned.toml` (walk up from file) merged over user config
-- [x] Per-language formatter commands with sensible defaults (rustfmt, gofmt,
-      black/ruff, prettier)
-- [x] Run after edits; `--no-fmt`; skip with note when formatter is missing
-- [x] Report formatter-introduced changes separately from the agent's edits
+- [ ] Spec: placeholder grammar, capture rules, substitution in `replace`
+- [ ] Fragment parsing with per-language contexts (`queries/<lang>/contexts.scm`)
+- [ ] Pattern-to-query compilation and matching
+- [ ] Capture substitution in `replace` TEXT
 
-## 7. Multi-file and advanced edits
+Version: minor once matching works; a further minor if capture substitution
+ships separately. The spec and context chunks alone release nothing.
 
-- [x] Globs and multiple files per script; per-file selector scoping
-- [x] `move SEL to before|after SEL` (within and across files)
-- [x] `--dry-run` diff-only mode
+### Sessions _(split)_
 
-## 8. Agent ergonomics
+With `-s, --session [NAME]` or `NED_SESSION`, `ned` records each invocation
+(script, file set, outcome and per-file edits) in an append-only log under a
+per-workspace state directory, guarded by an advisory lock so several
+frontends can share it. An agent repeats its last command with a correction
+using a shell-style `!!` shorthand instead of resending the script, and undoes
+the last invocation's edits. The REPL and MCP server use a session
+automatically, and the same session is visible from every mode, so a human
+can follow an agent's progress from the REPL. The store is a `ned-core` module
+and needs no daemon; the CLI keeps working without one.
 
-- [x] Concise `ned help` / `ned help VERB` sized for agent context windows
-- [x] Agent usage guide (skill/system-prompt snippet) in `docs/`
-- [x] Token-cost benchmark suite vs `sed`/Python on representative edits
-- [x] Error-message review: every error suggests a corrected command
-- [x] Range selectors `SEL..SEL` (`/^## 6/../^## 7/`, `fn:a..fn:c`): from the
-      start of the first match to the end of the second, searched after it;
-      whole lines if both ends are whole-line. The error for `/a/-/b/` suggests
-      `..`
-- [x] `show SEL +N`: N lines of context around each span; regions merge as now
-- [x] Markdown as a language: tree-sitter-md grammar; kinds `section` (a
-      heading and its content, named by the heading text), `item`, `table`,
-      `code`; `outline` as the heading tree; prettier as the default formatter
-      (realigns tables)
-- [x] `create PATH TEXT`: creates a file (an error if it exists) as part of the
-      transaction, with its language detected from the path, and adds it to
-      the file set
-- [x] `insert before|after` a syntax item that is blank-separated from its
-      neighbours adds one separating blank line, as `move` does, unless the
-      text already starts or ends with one
-- [x] `insert before|after` with heredoc TEXT widens a partial-line target to
-      its whole lines, as if `.lines` were given (string TEXT stays verbatim),
-      so `insert after /re/ <<END` can't land mid-line
-- [x] Name trait impls `TRAIT for TYPE` too: `impl:"Display for Language"`
-      picks one impl, while `impl:Language` still matches every impl of the
-      type
-- [x] Markdown sections get a `.body`: the content after the heading line, so
-      `insert start|end section:X` and `replace section:X.body` work
-- [x] `replace ITEM with TEXT` keeps the item's attributes and doc comments
-      (`#[test]`, `///`) unless TEXT starts with its own, so replacing a test
-      function can't silently drop `#[test]`
-- [x] `insert before ITEM` with TEXT that is only attributes or doc comments
-      adds no separating blank line: the text attaches to the item
-- [x] A syntax step that matches nothing suggests the same name under another
-      kind first (`struct:LspError` → "did you mean enum:LspError?"), before
-      the close-name hint
-- [x] Explicit chaining with `|`: `CMD | CMD` runs the right command against
-      the text as the left one left it (selectors see its additions, renames
-      and moves), while `;` and newlines keep snapshot semantics (§2.3). The
-      script stays one transaction. It avoids a second ned call for, e.g.,
-      `create`, `move` or `rename` followed by an edit that selects the result
-- [x] A FILE argument that doesn't exist but names a verb, as in
-      `ned outline src/a.rs`, is an error suggesting
-      `ned src/a.rs -e outline`, instead of waiting for a script on stdin
-- [x] Searching with `show all /re/` over a glob or `-w`: no match is a normal
-      answer, so say `no matches` (exit 0) instead of an error
-      listing the files searched with a hint to `show` them
-- [x] A `replace` whose TEXT starts with a copy of the line just above its
-      span, or ends with a copy of the line just below, prints a note naming
-      the duplicated line (the range was probably off by one)
-- [x] A regex, literal or heredoc lies inside a whole-line parent (a syntax
-      item) if it lies within its lines, as nested line selectors do, so
-      `fn:x>"    let a"` matches and `^` means a real line start (also in `sub`)
-- [x] No-match hints for `P>"a"..P>"b"` (suggest `P>"a".."b"`) and for a string
-      literal that matches as escaped source text (suggest `"\\n"` for `"\n"`)
-- [x] Markdown list re-basing: list-item TEXT inserted, replaced or moved next
-      to any line of a list item anchors to the item: re-based to its marker
-      column, inserted after the whole item (children included)
+- [ ] Store and log format, lock, per-workspace location
+- [ ] `-s`/`NED_SESSION`, `history` and `undo`
+- [ ] Repeat-with-correction shorthand
+
+Version: minor for the flag and store; the log format is versioned, and a
+format change before 1.0 is another minor. The shorthand is a minor if it
+ships after.
+
+### Commit from ned
+
+An agent turns its edits into one git commit without touching anything else in
+the working tree: `--commit MSG` commits exactly the invocation's edits, and
+with `-s` the session's edits so far. `ned` patches the index directly rather
+than staging paths, so other staged or unstaged changes are never swept into
+the commit. Depends on Sessions for the session case.
+
+Version: minor; a new flag.
+
+### Merge conflicts
+
+A file with `<<<<<<<`/`=======`/`>>>>>>>` markers still parses: markers are
+hidden from the grammar, so syntax selectors find items inside either side and
+the parse-error guard doesn't block edits to a conflicted file. Then an agent
+resolves conflicts structurally: a `conflict` kind (numbered in file order)
+with `.ours`, `.theirs` and `.base` parts, and `resolve conflict:2 ours`
+(or `replace conflict:2 with ...`) replaces the whole conflict with one side
+or new text. The marker tolerance is independent; the resolution verb depends
+on the parts work above.
+
+Version: patch for marker tolerance (existing scripts start working on
+conflicted files); minor for the `conflict` kind, its parts and `resolve`.
+
+### Terminal output
+
+When stdout is a terminal, `ned` formats for a human: syntax-highlighted code
+(from the grammars' highlight queries), right-aligned line numbers delimited
+from code by colour instead of `:`, coloured diffs. `--color auto|always|never`
+and `NO_COLOR` control it. Output to a pipe or file is unchanged, so agents
+keep the terse form that §6 of the spec defines. Prerequisite to the REPL.
+
+Version: minor; `--color` is new and terminal output changes, though piped
+output doesn't.
+
+### REPL
+
+`ned-repl`: a human edits interactively with persistent buffers, undo and an
+explicit write, using the same command language, and can attach to an agent's
+session to watch and correct its work. Depends on Sessions and Terminal
+output.
+
+Version: minor; a new binary.
+
+### MCP server
+
+`ned-mcp`: an MCP server exposes script execution, `outline` and `show` as
+tools, so agent frameworks call `ned` without a shell. It is a thin client of
+`ned-core` and the session store, with no logic of its own. Depends on
+Sessions.
+
+Version: minor; a new binary.
+
+### User-supplied grammars _(split)_
+
+A user adds a language without rebuilding `ned`: `[languages.NAME]` in
+`.ned.toml` names a compiled tree-sitter grammar library, its file extensions
+and a directory of query files (`selectors.scm`, `highlights.scm`). The
+closed `Language` enum becomes an open registry that syntax selectors,
+`outline`, formatting, LSP config and highlighting all key on. This needs no
+plugin system: a grammar plus queries is data, as the built-in languages are.
+
+- [ ] Language registry replacing the enum
+- [ ] Dynamic grammar loading and query-file lookup
+- [ ] Guide to writing selector and highlight queries
+
+Version: minor when loading works; the registry refactor alone is a patch if
+released on its own, since nothing visible changes.
+
+### Plugins
+
+Later. A Scheme extending tree-sitter's query syntax, embedded with Steel or a
+hand-rolled R5RS, for new languages whose items need logic, custom commands,
+complex tree manipulations and procedural code generation: a language-generic
+but syntax-aware macro system. Not for external processes, I/O outside the
+editing core, or Emacs-style scope creep; `ned` stays a focused tool. First
+step is a spike comparing Steel with a hand-rolled interpreter on one real
+use case.
+
+Version: minor when a first plugin can load; the spike releases nothing.
+
+## Agent ergonomics
+
+Hints and relaxed errors: each is a patch, and they batch into the next
+release of either kind.
+
 - [ ] A `sub` replacement that names a group its regex doesn't have is an
       error, not an empty expansion: `$1deletions` is the group `1deletions`,
       so suggest `${1}deletions` (or `$$` for a literal `$`)
@@ -141,73 +204,10 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       line, with a note, instead of an error (`show 1-60` on a 57-line file);
       edits keep the error
 
-## 9. LSP daemon _(split)_
-
-- [x] `ned-daemon` crate: per-workspace socket, lazy spawn, idle timeout
-- [x] LSP client (`lsp-types`, `tokio`): initialize, didOpen/didChange, shutdown
-- [x] Server configuration per language (rust-analyzer, gopls, pyright, tsserver)
-- [x] `check` verb: diagnostics for edited files (and automatic checking of
-      edits while a daemon runs)
-- [x] Diagnostics that only `cargo check` reports (rust-analyzer flycheck on
-      save), e.g. borrow errors, in `check` (edits are checked unsaved)
-- [x] `rename` verb (within the file set, or the workspace with `-w`)
-- [x] `.refs` / `.def` parts (replacing the reserved `refs:` / `def:`)
-- [x] LSP formatting fallback when no external formatter is installed
-
-## 10. REPL
-
-- [ ] `ned-repl` crate: interactive session with persistent buffers, undo,
-      explicit write
-
-## 11. MCP server
-
-- [ ] `ned-mcp` crate exposing script execution, `outline`, and `show` as tools
-
-## 12. Release
-
-- [x] Syntax selectors and `outline` for Python, TypeScript, TSX, JavaScript,
-      Go: query files, a test per kind and part, spec notes. Decided: Python
-      `.doc` is the docstring; in JS/TS, `const f = () => {}` (or
-      `= function () {}`) is both `fn:f` and `const:f` (outline lists it once,
-      as `fn`), `const` declarations are `const`, and `let`/`var` are `var`
-- [ ] CI (build, test, clippy, fmt) on Linux and macOS
-- [x] Install instructions (`cargo install --git`, README)
-- [ ] Release binaries
-- [x] License: MIT (`LICENSE`)
-
 ## Bugs
 
-- [x] Ambiguity candidates for nested selectors put the scope before the
-      whole selector (`64>fn:items>/name/`, `var:comma>fn:items>/name/`,
-      `fn:x>file:a.rs>/re/`), so they select nothing; put `file:` first and
-      the line or enclosing-item scope just before the last step. The line
-      scope is also wrong for items: two `impl:Workspace` candidates were
-      given as `112-120>…` and `124-150>…`, the impls' bodies, but a line
-      scope must cover the whole item (`111-121>impl:Workspace`) to match it
-- [x] A syntax step fails when the file set includes a file in a language
-      without selector queries yet (e.g. a `.py` file next to `.rs` files),
-      even if other files match; skip such files as files without a language
-      are skipped, and fail only if no searched file supports the kind
-- [x] Deleting (or moving) the last two items of a block in one script is an
-      overlap error: in `mod t { fn x() {} fn a() {} fn b() {} }`, with blank
-      lines between the functions, `delete fn:a; delete fn:b` gives "edit
-      overlaps command 1", because both tidy the blank line between them
-- [x] A line selector nested in a syntax item can't select the item's last
-      line (`fn:b>$`, `fn:b>8`): the line's newline lies outside the item's
-      span, which ends at `}`
-- [x] Formatting a file that `create` makes in a new directory reports
-      `rustfmt not found`: the formatter runs in the file's directory, which
-      doesn't exist until the write; run it in the nearest existing ancestor
-- [x] Syntax selectors are slow on large files: any `fn:` selector on the
-      3,500-line `crates/ned-core/src/exec.rs` takes 1.2 s (a 400-line file:
-      0.01 s), even when it matches nothing, so the cost grows faster than the
-      file; profile items/query resolution
-- [x] `ned` panics when stdout closes early (`ned F -e '...' | head -1`):
-      "failed printing to stdout: Broken pipe", before the edit was written;
-      finish the script instead
-- [x] `a_stale_socket_is_replaced` (ned-daemon `tests/daemon.rs`) is flaky:
-      about 1 run in 5 fails `Client::connect(..).is_none()` just after
-      binding and dropping a listener
+Each fix is a patch; a fix that changes documented behaviour is a minor.
+
 - [ ] `create a.rs "fn a() {}\n"` followed by `insert after fn:a ...` in the
       same script leaves a trailing blank line (rustfmt removes it)
 - [ ] The did-you-mean-another-kind hint only fires for a selector's last
@@ -217,13 +217,11 @@ are too large for one PR; plan sub-tasks with the engineer before starting.
       `|`: `outline | show 1` is a parse error ("expected a selector, found
       '|'"), because `optional_target` (`script/parser.rs`) doesn't treat
       `|` as the end of the command
-- [x] `cargo install --git` builds report a dirty version
-      (`0.1.0+6bf01e7.dirty.1790803292`): `build.rs` sees cargo's checkout
-      marker (`.cargo-ok`) as an uncommitted change, so every install gets a
-      new build time and a daemon from an earlier install of the same commit
-      isn't reused
 
 ## Future improvements
+
+Re-basing changes are patches, since the spec leaves their details open; the
+`|` change is a minor, because it lifts a documented error.
 
 - [ ] Smarter indent conversion in re-basing: normalize space widths (e.g.
       2-space text into a 4-space file), detect alignment (continuation lines
