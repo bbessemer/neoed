@@ -1252,22 +1252,25 @@ mod tests {
 
     #[test]
     fn ranges_run_from_one_match_to_the_next_match_of_the_end() {
-        assert_eq!(select("delete fn:a..fn:b", TEXT), [TEXT.trim_end()]);
+        assert_eq!(select("delete fn:a..fn:b", TEXT), [TEXT]);
         assert_eq!(
             select("delete all /let x/../let y/", TEXT),
-            ["let x = 1;\n    let y"]
-        );
-        assert_eq!(
-            select("delete /let x/../let y/.lines", TEXT),
             ["    let x = 1;\n    let y = 2;\n"]
         );
-        assert_eq!(select(r#"delete fn:b>/let/.."}""#, TEXT), ["let x = 3;\n}"]);
+        assert_eq!(
+            select("delete all /let x/../let y/.lines", TEXT),
+            ["    let x = 1;\n", "    let y = 2;\n"]
+        );
+        assert_eq!(
+            select(r#"delete fn:b>/let/.."}""#, TEXT),
+            ["    let x = 3;\n}\n"]
+        );
     }
 
     #[test]
     fn ranges_skip_starts_inside_an_earlier_range() {
-        assert_eq!(select("delete all /a/../b/", "a b a b\n"), ["a b", "a b"]);
-        assert_eq!(select("delete all /a/../b/", "a a b\n"), ["a a b"]);
+        assert_eq!(select("delete all /a/../b/", "a b a b\n"), ["a b a b\n"]);
+        assert_eq!(select("delete all /a/../b/", "a a b\nb\n"), ["a a b\n"]);
     }
 
     #[test]
@@ -1362,13 +1365,58 @@ mod tests {
     }
 
     #[test]
-    fn lines_part_widens_to_whole_lines() {
+    fn lines_part_selects_each_whole_line() {
         assert_eq!(select("delete \"y = 2\".lines", TEXT), ["    let y = 2;\n"]);
         assert_eq!(
-            select("delete \"2;\\n}\".lines", TEXT),
-            ["    let y = 2;\n}\n"]
+            select("delete all \"2;\\n}\".lines", TEXT),
+            ["    let y = 2;\n", "}\n"]
         );
         assert_eq!(select("delete all /x/.lines", "x x\ny\n"), ["x x\n"]);
+        assert_eq!(
+            select("delete all fn:b.lines", TEXT),
+            ["fn b() {\n", "    let x = 3;\n", "}\n"]
+        );
+        assert_eq!(
+            select("delete all fn:a.body.lines", TEXT),
+            ["    let x = 1;\n", "    let y = 2;\n"]
+        );
+    }
+
+    #[test]
+    fn ambiguous_lines_list_line_numbers() {
+        assert_eq!(
+            error("delete fn:b.lines", &[("a.rs", TEXT)]),
+            "error: script:1:8: fn:b.lines matches 3 items; add `all` or use one of:\n  \
+             fn:b>6   a.rs:6\n  \
+             fn:b>7   a.rs:7\n  \
+             fn:b>8   a.rs:8"
+        );
+        assert_eq!(
+            error("delete fn:a.body.lines", &[("a.rs", TEXT)]),
+            "error: script:1:8: fn:a.body.lines matches 2 items; add `all` or use one of:\n  \
+             fn:a.body>2   a.rs:2\n  \
+             fn:a.body>3   a.rs:3"
+        );
+    }
+
+    #[test]
+    fn bare_kinds_select_every_item_of_the_kind() {
+        assert_eq!(select("delete all fn", TEXT).len(), 2);
+        assert_eq!(select("delete fn:b>var", TEXT), ["let x = 3;"]);
+        assert_eq!(
+            error("delete fn", &[("a.rs", TEXT)]),
+            "error: script:1:8: fn matches 2 items; add `all` or use one of:\n  \
+             fn:a   a.rs:1-4\n  \
+             fn:b   a.rs:6-8"
+        );
+    }
+
+    #[test]
+    fn whole_is_the_item_with_its_docs() {
+        assert_eq!(
+            select("delete fn:new.whole", "/// Doc.\n#[a]\nfn new() {}\n"),
+            ["/// Doc.\n#[a]\nfn new() {}"]
+        );
     }
 
     #[test]
@@ -1762,7 +1810,7 @@ fn main() {
             ["fn new() -> Self {\n        Lexer\n    }"]
         );
         assert_eq!(select("delete all fn:*>var:x", RUST).len(), 2);
-        assert_eq!(select("delete fn:main.lines", RUST).len(), 1);
+        assert_eq!(select("delete all fn:main.lines", RUST).len(), 3);
     }
 
     #[test]

@@ -955,6 +955,44 @@ mod tests {
     }
 
     #[test]
+    fn bare_kinds_are_wildcard_syntax_steps() {
+        let show = |steps| CommandKind::Show {
+            target: Some(target(steps)),
+            context: 0,
+        };
+        assert_eq!(one("show fn"), show(vec![syntax("fn", "*")]));
+        assert_eq!(
+            one("show impl:Parser>fn.body"),
+            show(vec![
+                syntax("impl", "Parser"),
+                parts(syntax("fn", "*"), &[Part::Body]),
+            ])
+        );
+        let any = |kind: &str| Primary::Syntax {
+            kind: kind.into(),
+            name: "*".into(),
+        };
+        assert_eq!(
+            one("show fn..struct"),
+            show(vec![step(Primary::Range {
+                from: Box::new(any("fn")),
+                to: Box::new(any("struct")),
+            })])
+        );
+        assert_eq!(
+            one("check fn error"),
+            CommandKind::Check {
+                target: Some(target(vec![syntax("fn", "*")])),
+                level: Some(Severity::Error),
+            }
+        );
+        assert_eq!(
+            message("show nope"),
+            "expected a selector, found `nope`; quote literal text: \"nope\""
+        );
+    }
+
+    #[test]
     fn ranges() {
         let show = |steps| CommandKind::Show {
             target: Some(target(steps)),

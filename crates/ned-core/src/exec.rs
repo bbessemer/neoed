@@ -2992,7 +2992,7 @@ mod tests {
             "/// New.\nfn a() {}\n"
         );
         assert_eq!(
-            edited(ATTRS, "replace fn:a.lines with \"fn a() {}\""),
+            edited(ATTRS, "replace fn:a.whole with \"fn a() {}\""),
             "fn a() {}\n"
         );
         assert_eq!(
@@ -4361,6 +4361,19 @@ fn main() {}
         let files = [("c.rs", "fn m(x: u8) -> u8 {\n    x\n}\n")];
         let out = served(&files, Some(1), r#"replace 2>"x".def with "y""#, &mut lsp);
         assert_eq!(out.new_text(), "fn m(y: u8) -> u8 {\n    x\n}\n");
+    }
+
+    #[test]
+    fn lines_after_def_select_each_line_of_the_item() {
+        let mut lsp = ServerLsp::new(vec![]);
+        lsp.def = vec![("c.rs", edit(0, 3, 4, ""))];
+        let files = [("c.rs", "fn m() {\n    m();\n}\n")];
+        let out = served(&files, Some(1), r#"delete all 2>"m(".def.lines"#, &mut lsp);
+        assert_eq!(out.new_text(), "");
+        let mut lsp = ServerLsp::new(vec![]);
+        lsp.def = vec![("c.rs", edit(0, 3, 4, ""))];
+        let out = served(&files, Some(1), r#"delete 2>"m(".def.lines"#, &mut lsp);
+        assert!(out.error().contains("matches 3"), "{}", out.error());
     }
 
     #[test]

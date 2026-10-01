@@ -618,6 +618,21 @@ fn ambiguous_syntax_selector_lists_candidates() {
 }
 
 #[test]
+fn lines_of_an_item_are_listed_by_line_number() {
+    let dir = dir_with(&[("a.rs", "fn a() {\n    x();\n}\n")]);
+    let out = ned(dir.path(), &["a.rs", "-e", "show fn:a.lines"], "");
+    assert_snapshot!(out, @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: script:1:6: fn:a.lines matches 3 items; add `all` or use one of:
+      fn:a>1   a.rs:1
+      fn:a>2   a.rs:2
+      fn:a>3   a.rs:3
+    ");
+}
+
+#[test]
 fn insert_method_at_end_of_impl() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
     let script = "insert end impl:Parser <<END\n\nfn peek(&self) -> Option<char> {\n    self.src[self.pos..].chars().next()\n}\nEND\n";
