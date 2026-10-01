@@ -1078,6 +1078,84 @@ const C: u8 = 1;
         assert_eq!(part_of(Rust, "variant", "B", Part::Body, PARTS), None);
     }
 
+    const TYPED: &str = r#"/// Doc.
+#[derive(Debug)]
+#[serde(default)]
+struct S {
+    #[serde(rename = "x")]
+    x: Vec<u8>,
+}
+
+fn f(a: u8) -> Result<u8, E> {
+    let x: u32 = 2;
+    let y = 3;
+    Ok(a)
+}
+
+fn g() {}
+
+#[a]
+/// Between.
+#[b]
+fn k() {}
+
+#[inline] fn m() {}
+
+const C: u8 = 1;
+static D: &str = "s";
+type Alias = Vec<u8>;
+
+enum E {
+    A = 1,
+    B,
+}
+"#;
+
+    #[test]
+    fn rust_ret_type_value_and_attrs() {
+        let part = |kind, name, p| part_of(Rust, kind, name, p, TYPED);
+        assert_eq!(part("fn", "f", Part::Ret), Some("Result<u8, E>"));
+        assert_eq!(part("fn", "g", Part::Ret), None);
+        assert_eq!(part("field", "x", Part::Type), Some("Vec<u8>"));
+        assert_eq!(part("field", "x", Part::Value), None);
+        assert_eq!(part("const", "C", Part::Type), Some("u8"));
+        assert_eq!(part("const", "C", Part::Value), Some("1"));
+        assert_eq!(part("const", "D", Part::Type), Some("&str"));
+        assert_eq!(part("const", "D", Part::Value), Some("\"s\""));
+        assert_eq!(part("var", "x", Part::Type), Some("u32"));
+        assert_eq!(part("var", "x", Part::Value), Some("2"));
+        assert_eq!(part("var", "y", Part::Type), None);
+        assert_eq!(part("var", "y", Part::Value), Some("3"));
+        assert_eq!(part("type", "Alias", Part::Value), Some("Vec<u8>"));
+        assert_eq!(part("type", "Alias", Part::Type), None);
+        assert_eq!(part("variant", "A", Part::Value), Some("1"));
+        assert_eq!(part("variant", "B", Part::Value), None);
+        assert_eq!(part("fn", "f", Part::Type), None);
+        assert_eq!(part("fn", "f", Part::Value), None);
+    }
+
+    #[test]
+    fn rust_attrs() {
+        let part = |kind, name, p| part_of(Rust, kind, name, p, TYPED);
+        assert_eq!(
+            part("struct", "S", Part::Attrs),
+            Some("#[derive(Debug)]\n#[serde(default)]\n")
+        );
+        assert_eq!(
+            part("field", "x", Part::Attrs),
+            Some("    #[serde(rename = \"x\")]\n")
+        );
+        assert_eq!(part("struct", "S", Part::Doc), Some("/// Doc.\n"));
+        assert_eq!(
+            part("fn", "k", Part::Attrs),
+            Some("#[a]\n/// Between.\n#[b]\n")
+        );
+        assert_eq!(part("fn", "m", Part::Attrs), Some("#[inline]"));
+        assert_eq!(part("fn", "m", Part::Sig), Some("fn m()"));
+        assert_eq!(part("fn", "g", Part::Attrs), None);
+        assert_eq!(part("const", "C", Part::Attrs), None);
+    }
+
     const PYTHON: &str = r#""""Module doc."""
 from __future__ import annotations
 import os.path
@@ -1190,6 +1268,47 @@ def short(): return 1
         assert_eq!(part("field", "x", Part::Body), None);
     }
 
+    const PYTHON_TYPED: &str = r#"@dataclass
+@other(1)
+class C:
+    x: int
+    y: int = 0
+
+
+@cache
+def f(a) -> list[int]:
+    return [a]
+
+
+def g():
+    pass
+
+
+MAX: int = 3
+name = "n"
+"#;
+
+    #[test]
+    fn python_ret_type_value_and_attrs() {
+        let part = |kind, name, p| part_of(Python, kind, name, p, PYTHON_TYPED);
+        assert_eq!(
+            part("class", "C", Part::Attrs),
+            Some("@dataclass\n@other(1)\n")
+        );
+        assert_eq!(part("fn", "f", Part::Attrs), Some("@cache\n"));
+        assert_eq!(part("fn", "f", Part::Ret), Some("list[int]"));
+        assert_eq!(part("fn", "g", Part::Ret), None);
+        assert_eq!(part("fn", "g", Part::Attrs), None);
+        assert_eq!(part("field", "x", Part::Type), Some("int"));
+        assert_eq!(part("field", "x", Part::Value), None);
+        assert_eq!(part("field", "y", Part::Type), Some("int"));
+        assert_eq!(part("field", "y", Part::Value), Some("0"));
+        assert_eq!(part("const", "MAX", Part::Type), Some("int"));
+        assert_eq!(part("const", "MAX", Part::Value), Some("3"));
+        assert_eq!(part("var", "name", Part::Type), None);
+        assert_eq!(part("var", "name", Part::Value), Some("\"n\""));
+    }
+
     #[test]
     fn go_items_of_every_kind() {
         let expected = [
@@ -1282,6 +1401,48 @@ def short(): return 1
             part("struct", "Parser", Part::Doc),
             Some("// Parser parses.\n")
         );
+    }
+
+    const GO_TYPED: &str = "package p
+
+type S struct {
+\tX int
+}
+
+type Alias = []int
+
+type N int
+
+func F() (int, error) { return 0, nil }
+
+func G() int { return 0 }
+
+func H() {}
+
+const C int = 1
+
+var (
+\tV = 2
+\tW string
+)
+";
+
+    #[test]
+    fn go_ret_type_and_value() {
+        let part = |kind, name, p| part_of(Go, kind, name, p, GO_TYPED);
+        assert_eq!(part("fn", "F", Part::Ret), Some("(int, error)"));
+        assert_eq!(part("fn", "G", Part::Ret), Some("int"));
+        assert_eq!(part("fn", "H", Part::Ret), None);
+        assert_eq!(part("field", "X", Part::Type), Some("int"));
+        assert_eq!(part("type", "Alias", Part::Value), Some("[]int"));
+        assert_eq!(part("type", "N", Part::Value), Some("int"));
+        assert_eq!(part("const", "C", Part::Type), Some("int"));
+        assert_eq!(part("const", "C", Part::Value), Some("1"));
+        assert_eq!(part("var", "V", Part::Type), None);
+        assert_eq!(part("var", "V", Part::Value), Some("2"));
+        assert_eq!(part("var", "W", Part::Type), Some("string"));
+        assert_eq!(part("var", "W", Part::Value), None);
+        assert_eq!(part("fn", "F", Part::Attrs), None);
     }
 
     const GO: &str = r#"// Package a does things.
@@ -1460,6 +1621,79 @@ func (s Size) Parse() {}
             ts("interface", "Shape", Part::Body),
             Some("  area(): number;\n  label: string;\n")
         );
+    }
+
+    const TS_TYPED: &str = r#"@Component({})
+class App {
+  @Input() name: string = "x";
+  count = 0;
+
+  @HostListener("click")
+  render(): void {}
+}
+
+function f(a: number): Promise<number> {
+  return a;
+}
+
+const g = (x: number): string => "";
+
+function h() {}
+
+const C: number = 1;
+let v = 2;
+
+type Alias = string | number;
+
+enum E {
+  A = 1,
+  B,
+}
+
+interface I {
+  p: string;
+  m(): void;
+}
+"#;
+
+    #[test]
+    fn typescript_ret_type_value_and_attrs() {
+        let part = |kind, name, p| part_of(TypeScript, kind, name, p, TS_TYPED);
+        assert_eq!(part("class", "App", Part::Attrs), Some("@Component({})\n"));
+        assert_eq!(part("field", "name", Part::Attrs), Some("@Input()"));
+        assert_eq!(part("field", "name", Part::Type), Some("string"));
+        assert_eq!(part("field", "name", Part::Value), Some("\"x\""));
+        assert_eq!(part("field", "count", Part::Type), None);
+        assert_eq!(part("field", "count", Part::Value), Some("0"));
+        assert_eq!(
+            part("fn", "render", Part::Attrs),
+            Some("  @HostListener(\"click\")\n")
+        );
+        assert_eq!(part("fn", "render", Part::Ret), Some("void"));
+        assert_eq!(part("fn", "f", Part::Ret), Some("Promise<number>"));
+        assert_eq!(part("fn", "g", Part::Ret), Some("string"));
+        assert_eq!(part("fn", "h", Part::Ret), None);
+        assert_eq!(part("const", "C", Part::Type), Some("number"));
+        assert_eq!(part("const", "C", Part::Value), Some("1"));
+        assert_eq!(part("var", "v", Part::Type), None);
+        assert_eq!(part("var", "v", Part::Value), Some("2"));
+        assert_eq!(part("type", "Alias", Part::Value), Some("string | number"));
+        assert_eq!(part("variant", "A", Part::Value), Some("1"));
+        assert_eq!(part("variant", "B", Part::Value), None);
+        assert_eq!(part("field", "p", Part::Type), Some("string"));
+        assert_eq!(part("fn", "m", Part::Ret), Some("void"));
+    }
+
+    #[test]
+    fn javascript_value_and_attrs() {
+        const JS: &str = "@dec\nclass K {\n  @f x = 1;\n}\n\nconst C = 1;\nlet v = 2;\n";
+        let part = |kind, name, p| part_of(JavaScript, kind, name, p, JS);
+        assert_eq!(part("class", "K", Part::Attrs), Some("@dec\n"));
+        assert_eq!(part("field", "x", Part::Attrs), Some("@f"));
+        assert_eq!(part("field", "x", Part::Value), Some("1"));
+        assert_eq!(part("const", "C", Part::Value), Some("1"));
+        assert_eq!(part("var", "v", Part::Value), Some("2"));
+        assert_eq!(part("const", "C", Part::Type), None);
     }
 
     const JS: &str = r#"import fs from "fs";

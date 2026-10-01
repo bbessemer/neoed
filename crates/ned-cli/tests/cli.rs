@@ -656,6 +656,24 @@ fn replace_function_params() {
 }
 
 #[test]
+fn replace_function_return_type() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let script = r#"replace fn:new.ret with "Parser""#;
+    let out = ned(dir.path(), &["parser.rs", "-e", script], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    parser.rs: 1 edit, +1 -1
+    @@ -9,3 +9,3 @@
+     impl Parser {
+    -    pub fn new(src: &str) -> Self {
+    +    pub fn new(src: &str) -> Parser {
+             Parser { src: src.to_string(), pos: 0 }
+    --- stderr
+    ");
+}
+
+#[test]
 fn replace_function_body() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
     let script = "replace fn:parse.body with <<END\nlet tok = self.next().ok_or(Error::Eof)?;\nself.parse_expr(tok)\nEND\n";
@@ -698,7 +716,7 @@ fn missing_part_exits_1() {
     exit: 1
     --- stdout
     --- stderr
-    error: script:1:6: fn:new has no .doc; it has .body .sig .params .name .lines
+    error: script:1:6: fn:new has no .doc; it has .body .sig .params .name .ret .lines
     ");
 }
 

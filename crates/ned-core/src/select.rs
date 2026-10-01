@@ -1696,6 +1696,14 @@ mod tests {
             error("delete fn:main.lines.body", &[("a.rs", RUST)]),
             "error: script:1:8: .body needs a syntax item, e.g. fn:NAME.body"
         );
+        assert_eq!(
+            error("delete fn:main.ret", &[("a.rs", RUST)]),
+            "error: script:1:8: fn:main has no .ret; it has .body .sig .params .name .lines"
+        );
+        assert_eq!(
+            error("delete /x/.type", &[("a.rs", RUST)]),
+            "error: script:1:8: .type needs a syntax item, e.g. fn:NAME.type"
+        );
     }
 
     const RUST: &str = "\
