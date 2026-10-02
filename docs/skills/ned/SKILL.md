@@ -23,10 +23,11 @@ Syntax selectors work in Rust (`fn:parse`, `impl:Parser`,
 the item, and `.doc` is the docstring), Go (`fn:"Server.Run"` for a method),
 JavaScript and TypeScript (`class:App>fn:render`, `interface:Shape`; an item
 includes its `export`) and Markdown (`section:"Install"`, `item:`, `table:`,
-`code:`); `insert end section:X` appends to a section. In other files, use
-lines, regexes and literals, or give the file a language with `--lang LANG`. Run
-`ned help` for the whole language in one screen, and `ned help TOPIC` for one
-verb.
+`code:`); `insert end section:X` appends to a section. Other files are read as
+text, with a note naming their extensions: use lines, regexes and literals, or
+give the file a language with `--lang LANG` (`--lang text` turns parsing off).
+Run `ned help` for the whole language in one screen, and `ned help TOPIC` for
+one verb.
 
 ## Invocation
 

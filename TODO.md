@@ -41,6 +41,8 @@ which it is. When to release 1.0 is TBD.
   `.whole`; bare kinds (`fn` = `fn:*`); `.lines` splitting into lines;
   whole-line ranges; span types; `[...]` filters with `&&`, `||` and
   parentheses.
+- **Text language**: `--lang text` reads every file without parsing; files with
+  unknown extensions are read as text, with one note naming the extensions.
 
 ## Phase 2
 

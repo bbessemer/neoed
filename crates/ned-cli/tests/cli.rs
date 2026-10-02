@@ -818,8 +818,80 @@ fn outline_without_a_language_exits_1() {
     exit: 1
     --- stdout
     --- stderr
+    note: read .json files as text; syntax selectors skip them
     error: script:1:1: outline needs a language, but a.json has none; use --lang
     ");
+}
+
+#[test]
+fn lang_text_edits_code_as_text() {
+    let dir = dir_with(&[("a.rs", "fn a() {}\n")]);
+    let out = ned(
+        dir.path(),
+        &["--lang", "text", "a.rs", "-e", "sub /\\{\\}/ with \"{\""],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs: 1 edit, +1 -1
+    @@ -1,1 +1,1 @@
+    -fn a() {}
+    +fn a() {
+    --- stderr
+    ");
+    assert_eq!(read(&dir, "a.rs"), "fn a() {\n");
+    let out = ned(
+        dir.path(),
+        &["--lang", "text", "a.rs", "-e", "show fn:a"],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: script:1:6: fn:a needs a language, but a.rs has none; use --lang
+    ");
+}
+
+#[test]
+fn unknown_extensions_are_read_as_text_with_one_note() {
+    let dir = dir_with(&[
+        ("a.toml", "x = 1\n"),
+        ("b.json", "{\"x\": 1}\n"),
+        ("c.toml", "x = 2\n"),
+        ("d.txt", "x\n"),
+        ("Makefile", "x:\n"),
+    ]);
+    let out = ned(
+        dir.path(),
+        &[
+            "a.toml",
+            "b.json",
+            "c.toml",
+            "d.txt",
+            "Makefile",
+            "-e",
+            "show all /x/",
+        ],
+        "",
+    );
+    assert_snapshot!(out, @r#"
+    exit: 0
+    --- stdout
+    a.toml:1
+    1:x = 1
+    b.json:1
+    1:{"x": 1}
+    c.toml:1
+    1:x = 2
+    d.txt:1
+    1:x
+    Makefile:1
+    1:x:
+    --- stderr
+    note: read .json, .toml files as text; syntax selectors skip them
+    "#);
 }
 
 #[test]

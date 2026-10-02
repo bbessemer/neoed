@@ -41,7 +41,7 @@ the start of their stage, so line numbers from `show` stay valid until the
 next `|`. After a `|`, check, rename, .refs and .def are errors.
 
 Flags: -n dry run   -q summaries only   --force skip the guards (syntax, check)
-       --no-fmt   --no-check   --lang LANG   --context N
+       --no-fmt   --no-check   --lang LANG|text   --context N
        -w [DIR] every file in the workspace (.gitignore respected)
 
 Examples:

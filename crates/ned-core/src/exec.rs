@@ -1,6 +1,7 @@
 //! Running scripts against files, and the errors that can stop a run.
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::ops::Range;
@@ -9,7 +10,7 @@ use std::path::{Path, PathBuf};
 use tree_sitter::Node;
 
 use crate::edit::{Edit, EditError, EditSet};
-use crate::lang::Language;
+use crate::lang::{self, Language};
 use crate::lsp::{self, Document, Locate, Located, Lsp, LspFailure, Renamed, Severity, render};
 use crate::outline;
 use crate::script::Script;
@@ -61,8 +62,9 @@ pub struct Change {
 /// Settings from the command line that affect a run.
 #[derive(Debug, Clone, Default)]
 pub struct Options {
-    /// The language of every file, instead of detecting it.
-    pub lang: Option<Language>,
+    /// The language of every file, instead of detecting it; `Some(None)` reads
+    /// every file as text.
+    pub lang: Option<Option<Language>>,
     /// Skip the parse-error guard (§4.3).
     pub force: bool,
 }
@@ -87,8 +89,16 @@ pub fn run<'s, 'l: 's>(
         set: Vec::new(),
         output: String::new(),
         notes: Vec::new(),
+        unknown: BTreeSet::new(),
     };
     let result = executor.run(script, initial);
+    if !executor.unknown.is_empty() {
+        let extensions: Vec<_> = executor.unknown.into_iter().collect();
+        executor.notes.push(format!(
+            "read {} files as text; syntax selectors skip them",
+            extensions.join(", ")
+        ));
+    }
     Run {
         output: executor.output,
         result,
@@ -135,6 +145,8 @@ struct Executor<'s> {
     set: Vec<Member>,
     output: String,
     notes: Vec<String>,
+    /// The unknown extensions of files read as text, for one note.
+    unknown: BTreeSet<String>,
     /// The workspace's language servers, for `check`.
     lsp: Option<&'s mut dyn Lsp>,
     /// The most permissive `allow` so far.
@@ -222,6 +234,19 @@ impl Executor<'_> {
         Ok(())
     }
 
+    /// The language of the file at `path`, holding `text`, from `--lang` or
+    /// detected. Notes an unknown extension that makes it text.
+    fn lang(&mut self, path: &str, text: &str) -> Option<Language> {
+        if let Some(lang) = self.options.lang {
+            return lang;
+        }
+        let lang = Language::detect(path, text);
+        if let (None, Some(extension)) = (lang, lang::unknown_extension(path)) {
+            self.unknown.insert(format!(".{extension}"));
+        }
+        lang
+    }
+
     /// Adds a file made by `create` to the file set, holding `new` (§4.2).
     fn create(&mut self, path: &str, new: &Text) -> Result<(), ExecErrorKind> {
         let loaded = self.files.iter().any(|l| same_path(&l.file.path, path))
@@ -229,10 +254,7 @@ impl Executor<'_> {
         if loaded || std::path::Path::new(path).exists() {
             return Err(ExecErrorKind::FileExists { path: path.into() });
         }
-        let lang = self
-            .options
-            .lang
-            .or_else(|| Language::detect(path, &new.value));
+        let lang = self.lang(path, &new.value);
         let text = if new.value.is_empty() {
             String::new()
         } else {
@@ -354,7 +376,7 @@ impl Executor<'_> {
             _ => io(e.to_string()),
         })?;
         let text = String::from_utf8(bytes).map_err(|_| io("not valid UTF-8".into()))?;
-        let lang = self.options.lang.or_else(|| Language::detect(path, &text));
+        let lang = self.lang(path, &text);
         let file = SourceFile::new(path, text, lang);
         let edits = EditSet::new(&file.buffer);
         self.files.push(Loaded {
@@ -3533,7 +3555,7 @@ fn main() {}
         let out = guarded("a.txt", TEXT, script);
         assert!(out.result.is_ok());
         let rust = Options {
-            lang: Some(Language::Rust),
+            lang: Some(Some(Language::Rust)),
             ..Options::default()
         };
         let out = exec_with_options(&[("a.txt", TEXT)], 1, script, &rust);
@@ -3543,7 +3565,7 @@ fn main() {}
             out.error()
         );
         let python = Options {
-            lang: Some(Language::Python),
+            lang: Some(Some(Language::Python)),
             ..Options::default()
         };
         let out = exec_with_options(
@@ -3553,6 +3575,56 @@ fn main() {}
             &python,
         );
         assert_eq!(out.new_text(), "y = 2\n");
+    }
+
+    #[test]
+    fn lang_text_reads_every_file_as_text() {
+        let text = Options {
+            lang: Some(None),
+            ..Options::default()
+        };
+        let script = "replace \"let y = 2;\" with \"let y = (2;\"";
+        let out = exec_with_options(&[("a.rs", TEXT)], 1, script, &text);
+        assert!(out.result.is_ok(), "{:?}", out.result);
+        assert!(out.notes.is_empty(), "{:?}", out.notes);
+        let out = exec_with_options(&[("a.rs", TEXT)], 1, "show fn:main", &text);
+        assert!(out.error().contains("needs a language"), "{}", out.error());
+    }
+
+    #[test]
+    fn unknown_extensions_get_one_note() {
+        let files = [
+            ("b.toml", "x\n"),
+            ("a.json", "x\n"),
+            ("c.toml", "x\n"),
+            ("d.rs", "x\n"),
+            ("e.txt", "x\n"),
+            ("Makefile", "x\n"),
+        ];
+        let out = exec_with_options(&files, files.len(), "show all \"x\"", &Options::default());
+        assert!(out.result.is_ok(), "{:?}", out.result);
+        assert_eq!(
+            out.notes,
+            ["read .json, .toml files as text; syntax selectors skip them"]
+        );
+        let out = exec_with_options(&files[3..], 3, "show all \"x\"", &Options::default());
+        assert!(out.notes.is_empty(), "{:?}", out.notes);
+        let rust = Options {
+            lang: Some(Some(Language::Rust)),
+            ..Options::default()
+        };
+        let out = exec_with_options(&files, files.len(), "show all \"x\"", &rust);
+        assert!(out.notes.is_empty(), "{:?}", out.notes);
+    }
+
+    #[test]
+    fn created_files_with_unknown_extensions_are_noted() {
+        let out = exec_with_options(&[], 0, "create {dir}/a.yaml \"k: v\"", &Options::default());
+        assert!(out.result.is_ok(), "{:?}", out.result);
+        assert_eq!(
+            out.notes,
+            ["read .yaml files as text; syntax selectors skip them"]
+        );
     }
 
     #[test]
