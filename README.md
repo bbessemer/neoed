@@ -147,7 +147,16 @@ A selector can be:
 - a range (`fn:a..fn:c`);
 - a filter (`fn[.doc == ""]`, `fn:parse.lines[.len > 80]`);
 - scoped to one file (`file:src/a.rs>fn:new`);
+- a syntax pattern: code with placeholders, matched whatever its spacing and
+  comments (`` `foo(@x, @rest...)` ``);
 - a raw tree-sitter query (`query{...}`).
+
+A syntax pattern's `@name` placeholders capture what they match, and `replace`
+puts the captures into TEXT:
+``replace all `assert_eq!(@a..., true)` with "assert!(@a)"``. A pattern may
+leave out separators (`,`, `;`), but every other token must match, so
+`` `fn f(self) {}` `` doesn't match `fn f(&self) {}`. `ned help patterns` has
+the rules.
 
 A selector must match exactly one span unless it starts with `all`. A `|`
 between commands starts a stage that sees the edits before it.
@@ -167,7 +176,8 @@ respecting `.gitignore`. `ned help` prints the whole language on one screen;
 | TypeScript, TSX | the JavaScript items, plus `interface type enum variant mod`                     |
 | Markdown        | `section item table code`                                                        |
 
-Line, regex and literal selectors work in any UTF-8 file.
+Syntax patterns work in every language above but Markdown. Line, regex and
+literal selectors work in any UTF-8 file.
 
 ## Language servers
 
@@ -195,15 +205,13 @@ to verify the edit, and ned's diff replaces it.
 
 ## Status
 
-`ned` 0.1 is an MVP. The command language is specified, and ned is used day to
-day to develop ned itself, but the language may still change before 1.0.
+`ned` is pre-1.0. The command language is specified, and ned is used day to day
+to develop ned itself, but the language may still change before 1.0.
 
 ## Roadmap
 
 In order, with details in [`TODO.md`](TODO.md):
 
-- Syntax patterns: select code by writing code in backquotes, matched
-  structurally with `$name` placeholders, so whitespace never has to match
 - Sessions (`-s NAME`): a shared edit history across invocations, with repeat,
   `undo` and `history`
 - Git: commit exactly an invocation's or a session's edits; edit and resolve

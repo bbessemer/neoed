@@ -1,0 +1,25 @@
+patterns
+
+`CODE` is code matched against each file's syntax tree, whatever its spacing,
+line breaks and comments:
+    `dbg!(@x...)`              every dbg! call, capturing its arguments
+    `foo(@first, @rest...)`    a run: as few siblings as can match
+    `@x == @x`                 a name used twice matches equal code
+    `x: u32`                   a field or a parameter: any way it parses
+
+@name is one node (an expression, a statement, a name), @name... a run of
+siblings, @_ and @_... either without a name. @@ is a literal @, as in a
+decorator: `@@app.route(@path)`; an @ in a string or comment is literal anyway.
+Rust macro arguments are tokens: use a run (`dbg!(@x...)`) for an argument.
+Separators the pattern leaves out (a trailing , or ;) are skipped; every other
+token and node must match, so `fn @f() {}` doesn't match `pub fn f() {}`. A
+match is a span with .lines; matches don't overlap. A pattern holding
+backquotes opens and closes with a longer run of them. Files whose language
+can't parse the pattern are skipped. `replace` puts each capture where its
+@name is in TEXT.
+
+Examples:
+    show all `dbg!(@x...)`
+    delete all fn:main>`println!(@_...);`
+    show all `` `${name}` ``
+    replace all `assert_eq!(@a..., true)` with "assert!(@a)"

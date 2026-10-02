@@ -855,6 +855,38 @@ fn invalid_query_exits_2() {
     ");
 }
 
+#[test]
+fn pattern_selector_edits_matches() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let out = ned(
+        dir.path(),
+        &["parser.rs", "-e", "delete `eprintln!(@_...);`"],
+        "",
+    );
+    assert_snapshot!(out, @r#"
+    exit: 0
+    --- stdout
+    parser.rs: 1 edit, +0 -1
+    @@ -19,3 +19,2 @@
+         fn debug_dump(&self) {
+    -        eprintln!("{}", self.src);
+         }
+    --- stderr
+    "#);
+}
+
+#[test]
+fn invalid_pattern_exits_2() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let out = ned(dir.path(), &["parser.rs", "-e", "show `fn (@a`"], "");
+    assert_snapshot!(out, @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:6: `fn (@a` doesn't parse as rust at `@a`; add the code around it, or use query{}
+    ");
+}
+
 const FN_A: &str = "fn f() {\n    a();\n}\n";
 
 /// A directory with `a.rs` (`FN_A`) and a fake Rust formatter, `fmt.sh`, that

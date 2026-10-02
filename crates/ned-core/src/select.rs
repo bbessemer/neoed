@@ -1,7 +1,7 @@
 //! Resolving selectors to spans of files (command-language spec, §3).
 
 use std::cell::OnceCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use regex::Regex;
@@ -12,9 +12,11 @@ use tree_sitter::{Query, QueryCursor, QueryError, QueryErrorKind, StreamingItera
 use crate::buffer::{Buffer, LineEnding};
 use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
 use crate::lang::Language;
+use crate::pattern;
 use crate::script::ast::{LineNo, Part, Pattern, Primary, Selector, Step, Target, TextKind};
 use crate::span::Span;
 use crate::syntax::{self, Item};
+use crate::template::Template;
 use crate::text::{full_lines, is_whole_line, strip_indent};
 
 const MAX_CANDIDATES: usize = 10;
@@ -83,12 +85,17 @@ impl SourceFile {
     }
 }
 
-/// A selected span of `files[file]`.
+/// A selected span of `files[file]`, with what its selector's pattern steps
+/// captured (§3.10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Match {
     pub file: usize,
     pub range: Range<usize>,
+    pub captures: Captures,
 }
+
+/// Each named placeholder and the range it matched.
+pub type Captures = Vec<(String, Range<usize>)>;
 
 /// Resolves `target` against every file in `files`, enforcing the ambiguity
 /// rules of §3.5. `src` is the script, for error messages.
@@ -99,6 +106,7 @@ pub fn resolve(target: &Target, files: &[&SourceFile], src: &str) -> Result<Vec<
         .map(|(file, f)| Match {
             file,
             range: 0..f.text.len(),
+            captures: Vec::new(),
         })
         .collect();
     resolve_within(target, files, whole, src)
@@ -114,6 +122,23 @@ pub fn resolve_within(
 ) -> Result<Vec<Match>, ExecError> {
     let span = &target.selector.span;
     let error = |kind| ExecError::new(kind, Some(span.clone()));
+    // A name may repeat within a pattern, but not across patterns: steps, or
+    // a range's ends (§3.10).
+    let mut named = HashSet::new();
+    let patterns = target
+        .selector
+        .steps
+        .iter()
+        .flat_map(|s| s.primary.patterns());
+    for template in patterns.map(Template::parse) {
+        let names: HashSet<&str> = template.holes().filter_map(|h| h.name.as_deref()).collect();
+        if let Some(name) = names.iter().find(|n| named.contains(**n)) {
+            return Err(error(E::DuplicateCapture {
+                name: name.to_string(),
+            }));
+        }
+        named.extend(names.into_iter().map(String::from));
+    }
     let mut matches = start;
     let mut parents = Vec::new();
     let mut found = Vec::new();
@@ -184,7 +209,9 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
     let mut out: Vec<Found> = Vec::new();
     for (p, parent) in parents.iter().enumerate() {
         let f = &files[parent.file];
-        for range in matcher.find(f, parent.range.clone()) {
+        for (range, captured) in matcher.find(f, parent.range.clone()) {
+            let mut captures = parent.captures.clone();
+            captures.extend(captured);
             let core = range.clone();
             let item = match &step.primary {
                 Primary::Syntax { kind, .. } => f
@@ -210,6 +237,7 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
                 let m = Match {
                     file: parent.file,
                     range: span.range,
+                    captures: captures.clone(),
                 };
                 if out.last().map(|f| &f.m) != Some(&m) {
                     out.push(Found {
@@ -243,6 +271,8 @@ enum Matcher<'a> {
     },
     /// The query compiled for each searched language.
     Query(Vec<(Language, Query)>),
+    /// The pattern compiled for each searched language it parses in.
+    Code(Vec<(Language, pattern::Pattern)>),
     Range(Box<Matcher<'a>>, Box<Matcher<'a>>),
 }
 
@@ -286,6 +316,7 @@ impl<'a> Matcher<'a> {
                 Matcher::Syntax { kind, name }
             }
             Primary::Query(source) => Matcher::Query(compile_query(source, files, parents)?),
+            Primary::Code(code) => Matcher::Code(compile_pattern(code, files, parents)?),
             Primary::Range { from, to } => Matcher::Range(
                 Box::new(Matcher::new(from, files, parents)?),
                 Box::new(Matcher::new(to, files, parents)?),
@@ -293,7 +324,49 @@ impl<'a> Matcher<'a> {
         })
     }
 
-    fn find(&self, f: &SourceFile, parent: Range<usize>) -> Vec<Range<usize>> {
+    /// The step's matches in `parent`, with what its patterns captured.
+    fn find(&self, f: &SourceFile, parent: Range<usize>) -> Vec<(Range<usize>, Captures)> {
+        match self {
+            Matcher::Code(patterns) => {
+                let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
+                    return Vec::new();
+                };
+                let Some((_, pattern)) = patterns.iter().find(|(l, _)| *l == lang) else {
+                    return Vec::new();
+                };
+                pattern
+                    .find(tree, &f.text, parent)
+                    .into_iter()
+                    .map(|m| (m.range, m.captures))
+                    .collect()
+            }
+            Matcher::Range(from, to) => {
+                let ends = to.find(f, parent.clone());
+                let mut out = Vec::new();
+                let mut searched_to = parent.start;
+                for (start, captures) in from.find(f, parent.clone()) {
+                    if start.start < searched_to {
+                        continue;
+                    }
+                    let Some((end, end_captures)) = ends.iter().find(|(e, _)| e.start >= start.end)
+                    else {
+                        break;
+                    };
+                    let range = full_lines(&f.text, start.start..end.end);
+                    searched_to = range.end;
+                    out.push((range, [captures, end_captures.clone()].concat()));
+                }
+                out
+            }
+            _ => self
+                .ranges(f, parent)
+                .into_iter()
+                .map(|r| (r, Vec::new()))
+                .collect(),
+        }
+    }
+
+    fn ranges(&self, f: &SourceFile, parent: Range<usize>) -> Vec<Range<usize>> {
         let within = |r: &Range<usize>| parent.start <= r.start && r.end <= parent.end;
         let scope = scope(&f.text, &parent);
         let in_scope = |r: &Range<usize>| scope.start <= r.start && r.end <= scope.end;
@@ -365,23 +438,6 @@ impl<'a> Matcher<'a> {
                     Vec::new()
                 }
             }
-            Matcher::Range(from, to) => {
-                let ends = to.find(f, parent.clone());
-                let mut ranges = Vec::new();
-                let mut searched_to = parent.start;
-                for start in from.find(f, parent.clone()) {
-                    if start.start < searched_to {
-                        continue;
-                    }
-                    let Some(end) = ends.iter().find(|e| e.start >= start.end) else {
-                        break;
-                    };
-                    let range = full_lines(&f.text, start.start..end.end);
-                    searched_to = range.end;
-                    ranges.push(range);
-                }
-                ranges
-            }
             Matcher::Query(queries) => {
                 let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
                     return Vec::new();
@@ -411,6 +467,9 @@ impl<'a> Matcher<'a> {
                 out.sort_by_key(|r| (r.start, r.end));
                 out.dedup();
                 out
+            }
+            Matcher::Code(_) | Matcher::Range(..) => {
+                self.find(f, parent).into_iter().map(|(r, _)| r).collect()
             }
             Matcher::Syntax { kind, name } => f
                 .items()
@@ -528,6 +587,59 @@ fn compile_query(
     Ok(queries)
 }
 
+/// The pattern `code` compiled for each code language among the searched
+/// files that it parses in.
+fn compile_pattern(
+    code: &str,
+    files: &[&SourceFile],
+    parents: &[Match],
+) -> Result<Vec<(Language, pattern::Pattern)>, E> {
+    let mut searched: Vec<usize> = parents.iter().map(|m| m.file).collect();
+    searched.dedup();
+    let mut patterns: Vec<(Language, pattern::Pattern)> = Vec::new();
+    let mut failed: Vec<(Language, pattern::PatternError)> = Vec::new();
+    for &i in &searched {
+        let Some(lang) = files[i].lang.filter(|l| *l != Language::Markdown) else {
+            continue;
+        };
+        if patterns.iter().any(|(l, _)| *l == lang) || failed.iter().any(|(l, _)| *l == lang) {
+            continue;
+        }
+        match pattern::Pattern::compile(lang, code) {
+            Ok(p) => patterns.push((lang, p)),
+            Err(e) => failed.push((lang, e)),
+        }
+    }
+    let selector = fenced(code);
+    if !patterns.is_empty() || searched.is_empty() {
+        return Ok(patterns);
+    }
+    match failed.into_iter().next() {
+        Some((_, e)) => Err(E::InvalidPattern {
+            selector,
+            message: e.to_string(),
+        }),
+        None => Err(E::NoCodeLanguage {
+            selector,
+            files: file_list(
+                &searched
+                    .iter()
+                    .map(|&i| files[i].path.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+        }),
+    }
+}
+
+/// `code` as a pattern step: between runs of backquotes longer than any it
+/// holds (§3.10).
+fn fenced(code: &str) -> String {
+    let longest = code.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat(longest + 1);
+    let pad = if longest > 0 { " " } else { "" };
+    format!("{fence}{pad}{code}{pad}{fence}")
+}
+
 fn query_error(err: &QueryError, grammar: &tree_sitter::Language) -> String {
     let message = &err.message;
     let closest = |wanted: &str, names: Vec<&str>| {
@@ -633,6 +745,7 @@ pub(crate) fn hint(
         .map(|p| Match {
             file: p.file,
             range: scope(&files[p.file].text, &p.range),
+            captures: Vec::new(),
         })
         .collect();
     match &step.primary {
@@ -695,6 +808,7 @@ fn near_literal(needle: &str, files: &[&SourceFile], parents: &[Match]) -> Optio
         Some(Match {
             file: p.file,
             range: start..end,
+            captures: Vec::new(),
         })
     })
 }
@@ -721,6 +835,7 @@ fn escaped_literal(
         Some(Match {
             file: p.file,
             range: start..start + escaped.len(),
+            captures: Vec::new(),
         })
     })?;
     Some((escaped, found))
@@ -741,6 +856,7 @@ fn case_insensitive_match(
         Some(Match {
             file: p.file,
             range: start..(start + found.len()).max(start + 1),
+            captures: Vec::new(),
         })
     })
 }
@@ -1295,7 +1411,8 @@ mod tests {
             m,
             [Match {
                 file: 0,
-                range: TEXT.rfind("let x").unwrap()..TEXT.rfind(" = 3").unwrap()
+                range: TEXT.rfind("let x").unwrap()..TEXT.rfind(" = 3").unwrap(),
+                captures: vec![],
             }]
         );
         let m = resolve_in("delete /fn b[^}]*/>\"x\"", &set).unwrap();
@@ -1304,7 +1421,8 @@ mod tests {
             m,
             [Match {
                 file: 0,
-                range: x..x + 1
+                range: x..x + 1,
+                captures: vec![],
             }]
         );
         assert_eq!(
@@ -1574,7 +1692,8 @@ mod tests {
             m,
             [Match {
                 file: 1,
-                range: 2..3
+                range: 2..3,
+                captures: vec![],
             }]
         );
         assert_eq!(
@@ -1593,15 +1712,18 @@ mod tests {
             [
                 Match {
                     file: 0,
-                    range: 0..1
+                    range: 0..1,
+                    captures: vec![],
                 },
                 Match {
                     file: 0,
-                    range: 2..3
+                    range: 2..3,
+                    captures: vec![],
                 },
                 Match {
                     file: 1,
-                    range: 0..1
+                    range: 0..1,
+                    captures: vec![],
                 },
             ]
         );
@@ -1755,6 +1877,129 @@ mod tests {
             matches!(err.kind, ExecErrorKind::InvalidQuery { .. }),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn patterns_select_matching_code() {
+        let text = "fn a() {\n    foo(1);\n}\n\nfn b() {\n    foo(2);\n    bar(3);\n}\n";
+        assert_eq!(select("delete all `foo(@x)`", text), ["foo(1)", "foo(2)"]);
+        assert_eq!(select("delete fn:b>`foo(@x)`", text), ["foo(2)"]);
+        assert_eq!(
+            select("delete all `foo(@x)`.lines", text),
+            ["    foo(1);\n", "    foo(2);\n"]
+        );
+    }
+
+    #[test]
+    fn matches_carry_captures_from_every_pattern_step() {
+        let text = "impl Parser {\n    fn new() {\n        foo(1);\n    }\n}\n";
+        let found = resolve_in(
+            "delete `impl @t { @_... }`>fn:new>`foo(@x)`",
+            &files(&[("a.rs", text)]),
+        )
+        .unwrap();
+        let captures: Vec<(&str, &str)> = found[0]
+            .captures
+            .iter()
+            .map(|(n, r)| (n.as_str(), &text[r.clone()]))
+            .collect();
+        assert_eq!(captures, [("t", "Parser"), ("x", "1")]);
+        let parts = resolve_in("delete `foo(@x)`.lines", &files(&[("a.rs", text)])).unwrap();
+        assert_eq!(parts[0].captures.len(), 1);
+    }
+
+    #[test]
+    fn a_capture_name_in_two_steps_is_an_error() {
+        let text = "fn f() {\n    foo(bar(1));\n}\n";
+        assert_eq!(
+            error("delete `foo(@x)`>`bar(@x)`", &[("a.rs", text)]),
+            "error: script:1:8: `@x` is captured by two pattern steps; rename one of them"
+        );
+    }
+
+    #[test]
+    fn ranges_of_patterns_capture_at_both_ends() {
+        let text = "fn f() {\n    foo(1);\n    x();\n    bar(2);\n}\n";
+        let found = resolve_in("delete `foo(@a)`..`bar(@b)`", &files(&[("a.rs", text)])).unwrap();
+        let names: Vec<(&str, &str)> = found[0]
+            .captures
+            .iter()
+            .map(|(n, r)| (n.as_str(), &text[r.clone()]))
+            .collect();
+        assert_eq!(names, [("a", "1"), ("b", "2")]);
+        assert_eq!(
+            error("delete `foo(@a)`..`bar(@a)`", &[("a.rs", text)]),
+            "error: script:1:8: `@a` is captured by two pattern steps; rename one of them"
+        );
+    }
+
+    #[test]
+    fn ambiguous_patterns_list_candidates() {
+        let text = "fn a() {\n    foo(1);\n}\n\nfn b() {\n    foo(2);\n}\n";
+        assert_eq!(
+            error("delete `foo(@x)`", &[("a.rs", text)]),
+            "error: script:1:8: `foo(@x)` matches 2 items; add `all` or use one of:\n  \
+            fn:a>`foo(@x)`   a.rs:2\n  fn:b>`foo(@x)`   a.rs:6"
+        );
+    }
+
+    #[test]
+    fn patterns_skip_files_whose_language_cannot_parse_them() {
+        let found = resolve_in(
+            "delete all `let @x = @e;`",
+            &files(&[
+                ("a.rs", "fn f() {\n    let x = 1;\n}\n"),
+                ("b.py", "x = 1\n"),
+                ("c.md", "# x\n"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            found,
+            [Match {
+                file: 0,
+                range: 13..23,
+                captures: vec![("x".into(), 17..18), ("e".into(), 21..22)],
+            }]
+        );
+    }
+
+    #[test]
+    fn invalid_patterns_are_errors() {
+        assert_eq!(
+            error("delete `foo@bar(1)`", &[("a.rs", TEXT)]),
+            "error: script:1:8: `foo@bar(1)` has `@bar` where a whole node must be; \
+             write `@@` for a literal `@`"
+        );
+        let err = resolve_in("delete `fn (@a`", &files(&[("a.rs", TEXT)])).unwrap_err();
+        assert!(
+            matches!(err.kind, ExecErrorKind::InvalidPattern { .. }),
+            "{err:?}"
+        );
+        assert!(
+            err.render("delete `fn (@a`")
+                .contains("doesn't parse as rust"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn patterns_need_a_programming_language() {
+        assert_eq!(
+            error(
+                "delete `foo(@x)`",
+                &[("a.md", "# foo(1)\n"), ("b.txt", "foo(1)\n")]
+            ),
+            "error: script:1:8: `foo(@x)` needs a programming language, but a.md, b.txt has \
+             none; use a regex or literal, or --lang"
+        );
+    }
+
+    #[test]
+    fn errors_fence_patterns_that_hold_backquotes() {
+        assert_eq!(fenced("f(@x)"), "`f(@x)`");
+        assert_eq!(fenced("f(`a`)"), "`` f(`a`) ``");
+        assert_eq!(fenced("``"), "``` `` ```");
     }
 
     #[test]

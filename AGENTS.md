@@ -151,8 +151,13 @@ edits checked while a daemon runs (introduced errors block unless
 its own build. With a daemon running, language servers format files whose
 formatters aren't installed, and `check` also waits for save-time checks
 (`cargo check`). §9 is done. Syntax selectors cover Rust, Python, Go,
-JavaScript, TypeScript/TSX and Markdown. MIT-licensed; README has install and
-usage; CI (`.github/workflows/`) gates PRs.
+JavaScript, TypeScript/TSX and Markdown. Syntax patterns (spec §3.10) select
+code by writing it: `ned-scheme` reads the Scheme dialect (tree-sitter query
+syntax plus Scheme data) that builders and, later, plugins are written in;
+`template` lexes `@` placeholders, `fragment` parses a pattern alone or inside
+`queries/<lang>/builders.scm`, and `pattern` matches it against the tree;
+`replace` substitutes its captures. MIT-licensed; README has install and usage;
+CI (`.github/workflows/`) gates PRs.
 
 ## Key Documentation
 
@@ -187,6 +192,7 @@ Cargo.toml         workspace; shared version, edition, lints
 crates/ned-core/   library: buffer, script parser, selectors, languages, exec, formatting
 crates/ned-cli/    `ned` binary: args, I/O, output rendering, help texts, daemon client glue
 crates/ned-daemon/ per-workspace daemon (Unix socket), its sync client, language servers
+crates/ned-scheme/ reader for the Scheme dialect of query files, builders and plugins
 queries/<lang>/    tree-sitter selector queries (.scm), one dir per language
 docs/              specs, agent guide, Claude Code skill
 bench/             token-cost benchmark (uv project; cases/ back spec §8's table)

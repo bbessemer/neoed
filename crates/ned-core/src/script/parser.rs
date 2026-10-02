@@ -445,6 +445,7 @@ fn primary(token: Token) -> Result<Primary, ParseError> {
             name: "*".into(),
         },
         TokenKind::Query(query) => Primary::Query(query),
+        TokenKind::Code(code) => Primary::Code(code),
         kind => match text_from(kind) {
             Ok(text) => Primary::Literal(text),
             Err(kind) => return Err(expected("a selector", &Token { kind, ..token })),
@@ -523,6 +524,7 @@ fn expected(what: &'static str, token: &Token) -> ParseError {
         TokenKind::Str(_) => "a string".into(),
         TokenKind::Heredoc { .. } => "a heredoc".into(),
         TokenKind::Query(_) => "a query".into(),
+        TokenKind::Code(_) => "a pattern".into(),
         TokenKind::Part(_) => "a part".into(),
         TokenKind::Filter(_) => "a filter".into(),
         TokenKind::Path(_) => "a path".into(),
@@ -981,6 +983,13 @@ mod tests {
         assert_eq!(
             one("show query{(x) @sel}"),
             show(vec![step(Primary::Query("(x) @sel".into()))])
+        );
+        assert_eq!(
+            one("show fn:main>`foo(@a, 1)`"),
+            show(vec![
+                syntax("fn", "main"),
+                step(Primary::Code("foo(@a, 1)".into()))
+            ])
         );
     }
 

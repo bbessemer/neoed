@@ -156,12 +156,25 @@ pub enum Primary {
     /// `file:PATH`
     File(String),
     Query(String),
+    /// A syntax pattern's code (§3.10).
+    Code(String),
     /// `from..to`: from the start of a match of `from` to the end of the next
     /// match of `to` (§3.8).
     Range {
         from: Box<Primary>,
         to: Box<Primary>,
     },
+}
+
+impl Primary {
+    /// The syntax patterns in the primary: its own, or its range's ends.
+    pub fn patterns(&self) -> Vec<&str> {
+        match self {
+            Primary::Code(code) => vec![code],
+            Primary::Range { from, to } => [from.patterns(), to.patterns()].concat(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

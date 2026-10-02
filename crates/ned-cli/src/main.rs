@@ -291,6 +291,7 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::Overlap { .. }
         | ExecErrorKind::SyntaxError { .. }
         | ExecErrorKind::NoLanguage { .. }
+        | ExecErrorKind::NoCodeLanguage { .. }
         | ExecErrorKind::UnknownKind { .. }
         | ExecErrorKind::MissingPart { .. }
         | ExecErrorKind::PartNeedsItem { .. }
@@ -301,6 +302,10 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::AmbiguousLocated { .. } => 1,
         ExecErrorKind::NoFiles
         | ExecErrorKind::InvalidQuery { .. }
+        | ExecErrorKind::InvalidPattern { .. }
+        | ExecErrorKind::DuplicateCapture { .. }
+        | ExecErrorKind::UnknownCapture { .. }
+        | ExecErrorKind::WildcardInText
         | ExecErrorKind::NoServer { .. } => 2,
         ExecErrorKind::Io { .. } | ExecErrorKind::NoGlobMatch { .. } | ExecErrorKind::Lsp(_) => 3,
     }

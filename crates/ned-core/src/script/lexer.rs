@@ -46,6 +46,8 @@ pub enum TokenKind {
         raw: bool,
     },
     Query(String),
+    /// A syntax pattern, `` `CODE` `` (§3.10).
+    Code(String),
     Part(Part),
     Filter(Filter),
     /// A `file` command argument, from [`Lexer::path`].
@@ -122,6 +124,7 @@ impl<'a> Lexer<'a> {
             }
             '.' => TokenKind::Part(self.part()?),
             '[' => TokenKind::Filter(self.filter()?),
+            '`' => self.code(start)?,
             c if c.is_ascii_alphabetic() || c == '_' => self.word()?,
             c => {
                 return Err(ParseError::new(
@@ -392,6 +395,37 @@ impl<'a> Lexer<'a> {
                 c => query.push(c),
             }
         }
+    }
+
+    /// Lexes a pattern from its opening run of backquotes to the next run of the
+    /// same length, as Markdown does code spans. It may span lines, and its code
+    /// is verbatim, but for one space just inside each end when both have one.
+    fn code(&mut self, start: usize) -> Result<TokenKind, ParseError> {
+        let run = |at: usize| self.src[at..].len() - self.src[at..].trim_start_matches('`').len();
+        let fence = run(start);
+        let body = start + fence;
+        let mut at = body;
+        while let Some(offset) = self.src[at..].find('`') {
+            at += offset;
+            let len = run(at);
+            if len == fence {
+                self.pos = at + len;
+                let code = &self.src[body..at];
+                let padded = code.len() >= 2 && code.starts_with(' ') && code.ends_with(' ');
+                let code = if padded && !code.trim().is_empty() {
+                    &code[1..code.len() - 1]
+                } else {
+                    code
+                };
+                return Ok(TokenKind::Code(code.to_string()));
+            }
+            at += len;
+        }
+        self.pos = self.src.len();
+        Err(ParseError::new(
+            E::UnterminatedPattern,
+            start..self.src.len(),
+        ))
     }
 
     /// Lexes `<<TAG` and reads its body from the lines after the command line
@@ -666,6 +700,34 @@ mod tests {
         );
         assert_eq!(kinds(r"query{a\}b}"), [T::Query("a}b".into())]);
         assert_eq!(error("query{(a)\n}").kind, E::UnterminatedQuery);
+    }
+
+    #[test]
+    fn patterns() {
+        assert_eq!(
+            kinds("`foo(@a)`>fn:x"),
+            [T::Code("foo(@a)".into()), T::Gt, syntax("fn", "x")]
+        );
+        assert_eq!(kinds("`if c:\n    x`"), [T::Code("if c:\n    x".into())]);
+        assert_eq!(kinds(r#"`"\n" \`"#), [T::Code(r#""\n" \"#.into())]);
+        assert_eq!(kinds("`a # b`"), [T::Code("a # b".into())]);
+        let e = error("show `foo(");
+        assert_eq!(e.kind, E::UnterminatedPattern);
+        assert_eq!(e.span, 5..10);
+    }
+
+    #[test]
+    fn patterns_with_backquotes() {
+        assert_eq!(kinds("``a`b``"), [T::Code("a`b".into())]);
+        assert_eq!(kinds("``a```b``"), [T::Code("a```b".into())]);
+        // One space just inside each end is dropped, if both ends have one.
+        assert_eq!(kinds("`` `${x}` ``"), [T::Code("`${x}`".into())]);
+        assert_eq!(kinds("`` a ``"), [T::Code("a".into())]);
+        assert_eq!(kinds("` a`"), [T::Code(" a".into())]);
+        assert_eq!(kinds("`  `"), [T::Code("  ".into())]);
+        let e = error("show ``foo`");
+        assert_eq!(e.kind, E::UnterminatedPattern);
+        assert_eq!(e.span, 5..11);
     }
 
     #[test]

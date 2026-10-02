@@ -4,8 +4,9 @@ description:
   Read, search, create and edit source files with ned, a syntax-aware line
   editor. Outline a file, show an item (fn:parse, impl:Parser>fn:new), a line
   range or every match of a regex or literal across a glob or the whole
-  workspace (-w); create files; replace, insert, delete or move code in one
-  all-or-nothing call that prints a diff; find a symbol's references or
+  workspace (-w); select code by writing it, with @ placeholders, and rewrite it
+  from what they captured; create files; replace, insert, delete or move code in
+  one all-or-nothing call that prints a diff; find a symbol's references or
   definition, rename it across the workspace, and check language-server
   diagnostics without a build. Use it instead of grep, sed, cat, inline Python
   or str_replace.
@@ -158,6 +159,30 @@ delete fn:helper_a..fn:helper_c
 show /^## Usage/../^## License/
 ```
 
+Select code by writing it: a backquoted pattern matches whatever the spacing,
+line breaks and comments. `@name` stands for one node (an expression, a
+statement, a name), `@name...` for a run of them, `@_` for either without a
+name:
+
+```ned
+show all `dbg!(@x...)`
+delete all fn:main>`println!(@_...);`
+show `impl Display for @t { @_... }`>fn:fmt
+```
+
+`replace` puts what a pattern captured where TEXT names it; a capture's later
+lines are re-indented to fit:
+
+```ned
+replace all `assert_eq!(@a..., true)` with "assert!(@a)"
+replace fn:load>`if let Some(@x) = @e { @body... }` with <<END
+let Some(@x) = @e else {
+    return;
+};
+@body
+END
+```
+
 Select by a property instead of a name with a filter: `.text`, `.len`
 (characters on one line, lines on several) or a part, compared with `==`, `!=`,
 `<`, `>`, `<=`, `>=` or `~=` (regex), and combined with `&&` and `||`:
@@ -224,6 +249,15 @@ insert start class:App>fn:handle "metrics.count(req)"
   `show`, not from the diff, or use an item or regex selector.
 - **Keep output small** on big edits with `-q` (summaries only) or
   `--context 0`.
+- **`@` in a pattern is a placeholder.** Double it for a real one, as in a
+  decorator: `` `@@app.route(@path)` ``. A pattern holding backquotes opens and
+  closes with a longer run of them, as in Markdown: ``` `` `${x}` `` ```. A Rust
+  macro's arguments are tokens, so match one with a run: `` `dbg!(@x...)` ``.
+- **Patterns match strictly.** Only separators the pattern leaves out (`,`, `;`,
+  line breaks) and comments are skipped; every other token and node must match,
+  so `` `fn f(self) {}` `` doesn't match `fn f(&self) {}`, nor
+  `` `fn @f() {}` `` `pub fn f() {}`. Put `@_` or `@_...` where code may vary.
+  Captures keep the comments at their ends.
 - **Use `delete` to remove lines.** `replace 12 with ""` leaves an empty line,
   because line-oriented text always ends with a newline.
 - **Partial matches get verbatim text.** `insert after /re/ "x"` inserts right
