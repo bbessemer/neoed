@@ -118,6 +118,130 @@ fn edit_prints_summary_and_hunks() {
     );
 }
 
+/// `ned ARGS` with `--color always`, its escapes shown as `\e[...m`.
+fn colored(dir: &Path, args: &[&str]) -> String {
+    let args = [&["--color", "always"], args].concat();
+    ned(dir, &args, "").replace('\x1b', r"\e")
+}
+
+#[test]
+fn color_always_paints_reads_edits_and_messages() {
+    let dir = dir_with(&[("parser.rs", PARSER), ("a.toml", "x = 1\n")]);
+    let script = r#"replace "unexpected end" with "unexpected end of input""#;
+    assert_snapshot!(colored(dir.path(), &["parser.rs", "a.toml", "-e", script]), @r#"
+    exit: 0
+    --- stdout
+    \e[1mparser.rs: 1 edit, +1 -1\e[0m
+    \e[36m@@ -14,3 +14,3 @@\e[0m
+         pub fn parse(&mut self) -> Result<Ast, Error> {
+    \e[31m-        let tok = self.next().expect("unexpected end");\e[0m
+    \e[32m+        let tok = self.next().expect("unexpected end of input");\e[0m
+             self.parse_expr(tok)
+    --- stderr
+    \e[1;36mnote:\e[0m read .toml files as text; syntax selectors skip them
+    "#);
+    assert_snapshot!(colored(dir.path(), &["a.toml", "-e", "show 1"]), @r"
+    exit: 0
+    --- stdout
+    \e[1ma.toml:1\e[0m
+    \e[2m1\e[0m x = 1
+    --- stderr
+    \e[1;36mnote:\e[0m read .toml files as text; syntax selectors skip them
+    ");
+    assert_snapshot!(colored(dir.path(), &["parser.rs", "-e", "outline"]), @r"
+    exit: 0
+    --- stdout
+    \e[1mparser.rs\e[0m
+    \e[2m1\e[0m \e[36mimport\e[0m (1)
+    \e[2m3-7\e[0m \e[36mstruct\e[0m:Parser
+    \e[2m9-22\e[0m \e[36mimpl\e[0m:Parser
+      \e[2m10-12\e[0m \e[36mfn\e[0m:new
+      \e[2m14-17\e[0m \e[36mfn\e[0m:parse
+      \e[2m19-21\e[0m \e[36mfn\e[0m:debug_dump
+    --- stderr
+    ");
+    assert_snapshot!(colored(dir.path(), &["parser.rs", "-e", "show fn:nope"]), @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    \e[1;31merror:\e[0m script:1:6: fn:nope matches nothing in parser.rs; `outline` lists the items
+    ");
+}
+
+#[test]
+fn without_a_terminal_or_with_color_never_output_is_plain() {
+    let dir = dir_with(&[("parser.rs", PARSER), ("a.toml", "x = 1\n")]);
+    let script = "show fn:new; outline; show fn:nope";
+    let auto = ned(dir.path(), &["parser.rs", "a.toml", "-e", script], "");
+    let never = ned(
+        dir.path(),
+        &["--color", "never", "parser.rs", "a.toml", "-e", script],
+        "",
+    );
+    assert_eq!(auto, never);
+    assert!(!auto.contains('\x1b'), "{auto}");
+}
+
+#[test]
+fn an_unknown_color_word_is_a_usage_error() {
+    let dir = dir_with(&[]);
+    assert_snapshot!(ned(dir.path(), &["--color", "sometimes", "-e", "show 1"], ""), @"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: invalid value 'sometimes' for '--color <WHEN>': expected auto, always or never
+
+    For more information, try '--help'.
+    ");
+}
+
+#[test]
+fn color_always_paints_usage_errors() {
+    let dir = dir_with(&[]);
+    assert_snapshot!(colored(dir.path(), &["--bogus"]), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    \e[1m\e[31merror:\e[0m unexpected argument '\e[33m--bogus\e[0m' found
+
+      \e[32mtip:\e[0m to pass '\e[33m--bogus\e[0m' as a value, use '\e[32m-- --bogus\e[0m'
+
+    \e[1m\e[4mUsage:\e[0m ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...
+           ned help [TOPIC]    (the command language)
+           ned daemon start|status|stop [DIR]
+           ned history|undo [-s NAME] [-w DIR]
+
+    For more information, try '\e[1m--help\e[0m'.
+    ");
+    let joined = ned(dir.path(), &["--color=always", "--bogus"], "");
+    assert_eq!(
+        joined.replace('\x1b', r"\e"),
+        colored(dir.path(), &["--bogus"])
+    );
+    let plain = ned(dir.path(), &["--bogus"], "");
+    assert!(!plain.contains('\x1b'), "{plain}");
+}
+
+#[test]
+fn color_always_overrides_no_color_set_or_empty() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let painted = |no_color: &str| {
+        let output = cargo_bin_cmd!("ned")
+            .current_dir(dir.path())
+            .env("NO_COLOR", no_color)
+            .args(["--color", "always", "parser.rs", "-e", "show 1"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).replace('\x1b', r"\e")
+    };
+    let expected = colored(dir.path(), &["parser.rs", "-e", "show 1"]);
+    for no_color in ["1", ""] {
+        let out = painted(no_color);
+        assert!(out.contains(r"\e["), "NO_COLOR={no_color:?}: {out}");
+        assert!(expected.contains(&out), "NO_COLOR={no_color:?}: {out}");
+    }
+}
+
 #[test]
 fn script_from_stdin_with_heredoc() {
     let dir = dir_with(&[("app.py", APP)]);

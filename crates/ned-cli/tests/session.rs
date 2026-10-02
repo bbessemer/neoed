@@ -375,6 +375,23 @@ fn undo_reverts_the_last_edit_and_records_it() {
 }
 
 #[test]
+fn color_follows_a_subcommand() {
+    let ws = Workspace::new(&[("a.txt", "a\n")]);
+    ws.ned(&["-s", "agent", "a.txt", "-e", r#"replace 1 with "b""#]);
+    let report = ws.report(&["undo", "-s", "agent", "--color", "always"]);
+    assert_snapshot!(report.replace('\x1b', r"\e"), @r#"
+    exit: 0
+    --- stdout
+    undo 1: replace 1 with "b"
+    \e[1ma.txt: 1 edit, +1 -1\e[0m
+    \e[36m@@ -1,1 +1,1 @@\e[0m
+    \e[31m-b\e[0m
+    \e[32m+a\e[0m
+    --- stderr
+    "#);
+}
+
+#[test]
 fn repeated_undo_walks_back_until_nothing_is_left() {
     let ws = Workspace::new(&[("a.rs", "fn a() {}\n")]);
     ws.ned_with(

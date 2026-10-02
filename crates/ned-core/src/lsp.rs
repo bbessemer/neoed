@@ -11,6 +11,7 @@ use crate::buffer::Buffer;
 use crate::config::{Config, ConfigError, Entry, program};
 use crate::exec::Change;
 use crate::lang::Language;
+use crate::style::{Role, Style};
 
 /// A file's text, as `ned` sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -283,7 +284,7 @@ fn documents(
 
 /// `d` as a line of `check` output (spec §4.1), for the file at `path`
 /// holding `buffer`.
-pub fn render(path: &str, buffer: &Buffer, d: &Diagnostic) -> String {
+pub fn render(path: &str, buffer: &Buffer, d: &Diagnostic, style: Style) -> String {
     let start = buffer.lsp_offset(d.start.line, d.start.character);
     let line = buffer.byte_to_line(start).unwrap_or(d.start.line as usize);
     let line_start = buffer.line_range(line).map_or(start, |r| r.start);
@@ -298,11 +299,13 @@ pub fn render(path: &str, buffer: &Buffer, d: &Diagnostic) -> String {
     };
     let mut message = d.message.lines();
     let first = message.next().unwrap_or_default();
-    let mut out = format!(
-        "{path}:{}:{column}: {}: {first}{tag}\n",
-        line + 1,
-        d.severity
-    );
+    let role = match d.severity {
+        Severity::Error => Role::Error,
+        Severity::Warning => Role::Warning,
+        Severity::Info | Severity::Hint => Role::Info,
+    };
+    let severity = style.paint(role, d.severity.name());
+    let mut out = format!("{path}:{}:{column}: {severity}: {first}{tag}\n", line + 1);
     for rest in message {
         out.push_str(&format!("  {rest}\n"));
     }
@@ -397,6 +400,7 @@ mod tests {
 
     use super::*;
     use crate::config::tests::tree;
+    use crate::style::shown;
 
     fn server(root: &Path, lang: Language) -> Option<Vec<String>> {
         Config::new(None).unwrap().server(root, lang).unwrap()
@@ -523,6 +527,30 @@ mod tests {
             source: Some("fake".into()),
             code: None,
         }
+    }
+
+    #[test]
+    fn render_paints_the_severity() {
+        let buffer = Buffer::new("let x = 1;\n");
+        let line = |severity| shown(&render("a.rs", &buffer, &d(0, severity, "m"), Style::Color));
+        assert_eq!(
+            line(Severity::Error),
+            "a.rs:1:1: \\e[1;31merror\\e[0m: m [fake]\n"
+        );
+        assert_eq!(
+            line(Severity::Warning),
+            "a.rs:1:1: \\e[1;33mwarning\\e[0m: m [fake]\n"
+        );
+        assert_eq!(
+            line(Severity::Info),
+            "a.rs:1:1: \\e[1;34minfo\\e[0m: m [fake]\n"
+        );
+        assert_eq!(
+            line(Severity::Hint),
+            "a.rs:1:1: \\e[1;34mhint\\e[0m: m [fake]\n"
+        );
+        let plain = render("a.rs", &buffer, &d(0, Severity::Error, "m"), Style::Plain);
+        assert_eq!(plain, "a.rs:1:1: error: m [fake]\n");
     }
 
     #[test]

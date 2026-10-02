@@ -3,11 +3,12 @@
 use std::ops::Range;
 
 use crate::select::{SourceFile, line_numbers};
+use crate::style::{Role, Style};
 use crate::syntax::{self, Item, Kind, rank};
 
 /// The outline entries of the items in `f`, one per line, or of the items
 /// strictly inside `within`. Empty if `f` has no items.
-pub fn render(f: &SourceFile, within: Option<&Range<usize>>) -> String {
+pub fn render(f: &SourceFile, within: Option<&Range<usize>>, style: Style) -> String {
     let Some(items) = f.items() else {
         return String::new();
     };
@@ -24,7 +25,11 @@ pub fn render(f: &SourceFile, within: Option<&Range<usize>>) -> String {
     let flush = |out: &mut String, imports: &mut Option<(usize, Range<usize>, usize)>| {
         if let Some((depth, range, count)) = imports.take() {
             let lines = line_numbers(&f.buffer, &range);
-            out.push_str(&format!("{}{lines} import ({count})\n", "  ".repeat(depth)));
+            let (lines, kind) = (
+                style.paint(Role::Dim, &lines),
+                style.paint(Role::Kind, "import"),
+            );
+            out.push_str(&format!("{}{lines} {kind} ({count})\n", "  ".repeat(depth)));
         }
     };
     for item in listed {
@@ -59,7 +64,13 @@ pub fn render(f: &SourceFile, within: Option<&Range<usize>>) -> String {
         flush(&mut out, &mut imports);
         let lines = line_numbers(&f.buffer, &item.range);
         let selector = syntax::selector(item.kind, &item.name);
-        out.push_str(&format!("{}{lines} {selector}\n", "  ".repeat(depth)));
+        // `selector` is the kind, then `:` and the name.
+        let name = &selector[item.kind.len()..];
+        let (lines, kind) = (
+            style.paint(Role::Dim, &lines),
+            style.paint(Role::Kind, item.kind),
+        );
+        out.push_str(&format!("{}{lines} {kind}{name}\n", "  ".repeat(depth)));
     }
     flush(&mut out, &mut imports);
     out
@@ -74,13 +85,14 @@ fn is(item: &Item, has: fn(&Kind) -> bool) -> bool {
 mod tests {
     use super::*;
     use crate::lang::Language;
+    use crate::style::shown;
 
     fn file(path: &str, text: &str) -> SourceFile {
         SourceFile::new(path, text.into(), Language::detect(path, text))
     }
 
     fn outline(path: &str, text: &str) -> String {
-        render(&file(path, text), None)
+        render(&file(path, text), None, Style::Plain)
     }
 
     #[test]
@@ -90,6 +102,19 @@ mod tests {
             outline("a.rs", text),
             "1-8 mod:a\n  2-4 mod:b\n    3 fn:c\n  5-7 trait:T\n    6 fn:d\n9 const:E\n"
         );
+    }
+
+    #[test]
+    fn color_dims_lines_and_paints_kinds() {
+        let text = "use a;\nuse b;\n\nimpl S {\n    fn new() {}\n}\n";
+        let expected = [
+            r"\e[2m1-2\e[0m \e[36mimport\e[0m (2)",
+            r"\e[2m4-6\e[0m \e[36mimpl\e[0m:S",
+            r"  \e[2m5\e[0m \e[36mfn\e[0m:new",
+            "",
+        ];
+        let f = file("a.rs", text);
+        assert_eq!(shown(&render(&f, None, Style::Color)), expected.join("\n"));
     }
 
     #[test]
@@ -118,14 +143,17 @@ mod tests {
             .iter()
             .find(|i| i.kind == "struct")
             .unwrap();
-        assert_eq!(render(&f, Some(&s.range)), "3 field:a\n");
+        assert_eq!(render(&f, Some(&s.range), Style::Plain), "3 field:a\n");
         let e = f
             .items()
             .unwrap()
             .iter()
             .find(|i| i.kind == "enum")
             .unwrap();
-        assert_eq!(render(&f, Some(&e.range)), "6 variant:A\n7 variant:B\n");
+        assert_eq!(
+            render(&f, Some(&e.range), Style::Plain),
+            "6 variant:A\n7 variant:B\n"
+        );
     }
 
     #[test]
@@ -133,10 +161,13 @@ mod tests {
         let text = "impl A {\n    fn b() {}\n    fn c() {}\n}\n";
         let f = SourceFile::new("a.rs", text.into(), Some(Language::Rust));
         assert_eq!(
-            render(&f, Some(&(0..text.len()))),
+            render(&f, Some(&(0..text.len())), Style::Plain),
             "1-4 impl:A\n  2 fn:b\n  3 fn:c\n"
         );
-        assert_eq!(render(&f, Some(&(9..text.len()))), "2 fn:b\n3 fn:c\n");
+        assert_eq!(
+            render(&f, Some(&(9..text.len())), Style::Plain),
+            "2 fn:b\n3 fn:c\n"
+        );
     }
 
     #[test]
@@ -150,12 +181,12 @@ mod tests {
         let text = "# Title\n\n## Two\n\n- a\n- b\n\n| X | Y |\n| - | - |\n\n```rust\nx\n```\n\n### Deep\n\ntext\n";
         let f = file("a.md", text);
         assert_eq!(
-            render(&f, None),
+            render(&f, None, Style::Plain),
             "1-17 section:Title\n  3-17 section:Two\n    15-17 section:Deep\n"
         );
         let two = f.items().unwrap().iter().find(|i| i.name == "Two").unwrap();
         assert_eq!(
-            render(&f, Some(&two.range)),
+            render(&f, Some(&two.range), Style::Plain),
             "5 item:a\n6 item:b\n8-9 table:X\n11-13 code:rust\n15-17 section:Deep\n"
         );
     }
