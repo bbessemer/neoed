@@ -1089,4 +1089,95 @@ mod tests {
                 .starts_with("/q/a.rs ")
         );
     }
+
+    /// The script `src` repeats from entries with `scripts`, or its error.
+    fn expand(src: &str, scripts: &[&str]) -> Option<Result<String, RepeatError>> {
+        let entries: Vec<_> = scripts
+            .iter()
+            .enumerate()
+            .map(|(i, script)| recorded(i as u64 + 1, Some(script), 0, 0))
+            .collect();
+        repeat(src, &entries).map(|result| result.map(|(_, script)| script))
+    }
+
+    fn expanded(src: &str, script: &str) -> String {
+        expand(src, &["show 1", script]).unwrap().unwrap()
+    }
+
+    #[test]
+    fn repeat_gives_the_last_script() {
+        let entries = [
+            recorded(1, Some("show 1"), 0, 0),
+            recorded(2, Some("delete fn:prase"), 1, 0),
+            undo_of(3, 1, &[]),
+        ];
+        let (entry, script) = repeat("!!", &entries).unwrap().unwrap();
+        assert_eq!((entry.id, script.as_str()), (2, "delete fn:prase"));
+        assert_eq!(expanded("  !!\n", "show 2"), "show 2");
+    }
+
+    #[test]
+    fn other_scripts_are_no_repeat() {
+        assert_eq!(expand("show 1", &["show 2"]), None);
+        assert_eq!(expand("replace \"!!\" with \"!\"", &["show 2"]), None);
+    }
+
+    #[test]
+    fn substitutions_correct_the_repeat_in_order() {
+        let script = "replace fn:prase>\"a\" with \"a\"";
+        assert_eq!(
+            expanded("!!:s/prase/parse/", script),
+            "replace fn:parse>\"a\" with \"a\""
+        );
+        assert_eq!(expanded("!!:s/a/b/", "a a a"), "b a a");
+        assert_eq!(expanded("!!:gs/a/b/", "a a a"), "b b b");
+        assert_eq!(expanded("!!:s/a/b/:gs/a/c/", "a a a"), "b c c");
+        assert_eq!(expanded("!!:s/a/b", "a a"), "b a");
+        assert_eq!(expanded("!!:s|a/b|c|", "x a/b"), "x c");
+        assert_eq!(expanded(r"!!:s/a\/b/c\//", "a/b"), "c/");
+        assert_eq!(expanded(r"!!:s/\n/x/", r"a\nb"), "axb");
+        assert_eq!(expanded("!!:s/ a//", "show a"), "show");
+    }
+
+    #[test]
+    fn repeat_without_an_earlier_script_is_an_error() {
+        assert_eq!(expand("!!", &[]), Some(Err(RepeatError::NoScript)));
+        let entries = [undo_of(1, 1, &[])];
+        assert!(matches!(
+            repeat("!!", &entries),
+            Some(Err(RepeatError::NoScript))
+        ));
+    }
+
+    #[test]
+    fn a_substitution_of_missing_text_shows_the_script() {
+        let err = expand("!!:s/x/y/", &["show 1\nshow 2"])
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            err,
+            RepeatError::NotFound {
+                old: "x".into(),
+                script: "show 1\nshow 2".into()
+            }
+        );
+    }
+
+    #[test]
+    fn malformed_modifiers_are_errors() {
+        for src in [
+            "!!x",
+            "!!:",
+            "!!:s",
+            "!!:s/a",
+            "!!:s//b/",
+            "!!:q/a/b/",
+            "!!:sxaxbx",
+            "!!:s a b ",
+        ] {
+            let err = expand(src, &["a"]).unwrap().unwrap_err();
+            assert!(matches!(err, RepeatError::Malformed(_)), "{src}: {err}");
+            assert!(err.to_string().contains("usage: !!"), "{err}");
+        }
+    }
 }

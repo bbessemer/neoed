@@ -463,3 +463,123 @@ fn undo_without_a_session_is_a_usage_error() {
     let output = ws.ned(&["undo"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
 }
+
+#[test]
+fn a_repeat_corrects_a_failed_script_on_its_files() {
+    let ws = Workspace::new(&[("a.rs", "fn parse() {}\n"), ("b.rs", "fn b() {}\n")]);
+    let script = r#"replace fn:prase with "fn parse2() {}""#;
+    ws.ned_with(Some("agent"), &["a.rs", "-e", script]);
+    let output = ws.ned_with(Some("agent"), &["-e", "!!:s/prase/parse/"]);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(
+        stderr,
+        "note: repeating 1: replace fn:parse with \"fn parse2() {}\"\n"
+    );
+    assert!(stdout.starts_with("a.rs: 1 edit, +1 -1\n"), "{stdout}");
+    assert_eq!(ws.read("a.rs"), "fn parse2() {}\n");
+
+    let entry = &ws.entries("agent")[1];
+    assert_eq!(entry["script"], r#"replace fn:parse with "fn parse2() {}""#);
+    assert_eq!(entry["files"], serde_json::json!(["a.rs"]));
+}
+
+#[test]
+fn files_given_to_a_repeat_replace_the_recorded_ones() {
+    let ws = Workspace::new(&[("a.rs", "fn a() {}\n"), ("b.rs", "fn a() {}\n")]);
+    ws.ned_with(
+        Some("agent"),
+        &["a.rs", "-e", r#"replace fn:a with "fn c() {}""#],
+    );
+    let output = ws.ned_with(Some("agent"), &["b.rs", "-e", "!!"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(ws.read("b.rs"), "fn c() {}\n");
+}
+
+#[test]
+fn a_repeat_takes_the_recorded_workspace_and_directory() {
+    let ws = Workspace::new(&[("a.rs", "fn a() {}\n")]);
+    let sub = ws.dir.path().join("sub");
+    fs::create_dir(&sub).unwrap();
+    let in_sub = |script: &str| {
+        let output = cargo_bin_cmd!("ned")
+            .args(["-e", script])
+            .current_dir(&sub)
+            .env("XDG_STATE_HOME", ws.state.path())
+            .env("XDG_CONFIG_HOME", ws.config.path())
+            .env("XDG_RUNTIME_DIR", ws.runtime.path())
+            .env("NED_SESSION", "agent")
+            .write_stdin("")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let shown = format!("{}:1\n1:fn a() {{}}\n", ws.root().join("a.rs").display());
+
+    ws.ned_with(Some("agent"), &["a.rs", "-e", "show fn:x"]);
+    assert_eq!(in_sub("!!:s/fn:x/fn:a/"), shown);
+    ws.ned_with(Some("agent"), &["-w", "-e", "show all fn:y"]);
+    assert_eq!(in_sub("!!:s/fn:y/fn:a/"), shown);
+    assert_eq!(path(&ws.entries("agent")[3]["workspace"]), ws.root());
+}
+
+#[test]
+fn a_repeat_without_a_session_is_a_usage_error() {
+    let ws = Workspace::new(&[("a.rs", "fn a() {}\n")]);
+    assert_snapshot!(ws.report(&["a.rs", "-e", "!!"]), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: `!!` repeats a session's last script; give the session with -s NAME or NED_SESSION
+    ");
+}
+
+#[test]
+fn repeat_errors_are_usage_errors_and_not_recorded() {
+    let ws = Workspace::new(&[("a.rs", "fn a() {}\n")]);
+    assert_snapshot!(ws.report(&["-s", "agent", "-e", "!!"]), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: `!!` repeats the session's last script, but it has none; write the script out
+    ");
+    ws.ned(&["-s", "agent", "a.rs", "-e", "show fn:a"]);
+    assert_snapshot!(ws.report(&["-s", "agent", "-e", "!!:s/fn:b/fn:c/"]), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: `fn:b` isn't in the last script, which is:
+    show fn:a
+    ");
+    assert_eq!(ws.entries("agent").len(), 1);
+}
+
+#[test]
+fn a_damaged_log_blocks_only_what_reads_it() {
+    let ws = Workspace::new(&[("a.rs", "fn a() {}\n")]);
+    ws.ned(&["-s", "agent", "a.rs", "-e", "show 1"]);
+    let dir = fs::read_dir(ws.sessions_dir()).unwrap().next().unwrap();
+    let log = dir.unwrap().path().join("agent.log");
+    let mut text = fs::read_to_string(&log).unwrap();
+    text.push_str("garbage\n");
+    fs::write(&log, text).unwrap();
+
+    let output = ws.ned(&[
+        "-s",
+        "agent",
+        "a.rs",
+        "-e",
+        r#"replace fn:a with "fn b() {}""#,
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.starts_with("note: not recorded in session agent: "),
+        "{stderr}"
+    );
+    assert_eq!(ws.read("a.rs"), "fn b() {}\n");
+    let output = ws.ned(&["-s", "agent", "-e", "!!"]);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+}
