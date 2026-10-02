@@ -133,10 +133,10 @@ fn color_always_paints_reads_edits_and_messages() {
     --- stdout
     \e[1mparser.rs: 1 edit, +1 -1\e[0m
     \e[36m@@ -14,3 +14,3 @@\e[0m
-         pub fn parse(&mut self) -> Result<Ast, Error> {
-    \e[31m-        let tok = self.next().expect("unexpected end");\e[0m
-    \e[32m+        let tok = self.next().expect("unexpected end of input");\e[0m
-             self.parse_expr(tok)
+         \e[35mpub\e[0m \e[35mfn\e[0m \e[34mparse\e[0m(&\e[35mmut\e[0m \e[35mself\e[0m) -> \e[33mResult\e[0m<\e[33mAst\e[0m, \e[33mError\e[0m> {
+    \e[31m-\e[0m\e[31m        \e[0m\e[35mlet\e[0m\e[31m tok = \e[0m\e[35mself\e[0m\e[31m.\e[0m\e[34mnext\e[0m\e[31m().\e[0m\e[34mexpect\e[0m\e[31m(\e[0m\e[32m"unexpected end"\e[0m\e[31m);\e[0m
+    \e[32m+\e[0m\e[32m        \e[0m\e[35mlet\e[0m\e[32m tok = \e[0m\e[35mself\e[0m\e[32m.\e[0m\e[34mnext\e[0m\e[32m().\e[0m\e[34mexpect\e[0m\e[32m(\e[0m\e[32m"unexpected end of input"\e[0m\e[32m);\e[0m
+             \e[35mself\e[0m.\e[34mparse_expr\e[0m(tok)
     --- stderr
     \e[1;36mnote:\e[0m read .toml files as text; syntax selectors skip them
     "#);

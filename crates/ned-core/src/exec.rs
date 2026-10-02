@@ -1052,7 +1052,7 @@ impl Executor<'_> {
                     Style::Color => {
                         let number = format!("{:>width$}", line + 1);
                         let content = range.start..range.start + content.len();
-                        let code = highlight::paint(style, &f.text, content, &spans);
+                        let code = highlight::paint(style, &f.text, content, &spans, None);
                         format!("{} {code}\n", style.paint(Role::LineNumber, &number))
                     }
                 };

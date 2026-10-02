@@ -170,6 +170,10 @@ between commands starts a stage that sees the edits before it.
 respecting `.gitignore`. `ned help` prints the whole language on one screen;
 [`docs/command-language.md`](docs/command-language.md) is the full spec.
 
+On a terminal, output is coloured: shown code and diffs are syntax-highlighted,
+with aligned line numbers. A non-empty `NO_COLOR` turns it off, and
+`--color always` or `--color never` overrides both.
+
 With `-s NAME`, or `NED_SESSION=NAME` in the environment, `ned` records each
 invocation in a session: `ned history` lists them, `ned undo` reverts the last
 edit, and `ned -e '!!:s/prase/parse/'` repeats the last script with a fix.
@@ -223,8 +227,6 @@ In order, with details in [`TODO.md`](TODO.md):
 
 - Git: commit exactly an invocation's or a session's edits; edit and resolve
   files with merge-conflict markers
-- Human-friendly output on a terminal: syntax highlighting, aligned line
-  numbers, coloured diffs
 - `ned-repl`: an interactive session for humans, which can also follow an
   agent's session
 - `ned-mcp`: an MCP server that exposes scripts, `outline` and `show` as tools
