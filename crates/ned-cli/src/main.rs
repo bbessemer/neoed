@@ -16,6 +16,7 @@ macro_rules! outln {
 
 mod daemon;
 mod help;
+mod session;
 
 use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
@@ -41,7 +42,7 @@ use ned_core::{fs, script, workspace};
     args_conflicts_with_subcommands = true,
     disable_help_subcommand = true,
     // clap leaves a user-defined `help` subcommand out of the usage.
-    override_usage = "ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]"
+    override_usage = "ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]\n       ned history|undo [-s [NAME]]"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -79,6 +80,10 @@ struct Cli {
     /// Context lines around diff hunks.
     #[arg(long, value_name = "N", default_value_t = 1)]
     context: usize,
+    /// Record the invocation in session NAME (default `default`); overrides
+    /// NED_SESSION.
+    #[arg(short, long, value_name = "NAME", num_args = 0..=1)]
+    session: Option<Option<String>>,
 }
 
 #[derive(Subcommand)]
@@ -90,6 +95,15 @@ enum Command {
         #[command(subcommand)]
         action: daemon::Action,
     },
+    /// Print the session's last 10 entries.
+    History {
+        /// The session (default `default`); overrides NED_SESSION.
+        #[arg(short, long, value_name = "NAME", num_args = 0..=1)]
+        session: Option<Option<String>>,
+        /// Print every entry.
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -100,6 +114,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Some(Command::Daemon { action }) => return daemon::run(action),
+        Some(Command::History { session, all }) => return session::history(&session, all),
         None => {}
     }
     if let Some(err) = usage_error(&cli) {

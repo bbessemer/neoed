@@ -115,6 +115,12 @@ pub fn sessions(state_dir: &Path, root: &Path) -> Result<Vec<String>, SessionErr
     Ok(names)
 }
 
+/// `ned history`'s output: the last 10 entries, or every one with `all`, a
+/// line each (spec §1.2).
+pub fn history(entries: &[Entry], all: bool) -> String {
+    todo!()
+}
+
 /// The directory of `root`'s sessions: its last component and a hash of its
 /// path, so it's recognizable and unique.
 fn workspace_dir(state_dir: &Path, root: &Path) -> PathBuf {
