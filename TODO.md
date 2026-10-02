@@ -196,6 +196,26 @@ of either kind.
       silently, so `ned -e 'file X' <<'EOF' ... EOF` drops the heredoc). A
       minor, since §1 changes. Decide how not to wait on an open pipe that never
       closes, which `-e` alone doesn't read today
+- [ ] A dotted name whose tail isn't a part suggests quoting it:
+      `import:app.models.user` says "unknown part `.models`" and should suggest
+      `import:"app.models.user"`
+- [ ] `insert end` or `insert start` with no selector says it needs one, and
+      that `insert after $` appends to the file, instead of "expected text (a
+      string or heredoc), found end of line"
+- [ ] A `..` followed by `+N` (`show /re/+0..+70`) suggests `show /re/ +70`
+      rather than "expected end of command, found '..'"
+- [ ] A Python `.sig` replacement ending in `:` that the guard rejects
+      (`-> None::`) says `.sig` stops before the `:`; spec §3.4,
+      `ned help selectors` and the skill say so too
+- [ ] `ned help selectors` says `..` binds tighter than `>`, with the example
+      `class:Server>fn:start..fn:run` (not `...fn:start..class:Server>fn:run`)
+- [ ] The skill and agent guide say to use a heredoc whenever TEXT holds a
+      quote, rather than `-e` with shell escapes such as `'"'"'`
+- [ ] An any-kind selector matches a name whatever its kind, when that is
+      unique, so a long script needn't guess `const:` versus `var:` (syntax to
+      decide: `item:NAME`, `*:NAME` or a bare name). A minor
+- [ ] `show --raw` prints the selected lines without `N:` prefixes, for copying
+      text verbatim. A minor
 
 ## Bugs
 
@@ -255,3 +275,7 @@ change is a minor, because it lifts a documented error.
 - [ ] Compact session logs, which keep each written file's whole text before and
       after: diffs against the previous entry, or pruning old entries (a log
       format change, so a minor)
+- [ ] TOML syntax selectors (`table`, `key`), for `pyproject.toml`, `Cargo.toml`
+      and lock files (a new language, so a minor)
+- [ ] Relative range ends: `/re/..+70` is the match and the 70 lines after it (a
+      minor)
