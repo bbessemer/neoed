@@ -27,7 +27,8 @@ the skill, and it points the agent at `ned help` for the rest.
 
 ```text
 To read, search or edit files, use `ned` rather than cat, grep, sed, inline
-Python or whole-file rewrites. Pass the script on stdin with a quoted heredoc:
+Python or whole-file rewrites. Pass the script on stdin with a quoted heredoc
+(always when text holds a ', never shell escapes):
 
   ned FILE... <<'EOF'
   replace fn:parse>"old text" with "new text"

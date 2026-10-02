@@ -39,8 +39,9 @@ replace fn:parse>"unexpected end" with "unexpected end of input"
 EOF
 ```
 
-Short scripts can use `-e`: `ned src/parser.rs -e 'delete fn:debug_dump'`. Add
-`-n` to preview without writing.
+Short scripts with no `'` in them can use `-e`:
+`ned src/parser.rs -e 'delete fn:debug_dump'`. Add `-n` to preview without
+writing.
 
 Search with `show all` instead of grep. It prints each match's line with its
 number, under the file's name, across a glob or the whole workspace (`-w`, which

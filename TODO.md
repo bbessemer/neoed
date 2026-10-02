@@ -209,7 +209,7 @@ of either kind.
       `ned help selectors` and the skill say so too
 - [ ] `ned help selectors` says `..` binds tighter than `>`, with the example
       `class:Server>fn:start..fn:run` (not `...fn:start..class:Server>fn:run`)
-- [ ] The skill and agent guide say to use a heredoc whenever TEXT holds a
+- [x] The skill and agent guide say to use a heredoc whenever TEXT holds a
       quote, rather than `-e` with shell escapes such as `'"'"'`
 - [ ] An any-kind selector matches a name whatever its kind, when that is
       unique, so a long script needn't guess `const:` versus `var:` (syntax to
