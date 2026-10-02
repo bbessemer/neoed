@@ -18,8 +18,8 @@ ned undo [-s NAME] [-w DIR] [--force]
 `ned help TOPIC` details one verb (`show`, `outline`, `check`, `allow`,
 `replace`, `insert`, `delete`, `sub`, `move`, `rename`, `file`, `create`), or
 `selectors`, `text`, `config` or `session`. An unknown topic is a usage error
-that lists the topics. `help` must be the first argument; write a file named
-`help` as `./help`.
+that lists the topics. A subcommand (`help`, `daemon`, `history`, `undo`) must
+be the first argument; write a file with one of those names as `./help`, say.
 
 - `-e SCRIPT` may be repeated; the scripts are joined with newlines, in order.
 - Without `-e`, the script is read from stdin. If stdin is a terminal, that's a
