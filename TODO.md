@@ -302,6 +302,12 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [x] With a lone `\r` line ending, diff hunk headers count it as a line break
       (`similar` splits lines there), so their line numbers disagree with ned's
       `\n`-only ones
+- [x] Replacing a conflict whose sides are all empty puts the text at column 0
+      inside an indented block: `side_indent` falls back to `""`, and the marker
+      lines always start their line, so the indent must come from the enclosing
+      block in the tree
+- [x] In a session, an untracked file that is edited and then undone still goes
+      whole into the next `--commit`
 - [x] A syntax pattern can't match the tail of a method chain after a receiver
       (`` `let n = files[i] @_...;` ``), nor a match arm whose value is a chain
       (`` `Primary::Conflict(_) => f @_...,` ``)
