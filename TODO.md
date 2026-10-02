@@ -179,7 +179,7 @@ Version: minor when a first plugin can load; the spike releases nothing.
 Hints and relaxed errors: each is a patch, and they batch into the next release
 of either kind.
 
-- [ ] A `sub` replacement that names a group its regex doesn't have is an error,
+- [x] A `sub` replacement that names a group its regex doesn't have is an error,
       not an empty expansion: `$1deletions` is the group `1deletions`, so
       suggest `${1}deletions` (or `$$` for a literal `$`)
 - [ ] An invalid escape in a string suggests doubling the backslash, for text
@@ -188,7 +188,7 @@ of either kind.
 - [ ] `show` with a line range past the end of the file shows up to the last
       line, with a note, instead of an error (`show 1-60` on a 57-line file);
       edits keep the error
-- [ ] `sub all /re/ with "x"` says "`sub` needs a regex before `with`", since
+- [x] `sub all /re/ with "x"` says "`sub` needs a regex before `with`", since
       `all /re/` parses as the scope; say instead that `sub` already replaces
       every match, so `all` goes: `sub /re/ with "x"`
 - [ ] `-e` plus a script on stdin runs both: the `-e` scripts first, then stdin,
@@ -226,7 +226,7 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [ ] The did-you-mean-another-kind hint only fires for a selector's last step:
       `show fn:tests>fn:exec` says "`outline` lists the items" where
       `show fn:tests` suggests `mod:tests`
-- [ ] `show`, `outline` or `check` without a selector can't come before a `|`:
+- [x] `show`, `outline` or `check` without a selector can't come before a `|`:
       `outline | show 1` is a parse error ("expected a selector, found '|'"),
       because `optional_target` (`script/parser.rs`) doesn't treat `|` as the
       end of the command

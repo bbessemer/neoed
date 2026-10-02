@@ -249,10 +249,7 @@ mod tests {
     }
 
     fn regex(source: &str, flags: RegexFlags) -> Value {
-        Value::Regex(Pattern {
-            source: source.into(),
-            flags,
-        })
+        Value::Regex(Pattern::new(source.into(), flags).unwrap())
     }
 
     #[test]

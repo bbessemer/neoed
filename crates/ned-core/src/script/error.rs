@@ -86,6 +86,20 @@ pub enum ParseErrorKind {
     AllNotAllowed,
     #[error("`sub` needs a regex before `with`, e.g. sub fn:parse /old/ with \"new\"")]
     MissingSubPattern,
+    /// `sub all /re/ with`, holding the regex as written.
+    #[error("`sub` already replaces every match; drop `all`: sub {0} with ...")]
+    SubAll(String),
+    /// A `$` reference in `sub` TEXT to a group the regex doesn't have; `fix`
+    /// splits off the group it starts with, or lists the groups.
+    #[error("`{reference}` names group `{name}`, which the regex doesn't have; {fix}")]
+    UnknownGroup {
+        reference: String,
+        name: String,
+        fix: String,
+    },
+    /// `${}` in `sub` TEXT, which the regex crate expands to nothing.
+    #[error("`${{}}` names no group; write `$$` for a literal `$`")]
+    EmptyGroup,
     #[error(
         "invalid regex: {0}; escape literal characters such as ( [ . * with \\, or select a \"string\""
     )]

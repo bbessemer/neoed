@@ -13,7 +13,9 @@ use crate::buffer::{Buffer, LineEnding};
 use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
 use crate::lang::Language;
 use crate::pattern;
-use crate::script::ast::{LineNo, Part, Pattern, Primary, Selector, Step, Target, TextKind};
+use crate::script::ast::{
+    LineNo, Part, Pattern, Primary, RegexFlags, Selector, Step, Target, TextKind,
+};
 use crate::span::Span;
 use crate::syntax::{self, Item};
 use crate::template::Template;
@@ -258,7 +260,7 @@ enum Matcher<'a> {
         start: LineNo,
         end: LineNo,
     },
-    Regex(Regex),
+    Regex(&'a Regex),
     Str(&'a str),
     Heredoc {
         lines: Vec<String>,
@@ -284,11 +286,7 @@ impl<'a> Matcher<'a> {
                 check_lines(*start, end, files, parents)?;
                 Matcher::Lines { start: *start, end }
             }
-            Primary::Regex(pattern) => Matcher::Regex(
-                pattern
-                    .regex()
-                    .expect("regexes are validated when the script is parsed"),
-            ),
+            Primary::Regex(pattern) => Matcher::Regex(pattern.regex()),
             Primary::Literal(text) => match text.kind {
                 TextKind::Str => Matcher::Str(&text.value),
                 TextKind::Heredoc => Matcher::Heredoc {
@@ -847,9 +845,12 @@ fn case_insensitive_match(
     files: &[&SourceFile],
     parents: &[Match],
 ) -> Option<Match> {
-    let mut folded = pattern.clone();
-    folded.flags.case_insensitive = true;
-    let re = folded.regex().ok()?;
+    let flags = RegexFlags {
+        case_insensitive: true,
+        ..pattern.flags
+    };
+    let folded = Pattern::new(pattern.source.clone(), flags).ok()?;
+    let re = folded.regex();
     parents.iter().find_map(|p| {
         let found = re.find(&files[p.file].text[p.range.clone()])?;
         let start = p.range.start + found.start();

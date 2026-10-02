@@ -1198,9 +1198,7 @@ impl Executor<'_> {
         pattern: &Pattern,
         text: &Text,
     ) -> Result<(), ExecError> {
-        let regex = pattern
-            .regex()
-            .expect("regexes are validated when the script is parsed");
+        let regex = pattern.regex();
         let scopes: Vec<Match> = match scope {
             // A scope's whole lines, as a nested step searches them (§3.4).
             Some(target) => self
