@@ -98,7 +98,7 @@ same session is visible from every mode, so a human can follow an agent's
 progress from the REPL. The store is a `ned-core` module and needs no daemon;
 the CLI keeps working without one.
 
-- [ ] Store and log format, lock, per-workspace location
+- [x] Store and log format, lock, per-workspace location
 - [ ] `-s`/`NED_SESSION`, `history` and `undo`
 - [ ] Repeat-with-correction shorthand
 

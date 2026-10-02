@@ -1,7 +1,8 @@
 //! Sessions: per-workspace logs of `ned` invocations (spec §1.2).
 
-use std::fs::File;
-use std::io;
+use std::env;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -80,12 +81,76 @@ pub enum SessionError {
 /// The directory sessions live in: `$XDG_STATE_HOME/ned`, else
 /// `~/.local/state/ned`. Not created until a session is opened.
 pub fn state_dir() -> Result<PathBuf, SessionError> {
-    todo!()
+    let absolute = |var| {
+        env::var_os(var)
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    };
+    let state = absolute("XDG_STATE_HOME")
+        .or_else(|| Some(absolute("HOME")?.join(".local/state")))
+        .ok_or(SessionError::NoStateDir)?;
+    Ok(state.join("ned"))
 }
 
 /// The names of the sessions with a log for the workspace at `root`, sorted.
 pub fn sessions(state_dir: &Path, root: &Path) -> Result<Vec<String>, SessionError> {
-    todo!()
+    let dir = workspace_dir(state_dir, root);
+    let io_error = |source| SessionError::Io {
+        path: dir.clone(),
+        source,
+    };
+    let read = match fs::read_dir(&dir) {
+        Ok(read) => read,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(io_error(err)),
+    };
+    let mut names = Vec::new();
+    for item in read {
+        let name = item.map_err(io_error)?.file_name();
+        if let Some(name) = name.to_str().and_then(|name| name.strip_suffix(".log")) {
+            names.push(name.to_string());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// The directory of `root`'s sessions: its last component and a hash of its
+/// path, so it's recognizable and unique.
+fn workspace_dir(state_dir: &Path, root: &Path) -> PathBuf {
+    // FNV-1a: stable across Rust releases, unlike `DefaultHasher`.
+    let hash = root
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+        });
+    let base = root
+        .file_name()
+        .map_or("root".into(), |name| name.to_string_lossy());
+    state_dir
+        .join("sessions")
+        .join(format!("{base}-{hash:016x}"))
+}
+
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+fn private_dir(dir: &Path) -> Result<(), SessionError> {
+    #[cfg(unix)]
+    crate::fs::private_dir(dir)?;
+    #[cfg(not(unix))]
+    fs::create_dir_all(dir).map_err(|source| SessionError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+    Ok(())
 }
 
 /// One session of one workspace.
@@ -101,7 +166,25 @@ impl Session {
     /// Session `name` of the workspace at `root` (canonical), creating its
     /// directories under `state_dir` private to the user.
     pub fn new(state_dir: &Path, root: &Path, name: &str) -> Result<Session, SessionError> {
-        todo!()
+        if !valid_name(name) {
+            return Err(SessionError::BadName(name.to_string()));
+        }
+        if let Some(parent) = state_dir.parent() {
+            fs::create_dir_all(parent).map_err(|source| SessionError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        let dir = workspace_dir(state_dir, root);
+        for dir in [state_dir, &state_dir.join("sessions"), &dir] {
+            private_dir(dir)?;
+        }
+        Ok(Session {
+            name: name.to_string(),
+            root: root.to_path_buf(),
+            log: dir.join(format!("{name}.log")),
+            lock: dir.join(format!("{name}.lock")),
+        })
     }
 
     pub fn name(&self) -> &str {
@@ -115,7 +198,21 @@ impl Session {
 
     /// Waits for the session's lock, which the [`Log`] holds until dropped.
     pub fn lock(&self) -> Result<Log<'_>, SessionError> {
-        todo!()
+        let io_error = |source| SessionError::Io {
+            path: self.lock.clone(),
+            source,
+        };
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&self.lock)
+            .map_err(io_error)?;
+        file.lock().map_err(io_error)?;
+        Ok(Log {
+            session: self,
+            _lock: file,
+        })
     }
 }
 
@@ -126,15 +223,147 @@ pub struct Log<'a> {
     _lock: File,
 }
 
+/// The offset of the last `\n` in `file` before offset `before`.
+fn newline_before(file: &mut File, before: u64) -> io::Result<Option<u64>> {
+    let mut end = before;
+    let mut chunk = vec![0; 8192];
+    while end > 0 {
+        let start = end.saturating_sub(chunk.len() as u64);
+        let chunk = &mut chunk[..(end - start) as usize];
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(chunk)?;
+        if let Some(i) = chunk.iter().rposition(|&byte| byte == b'\n') {
+            return Ok(Some(start + i as u64));
+        }
+        end = start;
+    }
+    Ok(None)
+}
+
 impl Log<'_> {
     /// Every entry, oldest first; none if nothing has been recorded.
     pub fn entries(&self) -> Result<Vec<Entry>, SessionError> {
-        todo!()
+        let Some(text) = self.read()? else {
+            return Ok(Vec::new());
+        };
+        // A last line without its newline is an append cut short, which the next
+        // append replaces.
+        let text = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
+        let mut lines = text.lines().enumerate();
+        if let Some((_, header)) = lines.next() {
+            self.check_header(header)?;
+        }
+        lines
+            .map(|(i, line)| serde_json::from_str(line).map_err(|err| self.malformed(i, &err)))
+            .collect()
     }
 
-    /// Appends `entry` with the next id, which it returns.
+    /// Appends `entry` with the id after the last entry's, which it returns.
+    /// It reads only the log's header and the start of its last line, as
+    /// entries hold whole files.
     pub fn append(&mut self, entry: Entry) -> Result<u64, SessionError> {
-        todo!()
+        let path = &self.session.log;
+        let io_error = |source| SessionError::Io {
+            path: path.clone(),
+            source,
+        };
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .map_err(io_error)?;
+        let len = file.metadata().map_err(io_error)?.len();
+        let end = newline_before(&mut file, len)
+            .map_err(io_error)?
+            .map_or(0, |i| i + 1);
+        file.set_len(end).map_err(io_error)?;
+
+        let mut record = String::new();
+        let last = if end == 0 {
+            let header = Header {
+                ned_session: FORMAT,
+                workspace: self.session.root.clone(),
+            };
+            record.push_str(&serde_json::to_string(&header).expect("a header serializes"));
+            record.push('\n');
+            0
+        } else {
+            let mut header = String::new();
+            file.seek(SeekFrom::Start(0)).map_err(io_error)?;
+            BufReader::new(&file)
+                .read_line(&mut header)
+                .map_err(io_error)?;
+            self.check_header(header.trim_end())?;
+            match self.last_id(&mut file, end).map_err(io_error)? {
+                Some(id) => id,
+                // Not an entry: `entries` says where the log is malformed.
+                None => self.entries()?.last().map_or(0, |entry| entry.id),
+            }
+        };
+        let id = last + 1;
+        let entry = Entry { id, ..entry };
+        record.push_str(&serde_json::to_string(&entry).expect("an entry serializes"));
+        record.push('\n');
+        file.seek(SeekFrom::End(0))
+            .and_then(|_| file.write_all(record.as_bytes()))
+            .map_err(io_error)?;
+        Ok(id)
+    }
+
+    /// The id of the last entry in the first `end` bytes of the log: 0 if
+    /// there's only the header, `None` if the line doesn't start like an entry.
+    fn last_id(&self, file: &mut File, end: u64) -> io::Result<Option<u64>> {
+        let start = newline_before(file, end - 1)?.map_or(0, |i| i + 1);
+        if start == 0 {
+            return Ok(Some(0));
+        }
+        let mut prefix = Vec::new();
+        file.seek(SeekFrom::Start(start))?;
+        file.take(32).read_to_end(&mut prefix)?;
+        // `id` is the first field an entry serializes.
+        let digits = String::from_utf8_lossy(&prefix)
+            .strip_prefix("{\"id\":")
+            .map(|rest| {
+                rest.chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+            });
+        Ok(digits.and_then(|digits| digits.parse().ok()))
+    }
+
+    /// The log's text, or `None` if nothing has been recorded.
+    fn read(&self) -> Result<Option<String>, SessionError> {
+        let path = &self.session.log;
+        match fs::read_to_string(path) {
+            Ok(text) => Ok(Some(text)),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(SessionError::Io {
+                path: path.clone(),
+                source,
+            }),
+        }
+    }
+
+    fn check_header(&self, line: &str) -> Result<(), SessionError> {
+        let header: Header = serde_json::from_str(line).map_err(|err| self.malformed(0, &err))?;
+        if header.ned_session != FORMAT {
+            return Err(SessionError::UnknownFormat {
+                path: self.session.log.clone(),
+                version: header.ned_session,
+            });
+        }
+        Ok(())
+    }
+
+    /// The error for the log's line `index` (from 0).
+    fn malformed(&self, index: usize, err: &serde_json::Error) -> SessionError {
+        SessionError::Malformed {
+            path: self.session.log.clone(),
+            line: index + 1,
+            message: err.to_string(),
+        }
     }
 }
 
