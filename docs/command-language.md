@@ -10,8 +10,8 @@ changing behaviour.
 ned [FLAGS] [FILE... | -w [DIR]] [-e SCRIPT]...
 ned help [TOPIC]
 ned daemon start|status|stop [DIR]
-ned history [-s [NAME]] [--all]
-ned undo [-s [NAME]] [--force]
+ned history [-s NAME] [--all]
+ned undo [-s NAME] [--force]
 ```
 
 `ned help` prints a summary of the language, sized to fit in an agent's context.
@@ -42,7 +42,7 @@ the topics. `help` must be the first argument; write a file named `help` as
 | `--no-fmt`                | Don't run formatters (§6.4).                                                                                                         |
 | `--lang LANG`             | Use this language for every file: `rust`, `python`, `typescript`, `tsx`, `javascript`, `go`, `markdown`.                             |
 | `--context N`             | Context lines around diff hunks (default 1).                                                                                         |
-| `-s`, `--session [NAME]`  | Record the invocation in session `NAME` (default `default`), overriding `NED_SESSION` (§1.2).                                        |
+| `-s`, `--session NAME`    | Record the invocation in session `NAME`, overriding `NED_SESSION` (§1.2).                                                            |
 | `-V`, `--version`         | Print the version: the package version and the build's git commit (the version alone for a release build, or one built without git). |
 
 Otherwise, a file's language is detected from its extension, then from its
@@ -139,10 +139,10 @@ are errors.
 A **session** is a log of `ned` invocations in one workspace, kept so an agent
 can review, repeat and undo its work, and so other frontends can follow it. With
 `-s NAME`, or `NED_SESSION=NAME` in the environment, an invocation is recorded
-in session `NAME`. A bare `-s` is the session `default`. `-s` overrides
-`NED_SESSION`, and an empty `NED_SESSION` is no session. A name is letters,
-digits, `.`, `_` and `-`, and doesn't start with `.`; another name is a usage
-error. Without a session nothing is recorded, and nothing needs a daemon.
+in session `NAME`. `-s` overrides `NED_SESSION`, and an empty `NED_SESSION` is
+no session. A name is letters, digits, `.`, `_` and `-`, and doesn't start with
+`.`; another name is a usage error. Without a session nothing is recorded, and
+nothing needs a daemon.
 
 Every invocation that runs a script is recorded, including reads, dry runs and
 failures (a script syntax error too), so a failed one can be repeated with a
@@ -158,7 +158,7 @@ it has been, and the script's first line, followed by `(+N lines)` if it has
 more.
 
 ```
-$ ned history -s
+$ ned history
 1 ok: show fn:parse
 2 exit 1: replace fn:prase>"end" with "end of input"
 3 ok, 1 file, undone: replace fn:parse>"end" with "end of input"
@@ -189,10 +189,11 @@ applied in order:
   left off.
 
 ```
-$ ned -s src/parser.rs -e 'replace fn:prase>"end" with "end of input"'
+$ export NED_SESSION=agent
+$ ned src/parser.rs -e 'replace fn:prase>"end" with "end of input"'
 error: script:1:9: fn:prase matches nothing in src/parser.rs; did you mean fn:parse (14-17)?
-$ ned -s -e '!!:s/prase/parse/'
-note: repeating 2: replace fn:parse>"end" with "end of input"
+$ ned -e '!!:s/prase/parse/'
+note: repeating 1: replace fn:parse>"end" with "end of input"
 src/parser.rs: 1 edit, +1 -1
 ...
 ```

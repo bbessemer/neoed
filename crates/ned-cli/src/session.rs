@@ -5,8 +5,8 @@ use std::process::ExitCode;
 
 use ned_core::session::{Entry, Session, SessionError};
 
-/// The session `-s` (given as `flag`) or `NED_SESSION` names, if any.
-pub fn name(flag: &Option<Option<String>>) -> Option<String> {
+/// The session `-s` (`flag`) or `NED_SESSION` names, if any.
+pub fn name(flag: Option<String>) -> Option<String> {
     todo!()
 }
 
@@ -23,7 +23,7 @@ pub fn record(session: &Session, entry: Entry) {
 }
 
 /// `ned history`.
-pub fn history(flag: &Option<Option<String>>, all: bool) -> ExitCode {
+pub fn history(flag: Option<String>, all: bool) -> ExitCode {
     todo!()
 }
 
