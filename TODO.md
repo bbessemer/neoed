@@ -216,6 +216,22 @@ of either kind.
       decide: `item:NAME`, `*:NAME` or a bare name). A minor
 - [ ] `show --raw` prints the selected lines without `N:` prefixes, for copying
       text verbatim. A minor
+- [ ] A sed-style `sub SEL /a/b/` says "`sub` takes `/re/ with TEXT`", instead
+      of "unknown regex flag" or a hint about `SEL..SEL` ranges
+- [ ] `sub` with a literal before `with` (`sub 3 "- [ ]" with "- [x]"`) suggests
+      `replace 3>"- [ ]" with "- [x]"`, since `sub` takes only a regex
+- [ ] Context written `-N` (`show all "x" -3`) says context is `+N`, not a hint
+      about `SEL..SEL` ranges
+- [ ] A file path as a selector step (`a.rs>fn:x`) suggests `file:a.rs>fn:x`
+      rather than quoting `a` as a literal
+- [ ] A name with `{` (`import:a::b::{A, B}`) suggests the quoted name `outline`
+      prints (`import:"a::b::{A, B}"`), not "unexpected character `{`"
+- [ ] A part or filter picks the Nth line of a multi-line match, since `.lines`
+      splits a match into every line and there is no `.lines.first` (syntax to
+      decide). A minor
+- [ ] `!!` repeats the last script that edited or failed, not a read-only call
+      in between: after a failed edit, an `outline` to look around makes `!!`
+      refer to the `outline`. A minor, since §1.2 changes
 
 ## Bugs
 
@@ -254,6 +270,21 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [x] `impl:"Log<'_>"` matches nothing in a file with `impl Log<'_>`, and the
       hint is only "`outline` lists the items": suggest `impl:Log`, the name
       without its generic arguments
+- [ ] A `.ned.toml` the script creates or edits is ignored: `Config::layers`
+      (`config.rs`) loads layers from disk, though `{edition}` now reads
+      manifests the script writes
+- [ ] `replace "LINE\n" with ""` leaves an empty line where the whole line was
+      selected; empty TEXT for whole lines should remove them, as `delete` does
+- [ ] `.lines` on a multi-line literal that matches once
+      (`insert after "- a b\n  c d".lines "x"`) says "matches 2 items" and lists
+      identical candidates
+- [ ] Rust `show fn:f.sig` prints the whole first line, `{` included, though
+      `.sig` ends before the `{`: `replace fn:f.sig with "fn f(b: u8) {"`
+      doubles the brace, and the guard's error points at 1:1, not at the edit
+- [ ] An escape such as `\x27` in a heredoc inside a single-quoted `-e` script
+      goes in literally (heredocs don't read escapes): the skill should say to
+      pass a script with `'` on stdin, or `ned` could hint at it when the guard
+      rejects text holding `\x27`
 
 ## Future improvements
 
