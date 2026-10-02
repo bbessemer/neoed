@@ -8,32 +8,49 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use thiserror::Error;
 
 /// Replaces the contents of every file in `files`, preserving permissions and
-/// writing through symlinks to their targets.
+/// writing through symlinks to their targets, and removes the files in
+/// `remove`.
 ///
-/// All contents are first staged in temporary files beside their targets;
-/// only once every one is staged are they renamed into place. A failure while
-/// staging leaves every target untouched and removes the staged files.
-/// Then the files in `remove` are removed.
+/// All contents are first staged in temporary files beside their targets,
+/// and each file to remove is renamed to one; only once every one is staged
+/// are they renamed into place. A failure while staging leaves every target
+/// untouched and removes the staged files.
 pub fn write_atomic(files: &[(PathBuf, String)], remove: &[PathBuf]) -> io::Result<()> {
     let mut staged: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(files.len());
+    let mut removed: Vec<(PathBuf, &PathBuf)> = Vec::with_capacity(remove.len());
+    let roll_back = |staged: &[(PathBuf, PathBuf)], removed: &[(PathBuf, &PathBuf)]| {
+        for (temp, _) in staged {
+            let _ = fs::remove_file(temp);
+        }
+        for (temp, path) in removed {
+            let _ = fs::rename(temp, path);
+        }
+    };
     for (path, contents) in files {
         match stage(path, contents) {
             Ok(pair) => staged.push(pair),
             Err(err) => {
-                for (temp, _) in &staged {
-                    let _ = fs::remove_file(temp);
-                }
+                roll_back(&staged, &removed);
                 return Err(err);
             }
         }
     }
-    for (i, (temp, target)) in staged.iter().enumerate() {
-        if let Err(err) = fs::rename(temp, target) {
-            for (temp, _) in &staged[i..] {
-                let _ = fs::remove_file(temp);
-            }
+    for path in remove {
+        let temp = temp_path(path);
+        if let Err(err) = fs::rename(path, &temp) {
+            roll_back(&staged, &removed);
             return Err(err);
         }
+        removed.push((temp, path));
+    }
+    for (i, (temp, target)) in staged.iter().enumerate() {
+        if let Err(err) = fs::rename(temp, target) {
+            roll_back(&staged[i..], &removed);
+            return Err(err);
+        }
+    }
+    for (temp, _) in &removed {
+        let _ = fs::remove_file(temp);
     }
     Ok(())
 }
@@ -153,6 +170,39 @@ mod tests {
         assert_eq!(fs::read_to_string(&a).unwrap(), "new a\r\n");
         assert_eq!(fs::read_to_string(&b).unwrap(), "new b");
         assert_eq!(entries(dir.path()), ["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn removes_files_once_the_others_are_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.rs");
+        let b = dir.path().join("b.rs");
+        fs::write(&a, "old a").unwrap();
+        fs::write(&b, "old b").unwrap();
+        write_atomic(&[(a.clone(), "new a".into())], std::slice::from_ref(&b)).unwrap();
+        assert_eq!(fs::read_to_string(&a).unwrap(), "new a");
+        assert_eq!(entries(dir.path()), ["a.rs"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_removal_leaves_every_file_untouched() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.rs");
+        let locked = dir.path().join("locked");
+        let b = locked.join("b.rs");
+        fs::write(&a, "old a").unwrap();
+        fs::create_dir(&locked).unwrap();
+        fs::write(&b, "old b").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+        let result = write_atomic(&[(a.clone(), "new a".into())], std::slice::from_ref(&b));
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&a).unwrap(), "old a");
+        assert_eq!(fs::read_to_string(&b).unwrap(), "old b");
+        assert_eq!(entries(dir.path()), ["a.rs", "locked"]);
+        assert_eq!(entries(&locked), ["b.rs"]);
     }
 
     #[cfg(unix)]

@@ -21,7 +21,6 @@ mod session;
 use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 use ned_core::buffer::Buffer;
@@ -124,8 +123,8 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Some(Command::Daemon { action }) => return daemon::run(action),
-        Some(Command::History { session, all }) => return session::history(session, all),
-        Some(Command::Undo { session, force }) => return session::undo(session, force),
+        Some(Command::History { session, all }) => return finish(session::history(session, all)),
+        Some(Command::Undo { session, force }) => return finish(session::undo(session, force)),
         None => {}
     }
     if let Some(err) = usage_error(&cli) {
@@ -166,12 +165,11 @@ fn main() -> ExitCode {
 
     let ran = run(&cli, &src, &cwd, root.clone());
     if let Some(session) = &session {
-        let time = SystemTime::now().duration_since(UNIX_EPOCH);
         session::record(
             session,
             Entry {
                 id: 0,
-                time: time.map_or(0, |time| time.as_secs()),
+                time: ned_core::session::now(),
                 cwd,
                 files: cli.files.clone(),
                 workspace: cli.workspace.is_some().then_some(root),
@@ -341,6 +339,17 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
         exit: 0,
         error: None,
         changes: recorded,
+    }
+}
+
+/// The exit code of a subcommand, printing its error if it failed.
+fn finish(result: Result<(), session::Failure>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err((error, code)) => {
+            eprintln!("{error}");
+            ExitCode::from(code)
+        }
     }
 }
 

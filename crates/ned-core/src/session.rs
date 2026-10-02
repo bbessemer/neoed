@@ -7,6 +7,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::diff;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -117,6 +120,24 @@ pub fn sessions(state_dir: &Path, root: &Path) -> Result<Vec<String>, SessionErr
     Ok(names)
 }
 
+/// Seconds since the Unix epoch, for an entry's `time`.
+pub fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |time| time.as_secs())
+}
+
+/// A script's first line, followed by `(+N lines)` if it has more.
+pub fn script_summary(script: &str) -> String {
+    let mut lines = script.lines();
+    let first = lines.next().unwrap_or_default();
+    match lines.count() {
+        0 => first.to_string(),
+        1 => format!("{first} (+1 line)"),
+        more => format!("{first} (+{more} lines)"),
+    }
+}
+
 /// `ned history`'s output: the last 10 entries, or every one with `all`, a
 /// line each (spec §1.2).
 pub fn history(entries: &[Entry], all: bool) -> String {
@@ -143,13 +164,7 @@ pub fn history(entries: &[Entry], all: bool) -> String {
         }
         out.push_str(&format!("{} {}", entry.id, parts.join(", ")));
         if let Some(script) = &entry.script {
-            let mut lines = script.lines();
-            out.push_str(&format!(": {}", lines.next().unwrap_or_default()));
-            match lines.count() {
-                0 => {}
-                1 => out.push_str(" (+1 line)"),
-                more => out.push_str(&format!(" (+{more} lines)")),
-            }
+            out.push_str(&format!(": {}", script_summary(script)));
         }
         out.push('\n');
     }
@@ -191,7 +206,31 @@ pub enum UndoError {
 impl UndoError {
     /// The error with its path relative to `dir`, if it's inside it.
     pub fn relative_to(self, dir: &Path) -> UndoError {
-        todo!()
+        let relative = |path: PathBuf| {
+            path.strip_prefix(dir)
+                .map(Path::to_path_buf)
+                .unwrap_or(path)
+        };
+        match self {
+            UndoError::Nothing => UndoError::Nothing,
+            UndoError::Io { path, source } => UndoError::Io {
+                path: relative(path),
+                source,
+            },
+            UndoError::Changed { path, id } => UndoError::Changed {
+                path: relative(path),
+                id,
+            },
+            UndoError::Removed { path, id } => UndoError::Removed {
+                path: relative(path),
+                id,
+            },
+            UndoError::Conflict { path, line, id } => UndoError::Conflict {
+                path: relative(path),
+                line,
+                id,
+            },
+        }
     }
 }
 
@@ -201,10 +240,55 @@ impl UndoError {
 /// merges the undo into it.
 pub fn undo(
     entries: &[Entry],
-    read: impl FnMut(&Path) -> io::Result<Option<String>>,
+    mut read: impl FnMut(&Path) -> io::Result<Option<String>>,
     force: bool,
 ) -> Result<Undo, UndoError> {
-    todo!()
+    let undone: HashSet<u64> = entries.iter().filter_map(|entry| entry.undoes).collect();
+    let target = entries
+        .iter()
+        .rev()
+        .find(|e| e.undoes.is_none() && !e.changes.is_empty() && !undone.contains(&e.id))
+        .ok_or(UndoError::Nothing)?;
+    let id = target.id;
+    let mut changes = Vec::new();
+    for change in &target.changes {
+        let path = change.path.clone();
+        let current = read(&path).map_err(|source| UndoError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        let restored = if current == change.after {
+            change.before.clone()
+        } else if current.is_none() {
+            return Err(UndoError::Removed { path, id });
+        } else if !force {
+            return Err(UndoError::Changed { path, id });
+        } else {
+            let merged = diff::merge(
+                change.after.as_deref().unwrap_or_default(),
+                current.as_deref().unwrap_or_default(),
+                change.before.as_deref().unwrap_or_default(),
+            )
+            .map_err(|line| UndoError::Conflict {
+                path: path.clone(),
+                line,
+                id,
+            })?;
+            (change.before.is_some() || !merged.is_empty()).then_some(merged)
+        };
+        if restored != current {
+            changes.push(FileChange {
+                path,
+                before: current,
+                after: restored,
+            });
+        }
+    }
+    Ok(Undo {
+        id,
+        script: target.script.clone(),
+        changes,
+    })
 }
 
 /// The directory of `root`'s sessions: its last component and a hash of its

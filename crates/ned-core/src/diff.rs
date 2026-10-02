@@ -49,12 +49,12 @@ pub fn created_summary(path: &str, stat: DiffStat, dry_run: bool) -> String {
 
 /// The summary line of a file removed by an undo: `PATH: removed, -D`.
 pub fn removed_summary(path: &str, stat: DiffStat) -> String {
-    todo!()
+    format!("{path}: removed, -{}", stat.removed)
 }
 
 /// The number of separate changed regions between two texts.
 pub fn regions(old: &str, new: &str) -> usize {
-    todo!()
+    TextDiff::from_lines(old, new).grouped_ops(0).len()
 }
 
 /// A three-way merge of whole lines: `ours` and `theirs` are both edits of
@@ -62,7 +62,77 @@ pub fn regions(old: &str, new: &str) -> usize {
 /// or insert at the same point, conflict unless identical: the error is the
 /// first one's line in `ours` (from 1).
 pub fn merge(base: &str, ours: &str, theirs: &str) -> Result<String, usize> {
-    todo!()
+    let lines = |text| -> Vec<&str> { str::split_inclusive(text, '\n').collect() };
+    let (base, ours, theirs) = (lines(base), lines(ours), lines(theirs));
+    let (mine, other) = (changes(&base, &ours), changes(&base, &theirs));
+    let mut all: Vec<&Change> = Vec::new();
+    for change in &mine {
+        if other
+            .iter()
+            .any(|o| overlaps(&change.base, &o.base) && o != change)
+        {
+            return Err(change.at + 1);
+        }
+        all.push(change);
+    }
+    all.extend(other.iter().filter(|o| !mine.contains(o)));
+    all.sort_by_key(|change| (change.base.start, change.base.end));
+    let mut out = String::new();
+    let mut pos = 0;
+    for change in all {
+        out.extend(base[pos..change.base.start].iter().copied());
+        out.extend(change.lines.iter().copied());
+        pos = change.base.end;
+    }
+    out.extend(base[pos..].iter().copied());
+    Ok(out)
+}
+
+/// One side's change to a merge's base: base lines `base` become `lines`,
+/// which start at line `at` (from 0) of that side.
+#[derive(Debug)]
+struct Change<'a> {
+    base: Range<usize>,
+    lines: Vec<&'a str>,
+    at: usize,
+}
+
+impl PartialEq for Change<'_> {
+    /// The same edit, wherever it lands in its side.
+    fn eq(&self, other: &Self) -> bool {
+        self.base == other.base && self.lines == other.lines
+    }
+}
+
+fn changes<'a>(base: &[&str], side: &[&'a str]) -> Vec<Change<'a>> {
+    let mut out: Vec<Change> = Vec::new();
+    for op in similar::capture_diff_slices(similar::Algorithm::Myers, base, side) {
+        if op.tag() == similar::DiffTag::Equal {
+            continue;
+        }
+        let (old, new) = (op.old_range(), op.new_range());
+        match out.last_mut() {
+            Some(last) if last.base.end == old.start => {
+                last.base.end = old.end;
+                last.lines.extend(&side[new]);
+            }
+            _ => out.push(Change {
+                base: old,
+                lines: side[new.clone()].to_vec(),
+                at: new.start,
+            }),
+        }
+    }
+    out
+}
+
+/// Whether two changes touch the same base lines. An insertion conflicts
+/// with a change it borders, as it may continue or depend on it.
+fn overlaps(a: &Range<usize>, b: &Range<usize>) -> bool {
+    match a.is_empty() || b.is_empty() {
+        true => a.start <= b.end && b.start <= a.end,
+        false => a.start < b.end && b.start < a.end,
+    }
 }
 
 /// Unified-diff hunks with `@@ -a,b +c,d @@` headers and no file headers,

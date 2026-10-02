@@ -1,10 +1,13 @@
-//! Sessions in the CLI: `-s`, `NED_SESSION` and `ned history` (spec §1.2).
+//! Sessions in the CLI: `-s`, `NED_SESSION`, `ned history` and `ned undo`
+//! (spec §1.2).
 
 use std::env;
-use std::path::Path;
-use std::process::ExitCode;
+use std::io;
+use std::path::{Path, PathBuf};
 
-use ned_core::session::{self, Entry, Session, SessionError};
+use ned_core::diff::{self, DiffStat};
+use ned_core::fs;
+use ned_core::session::{self, Entry, Session, SessionError, UndoError};
 use ned_core::workspace;
 
 /// The session `-s` (`flag`) or `NED_SESSION` names, if any.
@@ -15,9 +18,8 @@ pub fn name(flag: Option<String>) -> Option<String> {
 
 /// Session `name` of the workspace at `root`, or the error to print and the
 /// exit code.
-pub fn open(name: &str, root: &Path) -> Result<Session, (String, u8)> {
-    let fail = |err: SessionError| (format!("error: {err}"), exit_code(&err));
-    Session::new(&session::state_dir().map_err(fail)?, root, name).map_err(fail)
+pub fn open(name: &str, root: &Path) -> Result<Session, Failure> {
+    Session::new(&session::state_dir().map_err(failure)?, root, name).map_err(failure)
 }
 
 /// Appends `entry` to `session`; a failure is only a note, since the
@@ -28,49 +30,118 @@ pub fn record(session: &Session, entry: Entry) {
     }
 }
 
+/// An error to print, and the exit code.
+pub type Failure = (String, u8);
+
 /// `ned history`.
-pub fn history(flag: Option<String>, all: bool) -> ExitCode {
-    let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
-    let root = workspace::root(&cwd).unwrap_or(cwd);
-    let opened = name(flag)
-        .ok_or_else(|| {
-            let listed = listing(&root);
-            let error =
-                format!("error: no session; give one with -s NAME or NED_SESSION ({listed})");
-            (error, 2)
-        })
-        .and_then(|name| open(&name, &root))
-        .and_then(|session| match session.exists() {
-            true => Ok(session),
-            false => Err((
-                format!(
-                    "error: no session `{}` in this workspace; {}",
-                    session.name(),
-                    listing(&root).replace(" in this workspace", " in it")
-                ),
-                2,
-            )),
-        })
-        .and_then(|session| {
-            let log = session.lock();
-            log.and_then(|log| log.entries())
-                .map_err(|err| (format!("error: {err}"), exit_code(&err)))
-        });
-    match opened {
-        Ok(entries) => {
-            out!("{}", session::history(&entries, all));
-            ExitCode::SUCCESS
-        }
-        Err((error, code)) => {
-            eprintln!("{error}");
-            ExitCode::from(code)
-        }
-    }
+pub fn history(flag: Option<String>, all: bool) -> Result<(), Failure> {
+    let session = existing(flag, &here().1)?;
+    let entries = session.lock().and_then(|log| log.entries());
+    out!("{}", session::history(&entries.map_err(failure)?, all));
+    Ok(())
 }
 
-/// `ned undo`.
-pub fn undo(flag: Option<String>, force: bool) -> ExitCode {
-    todo!()
+/// `ned undo`, holding the session's lock from reading the log to recording
+/// the undo, so no other invocation in the session comes between.
+pub fn undo(flag: Option<String>, force: bool) -> Result<(), Failure> {
+    let (cwd, root) = here();
+    let session = existing(flag, &root)?;
+    let mut log = session.lock().map_err(failure)?;
+    let entries = log.entries().map_err(failure)?;
+    let read = |path: &Path| match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    };
+    let undo = session::undo(&entries, read, force).map_err(|err| {
+        let code = match err {
+            UndoError::Io { .. } => 3,
+            _ => 1,
+        };
+        (format!("error: {}", err.relative_to(&cwd)), code)
+    })?;
+
+    let mut writes = Vec::new();
+    let mut removes = Vec::new();
+    for change in &undo.changes {
+        match &change.after {
+            Some(text) => writes.push((change.path.clone(), text.clone())),
+            None => removes.push(change.path.clone()),
+        }
+    }
+    if let Err(err) = fs::write_atomic(&writes, &removes) {
+        return Err((
+            format!("error: cannot write files: {err}; no file was changed"),
+            3,
+        ));
+    }
+
+    let script = undo.script.as_deref().map(session::script_summary);
+    outln!("undo {}: {}", undo.id, script.unwrap_or_default());
+    for change in &undo.changes {
+        let path = change.path.strip_prefix(&cwd).unwrap_or(&change.path);
+        let path = path.to_string_lossy();
+        let before = change.before.as_deref().unwrap_or_default();
+        let after = change.after.as_deref().unwrap_or_default();
+        let stat = DiffStat::between(before, after);
+        outln!(
+            "{}",
+            match (&change.before, &change.after) {
+                (None, _) => diff::created_summary(&path, stat, false),
+                (_, None) => diff::removed_summary(&path, stat),
+                _ => diff::summary(&path, diff::regions(before, after), stat, false),
+            }
+        );
+        out!("{}", diff::hunks(before, after, 1));
+    }
+
+    let entry = Entry {
+        id: 0,
+        time: session::now(),
+        cwd,
+        files: Vec::new(),
+        workspace: None,
+        script: None,
+        undoes: Some(undo.id),
+        dry_run: false,
+        exit: 0,
+        error: None,
+        changes: undo.changes,
+    };
+    if let Err(err) = log.append(entry) {
+        eprintln!("note: not recorded in session {}: {err}", session.name());
+    }
+    Ok(())
+}
+
+/// The working directory, canonical so recorded paths can be shown relative
+/// to it, and its workspace's root.
+fn here() -> (PathBuf, PathBuf) {
+    let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
+    let cwd = cwd.canonicalize().unwrap_or(cwd);
+    let root = workspace::root(&cwd).unwrap_or(cwd.clone());
+    (cwd, root)
+}
+
+/// The session `flag` or `NED_SESSION` names, which must have a log in the
+/// workspace at `root`.
+fn existing(flag: Option<String>, root: &Path) -> Result<Session, Failure> {
+    let Some(name) = name(flag) else {
+        let listed = listing(root);
+        let error = format!("error: no session; give one with -s NAME or NED_SESSION ({listed})");
+        return Err((error, 2));
+    };
+    let session = open(&name, root)?;
+    if !session.exists() {
+        let listed = listing(root).replace(" in this workspace", " in it");
+        let error = format!("error: no session `{name}` in this workspace; {listed}");
+        return Err((error, 2));
+    }
+    Ok(session)
+}
+
+fn failure(err: SessionError) -> Failure {
+    (format!("error: {err}"), exit_code(&err))
 }
 
 /// The workspace's sessions, for an error's fix.
