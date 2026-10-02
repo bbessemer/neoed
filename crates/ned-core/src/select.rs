@@ -144,24 +144,16 @@ pub fn resolve_within(
     let mut matches = start;
     let mut parents = Vec::new();
     let mut found = Vec::new();
-    for step in &target.selector.steps {
+    for (i, step) in target.selector.steps.iter().enumerate() {
         found = resolve_step(step, files, &matches).map_err(error)?;
         let next = found.iter().map(|f| f.m.clone()).collect();
         parents = std::mem::replace(&mut matches, next);
+        if matches.is_empty() {
+            return Err(error(no_match(target, i, files, &parents, src)));
+        }
     }
     let selector = &src[span.clone()];
     match matches.len() {
-        0 => Err(error(E::NoMatch {
-            selector: selector.into(),
-            files: file_list(&files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>()),
-            hint: range_precedence(&target.selector, src)
-                .or_else(|| {
-                    let step = target.selector.steps.last()?;
-                    Some(hint(step, files, &parents, selector))
-                })
-                .unwrap_or_default(),
-            searched: searched(&target.selector, &parents),
-        })),
         1 => Ok(matches),
         _ if target.all => Ok(matches),
         _ => Err(error(E::Ambiguous {
@@ -171,11 +163,45 @@ pub fn resolve_within(
     }
 }
 
-/// For a search whose last step (a regex, literal or heredoc) matched nothing
+/// The error for `target`, whose step `failed` matched nothing within the
+/// `parents` the steps before it found: it names the selector up to that step,
+/// with the fix for it (§7).
+fn no_match(
+    target: &Target,
+    failed: usize,
+    files: &[&SourceFile],
+    parents: &[Match],
+    src: &str,
+) -> E {
+    let selector = &target.selector;
+    let step = &selector.steps[failed];
+    let whole = &src[selector.span.clone()];
+    let (named, hint) = match range_precedence(selector, src) {
+        Some(hint) => (whole, hint),
+        None => (
+            &src[selector.span.start..step.span.end],
+            hint(
+                step,
+                files,
+                parents,
+                whole,
+                step.span.start - selector.span.start,
+            ),
+        ),
+    };
+    let last = failed + 1 == selector.steps.len();
+    E::NoMatch {
+        selector: named.into(),
+        files: file_list(&files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>()),
+        hint,
+        searched: last.then(|| searched(step, parents)).flatten(),
+    }
+}
+
+/// For a search `step` (a regex, literal or heredoc) that matched nothing
 /// within the `parents` the earlier steps found, the number of files searched.
-fn searched(selector: &Selector, parents: &[Match]) -> Option<usize> {
-    let last = selector.steps.last()?;
-    let search = matches!(last.primary, Primary::Regex(_) | Primary::Literal(_));
+fn searched(step: &Step, parents: &[Match]) -> Option<usize> {
+    let search = matches!(step.primary, Primary::Regex(_) | Primary::Literal(_));
     if !search || parents.is_empty() {
         return None;
     }
@@ -716,15 +742,16 @@ fn range_precedence(selector: &Selector, src: &str) -> Option<String> {
 /// The fix for a `step` that matched nothing within `parents` (§7): its name
 /// under another kind, a close syntax name, a literal match ignoring case and
 /// spacing, a case-insensitive regex match, the spans a nested step searched,
-/// or where to look.
+/// or where to look. The step starts at byte `at` of `selector`.
 pub(crate) fn hint(
     step: &Step,
     files: &[&SourceFile],
     parents: &[Match],
     selector: &str,
+    at: usize,
 ) -> String {
-    if let Some(hint) = other_kind(step, files, parents, selector)
-        .or_else(|| close_name(step, files, parents, selector))
+    if let Some(hint) = other_kind(step, files, parents, selector, at)
+        .or_else(|| close_name(step, files, parents, selector, at))
     {
         return hint;
     }
@@ -894,6 +921,7 @@ fn close_name(
     files: &[&SourceFile],
     parents: &[Match],
     selector: &str,
+    at: usize,
 ) -> Option<String> {
     let Primary::Syntax { kind, name } = &step.primary else {
         return None;
@@ -901,7 +929,8 @@ fn close_name(
     if name.contains('*') {
         return None;
     }
-    let limit = (name.chars().count() / 3).max(2);
+    let bare = bare_name(name);
+    let limit = (bare.chars().count() / 3).max(2);
     let best = parents
         .iter()
         .flat_map(|p| {
@@ -916,7 +945,7 @@ fn close_name(
                     let (d, closest) = [Some(&i.name), i.base_name.as_ref()]
                         .into_iter()
                         .flatten()
-                        .map(|n| (syntax::distance(name, n), n))
+                        .map(|n| (syntax::distance(name, n).min(syntax::distance(&bare, n)), n))
                         .min()
                         .expect("an item has a name");
                     (d, p.file, closest, i)
@@ -927,12 +956,33 @@ fn close_name(
     let (_, file, closest, item) = best?;
     Some(did_you_mean(
         selector,
+        at,
         &syntax::selector(kind, name),
         &syntax::selector(kind, closest),
         files,
         file,
         item,
     ))
+}
+
+/// `name` without its generic arguments and path prefixes, as items are
+/// named: `Display for Log` for `fmt::Display for Log<'_>`.
+fn bare_name(name: &str) -> String {
+    let mut depth = 0usize;
+    let mut outside = String::new();
+    for c in name.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => outside.push(c),
+            _ => {}
+        }
+    }
+    outside
+        .split_whitespace()
+        .map(|word| word.rsplit("::").next().unwrap_or(word))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// `; did you mean SEL (LINES)?`, naming an item of another kind with the name
@@ -943,6 +993,7 @@ fn other_kind(
     files: &[&SourceFile],
     parents: &[Match],
     selector: &str,
+    at: usize,
 ) -> Option<String> {
     let Primary::Syntax { kind, name } = &step.primary else {
         return None;
@@ -961,6 +1012,7 @@ fn other_kind(
         .min_by_key(|(_, i)| syntax::rank(i.kind))?;
     Some(did_you_mean(
         selector,
+        at,
         &syntax::selector(kind, name),
         &syntax::selector(item.kind, name),
         files,
@@ -969,17 +1021,19 @@ fn other_kind(
     ))
 }
 
-/// `; did you mean SEL (LINES)?`: `selector` with its last `written` step
-/// replaced by `fixed`, which selects `item` in `files[file]`.
+/// `; did you mean SEL (LINES)?`: `selector` with the first `written` from
+/// byte `at`, the failing step, replaced by `fixed`, which selects `item` in
+/// `files[file]`.
 fn did_you_mean(
     selector: &str,
+    at: usize,
     written: &str,
     fixed: &str,
     files: &[&SourceFile],
     file: usize,
     item: &Item,
 ) -> String {
-    let suggestion = match selector.rfind(written) {
+    let suggestion = match selector[at..].find(written).map(|i| at + i) {
         Some(i) => format!(
             "{}{fixed}{}",
             &selector[..i],
@@ -2436,6 +2490,60 @@ fn main() {
         assert_eq!(
             error("delete fn:zzzzzz", &[("a.rs", RUST)]),
             "error: script:1:8: fn:zzzzzz matches nothing in a.rs; `outline` lists the items"
+        );
+    }
+
+    #[test]
+    fn a_nested_no_match_names_and_hints_its_first_failing_step() {
+        let module = "mod tests {\n    fn exec() {}\n}\n";
+        assert_eq!(
+            error("delete fn:tests>fn:exec", &[("a.rs", module)]),
+            "error: script:1:8: fn:tests matches nothing in a.rs; \
+             did you mean mod:tests>fn:exec (1-3)?"
+        );
+        assert_eq!(
+            error("delete impl:Lexr>fn:new>\"x\"", &[("a.rs", RUST)]),
+            "error: script:1:8: impl:Lexr matches nothing in a.rs; \
+             did you mean impl:Lexer>fn:new>\"x\" (14-18)?"
+        );
+        assert_eq!(
+            error("delete impl:Lexer>fn:nwe>\"x\"", &[("a.rs", RUST)]),
+            "error: script:1:8: impl:Lexer>fn:nwe matches nothing in a.rs; \
+             did you mean impl:Lexer>fn:new>\"x\" (15-17)?"
+        );
+        assert_eq!(
+            error("delete fn:zzzzzz>\"x\"", &[("a.rs", RUST)]),
+            "error: script:1:8: fn:zzzzzz matches nothing in a.rs; `outline` lists the items"
+        );
+        // The fix replaces the failing step, not a later step written the same.
+        assert_eq!(
+            error(
+                "delete fn:m>fn:m",
+                &[("a.rs", "mod m {\n    struct s;\n}\n")]
+            ),
+            "error: script:1:8: fn:m matches nothing in a.rs; did you mean mod:m>fn:m (1-3)?"
+        );
+    }
+
+    #[test]
+    fn no_match_suggests_the_name_without_generics_or_paths() {
+        let text = "struct Log<'a>(&'a str);\n\nimpl Log<'_> {\n    fn f() {}\n}\n\nimpl fmt::Display for Log<'_> {}\n";
+        assert_eq!(
+            error("delete impl:\"Log<'_>\"", &[("a.rs", text)]),
+            "error: script:1:8: impl:\"Log<'_>\" matches nothing in a.rs; did you mean impl:Log (3-5)?"
+        );
+        assert_eq!(
+            error(
+                "delete impl:\"fmt::Display for Log<'_>\"",
+                &[("a.rs", text)]
+            ),
+            "error: script:1:8: impl:\"fmt::Display for Log<'_>\" matches nothing in a.rs; \
+             did you mean impl:\"Display for Log\" (7)?"
+        );
+        assert_eq!(
+            error("delete impl:\"Lexer<'a>\">fn:new>\"x\"", &[("a.rs", RUST)]),
+            "error: script:1:8: impl:\"Lexer<'a>\" matches nothing in a.rs; \
+             did you mean impl:Lexer>fn:new>\"x\" (14-18)?"
         );
     }
 

@@ -1266,7 +1266,7 @@ impl Executor<'_> {
                 filters: Vec::new(),
                 span: span.clone(),
             };
-            let hint = select::hint(&step, &set, &parents, &selector);
+            let hint = select::hint(&step, &set, &parents, &selector, 0);
             return Err(ExecError::new(
                 ExecErrorKind::NoMatch {
                     selector,
@@ -2192,6 +2192,14 @@ mod tests {
         let out = exec(TEXT, "show all /zzz/; replace 2 with \"x\"");
         assert_eq!(out.output, "no matches for /zzz/ in 1 file\n");
         assert_eq!(out.result.map(|changes| changes.len()), Ok(1));
+    }
+
+    #[test]
+    fn show_all_fails_when_an_earlier_step_matches_nothing() {
+        assert_eq!(
+            exec(TEXT, "show all fn:zzz>\"x\"").error(),
+            "error: script:1:10: fn:zzz matches nothing in a.rs; `outline` lists the items"
+        );
     }
 
     #[test]

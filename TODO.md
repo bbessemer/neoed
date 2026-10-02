@@ -223,7 +223,7 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 
 - [x] `create a.rs "fn a() {}\n"` followed by `insert after fn:a ...` in the
       same script leaves a trailing blank line (rustfmt removes it)
-- [ ] The did-you-mean-another-kind hint only fires for a selector's last step:
+- [x] The did-you-mean-another-kind hint only fires for a selector's last step:
       `show fn:tests>fn:exec` says "`outline` lists the items" where
       `show fn:tests` suggests `mod:tests`
 - [x] `show`, `outline` or `check` without a selector can't come before a `|`:
@@ -244,14 +244,14 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       `create`s its crate's `Cargo.toml`: `rust_edition` (`format.rs`) reads
       manifests from disk, not the script's created files, so 2024-style code is
       reformatted (`if c { a } else { b }` split over five lines)
-- [ ] A nested selector whose earlier step matches nothing reports the whole
+- [x] A nested selector whose earlier step matches nothing reports the whole
       selector with the last step's hint: `impl:"Lexer<'a>">fn:next>"x"` says
       "matches nothing; `show` prints the text to match against" instead of
       naming the failing step and suggesting `impl:Lexer`
 - [ ] The parse-error guard misses a Python class left with no body (`delete` of
       its only methods): tree-sitter-python parses `class A:` at the end of a
       file without an error node; only ruff reports it
-- [ ] `impl:"Log<'_>"` matches nothing in a file with `impl Log<'_>`, and the
+- [x] `impl:"Log<'_>"` matches nothing in a file with `impl Log<'_>`, and the
       hint is only "`outline` lists the items": suggest `impl:Log`, the name
       without its generic arguments
 
