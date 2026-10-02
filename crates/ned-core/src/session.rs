@@ -1,6 +1,8 @@
 //! Sessions: per-workspace logs of `ned` invocations (spec §1.2).
 
+use std::collections::HashSet;
 use std::env;
+
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -118,7 +120,40 @@ pub fn sessions(state_dir: &Path, root: &Path) -> Result<Vec<String>, SessionErr
 /// `ned history`'s output: the last 10 entries, or every one with `all`, a
 /// line each (spec §1.2).
 pub fn history(entries: &[Entry], all: bool) -> String {
-    todo!()
+    let undone: HashSet<u64> = entries.iter().filter_map(|entry| entry.undoes).collect();
+    let shown = match all {
+        true => entries,
+        false => &entries[entries.len().saturating_sub(10)..],
+    };
+    let mut out = String::new();
+    for entry in shown {
+        let mut parts = vec![match (entry.undoes, entry.exit, entry.dry_run) {
+            (Some(id), _, _) => format!("undo {id}"),
+            (None, 0, true) => "dry run".to_string(),
+            (None, 0, false) => "ok".to_string(),
+            (None, exit, _) => format!("exit {exit}"),
+        }];
+        match entry.changes.len() {
+            0 => {}
+            1 => parts.push("1 file".to_string()),
+            n => parts.push(format!("{n} files")),
+        }
+        if undone.contains(&entry.id) {
+            parts.push("undone".to_string());
+        }
+        out.push_str(&format!("{} {}", entry.id, parts.join(", ")));
+        if let Some(script) = &entry.script {
+            let mut lines = script.lines();
+            out.push_str(&format!(": {}", lines.next().unwrap_or_default()));
+            match lines.count() {
+                0 => {}
+                1 => out.push_str(" (+1 line)"),
+                more => out.push_str(&format!(" (+{more} lines)")),
+            }
+        }
+        out.push('\n');
+    }
+    out
 }
 
 /// The directory of `root`'s sessions: its last component and a hash of its
@@ -716,15 +751,15 @@ mod tests {
         assert_eq!(
             history(&entries, false),
             "\
-    1 ok: show fn:parse
-    2 exit 1: replace fn:prase>\"x\" with \"y\"
-    3 dry run: delete fn:a
-    4 ok, 2 files: sub /a/ with \"b\"
-    5 ok, 1 file, undone: replace fn:parse>\"x\" with \"y\"
-    6 undo 5, 1 file
-    7 ok, 1 file: file a.rs (+2 lines)
-    8 exit 2: show 1 (+1 line)
-    "
+1 ok: show fn:parse
+2 exit 1: replace fn:prase>\"x\" with \"y\"
+3 dry run: delete fn:a
+4 ok, 2 files: sub /a/ with \"b\"
+5 ok, 1 file, undone: replace fn:parse>\"x\" with \"y\"
+6 undo 5, 1 file
+7 ok, 1 file: file a.rs (+2 lines)
+8 exit 2: show 1 (+1 line)
+"
         );
     }
 
