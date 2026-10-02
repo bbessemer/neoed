@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use tree_sitter::{Node, QueryCursor, StreamingIterator, Tree};
 
 use crate::edit::{Edit, EditError, EditSet};
+use crate::highlight;
 use crate::lang::{self, Language};
 use crate::lsp::{self, Document, Locate, Located, Lsp, LspFailure, Renamed, Severity, render};
 use crate::outline;
@@ -1035,15 +1036,24 @@ impl Executor<'_> {
             self.output
                 .push_str(&format!("{}\n", style.paint(Role::Header, &header)));
             let width = (last + 1).to_string().len();
+            let region = |line| f.buffer.line_range(line).expect("line within the file");
+            let spans = match (style, f.lang, f.tree()) {
+                (Style::Color, Some(lang), Some(tree)) => {
+                    highlight::spans(lang, tree, &f.text, region(first).start..region(last).end)
+                }
+                _ => Vec::new(),
+            };
             for line in first..=last {
-                let range = f.buffer.line_range(line).expect("line within the file");
-                let content = f.text[range].trim_end_matches('\n');
+                let range = region(line);
+                let content = f.text[range.clone()].trim_end_matches('\n');
                 let content = content.strip_suffix('\r').unwrap_or(content);
                 let numbered = match style {
                     Style::Plain => format!("{}:{content}\n", line + 1),
                     Style::Color => {
                         let number = format!("{:>width$}", line + 1);
-                        format!("{} {content}\n", style.paint(Role::LineNumber, &number))
+                        let content = range.start..range.start + content.len();
+                        let code = highlight::paint(style, &f.text, content, &spans);
+                        format!("{} {code}\n", style.paint(Role::LineNumber, &number))
                     }
                 };
                 self.output.push_str(&numbered);
@@ -2455,6 +2465,24 @@ mod tests {
             r"\e[2m10\e[0m line 10",
             r"\e[1ma.txt:3\e[0m",
             r"\e[2m3\e[0m line 3",
+            "",
+        ];
+        assert_eq!(shown(&out.output), expected.join("\n"));
+    }
+
+    #[test]
+    fn colored_show_highlights_code_but_not_text() {
+        let color = Options {
+            style: Style::Color,
+            ..Options::default()
+        };
+        let files = [("a.rs", "fn a() {}\n"), ("a.txt", "fn a() {}\n")];
+        let out = exec_with_options(&files, 2, "show all 1", &color);
+        let expected = [
+            r"\e[1ma.rs:1\e[0m",
+            r"\e[2m1\e[0m \e[35mfn\e[0m \e[34ma\e[0m() {}",
+            r"\e[1ma.txt:1\e[0m",
+            r"\e[2m1\e[0m fn a() {}",
             "",
         ];
         assert_eq!(shown(&out.output), expected.join("\n"));

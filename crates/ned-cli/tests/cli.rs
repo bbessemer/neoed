@@ -169,6 +169,20 @@ fn color_always_paints_reads_edits_and_messages() {
 }
 
 #[test]
+fn color_always_highlights_shown_code() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    assert_snapshot!(colored(dir.path(), &["parser.rs", "-e", "show fn:new"]), @r"
+    exit: 0
+    --- stdout
+    \e[1mparser.rs:10-12\e[0m
+    \e[2m10\e[0m     \e[35mpub\e[0m \e[35mfn\e[0m \e[34mnew\e[0m(src: &\e[33mstr\e[0m) -> \e[33mSelf\e[0m {
+    \e[2m11\e[0m         \e[33mParser\e[0m { src: src.\e[34mto_string\e[0m(), pos: \e[36m0\e[0m }
+    \e[2m12\e[0m     }
+    --- stderr
+    ");
+}
+
+#[test]
 fn without_a_terminal_or_with_color_never_output_is_plain() {
     let dir = dir_with(&[("parser.rs", PARSER), ("a.toml", "x = 1\n")]);
     let script = "show fn:new; outline; show fn:nope";

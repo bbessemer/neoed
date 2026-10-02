@@ -4,6 +4,8 @@ use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::str::FromStr;
 
+use crate::highlight::Group;
+
 /// When to colour a stream: the `--color` words.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum When {
@@ -64,6 +66,8 @@ pub enum Role {
     Warning,
     Info,
     Note,
+    /// Highlighted code.
+    Code(Group),
 }
 
 impl Style {
@@ -79,6 +83,16 @@ impl Style {
             Role::Warning => "1;33",
             Role::Info => "1;34",
             Role::Note => "1;36",
+            Role::Code(group) => match group {
+                Group::Keyword => "35",
+                Group::String => "32",
+                Group::Comment => "2",
+                Group::Function | Group::Tag => "34",
+                Group::Type => "33",
+                Group::Constant => "36",
+                Group::Heading => "1",
+                Group::Link => "4",
+            },
         };
         match self {
             Style::Color if !text.is_empty() => Cow::Owned(format!("\x1b[{code}m{text}\x1b[0m")),
@@ -164,6 +178,20 @@ mod tests {
         assert_eq!(painted(Role::Warning), r"\e[1;33mx\e[0m");
         assert_eq!(painted(Role::Info), r"\e[1;34mx\e[0m");
         assert_eq!(painted(Role::Note), r"\e[1;36mx\e[0m");
+    }
+
+    #[test]
+    fn code_takes_its_groups_colour() {
+        let painted = |group| shown(&Style::Color.paint(Role::Code(group), "x"));
+        assert_eq!(painted(Group::Keyword), r"\e[35mx\e[0m");
+        assert_eq!(painted(Group::String), r"\e[32mx\e[0m");
+        assert_eq!(painted(Group::Comment), r"\e[2mx\e[0m");
+        assert_eq!(painted(Group::Function), r"\e[34mx\e[0m");
+        assert_eq!(painted(Group::Type), r"\e[33mx\e[0m");
+        assert_eq!(painted(Group::Constant), r"\e[36mx\e[0m");
+        assert_eq!(painted(Group::Tag), r"\e[34mx\e[0m");
+        assert_eq!(painted(Group::Heading), r"\e[1mx\e[0m");
+        assert_eq!(painted(Group::Link), r"\e[4mx\e[0m");
     }
 
     #[test]
