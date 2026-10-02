@@ -10,14 +10,14 @@ use std::cmp::Reverse;
 use tree_sitter::{Node, Query, QueryCursor, QueryError, QueryErrorKind, StreamingIterator, Tree};
 
 use crate::buffer::{Buffer, LineEnding};
-use crate::conflict;
+use crate::conflict::{self, Conflict};
 use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
 use crate::lang::Language;
 use crate::pattern;
 use crate::script::ast::{
     LineNo, Part, Pattern, Primary, RegexFlags, Selector, Step, Target, TextKind,
 };
-use crate::span::Span;
+use crate::span::{Of, Span};
 use crate::syntax::{self, Item};
 use crate::template::Template;
 use crate::text::{self, full_lines, is_whole_line, strip_indent};
@@ -55,6 +55,7 @@ pub struct SourceFile {
     pub lang: Option<Language>,
     tree: OnceCell<Tree>,
     items: OnceCell<Vec<Item>>,
+    conflicts: OnceCell<Vec<Conflict>>,
     indent_unit: OnceCell<String>,
 }
 
@@ -68,6 +69,7 @@ impl SourceFile {
             lang,
             tree: OnceCell::new(),
             items: OnceCell::new(),
+            conflicts: OnceCell::new(),
             indent_unit: OnceCell::new(),
         }
     }
@@ -80,6 +82,12 @@ impl SourceFile {
             self.items
                 .get_or_init(|| syntax::items(query, tree, &conflict::mask(&self.text))),
         )
+    }
+
+    /// The text's merge conflicts (§3.11).
+    pub fn conflicts(&self) -> &[Conflict] {
+        self.conflicts
+            .get_or_init(|| conflict::conflicts(&self.text))
     }
 
     /// The syntax tree of the text, parsed on first use; `None` without a
@@ -260,16 +268,27 @@ struct Found {
 }
 
 fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result<Vec<Found>, E> {
-    // Only a syntax item has parts other than `.lines`, and a part's span is
-    // no longer an item.
-    let mut item = matches!(step.primary, Primary::Syntax { .. });
-    for part in &step.parts {
-        if *part != Part::Lines && !item {
-            return Err(E::PartNeedsItem {
-                part: part_name(*part).into(),
-            });
+    // Only a syntax item has parts other than `.lines`, and a conflict its
+    // sides; a part's span is neither.
+    let mut primary = Some(&step.primary);
+    for &part in &step.parts {
+        let side = matches!(part, Part::Ours | Part::Theirs | Part::Base);
+        match primary {
+            _ if part == Part::Lines => {}
+            Some(Primary::Conflict(_)) if side => {}
+            Some(Primary::Syntax { .. }) if !side => {}
+            _ if side => {
+                return Err(E::PartNeedsConflict {
+                    part: part_name(part).into(),
+                });
+            }
+            _ => {
+                return Err(E::PartNeedsItem {
+                    part: part_name(part).into(),
+                });
+            }
         }
-        item = false;
+        primary = None;
     }
     let matcher = Matcher::new(&step.primary, files, parents)?;
     let mut out: Vec<Found> = Vec::new();
@@ -279,15 +298,22 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
             let mut captures = parent.captures.clone();
             captures.extend(captured);
             let core = range.clone();
-            let item = match &step.primary {
+            let of = match &step.primary {
                 Primary::Syntax { kind, .. } => f
                     .items()
                     .unwrap_or_default()
                     .iter()
-                    .find(|i| i.kind == kind && i.range == range),
-                _ => None,
+                    .find(|i| i.kind == kind && i.range == range)
+                    .map_or(Of::Plain, Of::Item),
+                Primary::Conflict(_) => f
+                    .conflicts()
+                    .iter()
+                    .enumerate()
+                    .find(|(_, c)| c.span() == range)
+                    .map_or(Of::Plain, |(i, c)| Of::Conflict(i + 1, c)),
+                _ => Of::Plain,
             };
-            let mut spans = vec![Span { range, item }];
+            let mut spans = vec![Span { range, of }];
             for part in &step.parts {
                 spans = spans
                     .iter()
@@ -331,6 +357,8 @@ enum Matcher<'a> {
         raw: bool,
     },
     File(&'a str),
+    /// `conflict:N`, or every conflict.
+    Conflict(Option<usize>),
     Syntax {
         kind: &'a str,
         name: &'a str,
@@ -373,6 +401,7 @@ impl<'a> Matcher<'a> {
                 }
                 Matcher::File(path)
             }
+            Primary::Conflict(n) => Matcher::Conflict(*n),
             Primary::Syntax { kind, name } => {
                 check_syntax(kind, name, files, parents)?;
                 Matcher::Syntax { kind, name }
@@ -500,6 +529,14 @@ impl<'a> Matcher<'a> {
                     Vec::new()
                 }
             }
+            Matcher::Conflict(n) => f
+                .conflicts()
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| n.is_none_or(|n| n == i + 1))
+                .map(|(_, c)| c.span())
+                .filter(within)
+                .collect(),
             Matcher::Query(queries) => {
                 let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
                     return Vec::new();
@@ -837,6 +874,26 @@ pub(crate) fn hint(
                 );
             }
         }
+        Primary::Conflict(_) => {
+            let mut searched: Vec<&SourceFile> = parents.iter().map(|p| files[p.file]).collect();
+            searched.dedup_by_key(|f| &f.path);
+            let conflicted: Vec<String> = searched
+                .iter()
+                .filter(|f| !f.conflicts().is_empty())
+                .take(3)
+                .map(|f| {
+                    let n = f.conflicts().len();
+                    let names: Vec<String> = (1..=n).map(|i| format!("conflict:{i}")).collect();
+                    let noun = if n == 1 { "conflict" } else { "conflicts" };
+                    format!("{} has {n} {noun} ({})", f.path, names.join(", "))
+                })
+                .collect();
+            return match searched[..] {
+                _ if !conflicted.is_empty() => format!("; {}", conflicted.join("; ")),
+                [f] => format!("; {} has no merge conflicts", f.path),
+                _ => "; no searched file has merge conflicts".into(),
+            };
+        }
         _ => {}
     }
     let nested = parents
@@ -1148,6 +1205,9 @@ pub(crate) fn part_name(part: Part) -> &'static str {
         Part::Lines => "lines",
         Part::Refs => "refs",
         Part::Def => "def",
+        Part::Ours => "ours",
+        Part::Theirs => "theirs",
+        Part::Base => "base",
     }
 }
 
@@ -1189,14 +1249,24 @@ fn candidates(
         .map(|(chosen, c)| {
             // The last step's filters, as written.
             let filters = last.and_then(|step| Some(step.filters.first()?.1.start..step.span.end));
+            let parts = |step: &Step| -> String {
+                step.parts
+                    .iter()
+                    .map(|&p| format!(".{}", part_name(p)))
+                    .collect()
+            };
             let text = match (chosen, last) {
                 (Some((name, item, true)), Some(step)) => {
-                    let parts: String = step
-                        .parts
+                    format!("{}{}", syntax::selector(item.kind, name), parts(step))
+                }
+                // Each of several conflicts is named by its number.
+                (None, Some(step)) if step.primary == Primary::Conflict(None) => {
+                    let n = files[c.m.file]
+                        .conflicts()
                         .iter()
-                        .map(|&p| format!(".{}", part_name(p)))
-                        .collect();
-                    format!("{}{parts}", syntax::selector(item.kind, name))
+                        .position(|k| k.span() == c.core)
+                        .expect("a conflict step matches conflicts");
+                    format!("conflict:{}{}", n + 1, parts(step))
                 }
                 _ => src[split..filters.clone().map_or(selector.span.end, |f| f.start)].to_string(),
             };
@@ -1211,6 +1281,10 @@ fn candidates(
     let enclosing: Vec<Option<String>> = found
         .iter()
         .map(|c| enclosing(files[c.m.file], &c.core, &parents[c.parent].range))
+        .collect();
+    let sides: Vec<Option<String>> = found
+        .iter()
+        .map(|c| enclosing_side(files[c.m.file], &c.core, &parents[c.parent].range))
         .collect();
     let all: Vec<(Option<String>, String)> = (0..found.len())
         .map(|i| {
@@ -1237,6 +1311,13 @@ fn candidates(
                     .count()
                     == 1
             });
+            let unique_side = sides[i].as_ref().filter(|&side| {
+                peers
+                    .iter()
+                    .filter(|&&j| sides[j].as_ref() == Some(side))
+                    .count()
+                    == 1
+            });
             let one_in_file = peers
                 .iter()
                 .filter(|&&j| found[j].m.file == c.m.file)
@@ -1245,6 +1326,7 @@ fn candidates(
             let candidate = match unique_item {
                 _ if peers.len() == 1 => Some(format!("{prefix}{last}")),
                 Some(item) => Some(format!("{prefix}{item}>{last}")),
+                None if let Some(side) = unique_side => Some(format!("{prefix}{side}>{last}")),
                 None if files.len() == 1 || in_file => {
                     lines_fit.then(|| format!("{prefix}{lines}>{last}"))
                 }
@@ -1322,6 +1404,21 @@ fn enclosing(f: &SourceFile, range: &Range<usize>, parent: &Range<usize>) -> Opt
                 && i.range != *parent
         })
         .map(|i| syntax::selector(i.kind, &i.name))
+}
+
+/// The selector of the conflict side, within `parent`, whose lines hold
+/// `range`, as `conflict:1.ours`.
+fn enclosing_side(f: &SourceFile, range: &Range<usize>, parent: &Range<usize>) -> Option<String> {
+    f.conflicts().iter().enumerate().find_map(|(i, c)| {
+        let side = c.sides().find(|s| {
+            s.start <= range.start
+                && range.end <= s.end
+                && s != range
+                && parent.start <= s.start
+                && s.end <= parent.end
+        })?;
+        Some(format!("conflict:{}.{}", i + 1, c.side_at(&side)?.name()))
+    })
 }
 
 /// The 1-based line or line range `range` touches, as a line selector.

@@ -117,7 +117,7 @@ text. The marker tolerance is independent; the resolution verb depends on the
 parts work above.
 
 - [x] Marker tolerance: conflict markers hidden from the grammar and the guard
-- [ ] The `conflict` kind and its `.ours`, `.theirs` and `.base` parts
+- [x] The `conflict` kind and its `.ours`, `.theirs` and `.base` parts
 - [ ] The `resolve` verb
 
 Version: patch for marker tolerance (existing scripts start working on

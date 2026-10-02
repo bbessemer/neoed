@@ -494,6 +494,7 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::UnknownKind { .. }
         | ExecErrorKind::MissingPart { .. }
         | ExecErrorKind::PartNeedsItem { .. }
+        | ExecErrorKind::PartNeedsConflict { .. }
         | ExecErrorKind::MoveIntoSource { .. }
         | ExecErrorKind::FileExists { .. }
         | ExecErrorKind::RenameRefused { .. }

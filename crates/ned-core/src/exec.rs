@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use tree_sitter::{Node, QueryCursor, StreamingIterator, Tree};
 
+use crate::conflict::Conflict;
 use crate::edit::{Edit, EditError, EditSet};
 use crate::highlight;
 use crate::lang::{self, Language};
@@ -20,7 +21,7 @@ use crate::script::ast::{
 };
 use crate::script::error::{excerpt, location};
 use crate::select::{self, Match, SourceFile, line_numbers, same_path};
-use crate::span::Span;
+use crate::span::{Of, Span};
 use crate::style::{Role, Style};
 use crate::syntax::{self, Item};
 use crate::template::Template;
@@ -481,6 +482,13 @@ impl Executor<'_> {
             }
             CommandKind::Delete(target) => {
                 for m in self.resolve(target)? {
+                    let f = &self.files[m.file].file;
+                    if let Some(side) = empty_side(f, &m.range) {
+                        let line = line_numbers(&f.buffer, &m.range);
+                        self.notes
+                            .push(format!("{}:{line}: {side} is already empty", f.path));
+                        continue;
+                    }
                     self.delete(index, span, m.file, m.range)?;
                 }
             }
@@ -594,7 +602,7 @@ impl Executor<'_> {
                         .map(|m| {
                             let plain = Span {
                                 range: m.range,
-                                item: None,
+                                of: Of::Plain,
                             };
                             let spans = plain.part(*part, &self.files[m.file].file.text)?;
                             let (file, captures) = (m.file, m.captures);
@@ -619,7 +627,7 @@ impl Executor<'_> {
             for m in found {
                 let plain = Span {
                     range: m.range.clone(),
-                    item: None,
+                    of: Of::Plain,
                 };
                 let text = &self.files[m.file].file.text;
                 if plain
@@ -922,14 +930,14 @@ impl Executor<'_> {
     }
 
     fn show(&mut self, target: Option<&Target>, context: usize) -> Result<(), ExecError> {
-        // (file, first line, last line), 0-based.
-        let mut spans: Vec<(usize, usize, usize)> = Vec::new();
+        // (file, first line, last line, empty side), 0-based.
+        let mut spans: Vec<(usize, usize, usize, Option<String>)> = Vec::new();
         match target {
             None => {
                 for i in self.read(|_| true)? {
                     let count = self.files[i].file.buffer.line_count();
                     if count > 0 {
-                        spans.push((i, 0, count - 1));
+                        spans.push((i, 0, count - 1, None));
                     }
                 }
             }
@@ -961,23 +969,33 @@ impl Executor<'_> {
                     } else {
                         line(m.range.end - 1)
                     };
+                    let empty = empty_side(&self.files[m.file].file, &m.range);
+                    let context = if empty.is_some() { 0 } else { context };
                     spans.push((
                         m.file,
                         first.saturating_sub(context),
                         (last + context).min(max),
+                        empty,
                     ));
                 }
             }
         }
-        let mut regions: Vec<(usize, usize, usize)> = Vec::new();
-        for (file, first, last) in spans {
+        let mut regions: Vec<(usize, usize, usize, Option<String>)> = Vec::new();
+        for (file, first, last, empty) in spans {
             match regions.last_mut() {
-                Some((f, _, end)) if *f == file && first <= *end + 2 => *end = (*end).max(last),
-                _ => regions.push((file, first, last)),
+                Some((f, _, end, None)) if *f == file && empty.is_none() && first <= *end + 2 => {
+                    *end = (*end).max(last)
+                }
+                _ => regions.push((file, first, last, empty)),
             }
         }
-        for (file, first, last) in regions {
+        for (file, first, last, empty) in regions {
             let f = &self.files[file].file;
+            if let Some(side) = empty {
+                let line = format!("{}:{}: {side} is empty\n", f.path, first + 1);
+                self.output.push_str(&line);
+                continue;
+            }
             let lines = if first == last {
                 format!("{}", first + 1)
             } else {
@@ -1618,6 +1636,13 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text, whole: bool) -> (Ran
         false => without_leading(f, range, new),
     };
     let unit = f.indent_unit();
+    if let Some(c) = conflict_at(f, &range) {
+        let mut new = line_oriented(new, side_indent(t, c), unit);
+        if !range.is_empty() && !t[..range.end].ends_with('\n') {
+            new.pop();
+        }
+        return (range, new);
+    }
     if text::is_whole_line(t, &range) {
         let full = text::full_lines(t, range);
         let indent = match list_anchor(f, full.start, new) {
@@ -1633,6 +1658,39 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text, whole: bool) -> (Ran
         let indent = text::indent_at(t, range.start);
         (range, verbatim(new, indent, unit))
     }
+}
+
+/// The conflict of `f` that `range` is, or is an empty side of.
+fn conflict_at<'f>(f: &'f SourceFile, range: &Range<usize>) -> Option<&'f Conflict> {
+    f.conflicts()
+        .iter()
+        .find(|c| c.span() == *range || (range.is_empty() && c.sides().any(|s| s == *range)))
+}
+
+/// The empty conflict side of `f` that `range` is, as `conflict:2.theirs`.
+fn empty_side(f: &SourceFile, range: &Range<usize>) -> Option<String> {
+    if !range.is_empty() {
+        return None;
+    }
+    f.conflicts()
+        .iter()
+        .enumerate()
+        .find_map(|(i, c)| Some(format!("conflict:{}.{}", i + 1, c.side_at(range)?.name())))
+}
+
+/// The indentation of the first non-blank line of `c`'s sides, which text
+/// replacing it takes, since its markers start their lines (§5.2).
+fn side_indent<'t>(t: &'t str, c: &Conflict) -> &'t str {
+    c.sides()
+        .find_map(|side| {
+            let mut at = side.start;
+            t[side].split_inclusive('\n').find_map(|line| {
+                let start = at;
+                at += line.len();
+                (!line.trim().is_empty()).then(|| text::indent_at(t, start))
+            })
+        })
+        .unwrap_or("")
 }
 
 /// `range` without the leading doc comments and attributes of the syntax item
@@ -1866,6 +1924,11 @@ fn insert(
     }
     let t = &f.text;
     let unit = f.indent_unit();
+    if range.is_empty()
+        && let Some(c) = conflict_at(f, &range)
+    {
+        return (range, line_oriented(new, side_indent(t, c), unit));
+    }
     if !text::is_whole_line(t, &range) {
         let at = match position {
             Position::Before | Position::Start => range.start,
@@ -2005,6 +2068,8 @@ pub enum ExecErrorKind {
     },
     #[error(".{part} needs a syntax item, e.g. fn:NAME.{part}")]
     PartNeedsItem { part: String },
+    #[error(".{part} needs a conflict, e.g. conflict:1.{part}")]
+    PartNeedsConflict { part: String },
     #[error("invalid {lang} query: {message}")]
     InvalidQuery { lang: String, message: String },
     #[error("{selector} {message}")]
@@ -3839,8 +3904,16 @@ fn main() {}
     fn an_item_on_both_sides_is_ambiguous() {
         let text = "<<<<<<< HEAD\nfn a() -> u8 {\n    1\n}\n=======\nfn a() {}\n>>>>>>> topic\n";
         let out = exec(text, "show fn:a");
-        assert!(out.error().contains("2-4>fn:a"), "{}", out.error());
-        assert!(out.error().contains("6>fn:a"), "{}", out.error());
+        assert!(
+            out.error().contains("conflict:1.ours>fn:a"),
+            "{}",
+            out.error()
+        );
+        assert!(
+            out.error().contains("conflict:1.theirs>fn:a"),
+            "{}",
+            out.error()
+        );
     }
 
     #[test]
@@ -3864,6 +3937,218 @@ fn main() {}
             "replace \"fn c() {}\" with \"fn c() {\"",
         );
         assert!(out.error().starts_with("error: a.rs:"), "{}", out.error());
+    }
+
+    /// Two conflicts: one in diff3 style inside `fn a`, and one without a base
+    /// whose theirs is empty.
+    const CONFLICTS: &str = "fn a() {\n<<<<<<< HEAD\n    one();\n||||||| base\n    zero();\n=======\n    two();\n>>>>>>> topic\n}\n\n<<<<<<< HEAD\nfn b() {}\n=======\n>>>>>>> topic\n";
+
+    #[test]
+    fn conflicts_are_numbered_in_file_order() {
+        let out = exec(CONFLICTS, "show conflict:2");
+        assert_eq!(
+            out.output,
+            "a.rs:11-14\n11:<<<<<<< HEAD\n12:fn b() {}\n13:=======\n14:>>>>>>> topic\n"
+        );
+        let out = exec(CONFLICTS, "show conflict:3");
+        assert!(
+            out.error().contains(
+                "conflict:3 matches nothing in a.rs; a.rs has 2 conflicts (conflict:1, conflict:2)"
+            ),
+            "{}",
+            out.error()
+        );
+        let out = exec("fn a() {}\n", "show conflict");
+        assert!(
+            out.error().contains("a.rs has no merge conflicts"),
+            "{}",
+            out.error()
+        );
+    }
+
+    #[test]
+    fn a_conflicts_parts_are_its_sides() {
+        let out = exec(
+            CONFLICTS,
+            "show conflict:1.ours; show conflict:1.base; show conflict:1.theirs",
+        );
+        assert_eq!(
+            out.output,
+            "a.rs:3\n3:    one();\na.rs:5\n5:    zero();\na.rs:7\n7:    two();\n"
+        );
+    }
+
+    #[test]
+    fn text_replacing_an_empty_side_goes_on_its_own_line() {
+        assert_eq!(
+            edited(CONFLICTS, "replace conflict:2.theirs with \"fn c() {}\""),
+            CONFLICTS.replace("=======\n>>>>>>>", "=======\nfn c() {}\n>>>>>>>")
+        );
+    }
+
+    #[test]
+    fn conflicts_nest_like_other_spans() {
+        let out = exec(
+            CONFLICTS,
+            "show fn:a>conflict; show conflict:2.ours>fn:b; show conflict:1>\"two\"",
+        );
+        assert_eq!(
+            out.output,
+            "a.rs:2-8\n2:<<<<<<< HEAD\n3:    one();\n4:||||||| base\n5:    zero();\n6:=======\n7:    two();\n8:>>>>>>> topic\na.rs:12\n12:fn b() {}\na.rs:7\n7:    two();\n"
+        );
+        let out = exec(CONFLICTS, "show fn:a>conflict:2");
+        assert!(out.error().contains("matches nothing"), "{}", out.error());
+    }
+
+    #[test]
+    fn ambiguous_conflicts_are_listed_by_number() {
+        let out = exec(CONFLICTS, "show conflict");
+        assert!(out.error().contains("\n  conflict:1 "), "{}", out.error());
+        assert!(out.error().contains("\n  conflict:2 "), "{}", out.error());
+        let out = exec(CONFLICTS, "show conflict.theirs");
+        assert!(
+            out.error().contains("\n  conflict:1.theirs "),
+            "{}",
+            out.error()
+        );
+    }
+
+    #[test]
+    fn a_conflict_without_a_base_says_how_to_get_one() {
+        let out = exec(CONFLICTS, "show conflict:2.base");
+        assert!(
+            out.error()
+                .contains("conflict:2 has no .base; it has .ours .theirs .lines"),
+            "{}",
+            out.error()
+        );
+        assert!(
+            out.error()
+                .contains("git checkout --conflict=diff3 -- FILE"),
+            "{}",
+            out.error()
+        );
+        let out = exec(CONFLICTS, "show all conflict[.base == \"\"]");
+        assert_eq!(out.output.lines().next(), Some("a.rs:11-14"));
+    }
+
+    #[test]
+    fn sides_need_a_conflict_and_conflicts_have_no_item_parts() {
+        let out = exec(CONFLICTS, "show fn:b.ours");
+        assert!(
+            out.error()
+                .contains(".ours needs a conflict, e.g. conflict:1.ours"),
+            "{}",
+            out.error()
+        );
+        let out = exec(CONFLICTS, "show conflict:1.body");
+        assert!(
+            out.error().contains(".body needs a syntax item"),
+            "{}",
+            out.error()
+        );
+    }
+
+    #[test]
+    fn conflicts_are_found_in_text_files() {
+        let text = "a\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> topic\n";
+        let out = exec_with(&[("notes.txt", text)], 1, "show conflict:1.theirs");
+        assert_eq!(out.output, "notes.txt:5\n5:c\n");
+    }
+
+    #[test]
+    fn text_inserted_into_an_empty_side_goes_on_lines_of_its_own() {
+        let text = "<<<<<<< HEAD\n=======\nc\n>>>>>>> topic\n";
+        for position in ["before", "after", "start", "end"] {
+            assert_eq!(
+                edited(text, &format!("insert {position} conflict:1.ours \"x\"")),
+                "<<<<<<< HEAD\nx\n=======\nc\n>>>>>>> topic\n",
+                "{position}"
+            );
+        }
+        let text = "fn a() {\n<<<<<<< HEAD\n    one();\n=======\n>>>>>>> topic\n}\n";
+        assert_eq!(
+            edited(text, "insert end conflict:1.theirs \"two();\""),
+            text.replace("=======\n", "=======\n    two();\n")
+        );
+    }
+
+    #[test]
+    fn text_moved_into_an_empty_side_goes_on_lines_of_its_own() {
+        let text = "x\n<<<<<<< HEAD\nb\n=======\n>>>>>>> topic\n";
+        assert_eq!(
+            edited(text, "move 1 start conflict:1.theirs"),
+            "<<<<<<< HEAD\nb\n=======\nx\n>>>>>>> topic\n"
+        );
+    }
+
+    #[test]
+    fn an_empty_side_has_no_lines() {
+        let out = exec(CONFLICTS, "show conflict:2.theirs");
+        assert_eq!(out.output, "a.rs:14: conflict:2.theirs is empty\n");
+        let out = exec(CONFLICTS, "show all conflict.theirs");
+        assert_eq!(
+            out.output,
+            "a.rs:7\n7:    two();\na.rs:14: conflict:2.theirs is empty\n"
+        );
+        let out = exec(CONFLICTS, "delete all conflict:2.theirs.lines");
+        assert!(out.error().contains("matches nothing"), "{}", out.error());
+    }
+
+    #[test]
+    fn deleting_an_empty_side_makes_no_edit() {
+        let out = exec(CONFLICTS, "delete conflict:2.theirs");
+        assert_eq!(out.result.unwrap(), []);
+        assert_eq!(out.notes, ["a.rs:14: conflict:2.theirs is already empty"]);
+    }
+
+    #[test]
+    fn conflicts_are_renumbered_after_a_stage() {
+        let out = exec(
+            CONFLICTS,
+            "replace conflict:1 with \"x();\" | show conflict:1",
+        );
+        assert_eq!(
+            out.output,
+            "a.rs:5-8\n5:<<<<<<< HEAD\n6:fn b() {}\n7:=======\n8:>>>>>>> topic\n"
+        );
+    }
+
+    #[test]
+    fn text_for_a_conflict_with_only_empty_sides_starts_its_line() {
+        let text = "fn a() {\n<<<<<<< HEAD\n=======\n>>>>>>> topic\n}\n";
+        assert_eq!(
+            edited(text, "replace conflict:1.ours with \"x();\""),
+            text.replace("HEAD\n", "HEAD\nx();\n")
+        );
+    }
+
+    #[test]
+    fn replacing_a_conflict_that_ends_the_file_keeps_its_missing_newline() {
+        let text = "a\n<<<<<<< HEAD\none\n=======\ntwo\n>>>>>>> topic";
+        assert_eq!(
+            edited_in("a.txt", text, "replace conflict with \"x\""),
+            "a\nx"
+        );
+    }
+
+    #[test]
+    fn a_split_marker_inside_a_side_drops_the_conflict() {
+        let text = "<<<<<<< HEAD\nTitle\n=======\n=======\nb\n>>>>>>> topic\n";
+        let out = exec_with(&[("a.md", text)], 1, "show conflict");
+        assert!(
+            out.error().contains("a.md has no merge conflicts"),
+            "{}",
+            out.error()
+        );
+    }
+
+    #[test]
+    fn replace_resolves_a_whole_conflict() {
+        assert_eq!(
+            edited(CONFLICTS, "replace conflict:1 with \"one_and_two();\""),
+            "fn a() {\n    one_and_two();\n}\n\n<<<<<<< HEAD\nfn b() {}\n=======\n>>>>>>> topic\n"
+        );
     }
 
     #[test]

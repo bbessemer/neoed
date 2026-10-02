@@ -1460,6 +1460,7 @@ fn files_with_merge_conflicts_parse_and_edit() {
     app.py
     2-3 fn:ours
     5-6 fn:theirs
+    1-7 conflict:1
     --- stderr
     ");
     let out = ned(
@@ -1469,6 +1470,20 @@ fn files_with_merge_conflicts_parse_and_edit() {
     );
     assert!(out.starts_with("exit: 0\n"), "{out}");
     assert_eq!(read(&dir, "app.py"), CONFLICTED.replace("2", "3"));
+}
+
+#[test]
+fn conflict_sides_in_a_text_file() {
+    let notes = "a\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> topic\n";
+    let dir = dir_with(&[("notes.txt", notes)]);
+    let out = ned(dir.path(), &["notes.txt", "-e", "show conflict.theirs"], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    notes.txt:5
+    5:c
+    --- stderr
+    ");
 }
 
 #[test]

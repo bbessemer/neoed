@@ -155,6 +155,8 @@ pub enum Primary {
     },
     /// `file:PATH`
     File(String),
+    /// `conflict:N`, or every conflict (§3.11).
+    Conflict(Option<usize>),
     Query(String),
     /// A syntax pattern's code (§3.10).
     Code(String),
@@ -257,4 +259,7 @@ pub enum Part {
     Lines,
     Refs,
     Def,
+    Ours,
+    Theirs,
+    Base,
 }

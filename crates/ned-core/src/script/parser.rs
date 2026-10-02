@@ -242,7 +242,12 @@ impl Parser<'_> {
     /// After `check`: an optional target, then an optional level.
     fn check(&mut self) -> Result<CommandKind, ParseError> {
         let target = match &self.peek()?.kind {
-            TokenKind::Word(word) if word != "all" && syntax::find_kind(word).is_none() => None,
+            TokenKind::Word(word)
+                if !matches!(word.as_str(), "all" | "conflict")
+                    && syntax::find_kind(word).is_none() =>
+            {
+                None
+            }
             _ => self.optional_target()?,
         };
         let level = match &self.peek()?.kind {
@@ -561,9 +566,16 @@ fn primary(token: Token) -> Result<Primary, ParseError> {
         }
         TokenKind::Syntax { kind, name } => match kind.as_str() {
             "file" => Primary::File(name),
+            "conflict" => match name.parse() {
+                Ok(n) if n > 0 && name.bytes().all(|b| b.is_ascii_digit()) => {
+                    Primary::Conflict(Some(n))
+                }
+                _ => return Err(ParseError::new(E::ConflictNumber(name), token.span)),
+            },
             "refs" | "def" => return Err(ParseError::new(E::PartAsKind(kind), token.span)),
             _ => Primary::Syntax { kind, name },
         },
+        TokenKind::Word(word) if word == "conflict" => Primary::Conflict(None),
         TokenKind::Word(word) if syntax::find_kind(&word).is_some() => Primary::Syntax {
             kind: word,
             name: "*".into(),
@@ -1156,6 +1168,48 @@ mod tests {
                 step(Primary::Code("foo(@a, 1)".into()))
             ])
         );
+    }
+
+    #[test]
+    fn conflicts_and_their_sides() {
+        let show = |steps| CommandKind::Show {
+            target: Some(target(steps)),
+            context: 0,
+        };
+        let conflict = |n| step(Primary::Conflict(n));
+        assert_eq!(
+            one("show conflict:2.theirs"),
+            show(vec![parts(conflict(Some(2)), &[Part::Theirs])])
+        );
+        assert_eq!(
+            one("show conflict.ours>fn:a"),
+            show(vec![
+                parts(conflict(None), &[Part::Ours]),
+                syntax("fn", "a")
+            ])
+        );
+        assert_eq!(
+            one("show fn:a>conflict.base"),
+            show(vec![
+                syntax("fn", "a"),
+                parts(conflict(None), &[Part::Base])
+            ])
+        );
+        assert_eq!(
+            one("check conflict"),
+            CommandKind::Check {
+                target: Some(target(vec![conflict(None)])),
+                level: None,
+            }
+        );
+        for n in ["0", "x", "*", "1a", "+1", "-1", ""] {
+            assert_eq!(
+                message(&format!("show conflict:{n}")),
+                format!(
+                    "`conflict:{n}` isn't a conflict's number; conflicts count from 1 in file order, as in conflict:1, and `conflict` is each of them"
+                )
+            );
+        }
     }
 
     #[test]
