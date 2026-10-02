@@ -234,6 +234,12 @@ of either kind.
 - [ ] `!!` repeats the last script that edited or failed, not a read-only call
       in between: after a failed edit, an `outline` to look around makes `!!`
       refer to the `outline`. A minor, since §1.2 changes
+- [ ] Line offsets in selectors: `SEL+N` is the line N lines after a match's
+      last line, and `SEL-N` the line N before its first, so an edit can aim
+      near a landmark (`replace /^fn parse/+1 with ...`) and a range can stop
+      short of a closing line (`fn:f>/start/../^\s*\}/-1`). Today `+N` after a
+      selector is `show`'s context; the syntax must tell the two apart (and keep
+      the `show /re/+0..+70` hint). A minor
 
 ## Bugs
 
