@@ -76,6 +76,13 @@ ned undo
 A subagent inherits `NED_SESSION`, so its `undo` or `!!` could act on its
 parent's calls: give each subagent its own `-s NAME`, which overrides it.
 
+Commit just your edit with `--commit MSG`: nothing else in the working tree or
+index goes in, staged or not, and the commit line follows the diff:
+
+```sh
+ned src/parser.rs --commit "Say what input ended" -e 'replace fn:parse>"end" with "end of input"'
+```
+
 ## Workflow
 
 1. `outline` to find the item. Each line is a selector you can paste back.

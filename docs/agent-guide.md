@@ -42,6 +42,7 @@ search with `ned -w -e 'show all /re/'`; make files with `create PATH <<END`.
 Write inserted code at column 0 in a `<<END` heredoc; ned re-indents it
 (`<<'END'` inside the script keeps text verbatim). ned prints a diff, so don't
 re-read the file to check the edit. Errors end with a fix; apply it and rerun.
+Add `--commit MSG` to commit just that edit; other changes stay uncommitted.
 With a language server: `check` for diagnostics, `rename SEL to NAME`,
 `SEL.refs` and `SEL.def`; after `ned daemon start`, edits that introduce
 errors are rejected. With NED_SESSION set, `ned undo` reverts your last edit

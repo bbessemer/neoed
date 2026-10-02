@@ -95,13 +95,16 @@ art: ast-grep's metavariables.
 Version: minor once matching works; a further minor if capture substitution
 ships separately. The spec, reader and builder chunks alone release nothing.
 
-### Commit from ned
+### Commit from ned _(split)_
 
 An agent turns its edits into one git commit without touching anything else in
 the working tree: `--commit MSG` commits exactly the invocation's edits, and
 with `-s` the session's edits so far. `ned` patches the index directly rather
 than staging paths, so other staged or unstaged changes are never swept into the
 commit. Depends on Sessions for the session case.
+
+- [x] `--commit MSG` for one invocation's edits
+- [ ] With `-s`, the session's edits since its last commit
 
 Version: minor; a new flag.
 

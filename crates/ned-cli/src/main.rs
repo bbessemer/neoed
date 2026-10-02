@@ -31,12 +31,14 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::OnceLock;
 
+use clap::builder::NonEmptyStringValueParser;
 use clap::{Parser, Subcommand};
 use ned_core::buffer::Buffer;
 use ned_core::config::{self, Config};
 use ned_core::diff::{self, DiffStat};
 use ned_core::exec::{self, ExecErrorKind, Initial, Options};
 use ned_core::format::{self, Outcome};
+use ned_core::git::{FileEdit, GitError, Prepared, Repo};
 use ned_core::lang::{self, Language};
 use ned_core::lsp;
 #[cfg(unix)]
@@ -102,6 +104,9 @@ struct Cli {
     /// Colour output for a terminal: auto, always or never.
     #[arg(long, value_name = "WHEN", default_value = "auto", global = true)]
     color: When,
+    /// Commit the edits written, and nothing else, to git with message MSG.
+    #[arg(long, value_name = "MSG", conflicts_with = "dry_run", value_parser = NonEmptyStringValueParser::new())]
+    commit: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -311,6 +316,9 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
         force: cli.force,
         style: styles().0,
     };
+    let top = root.clone();
+    // HEAD as the script starts, so a commit made while it runs is noticed.
+    let before = cli.commit.as_ref().and_then(|_| Repo::discover(&top).ok());
     let initial = match cli.workspace {
         Some(_) => Initial::Workspace(root.clone()),
         None => Initial::Files(&cli.files),
@@ -371,6 +379,18 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
         return Ran::failed(1, daemon::blocked(&changes, &finals, checked));
     }
 
+    let committed = match &cli.commit {
+        Some(message) => match commit(&top, before, cwd, &changes, &finals, message) {
+            Ok(committed) => Some(committed),
+            Err(err) => {
+                #[cfg(unix)]
+                daemon::restore(&mut workspace, &changes);
+                return Ran::failed(git_exit_code(&err), format!("error: {err}"));
+            }
+        },
+        None => None,
+    };
+
     if !cli.dry_run {
         let writes: Vec<(PathBuf, String)> = changes
             .iter()
@@ -378,6 +398,11 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
             .map(|(change, text)| (PathBuf::from(&change.path), text.to_string()))
             .collect();
         if let Err(err) = fs::write_atomic(&writes, &[]) {
+            if let Some((repo, prepared)) = &committed
+                && let Err(git) = repo.retreat(prepared)
+            {
+                errln!("error: {git}");
+            }
             let error = format!("error: cannot write files: {err}; no file was changed");
             return Ran::failed(3, error);
         }
@@ -430,6 +455,22 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
             }
         }
     }
+    if let Some((repo, prepared)) = &committed {
+        if let Err(err) = repo.stage(prepared) {
+            eprintln!("note: the index wasn't updated: {err}");
+        }
+        let subject = cli
+            .commit
+            .as_deref()
+            .unwrap_or_default()
+            .lines()
+            .next()
+            .unwrap_or_default();
+        let name = repo
+            .short(&prepared.commit)
+            .unwrap_or_else(|_| prepared.commit.clone());
+        outln!("commit {name}: {subject}");
+    }
     #[cfg(unix)]
     if checked.is_some() && cli.dry_run {
         daemon::restore(&mut workspace, &changes);
@@ -438,6 +479,43 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
         exit: 0,
         error: None,
         changes: recorded,
+    }
+}
+
+/// Makes the commit of the run's edits and moves `HEAD` to it (§1.3), if
+/// `HEAD` hasn't moved since `before`, the repository found as the run
+/// started, was found.
+fn commit(
+    top: &Path,
+    before: Option<Repo>,
+    cwd: &Path,
+    changes: &[exec::Change],
+    finals: &[&str],
+    message: &str,
+) -> Result<(Repo, Prepared), GitError> {
+    let found = Repo::discover(top)?;
+    let repo = before.filter(|b| b.top == found.top).unwrap_or(found);
+    let paths: Vec<PathBuf> = changes.iter().map(|c| cwd.join(&c.path)).collect();
+    let edits: Vec<FileEdit> = changes
+        .iter()
+        .zip(finals)
+        .zip(&paths)
+        .map(|((change, after), path)| FileEdit {
+            path,
+            before: (!change.created).then_some(change.old.as_str()),
+            after,
+        })
+        .collect();
+    let prepared = repo.prepare(&edits, message)?;
+    repo.advance(&prepared)?;
+    Ok((repo, prepared))
+}
+
+fn git_exit_code(err: &GitError) -> u8 {
+    match err {
+        GitError::NoGit | GitError::NotARepo(_) => 2,
+        GitError::Failed { .. } => 3,
+        _ => 1,
     }
 }
 

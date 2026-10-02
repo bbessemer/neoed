@@ -180,6 +180,10 @@ With `-s NAME`, or `NED_SESSION=NAME` in the environment, `ned` records each
 invocation in a session: `ned history` lists them, `ned undo` reverts the last
 edit, and `ned -e '!!:s/prase/parse/'` repeats the last script with a fix.
 
+`--commit MSG` turns the edits an invocation writes into one git commit, and
+nothing else: other changes in the working tree and index, staged or not, stay
+uncommitted.
+
 ## Languages
 
 | Language        | Syntax items                                                                     |
