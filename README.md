@@ -107,6 +107,10 @@ cp -r neoed/docs/skills/ned ~/.claude/skills/
 
 Claude then uses ned when it reads, searches or edits files.
 
+To let each conversation undo its own edits and repeat a failed command with a
+fix, give it a session with a `SessionStart` hook; the
+[agent guide](docs/agent-guide.md#setup) has the snippet.
+
 **Other agents:** add the system-prompt snippet from
 [`docs/agent-guide.md`](docs/agent-guide.md). It points the agent at `ned help`
 for the rest.

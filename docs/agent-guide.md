@@ -49,14 +49,36 @@ and `ned help TOPIC` document the rest.
 
 ```
 
-**Sessions.** Set `NED_SESSION` in the agent's environment, so `ned` records its
-invocations: the agent can then undo an edit and repeat a failed command with a
-fix, and you can follow its work with `ned history`. In Claude Code, add it to
-`.claude/settings.json`:
+**Sessions.** With `NED_SESSION` set in the agent's environment, `ned` records
+its invocations, so the agent can undo an edit and repeat a failed command with
+a fix, and you can follow its work with `ned history`. Give each conversation
+its own session, so one agent's `undo` never reverts another's edit. In Claude
+Code, a `SessionStart` hook names the session after the conversation: add it to
+`.claude/settings.json` (for one project) or `~/.claude/settings.json` (for all
+of them). It needs `jq`.
 
 ```json
-{ "env": { "NED_SESSION": "claude" } }
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"export NED_SESSION=claude-$(jq -r .session_id)\" >> \"$CLAUDE_ENV_FILE\""
+          }
+        ]
+      }
+    ]
+  }
+}
 ```
+
+The hook writes the variable to `$CLAUDE_ENV_FILE`, which Claude Code applies to
+every Bash command in the conversation. A resumed conversation keeps its
+session; `/clear` starts a new one. To read a conversation's log, run
+`ned history -s NAME`, with NAME a log's file name from
+`ls ~/.local/state/ned/sessions/*/`, less `.log`.
 
 ## Example
 
