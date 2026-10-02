@@ -240,6 +240,8 @@ of either kind.
       short of a closing line (`fn:f>/start/../^\s*\}/-1`). Today `+N` after a
       selector is `show`'s context; the syntax must tell the two apart (and keep
       the `show /re/+0..+70` hint). A minor
+- [ ] `insert end` or `insert start` with no selector appends to or prepends to
+      the file, instead of the hint to use `insert after $`. A minor
 
 ## Bugs
 
@@ -300,6 +302,18 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       paths with one `ls-tree -z` and one `ls-files -s -z`, read blobs with
       `cat-file --batch`, and feed `check-ignore --stdin`,
       `hash-object --stdin-paths` and `update-index --index-info` on stdin
+- [ ] With a lone `\r` line ending, diff hunk headers count it as a line break
+      (`similar` splits lines there), so their line numbers disagree with ned's
+      `\n`-only ones
+- [ ] Replacing a conflict whose sides are all empty puts the text at column 0
+      inside an indented block: `side_indent` falls back to `""`, and the marker
+      lines always start their line, so the indent must come from the enclosing
+      block in the tree
+- [ ] In a session, an untracked file that is edited and then undone still goes
+      whole into the next `--commit`
+- [ ] A syntax pattern can't match the tail of a method chain after a receiver
+      (`` `let n = files[i] @_...;` ``), nor a match arm whose value is a chain
+      (`` `Primary::Conflict(_) => f @_...,` ``)
 
 ## Future improvements
 
