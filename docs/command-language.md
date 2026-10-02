@@ -10,8 +10,8 @@ changing behaviour.
 ned [FLAGS] [FILE... | -w [DIR]] [-e SCRIPT]...
 ned help [TOPIC]
 ned daemon start|status|stop [DIR]
-ned history [-s NAME] [--all]
-ned undo [-s NAME] [--force]
+ned history [-s NAME] [-w DIR] [--all]
+ned undo [-s NAME] [-w DIR] [--force]
 ```
 
 `ned help` prints a summary of the language, sized to fit in an agent's context.
@@ -206,7 +206,9 @@ the script doesn't contain is a usage error; the last says what the script is.
 
 `history` and `undo` take the session from `-s` or `NED_SESSION` like a script
 does; with neither, or a session the workspace has no log for, they're a usage
-error listing the workspace's sessions.
+error listing the workspace's sessions. A session belongs to the workspace of
+the invocations it records (§1.1), so one recorded with `-w DIR` is reached with
+`-w DIR`: `ned history -w DIR`, `ned undo -w DIR` and `ned -w DIR -e '!!'`.
 
 Sessions live in `$XDG_STATE_HOME/ned/sessions/`, or `~/.local/state/ned/...`
 without it, in a directory per workspace (§1.1) named after the root's last

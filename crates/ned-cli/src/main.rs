@@ -43,7 +43,7 @@ use ned_core::{fs, script, workspace};
     args_conflicts_with_subcommands = true,
     disable_help_subcommand = true,
     // clap leaves a user-defined `help` subcommand out of the usage.
-    override_usage = "ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]\n       ned history|undo [-s NAME]"
+    override_usage = "ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]\n       ned history|undo [-s NAME] [-w DIR]"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -100,6 +100,10 @@ enum Command {
         /// The session; overrides NED_SESSION.
         #[arg(short, long, value_name = "NAME")]
         session: Option<String>,
+        /// The workspace the session belongs to, instead of the working
+        /// directory's.
+        #[arg(short, long, value_name = "DIR")]
+        workspace: Option<PathBuf>,
         /// Print every entry.
         #[arg(long)]
         all: bool,
@@ -109,6 +113,10 @@ enum Command {
         /// The session; overrides NED_SESSION.
         #[arg(short, long, value_name = "NAME")]
         session: Option<String>,
+        /// The workspace the session belongs to, instead of the working
+        /// directory's.
+        #[arg(short, long, value_name = "DIR")]
+        workspace: Option<PathBuf>,
         /// Merge the undo into files changed since.
         #[arg(long)]
         force: bool,
@@ -123,8 +131,16 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Some(Command::Daemon { action }) => return daemon::run(action),
-        Some(Command::History { session, all }) => return finish(session::history(session, all)),
-        Some(Command::Undo { session, force }) => return finish(session::undo(session, force)),
+        Some(Command::History {
+            session,
+            workspace,
+            all,
+        }) => return finish(session::history(session, workspace, all)),
+        Some(Command::Undo {
+            session,
+            workspace,
+            force,
+        }) => return finish(session::undo(session, workspace, force)),
         None => {}
     }
     if let Some(err) = usage_error(&cli) {

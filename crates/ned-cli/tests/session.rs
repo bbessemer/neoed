@@ -226,6 +226,27 @@ fn a_workspace_run_records_its_root() {
 }
 
 #[test]
+fn a_session_recorded_with_w_dir_is_reached_with_w_dir() {
+    let ws = Workspace::new(&[]);
+    fs::create_dir_all(ws.dir.path().join("other/.git")).unwrap();
+    fs::write(ws.dir.path().join("other/a.rs"), "fn a() {}\n").unwrap();
+    let script = r#"replace fn:a with "fn b() {}""#;
+    ws.ned(&["-s", "agent", "-w", "other", "-e", script]);
+
+    let output = ws.ned(&["history", "-s", "agent"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let output = ws.ned(&["history", "-s", "agent", "-w", "other"]);
+    let expected = format!("1 ok, 1 file: {script}\n");
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+
+    let output = ws.ned(&["-s", "agent", "-w", "other", "-e", "!!:s/fn:a/fn:x/"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let output = ws.ned(&["undo", "-s", "agent", "-w", "other"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(ws.read("other/a.rs"), "fn a() {}\n");
+}
+
+#[test]
 fn the_recorded_text_is_the_formatted_text() {
     let ws = Workspace::new(&[
         ("a.rs", "fn a() {}\n"),

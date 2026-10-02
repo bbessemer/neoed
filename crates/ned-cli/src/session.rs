@@ -34,8 +34,8 @@ pub fn record(session: &Session, entry: Entry) {
 pub type Failure = (String, u8);
 
 /// `ned history`.
-pub fn history(flag: Option<String>, all: bool) -> Result<(), Failure> {
-    let session = existing(flag, &here().1)?;
+pub fn history(flag: Option<String>, dir: Option<PathBuf>, all: bool) -> Result<(), Failure> {
+    let session = existing(flag, &here(dir)?.1)?;
     let entries = session.lock().and_then(|log| log.entries());
     out!("{}", session::history(&entries.map_err(failure)?, all));
     Ok(())
@@ -43,8 +43,8 @@ pub fn history(flag: Option<String>, all: bool) -> Result<(), Failure> {
 
 /// `ned undo`, holding the session's lock from reading the log to recording
 /// the undo, so no other invocation in the session comes between.
-pub fn undo(flag: Option<String>, force: bool) -> Result<(), Failure> {
-    let (cwd, root) = here();
+pub fn undo(flag: Option<String>, dir: Option<PathBuf>, force: bool) -> Result<(), Failure> {
+    let (cwd, root) = here(dir)?;
     let session = existing(flag, &root)?;
     let mut log = session.lock().map_err(failure)?;
     let entries = log.entries().map_err(failure)?;
@@ -165,12 +165,19 @@ pub fn repeat(
 }
 
 /// The working directory, canonical so recorded paths can be shown relative
-/// to it, and its workspace's root.
-fn here() -> (PathBuf, PathBuf) {
+/// to it, and the workspace's root: `dir` if given, else the working
+/// directory's.
+fn here(dir: Option<PathBuf>) -> Result<(PathBuf, PathBuf), Failure> {
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
     let cwd = cwd.canonicalize().unwrap_or(cwd);
-    let root = workspace::root(&cwd).unwrap_or(cwd.clone());
-    (cwd, root)
+    let root = match dir {
+        Some(dir) => dir.canonicalize().map_err(|err| {
+            let error = format!("error: cannot read {}: {err}", dir.display());
+            (error, 3)
+        })?,
+        None => workspace::root(&cwd).unwrap_or(cwd.clone()),
+    };
+    Ok((cwd, root))
 }
 
 /// The session `flag` or `NED_SESSION` names, which must have a log in the
