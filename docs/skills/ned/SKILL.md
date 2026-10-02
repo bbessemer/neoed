@@ -83,6 +83,8 @@ index goes in, staged or not, and the commit line follows the diff:
 ned src/parser.rs --commit "Say what input ended" -e 'replace fn:parse>"end" with "end of input"'
 ```
 
+In a session, the commit holds every edit since the session's last commit.
+
 ## Workflow
 
 1. `outline` to find the item. Each line is a selector you can paste back.
@@ -331,3 +333,15 @@ it too.
 - **Always give a script.** Without `-e` or a heredoc, `ned` reads the script
   from stdin: on a terminal that's an error, but an open pipe that never closes
   makes it wait.
+- **Ranges inside a scope.** `..` binds tighter than `>`, so scope a range once:
+  `fn:f>/start/../end/`, not `fn:f>/start/..fn:f>/end/`. A `+N` after a selector
+  is `show`'s context, not a line offset.
+- **Several lines of text by their lines.** A `"..."` literal must match the
+  file's indentation exactly; a `<<END` block selector matches whole lines
+  whatever their indentation, and `/first/../last/` spans from one line to
+  another.
+- **`insert end` goes at the very end of the span**, after a closing `]` or `}`
+  the span includes, as in a constant's `.value`. To add a last element to an
+  array or a match, `insert after` its current last element.
+- **A Markdown list item is named by its whole first line**: select it with a
+  prefix and `*`, as in `item:"Syntax steps skip*"`.

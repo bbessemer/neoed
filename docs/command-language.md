@@ -161,9 +161,9 @@ isn't recorded. Usage errors from the arguments themselves are not recorded.
 
 `ned history` prints the session's last 10 entries, or with `--all` every entry,
 oldest first, one line each: the entry's number, its outcome (`ok`, `dry run`,
-`exit N`, or `undo N` for an undo), the number of files it changed, `undone` if
-it has been, and the script's first line, followed by `(+N lines)` if it has
-more.
+`exit N`, or `undo N` for an undo), the number of files it changed, `commit SHA`
+(its first 7 characters) if it made a commit (§1.3), `undone` if it has been,
+and the script's first line, followed by `(+N lines)` if it has more.
 
 ```
 $ ned history
@@ -246,6 +246,7 @@ it:
 | `exit`      | The exit code                                                                                  |
 | `error`     | The error message, or `null`                                                                   |
 | `changes`   | Per written file: `path` (absolute), `before` (`null` if created), `after` (`null` if removed) |
+| `commit`    | The commit that `--commit` made (§1.3), or `null`; read as `null` if missing                   |
 
 ### 1.3 Committing
 
@@ -261,8 +262,23 @@ as they were, in the files and in the index.
   for a file `HEAD` lacks), and to the staged version in the index, so those
   changes stay uncommitted. An edit that overlaps them is an error naming the
   line (exit 1).
-- A file the script creates is added. Every edited file must be inside the
-  repository and not ignored by git.
+- A file the script creates is added. The repository is the one holding the
+  first file the script edits, wherever `ned` runs; every edited file must be in
+  it (not in a repository nested in its tree, or a submodule) and not ignored by
+  git.
+- With a session (§1.2), the commit holds every edit the session recorded since
+  its last commit (its last entry with a `commit`), undos included, as well as
+  the invocation's own: each file's edits are applied one after another, in
+  order. A file that an undo removed is removed from the commit too, and an
+  untracked file that its edits leave as they found it stays out of it,
+  untracked. The invocation's entry records the commit. A script that changes no
+  file is still "nothing to commit", whatever edits the session made before it.
+  Each file those earlier edits wrote must still hold what the session last
+  wrote to it, and be in the repository and not ignored. If one has changed
+  since (by `git checkout`, `git stash` or a hand edit, say), or isn't in the
+  repository or is ignored, the commit is refused (exit 1), naming the file and
+  the entry that wrote it; starting a new session commits only the edits from
+  then on.
 - The commit is made with git's plumbing (`commit-tree`): hooks don't run, it is
   signed if `commit.gpgSign` says so, and its author and committer come from
   git's configuration and environment, as for `git commit`.
@@ -272,9 +288,11 @@ as they were, in the files and in the index.
   error (exit 2). A merge in progress, a script that changes no file or nothing
   that differs from `HEAD` ("nothing to commit"), a file outside the repository
   or ignored, a file whose version in `HEAD` or the index isn't UTF-8, and an
-  overlap are rejected (exit 1). A failing git command is an I/O error (exit 3).
-  In every case, nothing is written and `HEAD` doesn't move; if `HEAD` moved
-  while the script ran, the commit is refused.
+  overlap are rejected (exit 1). A failing git command is an I/O error (exit 3),
+  and so is an index another git process has locked (`index.lock` exists): `ned`
+  holds that lock from before it reads the index until it has staged the edits.
+  In every case, nothing is written, `HEAD` doesn't move and the index is
+  unchanged; if `HEAD` moved while the script ran, the commit is refused.
 
 ```
 $ ned src/parser.rs --commit "Say what input ended" -e 'replace fn:parse>"end" with "end of input"'
