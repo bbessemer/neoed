@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"export NED_SESSION=claude-$(jq -r .session_id)\" >> \"$CLAUDE_ENV_FILE\""
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -10,9 +10,8 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-libc = "0.2.189"
 lsp-types = "0.97.0"
-ned-core = { version = "0.5.0", path = "../ned-core" }
+ned-core = { version = "0.6.0", path = "../ned-core" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.21"

@@ -16,9 +16,10 @@ macro_rules! outln {
 
 mod daemon;
 mod help;
+mod session;
 
 use std::io::{self, IsTerminal, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -31,6 +32,7 @@ use ned_core::lang::Language;
 use ned_core::lsp;
 #[cfg(unix)]
 use ned_core::lsp::Lsp;
+use ned_core::session::{Entry, FileChange};
 use ned_core::{fs, script, workspace};
 
 /// Token-economical, syntax-aware line editor for AI agents.
@@ -41,7 +43,7 @@ use ned_core::{fs, script, workspace};
     args_conflicts_with_subcommands = true,
     disable_help_subcommand = true,
     // clap leaves a user-defined `help` subcommand out of the usage.
-    override_usage = "ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]"
+    override_usage = "ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]\n       ned history|undo [-s NAME] [-w DIR]"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -79,6 +81,9 @@ struct Cli {
     /// Context lines around diff hunks.
     #[arg(long, value_name = "N", default_value_t = 1)]
     context: usize,
+    /// Record the invocation in session NAME; overrides NED_SESSION.
+    #[arg(short, long, value_name = "NAME")]
+    session: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -90,23 +95,59 @@ enum Command {
         #[command(subcommand)]
         action: daemon::Action,
     },
+    /// Print the session's last 10 entries.
+    History {
+        /// The session; overrides NED_SESSION.
+        #[arg(short, long, value_name = "NAME")]
+        session: Option<String>,
+        /// The workspace the session belongs to, instead of the working
+        /// directory's.
+        #[arg(short, long, value_name = "DIR")]
+        workspace: Option<PathBuf>,
+        /// Print every entry.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Undo the session's last edit that isn't undone.
+    Undo {
+        /// The session; overrides NED_SESSION.
+        #[arg(short, long, value_name = "NAME")]
+        session: Option<String>,
+        /// The workspace the session belongs to, instead of the working
+        /// directory's.
+        #[arg(short, long, value_name = "DIR")]
+        workspace: Option<PathBuf>,
+        /// Merge the undo into files changed since.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     match cli.command {
         Some(Command::Help { topic }) => {
             out!("{}", help::text(topic));
             return ExitCode::SUCCESS;
         }
         Some(Command::Daemon { action }) => return daemon::run(action),
+        Some(Command::History {
+            session,
+            workspace,
+            all,
+        }) => return finish(session::history(session, workspace, all)),
+        Some(Command::Undo {
+            session,
+            workspace,
+            force,
+        }) => return finish(session::undo(session, workspace, force)),
         None => {}
     }
     if let Some(err) = usage_error(&cli) {
         eprintln!("error: {err}");
         return ExitCode::from(2);
     }
-    let src = if cli.scripts.is_empty() {
+    let mut src = if cli.scripts.is_empty() {
         let mut src = String::new();
         if let Err(err) = io::stdin().read_to_string(&mut src) {
             eprintln!("error: cannot read the script from stdin: {err}");
@@ -116,20 +157,8 @@ fn main() -> ExitCode {
     } else {
         cli.scripts.join("\n")
     };
-    let parsed = match script::parse(&src) {
-        Ok(parsed) => parsed,
-        Err(err) => {
-            eprintln!("{}", err.render(&src));
-            return ExitCode::from(2);
-        }
-    };
-
-    let options = Options {
-        lang: cli.lang,
-        force: cli.force,
-    };
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let root = match &cli.workspace {
+    let mut root = match &cli.workspace {
         Some(Some(dir)) => match dir.canonicalize() {
             Ok(dir) => dir,
             Err(err) => {
@@ -137,7 +166,81 @@ fn main() -> ExitCode {
                 return ExitCode::from(3);
             }
         },
-        _ => workspace::root(&cwd).unwrap_or(cwd),
+        _ => workspace::root(&cwd).unwrap_or(cwd.clone()),
+    };
+    let session = match session::name(cli.session.clone()) {
+        None => None,
+        Some(name) => match session::open(&name, &root) {
+            Ok(session) => Some(session),
+            Err((error, code)) => {
+                eprintln!("{error}");
+                return ExitCode::from(code);
+            }
+        },
+    };
+    src = match session::repeat(
+        session.as_ref(),
+        src,
+        &cwd,
+        &mut cli.files,
+        &mut cli.workspace,
+        &mut root,
+    ) {
+        Ok(src) => src,
+        Err(failure) => return finish(Err(failure)),
+    };
+
+    let ran = run(&cli, &src, &cwd, root.clone());
+    if let Some(session) = &session {
+        session::record(
+            session,
+            Entry {
+                id: 0,
+                time: ned_core::session::now(),
+                cwd,
+                files: cli.files.clone(),
+                workspace: cli.workspace.is_some().then_some(root),
+                script: Some(src),
+                undoes: None,
+                dry_run: cli.dry_run,
+                exit: ran.exit,
+                error: ran.error,
+                changes: ran.changes,
+            },
+        );
+    }
+    ExitCode::from(ran.exit)
+}
+
+/// The outcome of running a script, as a session records it.
+struct Ran {
+    exit: u8,
+    error: Option<String>,
+    changes: Vec<FileChange>,
+}
+
+impl Ran {
+    /// Prints `error` and fails with `exit`.
+    fn failed(exit: u8, error: String) -> Ran {
+        let error = error.trim_end().to_string();
+        eprintln!("{error}");
+        Ran {
+            exit,
+            error: Some(error),
+            changes: Vec::new(),
+        }
+    }
+}
+
+/// Runs the script `src`: prints its output and writes its edits.
+fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
+    let parsed = match script::parse(src) {
+        Ok(parsed) => parsed,
+        Err(err) => return Ran::failed(2, err.render(src)),
+    };
+    let options = Options {
+        lang: cli.lang,
+        force: cli.force,
     };
     let initial = match cli.workspace {
         Some(_) => Initial::Workspace(root.clone()),
@@ -149,17 +252,14 @@ fn main() -> ExitCode {
     let lsp: Option<&mut dyn Lsp> = Some(&mut workspace);
     #[cfg(not(unix))]
     let lsp = None;
-    let run = exec::run(&parsed, &src, initial, &options, lsp);
+    let run = exec::run(&parsed, src, initial, &options, lsp);
     out!("{}", run.output);
     for note in &run.notes {
         eprintln!("note: {note}");
     }
     let changes = match run.result {
         Ok(changes) => changes,
-        Err(err) => {
-            eprintln!("{}", err.render(&src));
-            return ExitCode::from(exit_code(&err.kind));
-        }
+        Err(err) => return Ran::failed(exit_code(&err.kind), err.render(src)),
     };
 
     #[cfg_attr(not(unix), allow(unused_mut))]
@@ -170,10 +270,7 @@ fn main() -> ExitCode {
             .and_then(|mut config| format::run(&changes, &mut config));
         match formatted {
             Ok(outcomes) => outcomes,
-            Err(err) => {
-                eprintln!("error: {err}");
-                return ExitCode::from(2);
-            }
+            Err(err) => return Ran::failed(2, format!("error: {err}")),
         }
     };
 
@@ -200,10 +297,9 @@ fn main() -> ExitCode {
     if let Some(checked) = &checked
         && !checked.blocking.is_empty()
     {
-        eprint!("{}", daemon::blocked(&changes, &finals, checked));
         #[cfg(unix)]
         daemon::restore(&mut workspace, &changes);
-        return ExitCode::from(1);
+        return Ran::failed(1, daemon::blocked(&changes, &finals, checked));
     }
 
     if !cli.dry_run {
@@ -212,11 +308,26 @@ fn main() -> ExitCode {
             .zip(&finals)
             .map(|(change, text)| (PathBuf::from(&change.path), text.to_string()))
             .collect();
-        if let Err(err) = fs::write_atomic(&writes) {
-            eprintln!("error: cannot write files: {err}; no file was changed");
-            return ExitCode::from(3);
+        if let Err(err) = fs::write_atomic(&writes, &[]) {
+            let error = format!("error: cannot write files: {err}; no file was changed");
+            return Ran::failed(3, error);
         }
     }
+    let recorded = match cli.dry_run {
+        true => Vec::new(),
+        false => changes
+            .iter()
+            .zip(&finals)
+            .map(|(change, text)| {
+                let path = cwd.join(&change.path);
+                FileChange {
+                    path: std::fs::canonicalize(&path).unwrap_or(path),
+                    before: (!change.created).then(|| change.old.clone()),
+                    after: Some(text.to_string()),
+                }
+            })
+            .collect(),
+    };
     for (i, (change, outcome)) in changes.iter().zip(&outcomes).enumerate() {
         let stat = DiffStat::between(&change.old, &change.new);
         outln!(
@@ -251,7 +362,22 @@ fn main() -> ExitCode {
     if checked.is_some() && cli.dry_run {
         daemon::restore(&mut workspace, &changes);
     }
-    ExitCode::SUCCESS
+    Ran {
+        exit: 0,
+        error: None,
+        changes: recorded,
+    }
+}
+
+/// The exit code of a subcommand, printing its error if it failed.
+fn finish(result: Result<(), session::Failure>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err((error, code)) => {
+            eprintln!("{error}");
+            ExitCode::from(code)
+        }
+    }
 }
 
 /// A usage error found before the script is read (spec §1): a command's name
