@@ -17,9 +17,9 @@ ned undo [-s NAME] [--force]
 `ned help` prints a summary of the language, sized to fit in an agent's context.
 `ned help TOPIC` details one verb (`show`, `outline`, `check`, `allow`,
 `replace`, `insert`, `delete`, `sub`, `move`, `rename`, `file`, `create`), or
-`selectors`, `text` or `config`. An unknown topic is a usage error that lists
-the topics. `help` must be the first argument; write a file named `help` as
-`./help`.
+`selectors`, `text`, `config` or `session`. An unknown topic is a usage error
+that lists the topics. `help` must be the first argument; write a file named
+`help` as `./help`.
 
 - `-e SCRIPT` may be repeated; the scripts are joined with newlines, in order.
 - Without `-e`, the script is read from stdin. If stdin is a terminal, that's a

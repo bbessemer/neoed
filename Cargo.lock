@@ -530,7 +530,7 @@ dependencies = [
 
 [[package]]
 name = "ned-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -544,7 +544,7 @@ dependencies = [
 
 [[package]]
 name = "ned-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "glob",
  "ignore",
@@ -570,7 +570,7 @@ dependencies = [
 
 [[package]]
 name = "ned-daemon"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "lsp-types",
  "ned-core",
@@ -584,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "ned-scheme"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "thiserror",
 ]

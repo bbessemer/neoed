@@ -22,6 +22,7 @@ pub enum Topic {
     Patterns,
     Text,
     Config,
+    Session,
 }
 
 /// The help text for `topic`, or the summary.
@@ -46,5 +47,6 @@ pub fn text(topic: Option<Topic>) -> &'static str {
         Some(Topic::Patterns) => include_str!("../help/patterns.txt"),
         Some(Topic::Text) => include_str!("../help/text.txt"),
         Some(Topic::Config) => include_str!("../help/config.txt"),
+        Some(Topic::Session) => include_str!("../help/session.txt"),
     }
 }

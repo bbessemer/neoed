@@ -1,0 +1,16 @@
+session
+
+  ned -s NAME [FILE...] -e SCRIPT    (or NED_SESSION=NAME in the environment)
+  ned history [-s NAME] [--all]
+
+A session records each invocation in the workspace: its script, files and
+outcome, and the text of each file it wrote, before and after. -s overrides
+NED_SESSION; a name is letters, digits, `.`, `_` and `-`. Without a session,
+nothing is recorded. Sessions live in $XDG_STATE_HOME/ned/sessions (or
+~/.local/state/ned/sessions).
+
+`ned history` prints the last 10 entries (--all: every one), a line each:
+the entry's number, its outcome (ok, dry run, exit N), how many files it
+wrote, and the script's first line:
+
+  3 ok, 1 file: replace fn:parse>"end" with "end of input"
