@@ -297,6 +297,7 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::SyntaxError { .. }
         | ExecErrorKind::NoLanguage { .. }
         | ExecErrorKind::NoCodeLanguage { .. }
+        | ExecErrorKind::ParsingDisabled { .. }
         | ExecErrorKind::UnknownKind { .. }
         | ExecErrorKind::MissingPart { .. }
         | ExecErrorKind::PartNeedsItem { .. }

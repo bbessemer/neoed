@@ -850,7 +850,7 @@ fn lang_text_edits_code_as_text() {
     exit: 1
     --- stdout
     --- stderr
-    error: script:1:6: fn:a needs a language, but a.rs has none; use --lang
+    error: script:1:6: fn:a needs a language, but parsing was disabled with --lang text; drop it, or use a regex or literal
     ");
 }
 

@@ -91,7 +91,16 @@ pub fn run<'s, 'l: 's>(
         notes: Vec::new(),
         unknown: BTreeSet::new(),
     };
-    let result = executor.run(script, initial);
+    let result = executor.run(script, initial).map_err(|mut e| {
+        if let (Some(None), ExecErrorKind::NoLanguage { selector, .. })
+        | (Some(None), ExecErrorKind::NoCodeLanguage { selector, .. }) = (options.lang, &e.kind)
+        {
+            e.kind = ExecErrorKind::ParsingDisabled {
+                selector: selector.clone(),
+            };
+        }
+        e
+    });
     if !executor.unknown.is_empty() {
         let extensions: Vec<_> = executor.unknown.into_iter().collect();
         executor.notes.push(format!(
@@ -1942,6 +1951,10 @@ pub enum ExecErrorKind {
         "{selector} needs a programming language, but {files} has none; use a regex or literal, or --lang"
     )]
     NoCodeLanguage { selector: String, files: String },
+    #[error(
+        "{selector} needs a language, but parsing was disabled with --lang text; drop it, or use a regex or literal"
+    )]
+    ParsingDisabled { selector: String },
     #[error("{lang} has no `{kind}` items; use one of: {kinds}")]
     UnknownKind {
         kind: String,
@@ -3588,7 +3601,17 @@ fn main() {}
         assert!(out.result.is_ok(), "{:?}", out.result);
         assert!(out.notes.is_empty(), "{:?}", out.notes);
         let out = exec_with_options(&[("a.rs", TEXT)], 1, "show fn:main", &text);
-        assert!(out.error().contains("needs a language"), "{}", out.error());
+        assert_eq!(
+            out.error(),
+            "error: script:1:6: fn:main needs a language, but parsing was disabled with --lang text; drop it, or use a regex or literal"
+        );
+        let out = exec_with_options(&[("a.rs", TEXT)], 1, "show `let y = @x;`", &text);
+        assert!(
+            out.error()
+                .contains("`let y = @x;` needs a language, but parsing was disabled"),
+            "{}",
+            out.error()
+        );
     }
 
     #[test]
