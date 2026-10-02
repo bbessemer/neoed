@@ -28,6 +28,9 @@ tree-sitter-python = "0.25.0"
 tree-sitter-rust = "0.24.2"
 tree-sitter-typescript = "0.23.2"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"
+
 [dev-dependencies]
 insta = "1.48.0"
 tempfile = "3.27.0"

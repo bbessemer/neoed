@@ -1,9 +1,11 @@
-//! Atomic writes of edited files.
+//! Atomic writes of edited files, and private state directories.
 
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+use thiserror::Error;
 
 /// Replaces the contents of every file in `files`, preserving permissions and
 /// writing through symlinks to their targets.
@@ -70,6 +72,54 @@ fn temp_path(target: &Path) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let name = target.file_name().unwrap_or_default().to_string_lossy();
     target.with_file_name(format!(".{name}.ned-{}-{n}.tmp", std::process::id()))
+}
+
+/// Why [`private_dir`] refused or couldn't make a directory.
+#[derive(Debug, Error)]
+pub enum PrivateDirError {
+    #[error("cannot make {}: {source}", dir.display())]
+    Io { dir: PathBuf, source: io::Error },
+    #[error("{} is {why}", dir.display())]
+    Unsafe { dir: PathBuf, why: &'static str },
+}
+
+/// Creates `dir` accessible only to the user if it's missing; otherwise
+/// checks that it's a directory the user owns and others can't access.
+#[cfg(unix)]
+pub fn private_dir(dir: &Path) -> Result<(), PrivateDirError> {
+    use std::fs::DirBuilder;
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+
+    let io_error = |source| PrivateDirError::Io {
+        dir: dir.to_path_buf(),
+        source,
+    };
+    match DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => return Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(io_error(err)),
+    }
+    let meta = fs::symlink_metadata(dir).map_err(io_error)?;
+    let why = if !meta.is_dir() {
+        "not a directory"
+    } else if meta.uid() != uid() {
+        "owned by another user"
+    } else if meta.mode() & 0o077 != 0 {
+        "accessible to other users"
+    } else {
+        return Ok(());
+    };
+    Err(PrivateDirError::Unsafe {
+        dir: dir.to_path_buf(),
+        why,
+    })
+}
+
+/// The user's id.
+#[cfg(unix)]
+pub fn uid() -> u32 {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    unsafe { libc::getuid() }
 }
 
 #[cfg(test)]
@@ -150,5 +200,53 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(fs::read_to_string(&a).unwrap(), "old a");
         assert_eq!(entries(dir.path()), ["a.rs"]);
+    }
+
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_private_dir_is_created_private() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("ned");
+        private_dir(&dir).unwrap();
+        assert_eq!(mode(&dir), 0o700);
+        private_dir(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dir_others_can_access_is_not_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("ned");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o770)).unwrap();
+        assert!(matches!(
+            private_dir(&dir),
+            Err(PrivateDirError::Unsafe {
+                why: "accessible to other users",
+                ..
+            })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_is_not_a_private_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("ned");
+        fs::write(&dir, "").unwrap();
+        assert!(matches!(
+            private_dir(&dir),
+            Err(PrivateDirError::Unsafe {
+                why: "not a directory",
+                ..
+            })
+        ));
     }
 }

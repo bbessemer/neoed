@@ -549,6 +549,7 @@ dependencies = [
  "glob",
  "ignore",
  "insta",
+ "libc",
  "ned-scheme",
  "regex",
  "ropey",
@@ -571,7 +572,6 @@ dependencies = [
 name = "ned-daemon"
 version = "0.5.0"
 dependencies = [
- "libc",
  "lsp-types",
  "ned-core",
  "serde",
