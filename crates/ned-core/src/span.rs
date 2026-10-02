@@ -47,15 +47,13 @@ impl<'a> Span<'a> {
                 };
                 conflict
                     .side(side)
-                    .map(|range| vec![Span { range, of: Of::Side }])
-                    .ok_or_else(|| E::MissingPart {
-                        item: format!("conflict:{n}"),
-                        part: part_name(part).into(),
-                        has: format!(
-                            "{}; `git checkout --conflict=diff3 -- FILE` (or zdiff3) rewrites the file's conflicts with a base, undoing its edits since the merge",
-                            self.parts()
-                        ),
+                    .map(|range| {
+                        vec![Span {
+                            range,
+                            of: Of::Side,
+                        }]
                     })
+                    .ok_or_else(|| missing_base(n))
             }
             (Part::Ours | Part::Theirs | Part::Base, _) => Err(E::PartNeedsConflict {
                 part: part_name(part).into(),
@@ -173,6 +171,18 @@ impl<'a> Span<'a> {
             }
         }
         Ok(true)
+    }
+}
+
+/// The error for the `.base` of conflict `n`, which git didn't write in
+/// diff3 style (§3.11).
+pub fn missing_base(n: usize) -> E {
+    E::MissingPart {
+        item: format!("conflict:{n}"),
+        part: "base".into(),
+        has: ".ours .theirs .lines; `git checkout --conflict=diff3 -- FILE` (or zdiff3) \
+              rewrites the file's conflicts with a base, undoing its edits since the merge"
+            .into(),
     }
 }
 

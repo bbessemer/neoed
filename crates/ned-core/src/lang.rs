@@ -180,13 +180,19 @@ impl Language {
         })
     }
 
+    /// Parses `text`, with its conflicts' marker lines hidden (§3.3).
     pub fn parse(self, text: &str) -> Tree {
+        self.parse_masked(&conflict::mask(text, &conflict::conflicts(text)))
+    }
+
+    /// Parses `masked`, text whose conflicts' marker lines are already hidden.
+    pub fn parse_masked(self, masked: &str) -> Tree {
         let mut parser = Parser::new();
         parser
             .set_language(&self.grammar())
             .expect("linked-in grammars are compatible");
         parser
-            .parse(&*conflict::mask(text), None)
+            .parse(masked, None)
             .expect("parsing without a timeout or cancellation succeeds")
     }
 }
