@@ -144,7 +144,22 @@ impl Parser<'_> {
                 let target = self.optional_target()?;
                 let context = match self.peek()?.kind {
                     TokenKind::Context(n) if target.is_some() => {
-                        self.bump()?;
+                        let start = self.bump()?.span.start;
+                        if self.peek()?.kind == TokenKind::DotDot {
+                            let dots = self.bump()?;
+                            let next = self.peek()?;
+                            let TokenKind::Context(m) = next.kind else {
+                                return Err(expected("end of command", &dots));
+                            };
+                            let end = next.span.end;
+                            let target = target.as_ref().expect("matched a target");
+                            let all = if target.all { "all " } else { "" };
+                            let selector = &self.lexer.src[target.selector.span.clone()];
+                            return Err(ParseError::new(
+                                E::ContextRange(format!("show {all}{selector} +{m}")),
+                                start..end,
+                            ));
+                        }
                         n
                     }
                     _ => 0,
@@ -160,11 +175,37 @@ impl Parser<'_> {
                     text: self.text()?,
                 }
             }
-            "insert" => CommandKind::Insert {
-                position: self.position()?,
-                target: self.target()?,
-                text: self.text()?,
-            },
+            "insert" => {
+                let position = self.position()?;
+                let target = self.target()?;
+                // `insert end "text"`: the text was read as the selector.
+                if let (Position::Start | Position::End, [step]) =
+                    (position, &target.selector.steps[..])
+                    && matches!(step.primary, Primary::Literal(_))
+                    && matches!(
+                        self.peek()?.kind,
+                        TokenKind::Newline
+                            | TokenKind::Semicolon
+                            | TokenKind::Pipe
+                            | TokenKind::Eof
+                    )
+                {
+                    let word = if position == Position::Start {
+                        "start"
+                    } else {
+                        "end"
+                    };
+                    return Err(ParseError::new(
+                        E::InsertNeedsSelector(word),
+                        verb.span.start..self.last_end,
+                    ));
+                }
+                CommandKind::Insert {
+                    position,
+                    target,
+                    text: self.text()?,
+                }
+            }
             "delete" => CommandKind::Delete(self.target()?),
             "sub" => self.sub()?,
             "move" => CommandKind::Move {
@@ -1277,6 +1318,16 @@ mod tests {
             message("show +3"),
             "expected a selector, found a context count; usage: show [SEL [+N]]"
         );
+        assert_eq!(
+            message("show /re/+0..+70"),
+            "`+N` is one count of lines around each span, not a range; write show /re/ +70"
+        );
+        let e = error(r#"show all "x" +2..+5"#);
+        assert_eq!(
+            e.kind.to_string(),
+            r#"`+N` is one count of lines around each span, not a range; write show all "x" +5"#
+        );
+        assert_eq!(e.span, 13..19);
     }
 
     #[test]
@@ -1598,6 +1649,27 @@ mod tests {
     }
 
     #[test]
+    fn insert_start_or_end_needs_a_selector() {
+        assert_eq!(
+            message(r#"insert end "x""#),
+            "`insert end` needs a selector before the text, e.g. insert end fn:NAME TEXT; \
+         insert after $ TEXT appends to the file"
+        );
+        assert_eq!(
+            message("insert start <<END\nx\nEND\n"),
+            "`insert start` needs a selector before the text, e.g. insert start fn:NAME TEXT; \
+         insert before 1 TEXT adds to the top of the file"
+        );
+        assert_eq!(error(r#"insert end "x"; show"#).span, 0..14);
+        // A selector that isn't text is still missing its text.
+        assert_eq!(expected("insert end fn:x"), "text (a string or heredoc)");
+        assert_eq!(
+            expected(r#"insert after "x""#),
+            "text (a string or heredoc)"
+        );
+    }
+
+    #[test]
     fn every_command_has_a_usage_starting_with_it() {
         for verb in [
             "show", "outline", "replace", "insert", "delete", "sub", "move", "file",
@@ -1634,6 +1706,22 @@ mod tests {
         assert_eq!(
             message("show /(/"),
             r#"invalid regex: unclosed group; escape literal characters such as ( [ . * with \, or select a "string""#
+        );
+        assert_eq!(
+            message(r#"show "\r""#),
+            r#"invalid escape `\r`; write `\\r` for a backslash and r (strings support \n \t \" \\)"#
+        );
+        assert_eq!(
+            message("show import:app.models.user"),
+            r#"unknown part `.models`; quote a name that has dots: import:"app.models.user""#
+        );
+        assert_eq!(
+            message("show fn:App.handle"),
+            r#"unknown part `.handle`; to name a member, nest it: KIND:App>fn:handle (a Go method: fn:"App.handle")"#
+        );
+        assert_eq!(
+            message("show class:A.B"),
+            "unknown part `.B`; to name a member, nest it: KIND:A>class:B"
         );
     }
 

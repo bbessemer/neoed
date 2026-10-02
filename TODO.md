@@ -182,7 +182,7 @@ of either kind.
 - [x] A `sub` replacement that names a group its regex doesn't have is an error,
       not an empty expansion: `$1deletions` is the group `1deletions`, so
       suggest `${1}deletions` (or `$$` for a literal `$`)
-- [ ] An invalid escape in a string suggests doubling the backslash, for text
+- [x] An invalid escape in a string suggests doubling the backslash, for text
       copied from source: "invalid escape `\r`; write `\\r` for a backslash and
       r"
 - [ ] `show` with a line range past the end of the file shows up to the last
@@ -196,13 +196,13 @@ of either kind.
       silently, so `ned -e 'file X' <<'EOF' ... EOF` drops the heredoc). A
       minor, since §1 changes. Decide how not to wait on an open pipe that never
       closes, which `-e` alone doesn't read today
-- [ ] A dotted name whose tail isn't a part suggests quoting it:
+- [x] A dotted name whose tail isn't a part suggests quoting it:
       `import:app.models.user` says "unknown part `.models`" and should suggest
       `import:"app.models.user"`
-- [ ] `insert end` or `insert start` with no selector says it needs one, and
+- [x] `insert end` or `insert start` with no selector says it needs one, and
       that `insert after $` appends to the file, instead of "expected text (a
       string or heredoc), found end of line"
-- [ ] A `..` followed by `+N` (`show /re/+0..+70`) suggests `show /re/ +70`
+- [x] A `..` followed by `+N` (`show /re/+0..+70`) suggests `show /re/ +70`
       rather than "expected end of command, found '..'"
 - [ ] A Python `.sig` replacement ending in `:` that the guard rejects
       (`-> None::`) says `.sig` stops before the `:`; spec §3.4,

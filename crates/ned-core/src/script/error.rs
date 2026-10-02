@@ -18,7 +18,9 @@ pub enum ParseErrorKind {
         "unterminated string; close it with `\"` on the same line (use \\n or a heredoc for multi-line text)"
     )]
     UnterminatedString,
-    #[error("invalid escape `\\{0}`; strings support \\n \\t \\\" \\\\")]
+    #[error(
+        "invalid escape `\\{0}`; write `\\\\{0}` for a backslash and {0} (strings support \\n \\t \\\" \\\\)"
+    )]
     InvalidEscape(char),
     #[error("unterminated regex; close it with `/` (write `\\/` for a literal slash)")]
     UnterminatedRegex,
@@ -53,12 +55,29 @@ pub enum ParseErrorKind {
         "unknown part `.{0}`; parts are .body .sig .params .name .doc .attrs .ret .type .value .whole .lines .refs .def"
     )]
     UnknownPart(String),
+    /// `selector` is the whole dotted name, quoted.
+    #[error("unknown part `.{part}`; quote a name that has dots: {selector}")]
+    DottedName { selector: String, part: String },
+    /// `selector` nests the dotted name's segments under a placeholder `KIND`;
+    /// `method` is the quoted Go method name, for `fn:Recv.Name`.
+    #[error(
+        "unknown part `.{part}`; to name a member, nest it: {selector}{}",
+        method.as_ref().map(|m| format!(" (a Go method: {m})")).unwrap_or_default()
+    )]
+    NestedName {
+        selector: String,
+        part: String,
+        method: Option<String>,
+    },
     #[error("line numbers start at 1; use 1 for the first line")]
     ZeroLine,
     #[error("expected a line number or `$` after `-`, e.g. 12-20 or 12-$")]
     MissingRangeEnd,
     #[error("expected a line count after `+`, e.g. show fn:parse +3")]
     MissingContext,
+    /// `show SEL +N..+M`; the fix is `show SEL +M`.
+    #[error("`+N` is one count of lines around each span, not a range; write {0}")]
+    ContextRange(String),
     #[error("line range {start}-{end} is reversed; write {end}-{start}")]
     ReversedLines { start: usize, end: usize },
     #[error("line number is too large; use `$` for the last line")]
@@ -80,6 +99,12 @@ pub enum ParseErrorKind {
         found: String,
         hint: String,
     },
+    /// `insert start` or `insert end` with text but no selector.
+    #[error(
+    "`insert {0}` needs a selector before the text, e.g. insert {0} fn:NAME TEXT; {fix}",
+    fix = whole_file_insert(.0)
+)]
+    InsertNeedsSelector(&'static str),
     #[error("selectors can't contain spaces; write e.g. `impl:Parser>fn:new`")]
     SpaceInSelector,
     #[error("`all` can't be used here; a `move` destination must be a single span")]
@@ -126,6 +151,13 @@ fn quote_hint(c: char) -> &'static str {
         '\'' => "strings use double quotes: \"...\"",
         '-' => "ranges between selectors are written SEL..SEL, e.g. /a/../b/",
         _ => "quote literal text: \"...\"",
+    }
+}
+
+fn whole_file_insert(position: &str) -> &'static str {
+    match position {
+        "start" => "insert before 1 TEXT adds to the top of the file",
+        _ => "insert after $ TEXT appends to the file",
     }
 }
 

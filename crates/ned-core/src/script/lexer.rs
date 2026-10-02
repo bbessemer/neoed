@@ -9,6 +9,7 @@ use std::ops::Range;
 
 use super::ast::{Filter, LineNo, Part, RegexFlags};
 use super::error::{ParseError, ParseErrorKind as E};
+use crate::syntax;
 
 mod filter;
 
@@ -66,7 +67,7 @@ pub enum TokenKind {
 
 #[derive(Debug)]
 pub struct Lexer<'a> {
-    src: &'a str,
+    pub(super) src: &'a str,
     pos: usize,
     /// Where the next heredoc body on the current line starts.
     heredoc_cursor: Option<usize>,
@@ -323,28 +324,11 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
         self.pos += 1;
         let name = self.take_while(is_ident_char);
-        Ok(match name {
-            "" => return Err(ParseError::new(E::UnexpectedChar('.'), start..start + 1)),
-            "body" => Part::Body,
-            "sig" => Part::Sig,
-            "params" => Part::Params,
-            "name" => Part::Name,
-            "doc" => Part::Doc,
-            "attrs" => Part::Attrs,
-            "ret" => Part::Ret,
-            "type" => Part::Type,
-            "value" => Part::Value,
-            "whole" => Part::Whole,
-            "lines" => Part::Lines,
-            "refs" => Part::Refs,
-            "def" => Part::Def,
-            _ => {
-                return Err(ParseError::new(
-                    E::UnknownPart(name.into()),
-                    start..self.pos,
-                ));
-            }
-        })
+        match name {
+            "" => Err(ParseError::new(E::UnexpectedChar('.'), start..start + 1)),
+            _ => part_named(name)
+                .ok_or_else(|| ParseError::new(E::UnknownPart(name.into()), start..self.pos)),
+        }
     }
 
     fn word(&mut self) -> Result<TokenKind, ParseError> {
@@ -353,6 +337,7 @@ impl<'a> Lexer<'a> {
         match self.peek() {
             Some(':') => {
                 self.pos += 1;
+                let quoted = self.peek() == Some('"');
                 let name = match self.peek() {
                     Some('"') => self.string()?,
                     _ if word == "file" => self
@@ -368,6 +353,12 @@ impl<'a> Lexer<'a> {
                         start..self.pos,
                     ));
                 }
+                if !quoted
+                    && word != "file"
+                    && let Some(err) = self.dotted_name(word, &name)
+                {
+                    return Err(err);
+                }
                 Ok(TokenKind::Syntax {
                     kind: word.into(),
                     name,
@@ -376,6 +367,57 @@ impl<'a> Lexer<'a> {
             Some('{') if word == "query" => self.query(start),
             _ => Ok(TokenKind::Word(word.into())),
         }
+    }
+
+    /// For an unquoted `kind:name` followed by `.SEGMENT`s that aren't parts,
+    /// such as `import:app.models`, an error suggesting the quoted dotted name;
+    /// only imports have dotted names, so for another kind, such as
+    /// `fn:App.handle`, it suggests nesting the segments instead. A lone segment
+    /// close to a part's name is a misspelt part.
+    fn dotted_name(&self, kind: &str, name: &str) -> Option<ParseError> {
+        let rest = &self.src[self.pos..];
+        let run = &rest[..rest
+            .find(|c| !(is_ident_char(c) || c == '.'))
+            .unwrap_or(rest.len())];
+        let mut segments = run.strip_prefix('.')?.split('.').peekable();
+        let mut tail = Vec::new();
+        while let Some(segment) = segments.next_if(|s| !s.is_empty() && part_named(s).is_none()) {
+            tail.push(segment);
+        }
+        let misspelt = |s: &str| {
+            let edits = (s.chars().count() / 3).max(1);
+            PARTS.iter().any(|(p, _)| syntax::distance(s, p) <= edits)
+        };
+        match tail[..] {
+            [] => return None,
+            [segment] if misspelt(segment) => return None,
+            _ => {}
+        }
+        let parts: String = segments
+            .take_while(|s| part_named(s).is_some())
+            .map(|p| format!(".{p}"))
+            .collect();
+        let part = tail[0].to_string();
+        let span = self.pos..self.pos + 1 + tail.join(".").len();
+        let error = if kind == "import" {
+            let selector = syntax::selector(kind, &format!("{name}.{}", tail.join("."))) + &parts;
+            E::DottedName { selector, part }
+        } else {
+            let (last, parents) = tail.split_last()?;
+            let mut selector: String = std::iter::once(name)
+                .chain(parents.iter().copied())
+                .map(|p| syntax::selector("KIND", p) + ">")
+                .collect();
+            selector += &(syntax::selector(kind, last) + &parts);
+            let method = (kind == "fn" && parents.is_empty())
+                .then(|| syntax::selector(kind, &format!("{name}.{last}")) + &parts);
+            E::NestedName {
+                selector,
+                part,
+                method,
+            }
+        };
+        Some(ParseError::new(error, span))
     }
 
     fn query(&mut self, start: usize) -> Result<TokenKind, ParseError> {
@@ -479,6 +521,29 @@ impl<'a> Lexer<'a> {
             start..self.pos,
         ))
     }
+}
+
+const PARTS: [(&str, Part); 13] = [
+    ("body", Part::Body),
+    ("sig", Part::Sig),
+    ("params", Part::Params),
+    ("name", Part::Name),
+    ("doc", Part::Doc),
+    ("attrs", Part::Attrs),
+    ("ret", Part::Ret),
+    ("type", Part::Type),
+    ("value", Part::Value),
+    ("whole", Part::Whole),
+    ("lines", Part::Lines),
+    ("refs", Part::Refs),
+    ("def", Part::Def),
+];
+
+fn part_named(name: &str) -> Option<Part> {
+    PARTS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|&(_, part)| part)
 }
 
 fn is_ident_char(c: char) -> bool {
@@ -751,6 +816,73 @@ mod tests {
         let e = error("fn:f.bodyy");
         assert_eq!(e.kind, E::UnknownPart("bodyy".into()));
         assert_eq!(e.span, 4..10);
+    }
+
+    #[test]
+    fn dotted_names_suggest_quoting_or_nesting() {
+        let dotted = |src, selector: &str, part: &str| {
+            let e = error(src);
+            assert_eq!(
+                e.kind,
+                E::DottedName {
+                    selector: selector.into(),
+                    part: part.into()
+                },
+                "{src}"
+            );
+            e.span
+        };
+        let span = dotted(
+            "show import:app.models.user",
+            r#"import:"app.models.user""#,
+            "models",
+        );
+        assert_eq!(span, 15..27);
+        dotted("import:os.path", r#"import:"os.path""#, "path");
+        // Two letters are too short to be a misspelt `.doc`.
+        dotted("show import:app.db", r#"import:"app.db""#, "db");
+        // Other kinds' names have no dots: the name is a member.
+        let nested = |src, selector: &str, part: &str, method: Option<&str>| {
+            let e = error(src);
+            assert_eq!(
+                e.kind,
+                E::NestedName {
+                    selector: selector.into(),
+                    part: part.into(),
+                    method: method.map(Into::into),
+                },
+                "{src}"
+            );
+            e.span
+        };
+        let span = nested(
+            "show fn:App.handle",
+            "KIND:App>fn:handle",
+            "handle",
+            Some(r#"fn:"App.handle""#),
+        );
+        assert_eq!(span, 11..18);
+        nested(
+            "fn:a.b.body",
+            "KIND:a>fn:b.body",
+            "b",
+            Some(r#"fn:"a.b".body"#),
+        );
+        nested("fn:a.bodyy.x", "KIND:a>KIND:bodyy>fn:x", "bodyy", None);
+        nested("class:A.B", "KIND:A>class:B", "B", None);
+        // A single segment close to a part name is a misspelt part.
+        assert_eq!(error("fn:f.nmae").kind, E::UnknownPart("nmae".into()));
+        assert_eq!(error("fn:f.bodyy").kind, E::UnknownPart("bodyy".into()));
+        assert_eq!(error("fn:f.bodyy.sig").kind, E::UnknownPart("bodyy".into()));
+        // Only unquoted names.
+        assert_eq!(
+            error(r#"fn:"a".models"#).kind,
+            E::UnknownPart("models".into())
+        );
+        assert_eq!(
+            kinds("fn:a..fn:b"),
+            [syntax("fn", "a"), T::DotDot, syntax("fn", "b")]
+        );
     }
 
     #[test]
