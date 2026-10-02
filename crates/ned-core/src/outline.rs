@@ -73,6 +73,17 @@ pub fn render(f: &SourceFile, within: Option<&Range<usize>>, style: Style) -> St
         out.push_str(&format!("{}{lines} {kind}{name}\n", "  ".repeat(depth)));
     }
     flush(&mut out, &mut imports);
+    for (i, c) in f.conflicts().iter().enumerate() {
+        let span = c.span();
+        if within.is_none_or(|w| w.start <= span.start && span.end <= w.end && span != *w) {
+            let lines = line_numbers(&f.buffer, &span);
+            let (lines, kind) = (
+                style.paint(Role::Dim, &lines),
+                style.paint(Role::Kind, "conflict"),
+            );
+            out.push_str(&format!("{lines} {kind}:{}\n", i + 1));
+        }
+    }
     out
 }
 
@@ -167,6 +178,20 @@ mod tests {
         assert_eq!(
             render(&f, Some(&(9..text.len())), Style::Plain),
             "2 fn:b\n3 fn:c\n"
+        );
+    }
+
+    #[test]
+    fn ends_with_the_files_conflicts() {
+        let text = "fn a() {\n<<<<<<< HEAD\n    one();\n=======\n    two();\n>>>>>>> topic\n}\n\n<<<<<<< HEAD\nfn b() {}\n=======\n>>>>>>> topic\n";
+        assert_eq!(
+            outline("a.rs", text),
+            "1-7 fn:a\n10 fn:b\n2-6 conflict:1\n9-12 conflict:2\n"
+        );
+        let f = file("a.rs", text);
+        assert!(
+            shown(&render(&f, None, Style::Color))
+                .ends_with("\\e[2m9-12\\e[0m \\e[36mconflict\\e[0m:2\n"),
         );
     }
 

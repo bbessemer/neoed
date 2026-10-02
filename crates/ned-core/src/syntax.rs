@@ -533,7 +533,13 @@ pub fn part(item: &Item, part: Part, text: &str) -> Option<Range<usize>> {
         Part::Ret => item.ret.clone(),
         Part::Type => item.ty.clone(),
         Part::Value => item.value.clone(),
-        Part::Whole | Part::Lines | Part::Refs | Part::Def => None,
+        Part::Whole
+        | Part::Lines
+        | Part::Refs
+        | Part::Def
+        | Part::Ours
+        | Part::Theirs
+        | Part::Base => None,
     }
 }
 

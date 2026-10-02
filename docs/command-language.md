@@ -317,7 +317,7 @@ step       = primary [ ".." primary ] { part } { filter } ;
 context    = "+" digit { digit } ;
 part       = ".body" | ".sig" | ".params" | ".name" | ".doc" | ".attrs"
            | ".ret" | ".type" | ".value" | ".whole" | ".lines" | ".refs"
-           | ".def" ;
+           | ".def" | ".ours" | ".theirs" | ".base" ;
 filter     = "[" or "]" ;   (* whitespace allowed inside *)
 or         = and { "||" and } ;
 and        = cond { "&&" cond } ;
@@ -326,7 +326,7 @@ property   = ".len" | ".text" | part [ ".len" | ".text" ] ;
 op         = "==" | "!=" | "~=" | "<" | ">" | "<=" | ">=" ;
 value      = string | regex | number ;
 number     = digit { digit } ;
-primary    = lines | regex | literal | syntax | query | pattern ;
+primary    = lines | regex | literal | syntax | conflict | query | pattern ;
 
 lines      = lineno [ "-" lineno ] ;
 lineno     = digit { digit } | "$" ;
@@ -334,6 +334,7 @@ literal    = string | heredoc ;
 syntax     = kind [ ":" name ] ;
 kind       = ident ;
 name       = name-char { name-char } | string ;   (* name-char: [A-Za-z0-9_:*] *)
+conflict   = "conflict" [ ":" number ] ;
 query      = "query{" { any } "}" ;   (* ends at the first unescaped "}"; one line *)
 pattern    = "`"+ { any } "`"+ ;   (* runs of equal length; may span lines; see 3.10 *)
 
@@ -533,9 +534,10 @@ The kinds each language supports, and the items they cover there:
   (diff3 style), `=======` and `>>>>>>> ...`, each starting its line, in that
   order. The grammar sees the sides one after the other, so items on either side
   are found, and an item on both sides matches twice, which is ambiguous (§3.5)
-  unless it is scoped by lines. Spans are still of the file's text, so an item
-  that spans a conflict includes its marker lines. Marker lines that don't form
-  a whole conflict (a lone `=======`, say) are not hidden.
+  unless it is scoped by its side: `conflict:1.ours>fn:a`. Spans are still of
+  the file's text, so an item that spans a conflict includes its marker lines.
+  Marker lines that don't form a whole conflict (a lone `=======`, say) are not
+  hidden. `conflict` selects the conflicts themselves (§3.11).
 - `file:PATH` is a special step that selects the whole of one file in the
   current set. It exists to scope the steps after it:
   `file:src/lexer.rs>fn:new`. `PATH` may contain `/` and `.`, and ends at `>` or
@@ -552,21 +554,22 @@ The kinds each language supports, and the items they cover there:
   `fn:main>/unwrap\(\)/`, `100-200>fn:new`.
 - A **part** narrows each span of its step:
 
-| Part      | Span                                                                                                                             |
-| --------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `.body`   | the item's block, between its delimiters (`{}`, or a Python indented block); for a Markdown section, the lines after its heading |
-| `.sig`    | from the start of the item (after its doc and attributes) up to its body                                                         |
-| `.params` | the parameter list, between its parentheses                                                                                      |
-| `.name`   | the item's name identifier                                                                                                       |
-| `.doc`    | the item's leading doc comment lines; a Python docstring                                                                         |
-| `.attrs`  | the item's attributes or decorators, from the first to the last                                                                  |
-| `.ret`    | the function's return type                                                                                                       |
-| `.type`   | the declared type of a field, constant or variable                                                                               |
-| `.value`  | the value a constant, variable, field or variant is given; the type a `type` item names                                          |
-| `.whole`  | the item's default span (§3.3), doc comments, attributes and trailing `,` included, which `replace` replaces whole               |
-| `.lines`  | each whole line the span touches, as a span of its own (any selector)                                                            |
-| `.refs`   | each reference to the symbol at the span (below), without its declaration                                                        |
-| `.def`    | the symbol's definition: the item it names, or its identifier if it names no item                                                |
+| Part                        | Span                                                                                                                             |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `.body`                     | the item's block, between its delimiters (`{}`, or a Python indented block); for a Markdown section, the lines after its heading |
+| `.sig`                      | from the start of the item (after its doc and attributes) up to its body                                                         |
+| `.params`                   | the parameter list, between its parentheses                                                                                      |
+| `.name`                     | the item's name identifier                                                                                                       |
+| `.doc`                      | the item's leading doc comment lines; a Python docstring                                                                         |
+| `.attrs`                    | the item's attributes or decorators, from the first to the last                                                                  |
+| `.ret`                      | the function's return type                                                                                                       |
+| `.type`                     | the declared type of a field, constant or variable                                                                               |
+| `.value`                    | the value a constant, variable, field or variant is given; the type a `type` item names                                          |
+| `.whole`                    | the item's default span (§3.3), doc comments, attributes and trailing `,` included, which `replace` replaces whole               |
+| `.lines`                    | each whole line the span touches, as a span of its own (any selector)                                                            |
+| `.refs`                     | each reference to the symbol at the span (below), without its declaration                                                        |
+| `.def`                      | the symbol's definition: the item it names, or its identifier if it names no item                                                |
+| `.ours`, `.theirs`, `.base` | a conflict's sides (§3.11)                                                                                                       |
 
 - For `.body` and `.params`: if the opening delimiter ends its line and the
   closing delimiter starts its line, the part is the whole lines between them.
@@ -611,8 +614,9 @@ The kinds each language supports, and the items they cover there:
   same step, and later steps search inside their spans. They spawn the daemon if
   need be.
 - A part the item doesn't have (e.g. `.body` on a Rust `const`) is an error.
-  Parts other than `.lines` need a syntax item (§3.8): `/x/.body` is an error,
-  and so is a part after another part, as in `.body.name`.
+  Parts other than `.lines` need a syntax item, and `.ours`, `.theirs` and
+  `.base` a conflict (§3.8): `/x/.body` is an error, and so is a part after
+  another part, as in `.body.name`.
 - `.lines` on a span within one line widens it to that line. On a multi-line
   span it selects each line separately, so `fn:parse.lines` is many spans: use
   `all`, or nest a line number (`fn:parse>12`).
@@ -626,14 +630,15 @@ The kinds each language supports, and the items they cover there:
 - `all SEL` applies the verb to every match. Zero matches is still an error.
 - An ambiguous `.refs` or `.def` result lists where its matches are instead of
   candidate selectors, since no scope picks one out; add `all`.
-- There is no nth-match syntax. To disambiguate, nest (`impl:Lexer>fn:new`),
-  scope by lines (`40-80>fn:new`), or scope by file (`file:src/a.rs>fn:new`).
-  Error messages list the candidates in exactly these forms (§7): nested in the
-  match's nearest enclosing item (within the previous step's span) if that's
-  unique among the matches, otherwise scoped by file if that's unique, otherwise
-  by lines. A `file:` scope goes first; an item or line scope goes just before
-  the selector's last step (`impl:Lexer>fn:new>40-44>/x/`), and a line scope
-  covers the whole matched item, even when a part follows it.
+- There is no nth-match syntax, except for conflicts (§3.11). To disambiguate,
+  nest (`impl:Lexer>fn:new`), scope by lines (`40-80>fn:new`), or scope by file
+  (`file:src/a.rs>fn:new`). Error messages list the candidates in exactly these
+  forms (§7): nested in the match's nearest enclosing item (within the previous
+  step's span) if that's unique among the matches, otherwise scoped by file if
+  that's unique, otherwise by lines. A `file:` scope goes first; an item or line
+  scope goes just before the selector's last step
+  (`impl:Lexer>fn:new>40-44>/x/`), and a line scope covers the whole matched
+  item, even when a part follows it.
 - Every listed candidate picks exactly one match. Matches that share a line with
   another match can't be picked by scope, so they aren't listed; the error
   counts them and suggests selecting longer text, or `all`.
@@ -683,6 +688,8 @@ Every value in a script has a type, which decides the parts it has (§3.4):
 - An **item** is a span that a syntax step selects, with its kind (§3.3). It
   also has `.whole` and the parts its kind has in its language (§3.4). A part's
   span is a plain span, not an item.
+- A **conflict** is a span that a `conflict` step selects (§3.11). It has
+  `.ours`, `.theirs`, `.lines` and, in diff3 style, `.base`.
 - **Strings**, **numbers** and **regexes** are values written in a script: a
   filter (§3.9) compares a span's property with one. They have no parts.
 
@@ -700,8 +707,9 @@ filter follows the step's parts and tests the spans they select.
   - A part (§3.4), such as `.name` or `.doc`: the part's text. Add `.len` or
     `.text` after it for its length or text: `fn[.body.len > 50]`. An item
     without the part, such as a function without doc comments, has `""` there,
-    with length 0. A part needs an item: `/x/[.name == "a"]` is an error, as
-    `/x/.name` is. `.lines`, `.refs` and `.def` can't be properties.
+    with length 0. A part needs an item (or a conflict, for its sides):
+    `/x/[.name == "a"]` is an error, as `/x/.name` is. `.lines`, `.refs` and
+    `.def` can't be properties.
 - `.len` is a number, compared with `==`, `!=`, `<`, `>`, `<=` or `>=` and a
   number. Text is compared with `==` or `!=` and a string, or with `~=` and a
   regex, which matches anywhere in it unless anchored (`~= /^test_/`). Any other
@@ -815,6 +823,44 @@ let Some(@x) = @e else {
     return;
 };
 @body
+END
+```
+
+### 3.11 Conflicts
+
+`conflict` selects the merge conflicts that git leaves in a file, in any file
+whatever its language, text files included. `conflict:N` is the file's `N`th
+conflict, counting from 1 in file order, and bare `conflict` is each of them, so
+it is ambiguous (§3.5) in a file with more than one unless `all` is given;
+candidates are listed as `conflict:N`. A conflict's span is the whole lines from
+its `<<<<<<<` line through its `>>>>>>>` line. Only whole conflicts count, as
+for hiding markers from the grammar (§3.3), wherever they are: conflict-shaped
+text inside a Markdown code fence or a multi-line raw string is a conflict, as
+it is for git, so editing `all conflict` rewrites it too. Its parts are its
+sides:
+
+- `.ours`: the lines after `<<<<<<<`, up to `|||||||` or `=======`.
+- `.base`: the lines after `|||||||`, up to `=======`. Only a conflict that git
+  wrote in diff3 style, with `merge.conflictStyle` set to `diff3` or `zdiff3`,
+  has one; on another, `.base` is an error that says so, and that
+  `git checkout --conflict=diff3 -- FILE` (or `zdiff3`) rewrites the file's
+  conflicts with bases, undoing its edits since the merge.
+- `.theirs`: the lines after `=======`, up to `>>>>>>>`.
+
+Each side is whole lines, without the marker lines; an empty side is an empty
+span at the start of the marker line after it. It has no `.lines`; `show` prints
+`PATH:N: conflict:2.theirs is empty` for it, and `delete` makes no edit, with a
+note that it is already empty. `replace`, `insert` and `move` put their text on
+lines of their own there. Conflicts nest like other spans:
+`conflict:2.theirs>fn:parse`, `fn:main>conflict`. Numbers count every conflict
+in the file, not only those in scope: `fn:main>conflict:2` is the file's second
+conflict, which must lie in `fn:main`. `replace conflict:2 with TEXT` replaces
+the whole conflict, markers included.
+
+```ned
+show conflict:1.theirs
+replace conflict:2 with <<END
+let limit = config.limit.max(1);
 END
 ```
 
@@ -996,11 +1042,12 @@ Every line-oriented `TEXT` is re-based, except a `<<'TAG'` heredoc.
    Each level becomes one level of the file's indent unit.
 3. **Prefix** every non-blank line with the target indentation:
 
-| Edit                                        | Target indentation                                                                                                                                              |
-| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `replace`, `insert before`, `move` (before) | indentation of the target span's first line                                                                                                                     |
-| `insert after`, `move` (after)              | indentation of the target span's first line, or of its last non-blank line when the selector's last step is a literal or regex with no parts                    |
-| `insert start\|end`, `move` (start/end)     | indentation of the first non-blank line inside the span. If the span is empty or blank, the indentation of the enclosing item's first line plus one indent unit |
+| Edit                                        | Target indentation                                                                                                                                                                                                                 |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `replace`, `insert before`, `move` (before) | indentation of the target span's first line                                                                                                                                                                                        |
+| `insert after`, `move` (after)              | indentation of the target span's first line, or of its last non-blank line when the selector's last step is a literal or regex with no parts                                                                                       |
+| `insert start\|end`, `move` (start/end)     | indentation of the first non-blank line inside the span. If the span is empty or blank, the indentation of the enclosing item's first line plus one indent unit                                                                    |
+| `replace` of a conflict or its empty side   | indentation of the first non-blank line of the conflict's sides (§3.11); if all are blank, of the lines of the block enclosing the conflict, or one indent unit deeper than the line before it when that line opens an empty block |
 
 For `insert after` (and `move ... after`) in a file with a syntax tree, when
 that line ends a construct begun on an earlier line, such as the last line of a
@@ -1078,6 +1125,8 @@ straight back. The line range covers the item's default span.
   the left margin, under one header per file.
 - Like syntax steps, `outline` skips text files, and is an error if every file
   in the set is text.
+- A file with conflicts (§3.11) ends its outline with one line per conflict,
+  `START-END conflict:N`, at the left margin.
 
 ```
 src/parser.rs
@@ -1247,6 +1296,7 @@ Errors go to stderr, in the form `error: LOC: message`.
 | `check`, `rename`, `.refs` or `.def` after a `\|`                               | Running it before the first `\|`, or in a separate `ned` call                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `sub all /re/ with TEXT`, with no scope                                         | Dropping `all`, since `sub` replaces every match                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Selector matches nothing                                                        | The same name under another kind; a close syntax name, or the name without its generic arguments and paths (`impl:Log` for `impl:"Log<'_>"`); for `P>"a"..P>"b"`, `P>"a".."b"`; a string literal that matches as escaped source text (`"\\n"` for `"\n"`); a literal match that differs only in case or spacing; a regex that matches with `i`; the spans a nested step searched; a `\|` before the command, when the stage's earlier edits make it match; or `outline` |
+| A `conflict` step that matches nothing                                          | The conflicts each searched file has (`a.rs has 2 conflicts (conflict:1, conflict:2)`), or that it has none                                                                                                                                                                                                                                                                                                                                                             |
 | Command's name given as a `FILE`                                                | The `-e` form of the arguments                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Ambiguous selector                                                              | Candidate selectors (§3.5), or longer text for matches that share a line                                                                                                                                                                                                                                                                                                                                                                                                |
 | Missing part, part on a non-syntax step                                         | The parts the item has, or an example                                                                                                                                                                                                                                                                                                                                                                                                                                   |

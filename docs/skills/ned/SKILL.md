@@ -219,6 +219,21 @@ indents it to the block:
 insert start class:App>fn:handle "metrics.count(req)"
 ```
 
+Merge conflicts don't stop parsing: items on either side of a conflict are
+found. `conflict:N` is a file's Nth conflict (`outline` lists them), with
+`.ours`, `.theirs` and, in diff3 style, `.base`. Replace one to resolve it:
+
+```ned
+show conflict:1.theirs
+replace conflict:1 with <<END
+let limit = config.limit.max(1);
+END
+```
+
+Conflict-shaped text inside a Markdown code fence or a multi-line raw string
+counts as a conflict, as it does for git, so an edit to `all conflict` rewrites
+it too.
+
 ## Rules that trip agents up
 
 - **One match.** A selector must match exactly one span. If it matches more, the

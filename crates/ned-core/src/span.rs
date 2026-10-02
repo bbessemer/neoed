@@ -2,32 +2,69 @@
 
 use std::ops::Range;
 
+use crate::conflict::{Conflict, Side};
 use crate::exec::ExecErrorKind as E;
 use crate::script::ast::{Filter, Op, Part, Value};
 use crate::select::part_name;
 use crate::syntax::{self, Item};
 use crate::text::full_lines;
 
-/// A span of a file's text, and the item it is if a syntax step selected it.
+/// A span of a file's text, and what it is, which decides its parts (§3.8).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Span<'a> {
     pub range: Range<usize>,
-    pub item: Option<&'a Item>,
+    pub of: Of<'a>,
+}
+
+/// What a span is beyond its text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Of<'a> {
+    Plain,
+    Item(&'a Item),
+    /// The file's `N`th conflict (§3.11).
+    Conflict(usize, &'a Conflict),
+    /// A side of a conflict; an empty one has no lines.
+    Side,
 }
 
 impl<'a> Span<'a> {
     /// The spans `part` selects in `text`, the span's file. A part's spans
     /// are plain spans, not items. `.refs` and `.def` are the executor's.
     pub fn part(&self, part: Part, text: &str) -> Result<Vec<Span<'a>>, E> {
-        let plain = |range| Span { range, item: None };
-        match (part, self.item) {
+        let plain = |range| Span {
+            range,
+            of: Of::Plain,
+        };
+        match (part, self.of) {
+            (Part::Lines, Of::Side) if self.range.is_empty() => Ok(Vec::new()),
             (Part::Lines, _) => Ok(lines(text, self.range.clone()).map(plain).collect()),
             (Part::Refs | Part::Def, _) => unreachable!("resolved by the executor"),
-            (part, None) => Err(E::PartNeedsItem {
+            (Part::Ours | Part::Theirs | Part::Base, Of::Conflict(n, conflict)) => {
+                let side = match part {
+                    Part::Ours => Side::Ours,
+                    Part::Base => Side::Base,
+                    _ => Side::Theirs,
+                };
+                conflict
+                    .side(side)
+                    .map(|range| vec![Span { range, of: Of::Side }])
+                    .ok_or_else(|| E::MissingPart {
+                        item: format!("conflict:{n}"),
+                        part: part_name(part).into(),
+                        has: format!(
+                            "{}; `git checkout --conflict=diff3 -- FILE` (or zdiff3) rewrites the file's conflicts with a base, undoing its edits since the merge",
+                            self.parts()
+                        ),
+                    })
+            }
+            (Part::Ours | Part::Theirs | Part::Base, _) => Err(E::PartNeedsConflict {
                 part: part_name(part).into(),
             }),
-            (Part::Whole, Some(item)) => Ok(vec![plain(item.range.clone())]),
-            (part, Some(item)) => syntax::part(item, part, text)
+            (part, Of::Plain | Of::Side | Of::Conflict(..)) => Err(E::PartNeedsItem {
+                part: part_name(part).into(),
+            }),
+            (Part::Whole, Of::Item(item)) => Ok(vec![plain(item.range.clone())]),
+            (part, Of::Item(item)) => syntax::part(item, part, text)
                 .map(|range| vec![plain(range)])
                 .ok_or_else(|| E::MissingPart {
                     item: syntax::selector(item.kind, &item.name),
@@ -39,8 +76,16 @@ impl<'a> Span<'a> {
 
     /// The parts the span has, as `.body .sig ...`.
     pub fn parts(&self) -> String {
-        let Some(item) = self.item else {
-            return ".lines".into();
+        let item = match self.of {
+            Of::Plain | Of::Side => return ".lines".into(),
+            Of::Conflict(_, conflict) => {
+                return match conflict.base {
+                    Some(_) => ".ours .base .theirs .lines",
+                    None => ".ours .theirs .lines",
+                }
+                .into();
+            }
+            Of::Item(item) => item,
         };
         [
             item.body.is_some().then_some(".body"),
@@ -161,12 +206,15 @@ mod tests {
     const TEXT: &str = "fn a() {\n    x();\n}\nlast";
 
     fn lines(range: Range<usize>) -> Vec<&'static str> {
-        Span { range, item: None }
-            .part(Part::Lines, TEXT)
-            .unwrap()
-            .into_iter()
-            .map(|s| &TEXT[s.range])
-            .collect()
+        Span {
+            range,
+            of: Of::Plain,
+        }
+        .part(Part::Lines, TEXT)
+        .unwrap()
+        .into_iter()
+        .map(|s| &TEXT[s.range])
+        .collect()
     }
 
     #[test]
@@ -186,7 +234,7 @@ mod tests {
     fn plain_spans_have_only_lines() {
         let span = Span {
             range: 0..2,
-            item: None,
+            of: Of::Plain,
         };
         assert_eq!(span.parts(), ".lines");
         assert!(matches!(
@@ -210,9 +258,12 @@ mod tests {
     }
 
     fn holds(range: Range<usize>, filters: &str) -> bool {
-        Span { range, item: None }
-            .holds(&filter(filters), TEXT)
-            .unwrap()
+        Span {
+            range,
+            of: Of::Plain,
+        }
+        .holds(&filter(filters), TEXT)
+        .unwrap()
     }
 
     #[test]
@@ -245,7 +296,7 @@ mod tests {
     fn parts_in_a_filter_need_an_item() {
         let span = Span {
             range: 0..2,
-            item: None,
+            of: Of::Plain,
         };
         assert!(matches!(
             span.holds(&filter(r#"[.name == ""]"#), TEXT),

@@ -35,6 +35,7 @@ Selectors (a selector must match exactly one span unless prefixed with `all`):
   query{(call_expression) @sel} raw tree-sitter query
   `foo(@a, @rest...)`           syntax pattern: code with placeholders
   /^## 6/../^## 7/  fn:a..fn:c  range: whole lines, a match to the next
+  conflict:2.ours               a merge conflict's side
 
 TEXT is "a string" or a heredoc: <<END ... END is re-indented to fit its
 target; <<'END' is inserted verbatim. Selectors resolve against the text at
@@ -56,4 +57,4 @@ Examples:
     END
 
 Topics: show outline check allow replace insert delete sub move rename file
-create selectors filters patterns text config session
+create selectors filters patterns conflicts text config session

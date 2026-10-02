@@ -17,6 +17,27 @@ pub struct Conflict {
     pub end: Range<usize>,
 }
 
+/// A side of a conflict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Ours,
+    Base,
+    Theirs,
+}
+
+impl Side {
+    const ALL: [Side; 3] = [Side::Ours, Side::Base, Side::Theirs];
+
+    /// The side's name, as its part is written: `ours` for `.ours`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Side::Ours => "ours",
+            Side::Base => "base",
+            Side::Theirs => "theirs",
+        }
+    }
+}
+
 impl Conflict {
     fn markers(&self) -> impl Iterator<Item = &Range<usize>> {
         [
@@ -27,6 +48,33 @@ impl Conflict {
         ]
         .into_iter()
         .flatten()
+    }
+
+    /// The whole lines of the conflict, markers included.
+    pub fn span(&self) -> Range<usize> {
+        self.start.start..self.end.end
+    }
+
+    /// The lines of `side`, between its markers; `None` for the base of a
+    /// conflict that isn't in diff3 style.
+    pub fn side(&self, side: Side) -> Option<Range<usize>> {
+        Some(match side {
+            Side::Ours => self.start.end..self.base.as_ref().unwrap_or(&self.split).start,
+            Side::Base => self.base.as_ref()?.end..self.split.start,
+            Side::Theirs => self.split.end..self.end.start,
+        })
+    }
+
+    /// The lines of each side, in file order.
+    pub fn sides(&self) -> impl Iterator<Item = Range<usize>> {
+        Side::ALL.into_iter().filter_map(|side| self.side(side))
+    }
+
+    /// The side whose lines `range` is.
+    pub fn side_at(&self, range: &Range<usize>) -> Option<Side> {
+        Side::ALL
+            .into_iter()
+            .find(|&side| self.side(side).as_ref() == Some(range))
     }
 }
 

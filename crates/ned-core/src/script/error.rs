@@ -92,6 +92,10 @@ pub enum ParseErrorKind {
     UnknownCommand(String),
     #[error("`{0}:` is a part, not a kind; select the symbol and add .{0}, e.g. fn:NAME.{0}")]
     PartAsKind(String),
+    #[error(
+        "`conflict:{0}` isn't a conflict's number; conflicts count from 1 in file order, as in conflict:1, and `conflict` is each of them"
+    )]
+    ConflictNumber(String),
     /// `hint` is empty, or `; ` and a fix.
     #[error("expected {expected}, found {found}{hint}")]
     Expected {
