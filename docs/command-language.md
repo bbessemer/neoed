@@ -961,10 +961,11 @@ Every line-oriented `TEXT` is re-based, except a `<<'TAG'` heredoc.
    Each level becomes one level of the file's indent unit.
 3. **Prefix** every non-blank line with the target indentation:
 
-| Edit                                                     | Target indentation                                                                                                                                     |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `replace`, `insert before\|after`, `move` (before/after) | indentation of the target span's first line                                                                                                            |
-| `insert start\|end`, `move` (start/end)                  | indentation of the first non-blank line inside the span. If the span is empty, the indentation of the enclosing item's first line plus one indent unit |
+| Edit                                        | Target indentation                                                                                                                                              |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `replace`, `insert before`, `move` (before) | indentation of the target span's first line                                                                                                                     |
+| `insert after`, `move` (after)              | indentation of the target span's first line, or of its last non-blank line when the selector's last step is a literal or regex with no parts                    |
+| `insert start\|end`, `move` (start/end)     | indentation of the first non-blank line inside the span. If the span is empty or blank, the indentation of the enclosing item's first line plus one indent unit |
 
 In Markdown, when `TEXT` starts with a list item (`-`, `*`, `+`, `1.` or `1)`)
 and the target line lies in a list item (not in a code block inside it), the
@@ -974,9 +975,12 @@ wrapped lines and nested items included, and `insert before` goes before its
 first line. So a new item next to a wrapped item's continuation line becomes its
 sibling. `<<'TAG'` text is placed the same way but not re-based.
 
-The file's **indent unit** is the smallest non-zero increase in indentation
-between consecutive non-blank lines. If the file has none, it's the language
-default: four spaces, two for Markdown, or a tab for Go.
+The file's **indent unit** is measured on its non-blank lines, skipping those
+that start inside a string or comment. Its style is tabs or spaces, whichever
+indents more of those lines (the language default's on a tie), and it is the
+smallest non-zero increase in that style between consecutive lines. If the file
+has none, it's the language default: four spaces, two for Markdown, or a tab for
+Go.
 
 Formatters (§6.4) run after re-basing, so small indentation differences in brace
 languages don't matter. Python relies on re-basing alone.

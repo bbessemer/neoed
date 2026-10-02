@@ -440,7 +440,7 @@ impl Executor<'_> {
                     let f = &self.files[m.file].file;
                     let range = heredoc_lines(f, target, *position, text, m.range);
                     let text = separated(f, target, *position, &range, text);
-                    let (range, new) = insert(f, range, *position, &text);
+                    let (range, new) = insert(f, range, *position, &text, &target.selector);
                     self.push(index, span, m.file, range, new)?;
                 }
             }
@@ -868,7 +868,7 @@ impl Executor<'_> {
                 }
             }
             let moved = with_trailing_comma(target, &at, &moved);
-            let (range, new) = insert(target, at, position, &moved);
+            let (range, new) = insert(target, at, position, &moved, &dest.selector);
             if from.file == to.file && removal.start < range.start && range.end < removal.end {
                 let location = format!(
                     "{}:{}",
@@ -1377,6 +1377,11 @@ fn empty_body<'f>(f: &'f SourceFile, range: &Range<usize>) -> Option<&'f Item> {
     if !range.is_empty() {
         return None;
     }
+    body_of(f, range)
+}
+
+/// The item whose `.body` is `range`, if any.
+fn body_of<'f>(f: &'f SourceFile, range: &Range<usize>) -> Option<&'f Item> {
     f.items()?
         .iter()
         .find(|i| syntax::part(i, Part::Body, &f.text).as_ref() == Some(range))
@@ -1392,12 +1397,12 @@ fn fill_body(
     new: &Text,
 ) -> (Range<usize>, String) {
     let t = &f.text;
-    let unit = indent_unit(f);
+    let unit = f.indent_unit();
     if item.undelimited {
         // The lines right after the heading or docstring, which may end the
         // file, at that line's indentation.
         let indent = text::indent_at(t, range.start.saturating_sub(1));
-        let lines = line_oriented(new, indent, &unit);
+        let lines = line_oriented(new, indent, unit);
         let lead = if t[..range.start].ends_with('\n') {
             ""
         } else {
@@ -1406,7 +1411,7 @@ fn fill_body(
         return (range, format!("{lead}{lines}"));
     }
     let indent = format!("{}{unit}", text::indent_at(t, item.node.start));
-    let lines = line_oriented(new, &indent, &unit);
+    let lines = line_oriented(new, &indent, unit);
     let body = item.body.clone().expect("an empty body is a body");
     let inner = body.start + 1..body.end - 1;
     if t[inner.clone()].contains('\n') {
@@ -1491,11 +1496,6 @@ fn common_len(a: impl Iterator<Item = u8>, b: impl Iterator<Item = u8>) -> usize
     a.zip(b).take_while(|(x, y)| x == y).count()
 }
 
-/// The indent unit of `f`, falling back to its language's default (§5.2).
-fn indent_unit(f: &SourceFile) -> String {
-    text::indent_unit(&f.text, f.lang.map_or("    ", Language::default_indent))
-}
-
 /// `text` with the pattern captures of a match in `f` substituted (§3.10).
 /// Err with the name of a placeholder it can't fill.
 fn substitute(
@@ -1560,21 +1560,21 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text, whole: bool) -> (Ran
         true => range,
         false => without_leading(f, range, new),
     };
-    let unit = indent_unit(f);
+    let unit = f.indent_unit();
     if text::is_whole_line(t, &range) {
         let full = text::full_lines(t, range);
         let indent = match list_anchor(f, full.start, new) {
             Some(item) => text::indent_at(t, item.range.start),
             None => text::indent_at(t, full.start),
         };
-        let mut new = line_oriented(new, indent, &unit);
+        let mut new = line_oriented(new, indent, unit);
         if !t[..full.end].ends_with('\n') {
             new.pop();
         }
         (full, new)
     } else {
         let indent = text::indent_at(t, range.start);
-        (range, verbatim(new, indent, &unit))
+        (range, verbatim(new, indent, unit))
     }
 }
 
@@ -1795,29 +1795,28 @@ fn heredoc_lines(
 }
 
 /// The span and text of an insertion at `position` of `range` (§4.2, §5):
-/// an empty span, unless it opens an empty body.
+/// an empty span, unless it opens an empty body. Text after a match of
+/// `selector` takes the indentation of its last line (§5.2).
 fn insert(
     f: &SourceFile,
     range: Range<usize>,
     position: Position,
     new: &Text,
+    selector: &Selector,
 ) -> (Range<usize>, String) {
     if let Some(item) = empty_body(f, &range) {
         return fill_body(f, item, range, new);
     }
     let t = &f.text;
-    let unit = indent_unit(f);
+    let unit = f.indent_unit();
     if !text::is_whole_line(t, &range) {
         let at = match position {
             Position::Before | Position::Start => range.start,
             Position::After | Position::End => range.end,
         };
-        return (
-            at..at,
-            verbatim(new, text::indent_at(t, range.start), &unit),
-        );
+        return (at..at, verbatim(new, text::indent_at(t, range.start), unit));
     }
-    let full = text::full_lines(t, range);
+    let full = text::full_lines(t, range.clone());
     // List-item text next to a list item's line goes beside the whole item.
     let anchor = match position {
         Position::Before => list_anchor(f, full.start, new),
@@ -1826,14 +1825,29 @@ fn insert(
     };
     let full = anchor.map_or(full, |item| text::full_lines(t, item.range.clone()));
     let first = text::indent_at(t, full.start);
-    let inner = text::first_indent(t, full.clone()).unwrap_or(first);
+    let inner = match text::first_indent(t, full.clone()) {
+        Some(indent) => indent.to_string(),
+        // A blank delimited body is filled like an empty one.
+        None => body_of(f, &range)
+            .filter(|i| !i.undelimited)
+            .map_or(first.to_string(), |i| {
+                format!("{}{unit}", text::indent_at(t, i.node.start))
+            }),
+    };
+    let match_end = selector.steps.last().is_some_and(|s| {
+        s.parts.is_empty() && matches!(s.primary, Primary::Regex(_) | Primary::Literal(_))
+    });
+    let after = match anchor {
+        None if match_end => text::last_indent(t, full.clone()).unwrap_or(first),
+        _ => first,
+    };
     let (at, indent) = match position {
         Position::Before => (full.start, first),
-        Position::After => (full.end, first),
-        Position::Start => (full.start, inner),
-        Position::End => (full.end, inner),
+        Position::After => (full.end, after),
+        Position::Start => (full.start, inner.as_str()),
+        Position::End => (full.end, inner.as_str()),
     };
-    let mut new = line_oriented(new, indent, &unit);
+    let mut new = line_oriented(new, indent, unit);
     if at == full.end && !full.is_empty() && !t[..at].ends_with('\n') {
         // The span's last line has no line ending; give it one instead.
         new.pop();
@@ -2597,6 +2611,47 @@ mod tests {
     }
 
     #[test]
+    fn insert_after_a_match_takes_its_last_lines_indent() {
+        let text = "fn a() {\n    if x {\n        y();\n    }\n}\n";
+        assert_eq!(
+            edited(
+                text,
+                "insert after \"if x {\\n        y();\" <<END\nv();\nEND"
+            ),
+            text.replace("y();\n", "y();\n        v();\n")
+        );
+        let expected = APP_PY.replace("run()\n", "run()\n            z()\n");
+        for script in [
+            "insert after /if self.ok:\\n.*run\\(\\)/ \"z()\"",
+            "insert after fn:start>\"if self.ok:\\n            run()\" \"z()\"",
+        ] {
+            assert_eq!(edited_in("a.py", APP_PY, script), expected, "{script}");
+        }
+    }
+
+    #[test]
+    fn insert_after_lines_and_items_takes_the_first_lines_indent() {
+        let text = "def f():\n    if x:\n        a()\n    b()\n";
+        assert_eq!(
+            edited_in("a.py", text, "insert after 2-3 \"c()\""),
+            text.replace("a()\n", "a()\n    c()\n")
+        );
+        let text = "def f():\n    if x:\n        a()\n";
+        assert_eq!(
+            edited_in("a.py", text, "insert after fn:f.body \"c()\""),
+            format!("{text}    c()\n")
+        );
+        assert_eq!(
+            edited_in("a.py", APP_PY, "insert after fn:start \"x = 1\""),
+            APP_PY.replace("run()\n", "run()\n\n    x = 1\n")
+        );
+        assert_eq!(
+            edited_in("a.py", APP_PY, "insert after class:App \"x = 1\""),
+            APP_PY.replace("pass\n", "pass\n\nx = 1\n")
+        );
+    }
+
+    #[test]
     fn python_decorators_stay_with_their_item() {
         assert_eq!(
             edited_in(
@@ -2740,6 +2795,23 @@ mod tests {
             ),
             "fn a() {\n\tx();\n\tif y {\n\t\tz();\n\t}\n}\n"
         );
+    }
+
+    #[test]
+    fn the_indent_unit_skips_strings_and_comments() {
+        let code = "fn a() {\n    x();\n}\n";
+        let script = "insert after 2 <<END\nif y {\n\tz();\n}\nEND\n";
+        let expected = "fn a() {\n    x();\n    if y {\n        z();\n    }\n}\n";
+        for rest in [
+            "\nconst S: &str = \"\n\tb\n\";\n",
+            "\n/*\n\tb\n*/\n",
+            "\nconst S: &str = r#\"\nb\n\tc\n\t\"#;\n",
+        ] {
+            assert_eq!(
+                edited(&format!("{code}{rest}"), script),
+                format!("{expected}{rest}")
+            );
+        }
     }
 
     #[test]
@@ -3746,6 +3818,33 @@ fn main() {}
         assert_eq!(
             edited(ITEMS, "insert after fn:main \"fn b() {}\""),
             format!("{ITEMS}\nfn b() {{}}\n")
+        );
+    }
+
+    #[test]
+    fn blank_bodies_take_the_items_indent_plus_a_unit() {
+        let text = "mod tests {\n\n}\n";
+        assert_eq!(
+            edited(text, "insert end mod:tests \"fn a() {}\""),
+            "mod tests {\n\n    fn a() {}\n}\n"
+        );
+        assert_eq!(
+            edited(text, "insert start mod:tests \"fn a() {}\""),
+            "mod tests {\n    fn a() {}\n\n}\n"
+        );
+        let text = "impl A {\n    fn f() {\n  \n    }\n}\n";
+        assert_eq!(
+            edited(text, "insert end fn:f \"x();\""),
+            "impl A {\n    fn f() {\n  \n        x();\n    }\n}\n"
+        );
+        let text = "mod tests {\n\n    fn b() {}\n}\n";
+        assert_eq!(
+            edited(text, "insert end mod:tests \"fn a() {}\""),
+            "mod tests {\n\n    fn b() {}\n    fn a() {}\n}\n"
+        );
+        assert_eq!(
+            edited(text, "insert start mod:tests \"fn a() {}\""),
+            "mod tests {\n    fn a() {}\n\n    fn b() {}\n}\n"
         );
     }
 

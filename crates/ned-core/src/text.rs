@@ -46,22 +46,38 @@ pub fn first_indent(text: &str, range: Range<usize>) -> Option<&str> {
     None
 }
 
-/// The file's indent unit: the smallest non-zero increase in indentation
-/// between consecutive non-blank lines, or `default` if there is none.
-pub fn indent_unit(text: &str, default: &str) -> String {
-    let mut prev: Option<&str> = None;
-    let mut unit: Option<&str> = None;
-    for line in text.lines().filter(|l| !l.trim().is_empty()) {
-        let indent = leading_whitespace(line);
-        if let Some(increase) = prev.and_then(|p| indent.strip_prefix(p))
-            && !increase.is_empty()
-            && unit.is_none_or(|u| increase.len() < u.len())
-        {
-            unit = Some(increase);
-        }
-        prev = Some(indent);
-    }
-    unit.unwrap_or(default).to_string()
+/// The indentation of the last non-blank line of the whole lines `range`.
+pub fn last_indent(text: &str, range: Range<usize>) -> Option<&str> {
+    text[range]
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .map(leading_whitespace)
+}
+
+/// The indent unit of a file's `lines`: the smallest non-zero increase in
+/// indentation between consecutive non-blank lines, in the style (tabs or
+/// spaces) that indents most of them, or `default` if there is none.
+pub fn indent_unit<'a>(lines: impl IntoIterator<Item = &'a str>, default: &str) -> String {
+    let indents: Vec<&str> = lines
+        .into_iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(leading_whitespace)
+        .collect();
+    let count = |c| indents.iter().filter(|i| i.starts_with(c)).count();
+    let (tabs, spaces) = (count('\t'), count(' '));
+    let style = match tabs.cmp(&spaces) {
+        std::cmp::Ordering::Greater => '\t',
+        std::cmp::Ordering::Less => ' ',
+        std::cmp::Ordering::Equal => default.chars().next().unwrap_or(' '),
+    };
+    indents
+        .windows(2)
+        .filter_map(|w| w[1].strip_prefix(w[0]))
+        .filter(|increase| !increase.is_empty() && increase.chars().all(|c| c == style))
+        .min_by_key(|increase| increase.len())
+        .unwrap_or(default)
+        .to_string()
 }
 
 /// Re-bases line-oriented `text` (§5.2): strips its common indentation,
@@ -268,12 +284,23 @@ mod tests {
 
     #[test]
     fn indent_unit_is_the_smallest_increase() {
-        assert_eq!(indent_unit(TEXT, "    "), "    ");
-        assert_eq!(indent_unit("a:\n  b\n\n  c:\n    d\n", "    "), "  ");
-        assert_eq!(indent_unit("a {\n\tb {\n\t\tc\n\t}\n}\n", "    "), "\t");
-        assert_eq!(indent_unit("a\n    b\n      c\n", "    "), "  ");
-        assert_eq!(indent_unit("a\nb\n", "    "), "    ");
-        assert_eq!(indent_unit("", "    "), "    ");
+        let unit = |text: &str, default| indent_unit(text.lines(), default);
+        assert_eq!(unit(TEXT, "    "), "    ");
+        assert_eq!(unit("a:\n  b\n\n  c:\n    d\n", "    "), "  ");
+        assert_eq!(unit("a {\n\tb {\n\t\tc\n\t}\n}\n", "    "), "\t");
+        assert_eq!(unit("a\n    b\n      c\n", "    "), "  ");
+        assert_eq!(unit("a\nb\n", "    "), "    ");
+        assert_eq!(unit("", "    "), "    ");
+    }
+
+    #[test]
+    fn indent_unit_takes_the_dominant_style() {
+        let unit = |text: &str, default| indent_unit(text.lines(), default);
+        let mixed = "a {\n\tb\n    c {\n        d\n    }\n}\n";
+        assert_eq!(unit(mixed, "\t"), "    ");
+        assert_eq!(unit("a\n\tb\nc\n  d\n", "    "), "  ");
+        assert_eq!(unit("a\n\tb\nc\n  d\n", "\t"), "\t");
+        assert_eq!(unit("a\n\tb\n\t  c\n\t\td\n", "    "), "\t");
     }
 
     #[test]

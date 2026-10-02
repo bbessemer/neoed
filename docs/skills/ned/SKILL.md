@@ -286,12 +286,12 @@ insert start class:App>fn:handle "metrics.count(req)"
   one span. TEXT for a partial span keeps its first line as written and indents
   the rest by the first line's indentation, so leave that indentation off.
 - **Re-basing follows the target line.** `<<END` text takes the indentation of
-  the line it's inserted next to, or of the first line it replaces. In Markdown,
-  a new list item (`- ...`) next to any line of a list item goes beside the
-  whole item, at its marker's column; other text next to a wrapped item's
-  continuation line gets the hanging indent, continuing its paragraph. For code,
-  use `<<END`: a quoted `<<'END'` inside the script, a shell habit, leaves code
-  at column 0.
+  the target's first line (after a literal or regex, its last line), or, for
+  `insert start|end`, of the first line inside it. In Markdown, a new list item
+  (`- ...`) next to any line of a list item goes beside the whole item, at its
+  marker's column; other text next to a wrapped item's continuation line gets
+  the hanging indent, continuing its paragraph. For code, use `<<END`: a quoted
+  `<<'END'` inside the script, a shell habit, leaves code at column 0.
 - **Whole-line string TEXT gets its own newline.** A literal that runs from a
   line's indentation to its end (`"    x,\n"`, or `"    s\n}"`) is a whole-line
   target: string TEXT for it is re-based like a heredoc, and it ends in a

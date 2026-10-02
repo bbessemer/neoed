@@ -7,7 +7,7 @@ use std::ops::Range;
 use regex::Regex;
 use std::cmp::Reverse;
 
-use tree_sitter::{Query, QueryCursor, QueryError, QueryErrorKind, StreamingIterator, Tree};
+use tree_sitter::{Node, Query, QueryCursor, QueryError, QueryErrorKind, StreamingIterator, Tree};
 
 use crate::buffer::{Buffer, LineEnding};
 use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
@@ -19,7 +19,7 @@ use crate::script::ast::{
 use crate::span::Span;
 use crate::syntax::{self, Item};
 use crate::template::Template;
-use crate::text::{full_lines, is_whole_line, strip_indent};
+use crate::text::{self, full_lines, is_whole_line, strip_indent};
 
 const MAX_CANDIDATES: usize = 10;
 
@@ -54,6 +54,7 @@ pub struct SourceFile {
     pub lang: Option<Language>,
     tree: OnceCell<Tree>,
     items: OnceCell<Vec<Item>>,
+    indent_unit: OnceCell<String>,
 }
 
 impl SourceFile {
@@ -66,6 +67,7 @@ impl SourceFile {
             lang,
             tree: OnceCell::new(),
             items: OnceCell::new(),
+            indent_unit: OnceCell::new(),
         }
     }
 
@@ -85,6 +87,41 @@ impl SourceFile {
         let lang = self.lang?;
         Some(self.tree.get_or_init(|| lang.parse(&self.text)))
     }
+
+    /// The indent unit of the text (§5.2), measured on lines that don't start
+    /// inside a string or comment, or its language's default.
+    pub fn indent_unit(&self) -> &str {
+        self.indent_unit.get_or_init(|| {
+            let default = self.lang.map_or("    ", Language::default_indent);
+            let skipped = self
+                .tree()
+                .map(|t| text_rows(t.root_node()))
+                .unwrap_or_default();
+            let lines = self.text.lines().enumerate();
+            let lines = lines.filter(|(row, _)| !skipped.get(*row).is_some_and(|&s| s));
+            text::indent_unit(lines.map(|(_, line)| line), default)
+        })
+    }
+}
+
+/// Whether each row under `root` starts inside a string or comment, so its
+/// indentation is text, not code.
+fn text_rows(root: Node<'_>) -> Vec<bool> {
+    let mut skipped = vec![false; root.end_position().row + 1];
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        let (start, end) = (node.start_position().row, node.end_position().row);
+        if start == end {
+            continue;
+        }
+        let kind = node.kind();
+        if kind.contains("string") || kind.contains("comment") {
+            skipped[start + 1..=end].fill(true);
+        } else {
+            stack.extend(node.children(&mut node.walk()));
+        }
+    }
+    skipped
 }
 
 /// A selected span of `files[file]`, with what its selector's pattern steps

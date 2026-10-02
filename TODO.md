@@ -230,14 +230,14 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       `outline | show 1` is a parse error ("expected a selector, found '|'"),
       because `optional_target` (`script/parser.rs`) doesn't treat `|` as the
       end of the command
-- [ ] Re-basing a `<<END` heredoc into `crates/ned-core/src/syntax.rs` indented
+- [x] Re-basing a `<<END` heredoc into `crates/ned-core/src/syntax.rs` indented
       its nested lines with tabs, though the file's Rust code is indented with
       spaces (rustfmt fixed it). The indent unit seems to come from tab-indented
       lines elsewhere in the file (the Go test fixtures in raw strings), not
       from the lines around the target
-- [ ] `insert end mod:tests <<END` in a Rust file put the text at column 0, not
+- [x] `insert end mod:tests <<END` in a Rust file put the text at column 0, not
       at the module body's indentation (`insert end fn:...` re-bases correctly)
-- [ ] `insert after "LINE1\n...LASTLINE" <<END` re-based the text to the
+- [x] `insert after "LINE1\n...LASTLINE" <<END` re-based the text to the
       literal's first line's indentation, not its last line's, though the text
       goes after the last line
 - [x] rustfmt formats a `.rs` file with edition 2015 when the script also
