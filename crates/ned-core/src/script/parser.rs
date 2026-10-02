@@ -10,6 +10,7 @@ use crate::syntax;
 
 pub fn parse(src: &str) -> Result<Script, ParseError> {
     let mut parser = Parser {
+        src,
         lexer: Lexer::new(src),
         peeked: None,
         last_end: 0,
@@ -85,6 +86,7 @@ fn reads_disk(kind: &CommandKind) -> Option<&'static str> {
 }
 
 struct Parser<'a> {
+    src: &'a str,
     lexer: Lexer<'a>,
     peeked: Option<Token>,
     /// End of the last consumed token.
@@ -142,7 +144,22 @@ impl Parser<'_> {
                 let target = self.optional_target()?;
                 let context = match self.peek()?.kind {
                     TokenKind::Context(n) if target.is_some() => {
-                        self.bump()?;
+                        let start = self.bump()?.span.start;
+                        if self.peek()?.kind == TokenKind::DotDot {
+                            let dots = self.bump()?;
+                            let next = self.peek()?;
+                            let TokenKind::Context(m) = next.kind else {
+                                return Err(expected("end of command", &dots));
+                            };
+                            let end = next.span.end;
+                            let target = target.as_ref().expect("matched a target");
+                            let all = if target.all { "all " } else { "" };
+                            let selector = &self.lexer.src[target.selector.span.clone()];
+                            return Err(ParseError::new(
+                                E::ContextRange(format!("show {all}{selector} +{m}")),
+                                start..end,
+                            ));
+                        }
                         n
                     }
                     _ => 0,
@@ -158,11 +175,37 @@ impl Parser<'_> {
                     text: self.text()?,
                 }
             }
-            "insert" => CommandKind::Insert {
-                position: self.position()?,
-                target: self.target()?,
-                text: self.text()?,
-            },
+            "insert" => {
+                let position = self.position()?;
+                let target = self.target()?;
+                // `insert end "text"`: the text was read as the selector.
+                if let (Position::Start | Position::End, [step]) =
+                    (position, &target.selector.steps[..])
+                    && matches!(step.primary, Primary::Literal(_))
+                    && matches!(
+                        self.peek()?.kind,
+                        TokenKind::Newline
+                            | TokenKind::Semicolon
+                            | TokenKind::Pipe
+                            | TokenKind::Eof
+                    )
+                {
+                    let word = if position == Position::Start {
+                        "start"
+                    } else {
+                        "end"
+                    };
+                    return Err(ParseError::new(
+                        E::InsertNeedsSelector(word),
+                        verb.span.start..self.last_end,
+                    ));
+                }
+                CommandKind::Insert {
+                    position,
+                    target,
+                    text: self.text()?,
+                }
+            }
             "delete" => CommandKind::Delete(self.target()?),
             "sub" => self.sub()?,
             "move" => CommandKind::Move {
@@ -189,7 +232,9 @@ impl Parser<'_> {
 
     fn optional_target(&mut self) -> Result<Option<Target>, ParseError> {
         match self.peek()?.kind {
-            TokenKind::Newline | TokenKind::Semicolon | TokenKind::Eof => Ok(None),
+            TokenKind::Newline | TokenKind::Semicolon | TokenKind::Pipe | TokenKind::Eof => {
+                Ok(None)
+            }
             _ => self.target().map(Some),
         }
     }
@@ -369,11 +414,23 @@ impl Parser<'_> {
     /// `sub [target] /re/ with TEXT`: a lone regex before `with` is the
     /// pattern; otherwise the selector is the scope and a regex must follow.
     fn sub(&mut self) -> Result<CommandKind, ParseError> {
+        let all = self.peek()?.span.clone();
         let first = self.target()?;
         let (scope, pattern) = if self.peek_is_word("with")? {
             let span = first.selector.span.clone();
             let mut steps = first.selector.steps;
             match (first.all, steps.pop(), steps.is_empty()) {
+                (
+                    true,
+                    Some(Step {
+                        primary: Primary::Regex(_),
+                        parts,
+                        ..
+                    }),
+                    true,
+                ) if parts.is_empty() => {
+                    return Err(ParseError::new(E::SubAll(self.src[span].into()), all));
+                }
                 (
                     false,
                     Some(Step {
@@ -393,11 +450,78 @@ impl Parser<'_> {
             (Some(first), validate_regex(pattern, flags, token.span)?)
         };
         self.expect_with()?;
+        let at = self.peek()?.span.clone();
+        let text = self.text()?;
+        self.validate_groups(&pattern, &text, at)?;
         Ok(CommandKind::Sub {
             scope,
             pattern,
-            text: self.text()?,
+            text,
         })
+    }
+
+    /// Checks that each `$` reference in `text`, read from the token at `at`,
+    /// names a group of `pattern`.
+    fn validate_groups(
+        &self,
+        pattern: &Pattern,
+        text: &Text,
+        at: Range<usize>,
+    ) -> Result<(), ParseError> {
+        let regex = pattern.regex();
+        let has = |name: &str| match name.parse::<usize>() {
+            Ok(i) => i < regex.captures_len(),
+            Err(_) => regex.capture_names().flatten().any(|n| n == name),
+        };
+        let Some((range, name)) = group_refs(&text.value)
+            .into_iter()
+            .find(|(_, name)| !has(name))
+        else {
+            return Ok(());
+        };
+        let reference = &text.value[range.clone()];
+        let span = match text.kind {
+            TextKind::Str => {
+                str_offset(self.src, &at, range.start)..str_offset(self.src, &at, range.end)
+            }
+            TextKind::Heredoc | TextKind::RawHeredoc => at,
+        };
+        if name.is_empty() {
+            return Err(ParseError::new(E::EmptyGroup, span));
+        }
+        let split = (!reference.starts_with("${"))
+            .then(|| {
+                (1..name.len())
+                    .rev()
+                    .map(|i| name.split_at(i))
+                    .find(|(group, _)| has(group))
+            })
+            .flatten();
+        let fix = match split {
+            Some((group, rest)) => format!("write `${{{group}}}{rest}`, or `$$` for a literal `$`"),
+            None => {
+                let groups: Vec<String> = regex
+                    .capture_names()
+                    .enumerate()
+                    .map(|(i, name)| match name {
+                        Some(name) => format!("`${{{name}}}`"),
+                        None => format!("`${i}`"),
+                    })
+                    .collect();
+                format!(
+                    "its groups are {}, and `$$` is a literal `$`",
+                    groups.join(" ")
+                )
+            }
+        };
+        Err(ParseError::new(
+            E::UnknownGroup {
+                reference: reference.into(),
+                name: name.into(),
+                fix,
+            },
+            span,
+        ))
     }
 
     fn paths(&mut self) -> Result<Vec<String>, ParseError> {
@@ -473,13 +597,57 @@ fn text_from(kind: TokenKind) -> Result<Text, TokenKind> {
     }
 }
 
+/// Each `$` reference in a `sub` replacement, read as the regex crate's
+/// `Captures::expand` reads it: its byte range, and the group it names.
+fn group_refs(text: &str) -> Vec<(Range<usize>, &str)> {
+    let mut refs = Vec::new();
+    let mut at = 0;
+    while let Some(start) = text[at..].find('$').map(|i| at + i) {
+        let rest = &text[start + 1..];
+        let named = if rest.starts_with('$') {
+            at = start + 2;
+            continue;
+        } else if let Some(braced) = rest.strip_prefix('{') {
+            braced.find('}').map(|end| (&braced[..end], end + 2))
+        } else {
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            (end > 0).then(|| (&rest[..end], end))
+        };
+        at = start + 1;
+        if let Some((name, len)) = named {
+            at += len;
+            refs.push((start..at, name));
+        }
+    }
+    refs
+}
+
+/// The script offset of byte `offset` of the value of the string token at
+/// `token`; each escape is two bytes of script for one of value.
+fn str_offset(src: &str, token: &Range<usize>, offset: usize) -> usize {
+    let body = token.start + 1;
+    let mut value = 0;
+    let mut chars = src[body..token.end].char_indices();
+    while let Some((i, c)) = chars.next() {
+        if value >= offset {
+            return body + i;
+        }
+        if c == '\\' {
+            chars.next();
+        }
+        value += if c == '\\' { 1 } else { c.len_utf8() };
+    }
+    token.end
+}
+
 pub(super) fn validate_regex(
     source: String,
     flags: RegexFlags,
     span: Range<usize>,
 ) -> Result<Pattern, ParseError> {
-    let pattern = Pattern { source, flags };
-    if let Err(err) = pattern.regex() {
+    Pattern::new(source, flags).map_err(|err| {
         // The regex crate's message is a multi-line excerpt ending in
         // `error: <reason>`; keep only the reason.
         let message = err.to_string();
@@ -487,9 +655,8 @@ pub(super) fn validate_regex(
             .lines()
             .find_map(|l| l.strip_prefix("error: "))
             .unwrap_or(&message);
-        return Err(ParseError::new(E::InvalidRegex(reason.into()), span));
-    }
-    Ok(pattern)
+        ParseError::new(E::InvalidRegex(reason.into()), span)
+    })
 }
 
 const KEYWORDS: [&str; 8] = [
@@ -711,10 +878,7 @@ mod tests {
     }
 
     fn pattern(source: &str) -> Pattern {
-        Pattern {
-            source: source.into(),
-            flags: RegexFlags::default(),
-        }
+        Pattern::new(source.into(), RegexFlags::default()).unwrap()
     }
 
     fn text(value: &str, kind: TextKind) -> Text {
@@ -846,13 +1010,14 @@ mod tests {
             one(r#"sub fn:parse /x/i with "y""#),
             CommandKind::Sub {
                 scope: Some(target(vec![syntax("fn", "parse")])),
-                pattern: Pattern {
-                    source: "x".into(),
-                    flags: RegexFlags {
+                pattern: Pattern::new(
+                    "x".into(),
+                    RegexFlags {
                         case_insensitive: true,
                         dot_all: false,
                     },
-                },
+                )
+                .unwrap(),
                 text: string("y"),
             }
         );
@@ -1153,6 +1318,16 @@ mod tests {
             message("show +3"),
             "expected a selector, found a context count; usage: show [SEL [+N]]"
         );
+        assert_eq!(
+            message("show /re/+0..+70"),
+            "`+N` is one count of lines around each span, not a range; write show /re/ +70"
+        );
+        let e = error(r#"show all "x" +2..+5"#);
+        assert_eq!(
+            e.kind.to_string(),
+            r#"`+N` is one count of lines around each span, not a range; write show all "x" +5"#
+        );
+        assert_eq!(e.span, 13..19);
     }
 
     #[test]
@@ -1194,6 +1369,14 @@ mod tests {
             ]
         );
         assert_eq!(stages("show 1"), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn commands_without_a_selector_can_end_a_stage() {
+        assert_eq!(stages("outline | show 1"), [1]);
+        assert_eq!(stages("show | show 1"), [1]);
+        assert_eq!(stages("check | show 1"), [1]);
+        assert_eq!(stages("check error | show 1"), [1]);
     }
 
     #[test]
@@ -1340,12 +1523,75 @@ mod tests {
     fn sub_needs_a_pattern() {
         for src in [
             r#"sub fn:x with "y""#,
-            r#"sub all /x/ with "y""#,
             r#"sub /x/.lines with "y""#,
             r#"sub fn:x "y" with "z""#,
         ] {
             assert_eq!(error(src).kind, E::MissingSubPattern, "{src:?}");
         }
+    }
+
+    #[test]
+    fn sub_all_with_a_lone_regex_suggests_dropping_all() {
+        let src = r#"sub all /x\/y/i with "z""#;
+        let e = error(src);
+        assert_eq!(
+            e.kind.to_string(),
+            r"`sub` already replaces every match; drop `all`: sub /x\/y/i with ..."
+        );
+        assert_eq!(e.span, 4..7);
+    }
+
+    #[test]
+    fn sub_references_name_groups_the_regex_has() {
+        for src in [
+            r#"sub /(a)/ with "$0 $1 ${1}x ${0}""#,
+            r#"sub /(?<year>\d+)/ with "$year ${year}s $1""#,
+            r#"sub /a/ with "$$1 $$x $ $- ${ x $$""#,
+            "sub /a/ with <<E\n$0\nE",
+        ] {
+            one(src);
+        }
+    }
+
+    #[test]
+    fn sub_references_to_missing_groups_are_errors() {
+        assert_eq!(
+            message(r#"sub /(\d+) lines/ with "$1deletions""#),
+            "`$1deletions` names group `1deletions`, which the regex doesn't have; \
+             write `${1}deletions`, or `$$` for a literal `$`"
+        );
+        assert_eq!(
+            message(r#"sub /(?<year>\d+)/ with "$yearly""#),
+            "`$yearly` names group `yearly`, which the regex doesn't have; \
+             write `${year}ly`, or `$$` for a literal `$`"
+        );
+        assert_eq!(
+            message(r#"sub /(a)(?<b>b)/ with "${c}""#),
+            "`${c}` names group `c`, which the regex doesn't have; \
+             its groups are `$0` `$1` `${b}`, and `$$` is a literal `$`"
+        );
+        assert_eq!(
+            message(r#"sub /a/ with "$1""#),
+            "`$1` names group `1`, which the regex doesn't have; \
+             its groups are `$0`, and `$$` is a literal `$`"
+        );
+        assert_eq!(
+            message(r#"sub /a/ with "${10}""#),
+            "`${10}` names group `10`, which the regex doesn't have; \
+             its groups are `$0`, and `$$` is a literal `$`"
+        );
+        assert_eq!(
+            message(r#"sub /(a)/ with "${}x""#),
+            "`${}` names no group; write `$$` for a literal `$`"
+        );
+    }
+
+    #[test]
+    fn sub_reference_errors_point_at_the_reference() {
+        let src = r#"sub /(a)/ with "\"\t$1 $2x""#;
+        assert_eq!(error(src).span, src.find("$2").unwrap()..src.len() - 1);
+        let src = "sub /a/ with <<E\n$1\nE";
+        assert_eq!(error(src).span.start, src.find("<<").unwrap());
     }
 
     #[test]
@@ -1403,6 +1649,27 @@ mod tests {
     }
 
     #[test]
+    fn insert_start_or_end_needs_a_selector() {
+        assert_eq!(
+            message(r#"insert end "x""#),
+            "`insert end` needs a selector before the text, e.g. insert end fn:NAME TEXT; \
+         insert after $ TEXT appends to the file"
+        );
+        assert_eq!(
+            message("insert start <<END\nx\nEND\n"),
+            "`insert start` needs a selector before the text, e.g. insert start fn:NAME TEXT; \
+         insert before 1 TEXT adds to the top of the file"
+        );
+        assert_eq!(error(r#"insert end "x"; show"#).span, 0..14);
+        // A selector that isn't text is still missing its text.
+        assert_eq!(expected("insert end fn:x"), "text (a string or heredoc)");
+        assert_eq!(
+            expected(r#"insert after "x""#),
+            "text (a string or heredoc)"
+        );
+    }
+
+    #[test]
     fn every_command_has_a_usage_starting_with_it() {
         for verb in [
             "show", "outline", "replace", "insert", "delete", "sub", "move", "file",
@@ -1439,6 +1706,22 @@ mod tests {
         assert_eq!(
             message("show /(/"),
             r#"invalid regex: unclosed group; escape literal characters such as ( [ . * with \, or select a "string""#
+        );
+        assert_eq!(
+            message(r#"show "\r""#),
+            r#"invalid escape `\r`; write `\\r` for a backslash and r (strings support \n \t \" \\)"#
+        );
+        assert_eq!(
+            message("show import:app.models.user"),
+            r#"unknown part `.models`; quote a name that has dots: import:"app.models.user""#
+        );
+        assert_eq!(
+            message("show fn:App.handle"),
+            r#"unknown part `.handle`; to name a member, nest it: KIND:App>fn:handle (a Go method: fn:"App.handle")"#
+        );
+        assert_eq!(
+            message("show class:A.B"),
+            "unknown part `.B`; to name a member, nest it: KIND:A>class:B"
         );
     }
 

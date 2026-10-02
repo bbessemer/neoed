@@ -112,10 +112,7 @@ impl<'a> Span<'a> {
             }
             (false, Op::Eq, Value::Str(s)) => shown == s,
             (false, Op::Ne, Value::Str(s)) => shown != s,
-            (false, Op::Match, Value::Regex(pattern)) => pattern
-                .regex()
-                .expect("validated when parsed")
-                .is_match(shown),
+            (false, Op::Match, Value::Regex(pattern)) => pattern.regex().is_match(shown),
             _ => unreachable!("checked when parsed"),
         })
     }

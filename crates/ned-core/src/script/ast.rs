@@ -192,23 +192,40 @@ pub enum TextKind {
     RawHeredoc,
 }
 
-/// A regex, validated at parse time.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A regex, compiled with multi-line mode on and its flags applied.
+#[derive(Debug, Clone)]
 pub struct Pattern {
     pub source: String,
     pub flags: RegexFlags,
+    regex: Regex,
 }
 
 impl Pattern {
-    /// Compiles the pattern with multi-line mode on and its flags applied.
-    pub fn regex(&self) -> Result<Regex, regex::Error> {
-        RegexBuilder::new(&self.source)
+    pub fn new(source: String, flags: RegexFlags) -> Result<Pattern, regex::Error> {
+        let regex = RegexBuilder::new(&source)
             .multi_line(true)
-            .case_insensitive(self.flags.case_insensitive)
-            .dot_matches_new_line(self.flags.dot_all)
-            .build()
+            .case_insensitive(flags.case_insensitive)
+            .dot_matches_new_line(flags.dot_all)
+            .build()?;
+        Ok(Pattern {
+            source,
+            flags,
+            regex,
+        })
+    }
+
+    pub fn regex(&self) -> &Regex {
+        &self.regex
     }
 }
+
+impl PartialEq for Pattern {
+    fn eq(&self, other: &Pattern) -> bool {
+        (&self.source, self.flags) == (&other.source, other.flags)
+    }
+}
+
+impl Eq for Pattern {}
 
 /// A 1-based line number, or `$` for the last line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

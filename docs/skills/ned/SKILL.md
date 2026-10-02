@@ -39,8 +39,9 @@ replace fn:parse>"unexpected end" with "unexpected end of input"
 EOF
 ```
 
-Short scripts can use `-e`: `ned src/parser.rs -e 'delete fn:debug_dump'`. Add
-`-n` to preview without writing.
+Short scripts with no `'` in them can use `-e`:
+`ned src/parser.rs -e 'delete fn:debug_dump'`. Add `-n` to preview without
+writing.
 
 Search with `show all` instead of grep. It prints each match's line with its
 number, under the file's name, across a glob or the whole workspace (`-w`, which
@@ -239,6 +240,8 @@ insert start class:App>fn:handle "metrics.count(req)"
   Apply it and rerun; nothing was written.
 - **Syntax guard.** An edit that introduces a parse error is rejected. Fix the
   text; use `--force` only if the error is intended.
+- **A Python `.sig` stops before the `:`**: replace it with `def f(x) -> int`,
+  not `def f(x) -> int:`.
 - **Introduced errors block edits** while a daemon runs (`ned daemon start`;
   `status` and `stop` too; Unix only): the error lists what the edit broke. Fix
   the text, or add `allow errors` to the script when the code is knowingly
@@ -283,17 +286,16 @@ insert start class:App>fn:handle "metrics.count(req)"
   one span. TEXT for a partial span keeps its first line as written and indents
   the rest by the first line's indentation, so leave that indentation off.
 - **Re-basing follows the target line.** `<<END` text takes the indentation of
-  the line it's inserted next to, or of the first line it replaces. In Markdown,
-  a new list item (`- ...`) next to any line of a list item goes beside the
-  whole item, at its marker's column; other text next to a wrapped item's
-  continuation line gets the hanging indent, continuing its paragraph. For code,
-  use `<<END`: a quoted `<<'END'` inside the script, a shell habit, leaves code
-  at column 0.
+  the target's first line (after a literal or regex, its last line), or, for
+  `insert start|end`, of the first line inside it. In Markdown, a new list item
+  (`- ...`) next to any line of a list item goes beside the whole item, at its
+  marker's column; other text next to a wrapped item's continuation line gets
+  the hanging indent, continuing its paragraph. For code, use `<<END`: a quoted
+  `<<'END'` inside the script, a shell habit, leaves code at column 0.
 - **Whole-line string TEXT gets its own newline.** A literal that runs from a
   line's indentation to its end (`"    x,\n"`, or `"    s\n}"`) is a whole-line
-  target: string TEXT for it is re-based like a heredoc, and a final newline is
-  added, so a trailing `\n` in the string adds a blank line. Leave the `\n` off,
-  or use a line number or a heredoc.
+  target: string TEXT for it is re-based like a heredoc, and it ends in a
+  newline, whether or not the string does.
 - **Always give a script.** Without `-e` or a heredoc, `ned` reads the script
   from stdin: on a terminal that's an error, but an open pipe that never closes
   makes it wait.

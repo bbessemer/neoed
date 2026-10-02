@@ -1,7 +1,8 @@
 sub [[all] SEL] /re/ with TEXT
 
 Replaces every match of the regex inside each span of SEL, or of every file in
-the set. In TEXT, $1, ${name} and $0 expand to captures and $$ is a literal $.
+the set. In TEXT, $1, ${name} and $0 expand to captures and $$ is a literal $;
+${1}x is group 1 then x ($1x is group 1x). A group the regex lacks is an error.
 The replacement is verbatim. No match at all is an error. Regexes use Rust
 syntax; ^ and $ match at line boundaries; flags: i (ignore case), s (. matches
 newline).

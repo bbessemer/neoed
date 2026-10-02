@@ -120,6 +120,11 @@ propose the feature to the engineer and add it to TODO.md once approved;
 otherwise add guidance to `docs/skills/ned/SKILL.md`. Commit these to the
 current feature branch (prefix `todo:`), not a new branch.
 
+**Feedback from other agents** (reports on `ned` from sessions in other
+projects) goes in the same places. This repo is public: keep those projects'
+names, paths, identifiers and code out of every file and commit message, and
+rewrite examples with generic names.
+
 ## Project Overview
 
 Neoed (`ned`) is a line editor for AI coding agents, replacing `sed`/ad-hoc
