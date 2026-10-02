@@ -104,7 +104,7 @@ than staging paths, so other staged or unstaged changes are never swept into the
 commit. Depends on Sessions for the session case.
 
 - [x] `--commit MSG` for one invocation's edits
-- [ ] With `-s`, the session's edits since its last commit
+- [x] With `-s`, the session's edits since its last commit
 
 Version: minor; a new flag.
 

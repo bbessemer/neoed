@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use ned_core::diff::{self, DiffStat};
 use ned_core::fs;
 use ned_core::lang::Language;
-use ned_core::session::{self, Entry, Session, SessionError, UndoError};
+use ned_core::session::{
+    self, Entry, FileChange, Session, SessionError, UncommittedError, UndoError,
+};
 use ned_core::style::Role;
 use ned_core::workspace;
 
@@ -32,6 +34,19 @@ pub fn record(session: &Session, entry: Entry) {
     }
 }
 
+/// The changes `--commit` commits in `session` besides the invocation's own,
+/// each with its entry's id (spec §1.3).
+pub fn uncommitted(session: &Session) -> Result<Vec<(u64, FileChange)>, Failure> {
+    let entries = session.lock().and_then(|log| log.entries());
+    session::uncommitted(&entries.map_err(failure)?, read).map_err(|err| {
+        let code = match err {
+            UncommittedError::Io { .. } => 3,
+            UncommittedError::Changed { .. } => 1,
+        };
+        (format!("error: {err}"), code)
+    })
+}
+
 /// An error to print, and the exit code.
 pub type Failure = (String, u8);
 
@@ -50,11 +65,6 @@ pub fn undo(flag: Option<String>, dir: Option<PathBuf>, force: bool) -> Result<(
     let session = existing(flag, &root)?;
     let mut log = session.lock().map_err(failure)?;
     let entries = log.entries().map_err(failure)?;
-    let read = |path: &Path| match std::fs::read_to_string(path) {
-        Ok(text) => Ok(Some(text)),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err),
-    };
     let undo = session::undo(&entries, read, force).map_err(|err| {
         let code = match err {
             UndoError::Io { .. } => 3,
@@ -110,6 +120,7 @@ pub fn undo(flag: Option<String>, dir: Option<PathBuf>, force: bool) -> Result<(
         exit: 0,
         error: None,
         changes: undo.changes,
+        commit: None,
     };
     if let Err(err) = log.append(entry) {
         errln!("note: not recorded in session {}: {err}", session.name());
@@ -202,6 +213,15 @@ fn existing(flag: Option<String>, root: &Path) -> Result<Session, Failure> {
 
 fn failure(err: SessionError) -> Failure {
     (format!("error: {err}"), exit_code(&err))
+}
+
+/// The text of the file at `path`, `None` if it's missing.
+fn read(path: &Path) -> io::Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
 }
 
 /// The workspace's sessions, for an error's fix.

@@ -182,7 +182,8 @@ edit, and `ned -e '!!:s/prase/parse/'` repeats the last script with a fix.
 
 `--commit MSG` turns the edits an invocation writes into one git commit, and
 nothing else: other changes in the working tree and index, staged or not, stay
-uncommitted.
+uncommitted. In a session, it commits every edit since the session's last
+commit.
 
 ## Languages
 

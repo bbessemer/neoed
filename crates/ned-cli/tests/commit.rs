@@ -482,3 +482,305 @@ fn outside_a_repository_is_a_usage_error() {
         NOTES
     );
 }
+
+impl Repo {
+    /// Runs `ned ARGS` in session `s`.
+    fn ned_in_session(&self, args: &[&str]) -> Output {
+        let args: Vec<&str> = ["-s", "s"].iter().chain(args).copied().collect();
+        let out = self.ned(&args);
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {}", stderr(&out));
+        out
+    }
+
+    fn committed(&self, rev: &str) -> String {
+        self.git(&["show", "--format=%s", "--name-only", rev])
+    }
+}
+
+#[test]
+fn a_session_commits_its_edits_since_its_last_commit() {
+    let repo = Repo::new(&[("notes.txt", NOTES), ("other.txt", "x\n")]);
+    repo.ned_in_session(&["notes.txt", "-e", "replace \"one\" with \"1\""]);
+    repo.ned_in_session(&["other.txt", "-e", "replace \"x\" with \"y\""]);
+    repo.ned_in_session(&[
+        "notes.txt",
+        "--commit",
+        "First",
+        "-e",
+        "replace \"two\" with \"2\"",
+    ]);
+    assert_eq!(repo.committed("HEAD"), "First\n\nnotes.txt\nother.txt\n");
+    assert_eq!(
+        repo.git(&["show", "HEAD:notes.txt"]),
+        "1\n2\nthree\nfour\nfive\n"
+    );
+    repo.ned_in_session(&[
+        "notes.txt",
+        "--commit",
+        "Second",
+        "-e",
+        "replace \"three\" with \"3\"",
+    ]);
+    assert_eq!(
+        repo.git(&["diff", "--stat", "HEAD~1", "HEAD"])
+            .lines()
+            .count(),
+        2
+    );
+    assert_eq!(repo.git(&["status", "--porcelain"]), "");
+    let history = stdout(&repo.ned(&["history", "-s", "s"]));
+    let committed: Vec<&str> = history
+        .lines()
+        .filter(|l| l.contains(", commit "))
+        .collect();
+    assert_eq!(committed.len(), 2, "{history}");
+}
+
+#[test]
+fn a_session_leaves_undone_edits_out() {
+    let repo = Repo::new(&[("notes.txt", NOTES)]);
+    repo.ned_in_session(&["notes.txt", "-e", "replace \"one\" with \"1\""]);
+    repo.ned_in_session(&["-e", "create new.txt \"x\""]);
+    assert_eq!(repo.ned(&["undo", "-s", "s"]).status.code(), Some(0));
+    assert_eq!(repo.ned(&["undo", "-s", "s"]).status.code(), Some(0));
+    repo.ned_in_session(&[
+        "notes.txt",
+        "--commit",
+        "Only two",
+        "-e",
+        "replace \"two\" with \"2\"",
+    ]);
+    assert_eq!(repo.committed("HEAD"), "Only two\n\nnotes.txt\n");
+    assert_eq!(
+        repo.git(&["show", "HEAD:notes.txt"]),
+        "one\n2\nthree\nfour\nfive\n"
+    );
+}
+
+#[test]
+fn a_staged_mode_change_stays_staged() {
+    let repo = Repo::new(&[("notes.txt", NOTES)]);
+    let notes = repo.path().join("notes.txt");
+    fs::set_permissions(&notes, fs::Permissions::from_mode(0o755)).unwrap();
+    repo.git(&["add", "notes.txt"]);
+    let out = repo.ned(&[
+        "notes.txt",
+        "--commit",
+        "m",
+        "-e",
+        "replace \"one\" with \"1\"",
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let mode = |listed: String| listed.split(' ').next().unwrap().to_string();
+    assert_eq!(mode(repo.git(&["ls-tree", "HEAD", "notes.txt"])), "100644");
+    assert_eq!(mode(repo.git(&["ls-files", "-s", "notes.txt"])), "100755");
+    assert_eq!(repo.git(&["status", "--porcelain"]), "M  notes.txt\n");
+}
+
+#[test]
+fn a_locked_index_writes_nothing() {
+    let repo = Repo::new(&[("notes.txt", NOTES)]);
+    let lock = repo.path().join(".git/index.lock");
+    fs::write(&lock, "").unwrap();
+    let head = repo.head();
+    let out = repo.ned(&[
+        "notes.txt",
+        "--commit",
+        "m",
+        "-e",
+        "replace \"one\" with \"1\"",
+    ]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("index.lock exists"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(lock.exists());
+    fs::remove_file(&lock).unwrap();
+    assert_eq!(repo.head(), head);
+    assert_eq!(repo.read("notes.txt"), NOTES);
+    assert_eq!(repo.git(&["status", "--porcelain"]), "");
+}
+
+#[test]
+fn the_repository_is_the_first_files() {
+    let repo = Repo::new(&[("notes.txt", NOTES)]);
+    let elsewhere = tempfile::tempdir().unwrap();
+    let notes = repo.path().join("notes.txt").display().to_string();
+    let out = cargo_bin_cmd!("ned")
+        .envs(isolated(repo.home.path()))
+        .env(
+            "GIT_CEILING_DIRECTORIES",
+            elsewhere.path().parent().unwrap(),
+        )
+        .env("XDG_STATE_HOME", repo.home.path())
+        .args([&notes, "--commit", "m", "-e", "replace \"one\" with \"1\""])
+        .current_dir(elsewhere.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(repo.git(&["log", "-1", "--format=%s"]), "m\n");
+}
+
+#[test]
+fn a_file_in_a_nested_repository_is_refused() {
+    let repo = Repo::new(&[("notes.txt", NOTES), (".gitignore", "inner/\n")]);
+    let inner = repo.path().join("inner");
+    fs::create_dir(&inner).unwrap();
+    repo.git(&["-C", "inner", "init", "-q"]);
+    repo.write(&[("inner/f.txt", "x\n")]);
+    repo.git(&["-C", "inner", "add", "f.txt"]);
+    repo.git(&["-C", "inner", "commit", "-qm", "inner"]);
+    let head = repo.head();
+    let out = repo.ned(&[
+        "notes.txt",
+        "inner/f.txt",
+        "--commit",
+        "m",
+        "-e",
+        "replace all /^(one|x)$/ with \"1\"",
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("f.txt isn't in the repository at"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(repo.head(), head);
+    assert_eq!(repo.read("inner/f.txt"), "x\n");
+    let out = repo.ned(&["inner/f.txt", "--commit", "m", "-e", "replace 1 with \"y\""]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(repo.git(&["-C", "inner", "show", "HEAD:f.txt"]), "y\n");
+    assert_eq!(repo.head(), head);
+}
+
+#[test]
+fn a_file_in_a_submodule_is_refused() {
+    let repo = Repo::new(&[("notes.txt", NOTES)]);
+    let sub = Repo::new(&[("f.txt", "x\n")]);
+    let url = sub.path().display().to_string();
+    repo.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        &url,
+        "sub",
+    ]);
+    repo.git(&["commit", "-qm", "sub"]);
+    let head = repo.head();
+    let out = repo.ned(&[
+        "notes.txt",
+        "sub/f.txt",
+        "--commit",
+        "m",
+        "-e",
+        "replace all /^(one|x)$/ with \"1\"",
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("f.txt isn't in the repository at"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(repo.head(), head);
+    assert_eq!(repo.read("sub/f.txt"), "x\n");
+}
+
+#[test]
+fn a_session_script_that_changes_nothing_commits_nothing() {
+    let repo = Repo::new(&[("notes.txt", NOTES)]);
+    repo.ned_in_session(&["notes.txt", "-e", "replace \"one\" with \"1\""]);
+    let head = repo.head();
+    let out = repo.ned(&["-s", "s", "notes.txt", "--commit", "m", "-e", "show 1"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("nothing to commit"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(repo.head(), head);
+}
+
+#[test]
+fn a_session_edit_no_longer_on_disk_is_refused() {
+    let repo = Repo::new(&[("notes.txt", NOTES), ("other.txt", "x\n")]);
+    repo.ned_in_session(&["notes.txt", "-e", "replace \"one\" with \"1\""]);
+    repo.git(&["checkout", "--", "notes.txt"]);
+    let head = repo.head();
+    let out = repo.ned(&[
+        "-s",
+        "s",
+        "other.txt",
+        "--commit",
+        "m",
+        "-e",
+        "replace \"x\" with \"y\"",
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("notes.txt changed since session entry 1 wrote it"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(repo.head(), head);
+    assert_eq!(repo.read("other.txt"), "x\n");
+    assert_eq!(repo.git(&["status", "--porcelain"]), "");
+}
+
+#[test]
+fn a_session_edit_git_cant_commit_names_its_entry() {
+    let repo = Repo::new(&[("notes.txt", NOTES), (".gitignore", "*.log\n")]);
+    let elsewhere = tempfile::tempdir().unwrap();
+    let outside = elsewhere.path().join("outside.txt");
+    fs::write(&outside, "x\n").unwrap();
+    let outside = outside.display().to_string();
+    repo.write(&[("build.log", "x\n")]);
+    for (session, file, problem) in [
+        ("ignored", "build.log", "build.log is ignored by git"),
+        (
+            "outside",
+            outside.as_str(),
+            "outside.txt isn't in the repository at",
+        ),
+    ] {
+        let edit = |args: &[&str]| {
+            let args: Vec<&str> = ["-s", session].iter().chain(args).copied().collect();
+            repo.ned(&args)
+        };
+        let out = edit(&[file, "-e", "replace \"x\" with \"y\""]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let head = repo.head();
+        let commit = [
+            "notes.txt",
+            "--commit",
+            "m",
+            "-e",
+            "replace \"one\" with \"1\"",
+        ];
+        let out = edit(&commit);
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+        for expected in [problem, ", and session entry 1 edited it"] {
+            assert!(stderr(&out).contains(expected), "{}", stderr(&out));
+        }
+        assert!(
+            stderr(&out).contains("start a new session"),
+            "{}",
+            stderr(&out)
+        );
+        assert_eq!(repo.head(), head);
+        assert_eq!(repo.read("notes.txt"), NOTES);
+    }
+    let out = repo.ned(&[
+        "-s",
+        "fresh",
+        "notes.txt",
+        "--commit",
+        "m",
+        "-e",
+        "replace \"one\" with \"1\"",
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+}

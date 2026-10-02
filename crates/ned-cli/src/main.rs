@@ -263,7 +263,14 @@ fn main() -> ExitCode {
         Err(failure) => return finish(Err(failure)),
     };
 
-    let ran = run(&cli, &src, &cwd, root.clone());
+    let prior = match (&cli.commit, &session) {
+        (Some(_), Some(session)) => match session::uncommitted(session) {
+            Ok(prior) => prior,
+            Err(failure) => return finish(Err(failure)),
+        },
+        _ => Vec::new(),
+    };
+    let ran = run(&cli, &src, &cwd, root.clone(), &prior);
     if let Some(session) = &session {
         session::record(
             session,
@@ -279,6 +286,7 @@ fn main() -> ExitCode {
                 exit: ran.exit,
                 error: ran.error,
                 changes: ran.changes,
+                commit: ran.commit,
             },
         );
     }
@@ -290,6 +298,8 @@ struct Ran {
     exit: u8,
     error: Option<String>,
     changes: Vec<FileChange>,
+    /// The commit `--commit` made.
+    commit: Option<String>,
 }
 
 impl Ran {
@@ -301,12 +311,14 @@ impl Ran {
             exit,
             error: Some(error),
             changes: Vec::new(),
+            commit: None,
         }
     }
 }
 
-/// Runs the script `src`: prints its output and writes its edits.
-fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
+/// Runs the script `src`: prints its output and writes its edits, and with
+/// `--commit` commits them after the session's `prior` changes.
+fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf, prior: &[(u64, FileChange)]) -> Ran {
     let parsed = match script::parse(src) {
         Ok(parsed) => parsed,
         Err(err) => return Ran::failed(2, err.render(src)),
@@ -378,12 +390,12 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
     }
 
     let committed = match &cli.commit {
-        Some(message) => match commit(&top, cwd, &changes, &finals, message) {
+        Some(message) => match commit(&top, cwd, prior, &changes, &finals, message) {
             Ok(committed) => Some(committed),
             Err(err) => {
                 #[cfg(unix)]
                 daemon::restore(&mut workspace, &changes);
-                return Ran::failed(git_exit_code(&err), format!("error: {err}"));
+                return Ran::failed(git_exit_code(&err), commit_error(&err, prior));
             }
         },
         None => None,
@@ -454,9 +466,6 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
         }
     }
     if let Some((repo, prepared)) = &committed {
-        if let Err(err) = repo.stage(prepared) {
-            eprintln!("note: the index wasn't updated: {err}");
-        }
         let subject = cli
             .commit
             .as_deref()
@@ -477,6 +486,7 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
         exit: 0,
         error: None,
         changes: recorded,
+        commit: committed.map(|(_, prepared)| prepared.commit),
     }
 }
 
@@ -484,31 +494,67 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
 fn commit(
     top: &Path,
     cwd: &Path,
+    prior: &[(u64, FileChange)],
     changes: &[exec::Change],
     finals: &[&str],
     message: &str,
 ) -> Result<(Repo, Prepared), GitError> {
-    let repo = Repo::discover(top)?;
     let paths: Vec<PathBuf> = changes.iter().map(|c| cwd.join(&c.path)).collect();
-    let edits: Vec<FileEdit> = changes
-        .iter()
-        .zip(finals)
-        .zip(&paths)
-        .map(|((change, after), path)| FileEdit {
-            path,
-            before: (!change.created).then_some(change.old.as_str()),
-            after,
-        })
+    let earlier = prior.iter().map(|(_, change)| FileEdit {
+        path: &change.path,
+        before: change.before.as_deref(),
+        after: change.after.as_deref(),
+    });
+    let edits: Vec<FileEdit> = earlier
+        .chain(
+            changes
+                .iter()
+                .zip(finals)
+                .zip(&paths)
+                .map(|((change, after), path)| FileEdit {
+                    path,
+                    before: (!change.created).then_some(change.old.as_str()),
+                    after: Some(after),
+                }),
+        )
         .collect();
-    let prepared = repo.prepare(&edits, message)?;
+    let repo = Repo::discover(paths.first().map_or(top, PathBuf::as_path))?;
+    if changes.is_empty() {
+        return Err(GitError::NothingToCommit);
+    }
+    let mut prepared = repo.prepare(&edits, message)?;
     repo.advance(&prepared)?;
+    if let Err(err) = repo.stage(&mut prepared) {
+        if let Err(git) = repo.retreat(&prepared) {
+            eprintln!("error: {git}");
+        }
+        return Err(err);
+    }
     Ok((repo, prepared))
+}
+
+/// The message for `err`, naming the session entry whose edit it concerns,
+/// if `prior` (§1.3) holds that edit.
+fn commit_error(err: &GitError, prior: &[(u64, FileChange)]) -> String {
+    let (problem, edit) = match err {
+        GitError::Ignored { path, edit } => (format!("{path} is ignored by git"), edit),
+        GitError::Outside { path, top, edit } => {
+            (format!("{path} isn't in the repository at {top}"), edit)
+        }
+        _ => return format!("error: {err}"),
+    };
+    match prior.get(*edit) {
+        Some((id, _)) => format!(
+            "error: {problem}, and session entry {id} edited it, so the session's edits can't be committed; start a new session (-s NAME) to commit only the edits from then on"
+        ),
+        None => format!("error: {err}"),
+    }
 }
 
 fn git_exit_code(err: &GitError) -> u8 {
     match err {
         GitError::NoGit | GitError::NotARepo(_) => 2,
-        GitError::Failed { .. } => 3,
+        GitError::Failed { .. } | GitError::IndexLocked(_) => 3,
         _ => 1,
     }
 }
