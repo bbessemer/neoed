@@ -28,12 +28,16 @@ use ned_core::config::{self, Config};
 use ned_core::diff::{self, DiffStat};
 use ned_core::exec::{self, ExecErrorKind, Initial, Options};
 use ned_core::format::{self, Outcome};
-use ned_core::lang::Language;
+use ned_core::lang::{self, Language};
 use ned_core::lsp;
 #[cfg(unix)]
 use ned_core::lsp::Lsp;
 use ned_core::session::{Entry, FileChange};
 use ned_core::{fs, script, workspace};
+
+/// A `--lang` value, `None` for text. Clap would read `Option<Option<_>>` as a
+/// flag whose value is optional.
+type LangFlag = Option<Language>;
 
 /// Token-economical, syntax-aware line editor for AI agents.
 #[derive(Parser)]
@@ -75,9 +79,10 @@ struct Cli {
     /// Don't check edits with language servers.
     #[arg(long)]
     no_check: bool,
-    /// Use this language for every file instead of detecting it.
-    #[arg(long, value_name = "LANG")]
-    lang: Option<Language>,
+    /// Use this language for every file instead of detecting it, or `text` to
+    /// parse none of them.
+    #[arg(long, value_name = "LANG", value_parser = lang::parse_lang)]
+    lang: Option<LangFlag>,
     /// Context lines around diff hunks.
     #[arg(long, value_name = "N", default_value_t = 1)]
     context: usize,
@@ -418,6 +423,7 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::SyntaxError { .. }
         | ExecErrorKind::NoLanguage { .. }
         | ExecErrorKind::NoCodeLanguage { .. }
+        | ExecErrorKind::ParsingDisabled { .. }
         | ExecErrorKind::UnknownKind { .. }
         | ExecErrorKind::MissingPart { .. }
         | ExecErrorKind::PartNeedsItem { .. }

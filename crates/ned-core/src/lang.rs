@@ -51,17 +51,9 @@ impl Language {
     /// The language of a file, from its extension, then its shebang.
     pub fn detect(path: &str, text: &str) -> Option<Language> {
         let extension = Path::new(path).extension().and_then(|e| e.to_str());
-        let by_extension = match extension.unwrap_or_default() {
-            "rs" => Some(Language::Rust),
-            "py" | "pyi" => Some(Language::Python),
-            "ts" | "mts" | "cts" => Some(Language::TypeScript),
-            "tsx" => Some(Language::Tsx),
-            "js" | "mjs" | "cjs" | "jsx" => Some(Language::JavaScript),
-            "go" => Some(Language::Go),
-            "md" | "markdown" => Some(Language::Markdown),
-            _ => None,
-        };
-        by_extension.or_else(|| from_shebang(text))
+        by_extension(extension.unwrap_or_default())
+            .flatten()
+            .or_else(|| from_shebang(text))
     }
 
     pub fn grammar(self) -> tree_sitter::Language {
@@ -168,6 +160,23 @@ impl Language {
     }
 }
 
+/// The language an extension names: `Some(None)` for a known text extension,
+/// `None` for an unknown one.
+fn by_extension(extension: &str) -> Option<Option<Language>> {
+    let lang = match extension {
+        "rs" => Language::Rust,
+        "py" | "pyi" => Language::Python,
+        "ts" | "mts" | "cts" => Language::TypeScript,
+        "tsx" => Language::Tsx,
+        "js" | "mjs" | "cjs" | "jsx" => Language::JavaScript,
+        "go" => Language::Go,
+        "md" | "markdown" => Language::Markdown,
+        "txt" => return Some(None),
+        _ => return None,
+    };
+    Some(Some(lang))
+}
+
 /// The language of the interpreter named on a `#!` first line, looking past
 /// `env` and its flags.
 fn from_shebang(text: &str) -> Option<Language> {
@@ -187,6 +196,40 @@ fn from_shebang(text: &str) -> Option<Language> {
     }
 }
 
+/// A `--lang` value: a language's name, or `text` (`None`) to parse no file.
+pub fn parse_lang(s: &str) -> Result<Option<Language>, String> {
+    match s {
+        TEXT => Ok(None),
+        _ => s
+            .parse()
+            .map(Some)
+            .map_err(|_| unknown_language(s, &[TEXT])),
+    }
+}
+
+/// The extension of `path`, if `ned` doesn't know it and so reads the file as
+/// text.
+pub fn unknown_extension(path: &str) -> Option<&str> {
+    let extension = Path::new(path).extension()?.to_str()?;
+    by_extension(extension).is_none().then_some(extension)
+}
+
+/// The `--lang` name for reading a file as text.
+pub const TEXT: &str = "text";
+
+/// The error for an unknown language name, listing the known ones and `extra`.
+fn unknown_language(s: &str, extra: &[&str]) -> String {
+    let names: Vec<_> = Language::ALL
+        .iter()
+        .map(|l| l.name())
+        .chain(extra.iter().copied())
+        .collect();
+    format!(
+        "unknown language `{s}`; expected one of {}",
+        names.join(", ")
+    )
+}
+
 impl fmt::Display for Language {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
@@ -200,13 +243,7 @@ impl FromStr for Language {
         Language::ALL
             .into_iter()
             .find(|l| l.name() == s)
-            .ok_or_else(|| {
-                let names: Vec<_> = Language::ALL.iter().map(|l| l.name()).collect();
-                format!(
-                    "unknown language `{s}`; expected one of {}",
-                    names.join(", ")
-                )
-            })
+            .ok_or_else(|| unknown_language(s, &[]))
     }
 }
 
@@ -277,7 +314,27 @@ mod tests {
         assert_eq!(
             "ruby".parse::<Language>(),
             Err("unknown language `ruby`; expected one of rust, python, typescript, tsx, javascript, go, markdown".into())
+            );
+        assert!("text".parse::<Language>().is_err());
+    }
+
+    #[test]
+    fn parses_lang_flags() {
+        assert_eq!(parse_lang("go"), Ok(Some(Language::Go)));
+        assert_eq!(parse_lang("text"), Ok(None));
+        assert_eq!(
+            parse_lang("ruby"),
+            Err("unknown language `ruby`; expected one of rust, python, typescript, tsx, javascript, go, markdown, text".into())
         );
+    }
+
+    #[test]
+    fn finds_unknown_extensions() {
+        assert_eq!(unknown_extension("a/b.toml"), Some("toml"));
+        assert_eq!(unknown_extension("a.RS"), Some("RS"));
+        for known in ["a.rs", "a.markdown", "notes.txt", "Makefile", ".gitignore"] {
+            assert_eq!(unknown_extension(known), None, "{known}");
+        }
     }
 
     #[test]

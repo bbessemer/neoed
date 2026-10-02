@@ -32,18 +32,18 @@ be the first argument; write a file with one of those names as `./help`, say.
 - Files must be UTF-8. Line endings are detected per file (LF or CRLF), and
   inserted text is converted to match.
 
-| Flag                      | Effect                                                                                                                               |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `-n`, `--dry-run`         | Resolve and apply edits in memory, print the output, write nothing.                                                                  |
-| `-q`, `--quiet`           | Print only the per-file summary lines on success (§6.3).                                                                             |
-| `--force`                 | Skip the parse-error guard (§4.3) and blocking on introduced diagnostics (§6.5).                                                     |
-| `--no-check`              | Don't check edits with language servers (§6.5).                                                                                      |
-| `-w`, `--workspace [DIR]` | Start with every file in the workspace, `DIR` or the one detected (§1.1), instead of `FILE` arguments (§2.4).                        |
-| `--no-fmt`                | Don't run formatters (§6.4).                                                                                                         |
-| `--lang LANG`             | Use this language for every file: `rust`, `python`, `typescript`, `tsx`, `javascript`, `go`, `markdown`.                             |
-| `--context N`             | Context lines around diff hunks (default 1).                                                                                         |
-| `-s`, `--session NAME`    | Record the invocation in session `NAME`, overriding `NED_SESSION` (§1.2).                                                            |
-| `-V`, `--version`         | Print the version: the package version and the build's git commit (the version alone for a release build, or one built without git). |
+| Flag                      | Effect                                                                                                                                    |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `-n`, `--dry-run`         | Resolve and apply edits in memory, print the output, write nothing.                                                                       |
+| `-q`, `--quiet`           | Print only the per-file summary lines on success (§6.3).                                                                                  |
+| `--force`                 | Skip the parse-error guard (§4.3) and blocking on introduced diagnostics (§6.5).                                                          |
+| `--no-check`              | Don't check edits with language servers (§6.5).                                                                                           |
+| `-w`, `--workspace [DIR]` | Start with every file in the workspace, `DIR` or the one detected (§1.1), instead of `FILE` arguments (§2.4).                             |
+| `--no-fmt`                | Don't run formatters (§6.4).                                                                                                              |
+| `--lang LANG`             | Use this language for every file: `rust`, `python`, `typescript`, `tsx`, `javascript`, `go`, `markdown`, or `text` to parse none of them. |
+| `--context N`             | Context lines around diff hunks (default 1).                                                                                              |
+| `-s`, `--session NAME`    | Record the invocation in session `NAME`, overriding `NED_SESSION` (§1.2).                                                                 |
+| `-V`, `--version`         | Print the version: the package version and the build's git commit (the version alone for a release build, or one built without git).      |
 
 Otherwise, a file's language is detected from its extension, then from its
 shebang (`python…` or `node`, directly or through `env`). Extensions are
@@ -58,9 +58,15 @@ case-sensitive:
 | `javascript` | `.js`, `.mjs`, `.cjs`, `.jsx` |
 | `go`         | `.go`                         |
 | `markdown`   | `.md`, `.markdown`            |
+| `text`       | `.txt`                        |
 
-Line, regex and literal selectors work on any file; syntax selectors need a
-language.
+A file with any other extension, and no shebang `ned` knows, is read as `text`:
+it isn't parsed, so line, regex and literal selectors work on it, but syntax
+selectors, the parse-error guard (§4.3), formatting (§6.4) and language servers
+(§6.5) skip it. A run that reads such files prints one note on stderr naming
+their extensions, sorted, e.g.
+`note: read .json, .toml files as text; syntax selectors skip them`. Files
+without an extension, `.txt` files and runs with `--lang` print no note.
 
 ### 1.1 Daemon
 
@@ -510,16 +516,16 @@ The kinds each language supports, and the items they cover there:
   without generic arguments (`impl<T> fmt::Display for Foo<T>` is
   `"Display for Foo"`). `impl:TYPE` also matches every trait impl of the type.
 - A syntax step skips files whose language doesn't support its kind, as it skips
-  files without a language, so `fn:parse` works in a set that also holds
-  Markdown. If no searched file supports the kind, the step is an error that
-  lists the kinds the first such language does support.
+  text files, so `fn:parse` works in a set that also holds Markdown. If no
+  searched file supports the kind, the step is an error that lists the kinds the
+  first such language does support.
 - A syntax item's default span is the **whole item as a reader sees it**,
   including its leading doc comments and attributes or decorators, up to the
   first blank line above it. A `,` directly after the item, on the same line, is
   part of the span too (fields, variants). When `replace` targets such an item
   and `TEXT` doesn't end with `,`, one is appended.
-- Syntax steps skip files without a language. If no searched file has one, the
-  selector is an error that suggests `--lang`.
+- Syntax steps skip text files. If every searched file is text, the selector is
+  an error that suggests `--lang`.
 - `file:PATH` is a special step that selects the whole of one file in the
   current set. It exists to scope the steps after it:
   `file:src/lexer.rs>fn:new`. `PATH` may contain `/` and `.`, and ends at `>` or
@@ -635,10 +641,10 @@ The kinds each language supports, and the items they cover there:
 
 `query{...}` runs a tree-sitter query against each file's grammar, so it works
 in every language `ned` detects. The span is taken from the `@sel` capture if
-there is one, and otherwise from the outermost capture of each match. Files
-without a language are skipped, as for syntax steps. A query that doesn't
-compile is a script error (exit 2). Write `\}` for a literal `}` in the query.
-The query must fit on one line.
+there is one, and otherwise from the outermost capture of each match. Text files
+are skipped, as for syntax steps. A query that doesn't compile is a script error
+(exit 2). Write `\}` for a literal `}` in the query. The query must fit on one
+line.
 
 ```
 delete all query{(call_expression function: (identifier) @f (#eq? @f "dbg")) @sel}
@@ -750,9 +756,9 @@ an `impl` or a class, a match arm inside a `match`, a field inside a struct.
 defines, and keeps every reading that parses without errors. The pattern matches
 any of them: `` `x: u32` `` matches a struct field or a parameter.
 
-- A file whose language can't parse the pattern is skipped, and so are files
-  without a language and Markdown files. If no searched file's language parses
-  the pattern, it's a script error (exit 2) that shows where parsing failed.
+- A file whose language can't parse the pattern is skipped, and so are text and
+  Markdown files. If no searched file's language parses the pattern, it's a
+  script error (exit 2) that shows where parsing failed.
 - The pattern's root is the deepest node spanning all of its code, so
   `` `foo(@a)` `` is a call and matches calls in expressions as well as in
   statements. A pattern of several statements or items matches any run of
@@ -1023,8 +1029,8 @@ straight back. The line range covers the item's default span.
   outline is the tree of sections.
 - `outline SEL` lists the items strictly inside each span of `SEL`, starting at
   the left margin, under one header per file.
-- Like syntax steps, `outline` skips files without a language, and is an error
-  if no file in the set has one.
+- Like syntax steps, `outline` skips text files, and is an error if every file
+  in the set is text.
 
 ```
 src/parser.rs
@@ -1179,8 +1185,9 @@ Errors go to stderr, in the form `error: LOC: message`.
 | `@_` in `replace` TEXT                                                          | `@@_` for a literal `@`                                                                                                                                                                                                                                                                                                                                                                        |
 | `$name` in `sub` TEXT that the regex doesn't have                               | `${1}rest` for a name starting with a group, else the groups it has; `$$` for a literal `$`                                                                                                                                                                                                                                                                                                    |
 | `${}` in `sub` TEXT                                                             | `$$` for a literal `$`                                                                                                                                                                                                                                                                                                                                                                         |
-| Pattern searching only files without a code language                            | A regex or literal, or `--lang`                                                                                                                                                                                                                                                                                                                                                                |
-| Syntax step or `outline` in a file without a language                           | `--lang`                                                                                                                                                                                                                                                                                                                                                                                       |
+| Pattern searching only text and Markdown files                                  | A regex or literal, or `--lang`                                                                                                                                                                                                                                                                                                                                                                |
+| Syntax step or `outline` in a text file                                         | `--lang`                                                                                                                                                                                                                                                                                                                                                                                       |
+| Syntax step, pattern or `outline` with `--lang text`                            | Dropping `--lang text`, or a regex or literal                                                                                                                                                                                                                                                                                                                                                  |
 | Kind the language doesn't have                                                  | The kinds it has                                                                                                                                                                                                                                                                                                                                                                               |
 | Line past the end                                                               | `$` for the last line                                                                                                                                                                                                                                                                                                                                                                          |
 | No language server for the files                                                | The `[lsp]` setting for their language                                                                                                                                                                                                                                                                                                                                                         |
@@ -1222,12 +1229,12 @@ error: script:2:28: unterminated heredoc <<END (started here); end it with a lin
                              ^
 ```
 
-| Code | Meaning                                                                                                                                                                                                                                                                                                                                                                                             |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | Success, including dry runs and skipped formatters                                                                                                                                                                                                                                                                                                                                                  |
-| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unknown kind, no language, line past the end, file not in the set, `create` of an existing file, parse-error guard, introduced diagnostics, move into its own source, rename refused, reaching outside the file set, ambiguous `.refs`/`.def` result, nothing to undo, undo of a file changed or removed since, undo merge overlap |
-| 2    | Usage error (bad flags or arguments, a command's name given as a `FILE`, no script on a terminal, no files to edit, a bad session name, no session, a bad `!!`), script syntax error, invalid query, pattern or config, or no language server                                                                                                                                                       |
-| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, write failure, language server failure, or an unsafe or unknown-version session store                                                                                                                                                                                                                                                |
+| Code | Meaning                                                                                                                                                                                                                                                                                                                                                                                           |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Success, including dry runs and skipped formatters                                                                                                                                                                                                                                                                                                                                                |
+| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unknown kind, text file, line past the end, file not in the set, `create` of an existing file, parse-error guard, introduced diagnostics, move into its own source, rename refused, reaching outside the file set, ambiguous `.refs`/`.def` result, nothing to undo, undo of a file changed or removed since, undo merge overlap |
+| 2    | Usage error (bad flags or arguments, a command's name given as a `FILE`, no script on a terminal, no files to edit, a bad session name, no session, a bad `!!`), script syntax error, invalid query, pattern or config, or no language server                                                                                                                                                     |
+| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, write failure, language server failure, or an unsafe or unknown-version session store                                                                                                                                                                                                                                              |
 
 On any non-zero exit, no file is modified. Reads that ran before the failure
 still print their output.

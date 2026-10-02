@@ -5,7 +5,7 @@ too large for one PR: they carry a checklist of coarse chunks to plan with the
 engineer before starting each one; a single-PR item has none, and moves to Done
 when it lands.
 
-Versions follow semver at 0.x (currently 0.6.1): a change to the command
+Versions follow semver at 0.x (currently 0.6.2): a change to the command
 language or any new user-visible feature bumps the minor version, and a release
 that only fixes bugs or adds hints bumps the patch version. Each item below says
 which it is. When to release 1.0 is TBD.
@@ -44,6 +44,8 @@ which it is. When to release 1.0 is TBD.
 - **Sessions** (0.6.0): `-s NAME`/`NED_SESSION` record each invocation in a
   versioned, locked per-workspace log; `ned history`, `ned undo` (`--force`
   merges into later changes) and `!!:s/OLD/NEW/` repeats.
+- **Text language**: `--lang text` reads every file without parsing; files with
+  unknown extensions are read as text, with one note naming the extensions.
 
 ## Phase 2
 
