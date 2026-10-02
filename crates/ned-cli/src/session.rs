@@ -68,6 +68,11 @@ pub fn history(flag: Option<String>, all: bool) -> ExitCode {
     }
 }
 
+/// `ned undo`.
+pub fn undo(flag: Option<String>, force: bool) -> ExitCode {
+    todo!()
+}
+
 /// The workspace's sessions, for an error's fix.
 fn listing(root: &Path) -> String {
     let names = session::state_dir().and_then(|dir| session::sessions(&dir, root));

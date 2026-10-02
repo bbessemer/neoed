@@ -13,7 +13,8 @@ use thiserror::Error;
 /// All contents are first staged in temporary files beside their targets;
 /// only once every one is staged are they renamed into place. A failure while
 /// staging leaves every target untouched and removes the staged files.
-pub fn write_atomic(files: &[(PathBuf, String)]) -> io::Result<()> {
+/// Then the files in `remove` are removed.
+pub fn write_atomic(files: &[(PathBuf, String)], remove: &[PathBuf]) -> io::Result<()> {
     let mut staged: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(files.len());
     for (path, contents) in files {
         match stage(path, contents) {
@@ -144,7 +145,11 @@ mod tests {
         let b = dir.path().join("b.rs");
         fs::write(&a, "old a").unwrap();
         fs::write(&b, "old b").unwrap();
-        write_atomic(&[(a.clone(), "new a\r\n".into()), (b.clone(), "new b".into())]).unwrap();
+        write_atomic(
+            &[(a.clone(), "new a\r\n".into()), (b.clone(), "new b".into())],
+            &[],
+        )
+        .unwrap();
         assert_eq!(fs::read_to_string(&a).unwrap(), "new a\r\n");
         assert_eq!(fs::read_to_string(&b).unwrap(), "new b");
         assert_eq!(entries(dir.path()), ["a.rs", "b.rs"]);
@@ -161,10 +166,13 @@ mod tests {
         fs::write(&private, "old").unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
         fs::set_permissions(&private, fs::Permissions::from_mode(0o600)).unwrap();
-        write_atomic(&[
-            (script.clone(), "new".into()),
-            (private.clone(), "new".into()),
-        ])
+        write_atomic(
+            &[
+                (script.clone(), "new".into()),
+                (private.clone(), "new".into()),
+            ],
+            &[],
+        )
         .unwrap();
         let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&script), 0o755);
@@ -179,7 +187,7 @@ mod tests {
         let link = dir.path().join("link.rs");
         fs::write(&target, "old").unwrap();
         std::os::unix::fs::symlink(&target, &link).unwrap();
-        write_atomic(&[(link.clone(), "new".into())]).unwrap();
+        write_atomic(&[(link.clone(), "new".into())], &[]).unwrap();
         assert!(
             fs::symlink_metadata(&link)
                 .unwrap()
@@ -196,7 +204,10 @@ mod tests {
         let a = dir.path().join("a.rs");
         fs::write(&a, "old a").unwrap();
         let under_a_file = a.join("b.rs");
-        let result = write_atomic(&[(a.clone(), "new a".into()), (under_a_file, "new b".into())]);
+        let result = write_atomic(
+            &[(a.clone(), "new a".into()), (under_a_file, "new b".into())],
+            &[],
+        );
         assert!(result.is_err());
         assert_eq!(fs::read_to_string(&a).unwrap(), "old a");
         assert_eq!(entries(dir.path()), ["a.rs"]);

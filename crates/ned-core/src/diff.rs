@@ -47,6 +47,24 @@ pub fn created_summary(path: &str, stat: DiffStat, dry_run: bool) -> String {
     format!("{prefix}{path}: created, +{}", stat.added)
 }
 
+/// The summary line of a file removed by an undo: `PATH: removed, -D`.
+pub fn removed_summary(path: &str, stat: DiffStat) -> String {
+    todo!()
+}
+
+/// The number of separate changed regions between two texts.
+pub fn regions(old: &str, new: &str) -> usize {
+    todo!()
+}
+
+/// A three-way merge of whole lines: `ours` and `theirs` are both edits of
+/// `base`, and the result keeps the changes of each. Changes that overlap,
+/// or insert at the same point, conflict unless identical: the error is the
+/// first one's line in `ours` (from 1).
+pub fn merge(base: &str, ours: &str, theirs: &str) -> Result<String, usize> {
+    todo!()
+}
+
 /// Unified-diff hunks with `@@ -a,b +c,d @@` headers and no file headers,
 /// rendered with `\n` line endings.
 pub fn hunks(old: &str, new: &str, context: usize) -> String {

@@ -156,6 +156,57 @@ pub fn history(entries: &[Entry], all: bool) -> String {
     out
 }
 
+/// What `ned undo` writes: the files of entry `id`, restored. Each change's
+/// `before` is the file's current text, and `after` what the undo leaves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Undo {
+    pub id: u64,
+    pub script: Option<String>,
+    pub changes: Vec<FileChange>,
+}
+
+#[derive(Debug, Error)]
+pub enum UndoError {
+    #[error("nothing to undo; `ned history` lists the session's entries")]
+    Nothing,
+    #[error("{}: {source}; check its permissions, then run `ned undo` again", path.display())]
+    Io { path: PathBuf, source: io::Error },
+    #[error(
+        "{} changed since entry {id} wrote it; use --force to merge the undo into its current text",
+        path.display()
+    )]
+    Changed { path: PathBuf, id: u64 },
+    #[error(
+        "{} was removed since entry {id} wrote it, so it can't be undone; restore it by hand (`ned history` lists the entries)",
+        path.display()
+    )]
+    Removed { path: PathBuf, id: u64 },
+    #[error(
+        "{}:{line}: undoing entry {id} conflicts with a later change; edit the file by hand",
+        path.display()
+    )]
+    Conflict { path: PathBuf, line: usize, id: u64 },
+}
+
+impl UndoError {
+    /// The error with its path relative to `dir`, if it's inside it.
+    pub fn relative_to(self, dir: &Path) -> UndoError {
+        todo!()
+    }
+}
+
+/// Plans undoing the last entry of `entries` that wrote files and isn't
+/// undone. `read` gives a file's current text, `None` if it's missing. A file
+/// that no longer holds what the entry wrote is an error, unless `force`
+/// merges the undo into it.
+pub fn undo(
+    entries: &[Entry],
+    read: impl FnMut(&Path) -> io::Result<Option<String>>,
+    force: bool,
+) -> Result<Undo, UndoError> {
+    todo!()
+}
+
 /// The directory of `root`'s sessions: its last component and a hash of its
 /// path, so it's recognizable and unique.
 fn workspace_dir(state_dir: &Path, root: &Path) -> PathBuf {

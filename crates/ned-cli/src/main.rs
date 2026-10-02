@@ -105,6 +105,15 @@ enum Command {
         #[arg(long)]
         all: bool,
     },
+    /// Undo the session's last edit that isn't undone.
+    Undo {
+        /// The session; overrides NED_SESSION.
+        #[arg(short, long, value_name = "NAME")]
+        session: Option<String>,
+        /// Merge the undo into files changed since.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -116,6 +125,7 @@ fn main() -> ExitCode {
         }
         Some(Command::Daemon { action }) => return daemon::run(action),
         Some(Command::History { session, all }) => return session::history(session, all),
+        Some(Command::Undo { session, force }) => return session::undo(session, force),
         None => {}
     }
     if let Some(err) = usage_error(&cli) {
@@ -273,7 +283,7 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
             .zip(&finals)
             .map(|(change, text)| (PathBuf::from(&change.path), text.to_string()))
             .collect();
-        if let Err(err) = fs::write_atomic(&writes) {
+        if let Err(err) = fs::write_atomic(&writes, &[]) {
             let error = format!("error: cannot write files: {err}; no file was changed");
             return Ran::failed(3, error);
         }
