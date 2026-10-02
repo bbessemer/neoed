@@ -1448,6 +1448,29 @@ fn python_outline_and_edits() {
     );
 }
 
+const CONFLICTED: &str = "<<<<<<< HEAD\ndef ours():\n    return 1\n=======\ndef theirs():\n    return 2\n>>>>>>> topic\n";
+
+#[test]
+fn files_with_merge_conflicts_parse_and_edit() {
+    let dir = dir_with(&[("app.py", CONFLICTED)]);
+    let out = ned(dir.path(), &["app.py", "-e", "outline"], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    app.py
+    2-3 fn:ours
+    5-6 fn:theirs
+    --- stderr
+    ");
+    let out = ned(
+        dir.path(),
+        &["-q", "app.py", "-e", "replace fn:theirs>\"2\" with \"3\""],
+        "",
+    );
+    assert!(out.starts_with("exit: 0\n"), "{out}");
+    assert_eq!(read(&dir, "app.py"), CONFLICTED.replace("2", "3"));
+}
+
 #[test]
 fn go_outline_and_edits() {
     let text = "package main\n\ntype T struct{}\n\nfunc (t T) Run() {\n\tstart()\n}\n";

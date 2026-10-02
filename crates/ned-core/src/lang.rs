@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use tree_sitter::{Parser, Query, Tree};
 
+use crate::conflict;
 use crate::fragment::{Builder, NodeTypes};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -185,7 +186,7 @@ impl Language {
             .set_language(&self.grammar())
             .expect("linked-in grammars are compatible");
         parser
-            .parse(text, None)
+            .parse(&*conflict::mask(text), None)
             .expect("parsing without a timeout or cancellation succeeds")
     }
 }
@@ -404,5 +405,46 @@ mod tests {
             let builders = lang.builders();
             assert_eq!(builders.is_empty(), lang == Language::Markdown, "{lang}");
         }
+    }
+
+    #[test]
+    fn conflict_markers_are_hidden_from_the_grammar() {
+        let conflicted = [
+            (
+                Language::Rust,
+                "fn a() {}\n<<<<<<< HEAD\nfn b() {}\n=======\nfn c() {}\n>>>>>>> topic\n",
+            ),
+            (
+                Language::Python,
+                "def a():\n<<<<<<< HEAD\n    return 1\n||||||| base\n    return 0\n=======\n    return 2\n>>>>>>> topic\n",
+            ),
+            (
+                Language::Go,
+                "package a\n\n<<<<<<< HEAD\nfunc b() {}\n=======\nfunc c() {}\n>>>>>>> topic\n",
+            ),
+            (
+                Language::TypeScript,
+                "<<<<<<< HEAD\nconst a = 1;\n=======\nconst b = 2;\n>>>>>>> topic\n",
+            ),
+            (
+                Language::Tsx,
+                "<<<<<<< HEAD\nconst a = <A />;\n=======\nconst b = <B />;\n>>>>>>> topic\n",
+            ),
+            (
+                Language::JavaScript,
+                "function f() {\n<<<<<<< HEAD\n  return 1;\n=======\n  return 2;\n>>>>>>> topic\n}\n",
+            ),
+        ];
+        for (lang, text) in conflicted {
+            assert!(!lang.parse(text).root_node().has_error(), "{lang}");
+        }
+    }
+
+    #[test]
+    fn conflict_markers_are_not_markdown() {
+        let text = "# Doc\n\n<<<<<<< HEAD\nfoo\n=======\nbar\n>>>>>>> topic\n";
+        let tree = Language::Markdown.parse(text).root_node().to_sexp();
+        assert!(!tree.contains("setext_heading"), "{tree}");
+        assert!(!tree.contains("block_quote"), "{tree}");
     }
 }

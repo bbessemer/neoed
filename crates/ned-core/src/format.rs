@@ -10,6 +10,7 @@ use toml::Value;
 
 use crate::buffer::Buffer;
 use crate::config::{Config, ConfigError, Entry, program};
+use crate::conflict::conflicts;
 use crate::edit::{Edit, EditSet};
 use crate::exec::Change;
 use crate::lang::Language;
@@ -36,7 +37,7 @@ pub enum Outcome {
     Formatted { name: String, text: String },
     /// No formatter for the file is installed; the note says so.
     NotFound(String),
-    /// The formatter failed; the note says why.
+    /// The formatter failed, or wasn't run; the note says why.
     Failed(String),
 }
 
@@ -60,6 +61,10 @@ pub fn run(changes: &[Change], config: &mut Config) -> Result<Vec<Outcome>, Conf
             .zip(&found)
             .map(|(change, formatter)| {
                 scope.spawn(move || match formatter {
+                    Some(_) if !conflicts(&change.new).is_empty() => Outcome::Failed(format!(
+                        "skipped formatting {}: it has merge conflicts",
+                        change.path
+                    )),
                     Some(formatter) => formatter.format(&change.path, &change.new),
                     None => Outcome::Unchanged,
                 })
@@ -748,6 +753,38 @@ mod tests {
         assert_eq!(
             err.message,
             "`rust` must be a command (an array of strings) or false"
+        );
+    }
+
+    #[test]
+    fn files_with_conflicts_are_not_formatted() {
+        let root = tree(&[(
+            ".ned.toml",
+            "[format]\nmarkdown = [\"sh\", \"-c\", \"tr a-z A-Z\"]\n",
+        )]);
+        let path = root.path().join("a.md");
+        let changes = [
+            change(
+                &path,
+                Some(Language::Markdown),
+                "<<<<<<< HEAD\na\n=======\nb\n>>>>>>> t\n",
+            ),
+            change(
+                &root.path().join("b.md"),
+                Some(Language::Markdown),
+                "=======\nb\n",
+            ),
+        ];
+        let outcomes = run(&changes, &mut Config::new(None).unwrap()).unwrap();
+        assert_eq!(
+            outcomes,
+            [
+                Outcome::Failed(format!(
+                    "skipped formatting {}: it has merge conflicts",
+                    path.display()
+                )),
+                formatted("sh", "=======\nB\n"),
+            ]
         );
     }
 
