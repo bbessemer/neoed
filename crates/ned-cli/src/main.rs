@@ -406,18 +406,18 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
             diff::summary(&change.path, change.edits, stat, cli.dry_run)
         };
         outln!("{}", style.paint(Role::Header, &summary));
+        let new = diff::Side::new(&change.new, change.lang);
         if !cli.quiet {
-            out!(
-                "{}",
-                diff::hunks(&change.old, &change.new, cli.context, style)
-            );
+            let old = diff::Side::new(&change.old, change.lang);
+            out!("{}", diff::hunks(&old, &new, cli.context, style));
         }
         match outcome {
             Outcome::Formatted { name, text } => {
                 let header = format!("fmt {name}: {}", DiffStat::between(&change.new, text));
                 outln!("{}", style.paint(Role::Header, &header));
                 if !cli.quiet {
-                    out!("{}", diff::hunks(&change.new, text, cli.context, style));
+                    let text = diff::Side::new(text, change.lang);
+                    out!("{}", diff::hunks(&new, &text, cli.context, style));
                 }
             }
             Outcome::NotFound(note) | Outcome::Failed(note) => errln!("note: {note}"),

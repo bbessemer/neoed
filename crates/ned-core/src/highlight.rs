@@ -1,6 +1,7 @@
 //! Syntax highlighting from the grammars' highlight queries, for terminal
 //! output (command-language spec, §6.6).
 
+use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::ops::Range;
 
@@ -149,13 +150,18 @@ fn encloses(outer: Node, inner: Node) -> bool {
 }
 
 /// `text[range]` painted with `spans`, which `spans` gave for a range
-/// containing it.
+/// containing it, and the text between them painted as `base`.
 pub fn paint(
     style: Style,
     text: &str,
     range: Range<usize>,
     spans: &[(Range<usize>, Group)],
+    base: Option<Role>,
 ) -> String {
+    let gap = |text| match base {
+        Some(role) => style.paint(role, text),
+        None => Cow::Borrowed(text),
+    };
     let mut out = String::new();
     let mut at = range.start;
     let first = spans.partition_point(|(r, _)| r.end <= range.start);
@@ -164,11 +170,11 @@ pub fn paint(
             break;
         }
         let (start, end) = (span.start.max(range.start), span.end.min(range.end));
-        out.push_str(&text[at..start]);
+        out.push_str(&gap(&text[at..start]));
         out.push_str(&style.paint(Role::Code(*group), &text[start..end]));
         at = end;
     }
-    out.push_str(&text[at..range.end]);
+    out.push_str(&gap(&text[at..range.end]));
     out
 }
 
@@ -367,10 +373,26 @@ mod tests {
         let text = "let s = \"a\nb\";\n";
         let tree = Language::Rust.parse(text);
         let found = spans(Language::Rust, &tree, text, 0..text.len());
-        let first = shown(&paint(Style::Color, text, 0..10, &found));
+        let first = shown(&paint(Style::Color, text, 0..10, &found, None));
         assert_eq!(first, r#"\e[35mlet\e[0m s = \e[32m"a\e[0m"#);
-        let second = shown(&paint(Style::Color, text, 11..14, &found));
+        let second = shown(&paint(Style::Color, text, 11..14, &found, None));
         assert_eq!(second, r#"\e[32mb"\e[0m;"#);
+    }
+
+    #[test]
+    fn paint_gives_the_text_between_spans_the_base_role() {
+        let text = "let s = 1;\n";
+        let tree = Language::Rust.parse(text);
+        let found = spans(Language::Rust, &tree, text, 0..text.len());
+        let painted = shown(&paint(
+            Style::Color,
+            text,
+            0..10,
+            &found,
+            Some(Role::Removed),
+        ));
+        let expected = r"\e[35mlet\e[0m\e[31m s = \e[0m\e[36m1\e[0m\e[31m;\e[0m";
+        assert_eq!(painted, expected);
     }
 
     #[test]
@@ -378,7 +400,7 @@ mod tests {
         let text = "let s = 1;\n";
         let tree = Language::Rust.parse(text);
         let found = spans(Language::Rust, &tree, text, 0..text.len());
-        assert_eq!(paint(Style::Plain, text, 0..10, &found), "let s = 1;");
-        assert_eq!(paint(Style::Color, text, 4..5, &[]), "s");
+        assert_eq!(paint(Style::Plain, text, 0..10, &found, None), "let s = 1;");
+        assert_eq!(paint(Style::Color, text, 4..5, &[], None), "s");
     }
 }

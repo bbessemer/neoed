@@ -46,6 +46,10 @@ which it is. When to release 1.0 is TBD.
   merges into later changes) and `!!:s/OLD/NEW/` repeats.
 - **Text language**: `--lang text` reads every file without parsing; files with
   unknown extensions are read as text, with one note naming the extensions.
+- **Terminal output**: `--color auto|always|never` and `NO_COLOR`; on a
+  terminal, `show` and diff hunks are highlighted from the grammars' highlight
+  queries, line numbers are right-aligned, and `outline`, `check` and messages
+  are coloured. Piped output is unchanged.
 
 ## Phase 2
 
@@ -114,17 +118,6 @@ parts work above.
 
 Version: patch for marker tolerance (existing scripts start working on
 conflicted files); minor for the `conflict` kind, its parts and `resolve`.
-
-### Terminal output
-
-When stdout is a terminal, `ned` formats for a human: syntax-highlighted code
-(from the grammars' highlight queries), right-aligned line numbers delimited
-from code by colour instead of `:`, coloured diffs. `--color auto|always|never`
-and `NO_COLOR` control it. Output to a pipe or file is unchanged, so agents keep
-the terse form that §6 of the spec defines. Prerequisite to the REPL.
-
-Version: minor; `--color` is new and terminal output changes, though piped
-output doesn't.
 
 ### REPL
 

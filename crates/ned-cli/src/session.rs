@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use ned_core::diff::{self, DiffStat};
 use ned_core::fs;
+use ned_core::lang::Language;
 use ned_core::session::{self, Entry, Session, SessionError, UndoError};
 use ned_core::style::Role;
 use ned_core::workspace;
@@ -92,7 +93,9 @@ pub fn undo(flag: Option<String>, dir: Option<PathBuf>, force: bool) -> Result<(
             _ => diff::summary(&path, diff::regions(before, after), stat, false),
         };
         outln!("{}", style.paint(Role::Header, &summary));
-        out!("{}", diff::hunks(before, after, 1, style));
+        let lang = Language::detect(&path, after);
+        let (before, after) = (diff::Side::new(before, lang), diff::Side::new(after, lang));
+        out!("{}", diff::hunks(&before, &after, 1, style));
     }
 
     let entry = Entry {

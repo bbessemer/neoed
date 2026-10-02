@@ -158,14 +158,16 @@ formatters aren't installed, and `check` also waits for save-time checks
 (`cargo check`). §9 is done. Sessions (spec §1.2): `session` in `ned-core` keeps
 the per-workspace log, plans `undo` (`--force` merges with `diff::merge`) and
 expands `!!`; the CLI records every script run under `-s`/`NED_SESSION` and has
-`ned history` and `ned undo`. Syntax selectors cover Rust, Python, Go,
-JavaScript, TypeScript/TSX and Markdown. Syntax patterns (spec §3.10) select
-code by writing it: `ned-scheme` reads the Scheme dialect (tree-sitter query
-syntax plus Scheme data) that builders and, later, plugins are written in;
-`template` lexes `@` placeholders, `fragment` parses a pattern alone or inside
-`queries/<lang>/builders.scm`, and `pattern` matches it against the tree;
-`replace` substitutes its captures. MIT-licensed; README has install and usage;
-CI (`.github/workflows/`) gates PRs.
+`ned history` and `ned undo`. Terminal output (spec §6.6): `style` paints output
+under `--color`/`NO_COLOR`, and `highlight` colours `show` and diff hunks from
+the grammars' highlight queries; piped output is unchanged. Syntax selectors
+cover Rust, Python, Go, JavaScript, TypeScript/TSX and Markdown. Syntax patterns
+(spec §3.10) select code by writing it: `ned-scheme` reads the Scheme dialect
+(tree-sitter query syntax plus Scheme data) that builders and, later, plugins
+are written in; `template` lexes `@` placeholders, `fragment` parses a pattern
+alone or inside `queries/<lang>/builders.scm`, and `pattern` matches it against
+the tree; `replace` substitutes its captures. MIT-licensed; README has install
+and usage; CI (`.github/workflows/`) gates PRs.
 
 ## Key Documentation
 
