@@ -883,7 +883,7 @@ fn invalid_pattern_exits_2() {
     exit: 2
     --- stdout
     --- stderr
-    error: script:1:6: `fn (@a` doesn't parse as rust at `fn (@a`; add the code around it, or use query{}
+    error: script:1:6: `fn (@a` doesn't parse as rust at `@a`; add the code around it, or use query{}
     ");
 }
 

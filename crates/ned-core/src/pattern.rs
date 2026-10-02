@@ -1,5 +1,5 @@
 //! Matching syntax patterns against syntax trees (command-language spec,
-//! §3.10): node by node, skipping comments on both sides and tokens the
+//! §3.10): node by node, skipping comments on both sides and separators the
 //! pattern leaves out.
 
 use std::collections::HashMap;
@@ -44,6 +44,8 @@ pub enum PatternError {
     NoParse { lang: Language, at: String },
     #[error("has `{placeholder}` where a whole node must be; write `@@` for a literal `@`")]
     Fused { placeholder: String },
+    #[error("has no code; write the code to match between the backquotes")]
+    Empty,
 }
 
 impl Pattern {
@@ -51,6 +53,10 @@ impl Pattern {
     /// of its lines.
     pub fn compile(lang: Language, src: &str) -> Result<Pattern, PatternError> {
         let code = strip_indent(src).join("\n");
+        if code.trim().is_empty() {
+            return Err(PatternError::Empty);
+        }
+
         let template = Template::parse(&code);
         let fragments = fragment::parse(lang, &template).map_err(|e| match e {
             FragmentError::NoParse { lang, at } => PatternError::NoParse {
@@ -120,9 +126,21 @@ fn excerpt(code: &str, at: usize) -> String {
 }
 
 impl Reading {
-    /// Pushes the matches in `node`'s subtree that lie within `range`.
+    /// Pushes the matches in `root`'s subtree that lie within `range`.
     fn find<'t>(
         &self,
+        root: Node<'t>,
+        text: &'t str,
+        range: &Range<usize>,
+        out: &mut Vec<PatternMatch>,
+    ) {
+        let roots: Vec<Elem> = self.fragment.roots().into_iter().map(Elem::Node).collect();
+        self.walk(&roots, root, text, range, out);
+    }
+
+    fn walk<'p, 't>(
+        &'p self,
+        roots: &[Elem<'p>],
         node: Node<'t>,
         text: &'t str,
         range: &Range<usize>,
@@ -131,11 +149,13 @@ impl Reading {
         if node.end_byte() <= range.start || node.start_byte() >= range.end {
             return;
         }
-        let roots = self.fragment.roots();
         let inside = |r: &Range<usize>| range.start <= r.start && r.end <= range.end;
-        if let [root] = roots.as_slice() {
+        let children = children_of(node);
+        if let [Elem::Node(root)] = roots {
+            // The grammar's top node is the whole file, not code to match.
             let candidate = node.is_named()
                 && !node.is_extra()
+                && node.parent().is_some()
                 && (self.holes.contains_key(&root.id()) || root.kind_id() == node.kind_id());
             if candidate && inside(&node.byte_range()) {
                 let mut m = Matcher::new(self, text);
@@ -144,14 +164,13 @@ impl Reading {
                 }
             }
         } else {
-            let children = children_of(node);
             for (i, start) in children.iter().enumerate() {
                 if !start.is_named() || !inside(&start.byte_range()) {
                     continue;
                 }
                 let mut m = Matcher::new(self, text);
-                let roots: Vec<Elem> = roots.iter().copied().map(Elem::Node).collect();
-                if let Some(end) = m.seq(&roots, &children[i..], false) {
+                // A run of roots may match no siblings, which is no match.
+                if let Some(end) = m.seq(roots, &children[i..], false).filter(|&n| n > 0) {
                     let r = start.start_byte()..children[i + end - 1].end_byte();
                     if inside(&r) {
                         out.push(m.matched(r));
@@ -159,8 +178,8 @@ impl Reading {
                 }
             }
         }
-        for child in children_of(node) {
-            self.find(child, text, range, out);
+        for child in children {
+            self.walk(roots, child, text, range, out);
         }
     }
 }
@@ -171,6 +190,28 @@ impl Reading {
 enum Elem<'p> {
     Node(Node<'p>),
     Run(&'p Option<String>),
+}
+
+/// `range` without the whitespace at its ends: Go ends a statement node with
+/// its newline.
+fn trim(text: &str, range: Range<usize>) -> Range<usize> {
+    let s = &text[range.clone()];
+    let start = range.start + (s.len() - s.trim_start().len());
+    start..(start + s.trim().len())
+}
+
+/// The range from `first` to `last`, siblings, with the comments between
+/// them and their neighbours, which a capture keeps.
+fn with_comments(first: Node<'_>, last: Node<'_>) -> Range<usize> {
+    let mut start = first;
+    while let Some(p) = start.prev_sibling().filter(|p| p.is_extra()) {
+        start = p;
+    }
+    let mut end = last;
+    while let Some(n) = end.next_sibling().filter(|n| n.is_extra()) {
+        end = n;
+    }
+    start.start_byte()..end.end_byte()
 }
 
 /// A match of one reading in progress: what its placeholders have bound.
@@ -196,9 +237,14 @@ impl<'p, 't> Matcher<'p, 't> {
     }
 
     fn matched(self, range: Range<usize>) -> PatternMatch {
+        let text = self.text;
         PatternMatch {
-            range,
-            captures: self.binds.into_iter().map(|b| (b.name, b.range)).collect(),
+            range: trim(text, range),
+            captures: self
+                .binds
+                .into_iter()
+                .map(|b| (b.name, trim(text, b.range)))
+                .collect(),
         }
     }
 
@@ -208,6 +254,12 @@ impl<'p, 't> Matcher<'p, 't> {
 
     fn pattern_text(&self, p: Node<'_>) -> &'p str {
         &self.reading.fragment.text[p.byte_range()]
+    }
+
+    /// Whether target node `t` is a separator: `,`, `;`, or a line break.
+    fn separator(&self, t: Node<'t>) -> bool {
+        let text = &self.text[t.byte_range()];
+        !t.is_named() && (text == "," || text == ";" || text.trim().is_empty())
     }
 
     /// The elements of pattern node `p`'s children: its children, with its gaps
@@ -230,7 +282,7 @@ impl<'p, 't> Matcher<'p, 't> {
     /// Whether pattern node `p` matches target node `t`.
     fn node(&mut self, p: Node<'p>, t: Node<'t>) -> bool {
         if let Some((name, _)) = self.hole(p) {
-            return self.bind(name, vec![t], t.byte_range());
+            return self.bind(name, vec![t], with_comments(t, t));
         }
         if p.kind_id() != t.kind_id() {
             return false;
@@ -243,11 +295,11 @@ impl<'p, 't> Matcher<'p, 't> {
     }
 
     /// Matches the pattern nodes `ps` against a prefix of the target nodes
-    /// `ts`, or all of them if `all`, skipping target tokens the pattern
+    /// `ts`, or all of them if `all`, skipping target separators the pattern
     /// leaves out. The number of target nodes matched, if they match.
     fn seq(&mut self, ps: &[Elem<'p>], ts: &[Node<'t>], all: bool) -> Option<usize> {
         let Some((&p, rest)) = ps.split_first() else {
-            return (!all || ts.iter().all(|t| !t.is_named())).then_some(0);
+            return (!all || ts.iter().all(|t| self.separator(*t))).then_some(0);
         };
         let saved = self.binds.len();
         let run = match p {
@@ -264,7 +316,7 @@ impl<'p, 't> Matcher<'p, 't> {
                 let run: Vec<Node<'t>> =
                     ts[..end].iter().copied().filter(|n| n.is_named()).collect();
                 let range = match (run.first(), run.last()) {
-                    (Some(first), Some(last)) => first.start_byte()..last.end_byte(),
+                    (Some(first), Some(last)) => with_comments(*first, *last),
                     _ => {
                         let at = ts.get(end).map_or(0, |t| t.start_byte());
                         at..at
@@ -296,8 +348,9 @@ impl<'p, 't> Matcher<'p, 't> {
                 return n.map(|n| i + 1 + n);
             }
             self.binds.truncate(saved);
-            // Only a token the pattern leaves out can be skipped.
-            if t.is_named() {
+            // Only a separator the pattern leaves out can be skipped: any other
+            // token, such as `async` or `&`, changes what the code means.
+            if !self.separator(t) {
                 return None;
             }
         }
@@ -416,6 +469,32 @@ mod tests {
     }
 
     #[test]
+    fn only_separators_the_pattern_leaves_out_are_skipped() {
+        assert!(found("fn f(self) {}", "fn f(&self) {}\n").is_empty());
+        assert!(found("|x| x", "fn main() { let f = move |x| x; }").is_empty());
+        assert!(
+            found_in(
+                Language::JavaScript,
+                "function f() {}",
+                "async function f() {}\n"
+            )
+            .is_empty()
+        );
+        assert!(
+            found_in(
+                Language::Python,
+                "def f():\n    pass",
+                "async def f():\n    pass\n"
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            found("Some(@x) => @y", "fn main() { match a { Some(b) => c, } }"),
+            ["Some(b) => c,"]
+        );
+    }
+
+    #[test]
     fn named_nodes_must_all_match() {
         assert_eq!(
             found("fn @name() {}", "pub fn f() {}\nfn g() {}\n"),
@@ -435,6 +514,24 @@ mod tests {
             [pairs(&[("a", "x + 1"), ("b", "y")])]
         );
         assert_eq!(captured("foo(@_)", "fn main() { foo(x); }"), [vec![]]);
+    }
+
+    #[test]
+    fn captures_keep_the_comments_at_their_ends() {
+        assert_eq!(
+            captured("foo(@a)", "fn main() { foo(/* c */ 1); }"),
+            [pairs(&[("a", "/* c */ 1")])]
+        );
+        assert_eq!(
+            captured(
+                "if @c { @body... }",
+                "fn main() { if x {\n    // first\n    a();\n    b(); // done\n} }"
+            ),
+            [pairs(&[
+                ("c", "x"),
+                ("body", "// first\n    a();\n    b(); // done")
+            ])]
+        );
     }
 
     #[test]
@@ -494,6 +591,39 @@ mod tests {
     }
 
     #[test]
+    fn several_statements_match_in_every_language() {
+        assert_eq!(
+            found_in(
+                Language::Go,
+                "x := 1\ny := @v",
+                "package main\n\nfunc main() {\n\tx := 1\n\ty := 2\n\tz := 3\n}\n"
+            ),
+            ["x := 1\n\ty := 2"]
+        );
+        assert_eq!(
+            found_in(
+                Language::Python,
+                "x = 1\ny = @v",
+                "def f():\n    x = 1\n    y = 2\n"
+            ),
+            ["x = 1\n    y = 2"]
+        );
+        assert_eq!(
+            found_in(
+                Language::JavaScript,
+                "f(1);\ng(@v);",
+                "function h() { f(1); g(2); }\n"
+            ),
+            ["f(1); g(2);"]
+        );
+    }
+
+    #[test]
+    fn a_pattern_of_runs_matching_nothing_is_no_match() {
+        assert!(found_in(Language::Python, "@a...\n@b...", "x = 1\ny = 2\n").is_empty());
+    }
+
+    #[test]
     fn a_pattern_matches_any_of_its_readings() {
         assert_eq!(
             found("@a: u32", "struct S { a: u32 }\nfn f(b: u32) {}\n"),
@@ -509,6 +639,17 @@ mod tests {
                 "fn main() { log(\"user@host\"); log(\"x\"); }"
             ),
             ["log(\"user@host\")"]
+        );
+    }
+
+    #[test]
+    fn a_placeholder_that_is_a_whole_string_is_literal() {
+        assert_eq!(
+            found(
+                "log(\"@who\", @x)",
+                "fn main() { log(\"anyone\", 1); log(\"@who\", 2); }"
+            ),
+            ["log(\"@who\", 2)"]
         );
     }
 
@@ -546,18 +687,54 @@ mod tests {
     }
 
     #[test]
+    fn go_captures_leave_out_the_statement_newline() {
+        let text = "package main\n\nfunc main() {\n\tif c {\n\t\ta()\n\t\tb()\n\t}\n}\n";
+        let m = &matches(Language::Go, "if @c { @body... }", text)[0];
+        let body = m.captures.iter().find(|(n, _)| n == "body").unwrap();
+        assert_eq!(&text[body.1.clone()], "a()\n\t\tb()");
+        assert_eq!(&text[m.range.clone()], "if c {\n\t\ta()\n\t\tb()\n\t}");
+    }
+
+    #[test]
     fn compile_errors() {
         let Err(PatternError::NoParse { lang, at }) = Pattern::compile(Language::Rust, "fn (@a")
         else {
             panic!("compiled");
         };
         assert_eq!(lang, Language::Rust);
-        assert!("fn (@a".ends_with(&at) && !at.is_empty(), "at {at:?}");
+        assert_eq!(at, "@a");
+        let Err(PatternError::NoParse { at, .. }) = Pattern::compile(Language::Go, "x := := 1")
+        else {
+            panic!("compiled");
+        };
+        assert_eq!(at, ":= 1");
         assert_eq!(
             Pattern::compile(Language::Rust, "foo@bar(1)").unwrap_err(),
             PatternError::Fused {
                 placeholder: "@bar".into()
             }
         );
+    }
+
+    #[test]
+    fn a_lone_placeholder_matches_each_top_level_node() {
+        assert_eq!(
+            found("@x", "fn a() {}\nfn b() {}\n"),
+            ["fn a() {}", "fn b() {}"]
+        );
+    }
+
+    #[test]
+    fn a_pattern_needs_code() {
+        assert_eq!(
+            Pattern::compile(Language::Rust, "  ").unwrap_err(),
+            PatternError::Empty
+        );
+        let Err(PatternError::NoParse { at, .. }) =
+            Pattern::compile(Language::Rust, "// only a comment")
+        else {
+            panic!("compiled");
+        };
+        assert_eq!(at, "// only a comment");
     }
 }

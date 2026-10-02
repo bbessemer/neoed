@@ -122,13 +122,15 @@ pub fn resolve_within(
 ) -> Result<Vec<Match>, ExecError> {
     let span = &target.selector.span;
     let error = |kind| ExecError::new(kind, Some(span.clone()));
-    // A name may repeat within a pattern, but not across steps (§3.10).
+    // A name may repeat within a pattern, but not across patterns: steps, or
+    // a range's ends (§3.10).
     let mut named = HashSet::new();
-    for step in &target.selector.steps {
-        let Primary::Code(code) = &step.primary else {
-            continue;
-        };
-        let template = Template::parse(code);
+    let patterns = target
+        .selector
+        .steps
+        .iter()
+        .flat_map(|s| s.primary.patterns());
+    for template in patterns.map(Template::parse) {
         let names: HashSet<&str> = template.holes().filter_map(|h| h.name.as_deref()).collect();
         if let Some(name) = names.iter().find(|n| named.contains(**n)) {
             return Err(error(E::DuplicateCapture {
@@ -322,26 +324,46 @@ impl<'a> Matcher<'a> {
         })
     }
 
-    /// The step's matches in `parent`, with what a pattern captured.
+    /// The step's matches in `parent`, with what its patterns captured.
     fn find(&self, f: &SourceFile, parent: Range<usize>) -> Vec<(Range<usize>, Captures)> {
-        let Matcher::Code(patterns) = self else {
-            return self
+        match self {
+            Matcher::Code(patterns) => {
+                let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
+                    return Vec::new();
+                };
+                let Some((_, pattern)) = patterns.iter().find(|(l, _)| *l == lang) else {
+                    return Vec::new();
+                };
+                pattern
+                    .find(tree, &f.text, parent)
+                    .into_iter()
+                    .map(|m| (m.range, m.captures))
+                    .collect()
+            }
+            Matcher::Range(from, to) => {
+                let ends = to.find(f, parent.clone());
+                let mut out = Vec::new();
+                let mut searched_to = parent.start;
+                for (start, captures) in from.find(f, parent.clone()) {
+                    if start.start < searched_to {
+                        continue;
+                    }
+                    let Some((end, end_captures)) = ends.iter().find(|(e, _)| e.start >= start.end)
+                    else {
+                        break;
+                    };
+                    let range = full_lines(&f.text, start.start..end.end);
+                    searched_to = range.end;
+                    out.push((range, [captures, end_captures.clone()].concat()));
+                }
+                out
+            }
+            _ => self
                 .ranges(f, parent)
                 .into_iter()
                 .map(|r| (r, Vec::new()))
-                .collect();
-        };
-        let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
-            return Vec::new();
-        };
-        let Some((_, pattern)) = patterns.iter().find(|(l, _)| *l == lang) else {
-            return Vec::new();
-        };
-        pattern
-            .find(tree, &f.text, parent)
-            .into_iter()
-            .map(|m| (m.range, m.captures))
-            .collect()
+                .collect(),
+        }
     }
 
     fn ranges(&self, f: &SourceFile, parent: Range<usize>) -> Vec<Range<usize>> {
@@ -416,23 +438,6 @@ impl<'a> Matcher<'a> {
                     Vec::new()
                 }
             }
-            Matcher::Range(from, to) => {
-                let ends = to.ranges(f, parent.clone());
-                let mut ranges = Vec::new();
-                let mut searched_to = parent.start;
-                for start in from.ranges(f, parent.clone()) {
-                    if start.start < searched_to {
-                        continue;
-                    }
-                    let Some(end) = ends.iter().find(|e| e.start >= start.end) else {
-                        break;
-                    };
-                    let range = full_lines(&f.text, start.start..end.end);
-                    searched_to = range.end;
-                    ranges.push(range);
-                }
-                ranges
-            }
             Matcher::Query(queries) => {
                 let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
                     return Vec::new();
@@ -463,7 +468,9 @@ impl<'a> Matcher<'a> {
                 out.dedup();
                 out
             }
-            Matcher::Code(_) => self.find(f, parent).into_iter().map(|(r, _)| r).collect(),
+            Matcher::Code(_) | Matcher::Range(..) => {
+                self.find(f, parent).into_iter().map(|(r, _)| r).collect()
+            }
             Matcher::Syntax { kind, name } => f
                 .items()
                 .unwrap_or_default()
@@ -1907,6 +1914,22 @@ mod tests {
         assert_eq!(
             error("delete `foo(@x)`>`bar(@x)`", &[("a.rs", text)]),
             "error: script:1:8: `@x` is captured by two pattern steps; rename one of them"
+        );
+    }
+
+    #[test]
+    fn ranges_of_patterns_capture_at_both_ends() {
+        let text = "fn f() {\n    foo(1);\n    x();\n    bar(2);\n}\n";
+        let found = resolve_in("delete `foo(@a)`..`bar(@b)`", &files(&[("a.rs", text)])).unwrap();
+        let names: Vec<(&str, &str)> = found[0]
+            .captures
+            .iter()
+            .map(|(n, r)| (n.as_str(), &text[r.clone()]))
+            .collect();
+        assert_eq!(names, [("a", "1"), ("b", "2")]);
+        assert_eq!(
+            error("delete `foo(@a)`..`bar(@a)`", &[("a.rs", text)]),
+            "error: script:1:8: `@a` is captured by two pattern steps; rename one of them"
         );
     }
 

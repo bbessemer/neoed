@@ -402,14 +402,15 @@ impl Executor<'_> {
                     .selector
                     .steps
                     .iter()
-                    .any(|s| matches!(s.primary, Primary::Code(_)));
+                    .any(|s| !s.primary.patterns().is_empty());
                 for m in self.resolve(target)? {
                     let f = &self.files[m.file].file;
                     let filled;
                     let text = match patterns {
                         true => {
-                            filled = substitute(f, &m.captures, text).map_err(|kind| {
-                                ExecError::new(kind, Some(target.selector.span.clone()))
+                            filled = substitute(f, &m.captures, text).map_err(|(kind, name)| {
+                                let span = placeholder_span(self.src, &target.selector.span, &name);
+                                ExecError::new(kind, Some(span))
                             })?;
                             &filled
                         }
@@ -1480,11 +1481,12 @@ fn indent_unit(f: &SourceFile) -> String {
 }
 
 /// `text` with the pattern captures of a match in `f` substituted (§3.10).
+/// Err with the name of a placeholder it can't fill.
 fn substitute(
     f: &SourceFile,
     captures: &select::Captures,
     text: &Text,
-) -> Result<Text, ExecErrorKind> {
+) -> Result<Text, (ExecErrorKind, String)> {
     let capture = |name: &str| {
         let (_, range) = captures.iter().find(|(n, _)| n == name)?;
         Some((
@@ -1493,19 +1495,41 @@ fn substitute(
         ))
     };
     let value = Template::parse(&text.value).fill(capture).map_err(|name| {
-        let mut names: Vec<String> = captures.iter().map(|(n, _)| format!("@{n}")).collect();
-        names.dedup();
+        if name == "_" {
+            return (ExecErrorKind::WildcardInText, name);
+        }
+        let names: Vec<String> = captures.iter().map(|(n, _)| format!("@{n}")).collect();
         let literal = format!("write `@@{name}` for a literal `@`");
         let fix = match names.is_empty() {
             true => literal,
             false => format!("use {}, or {literal}", names.join(", ")),
         };
-        ExecErrorKind::UnknownCapture { name, fix }
+        (
+            ExecErrorKind::UnknownCapture {
+                name: name.clone(),
+                fix,
+            },
+            name,
+        )
     })?;
     Ok(Text {
         value,
         kind: text.kind,
     })
+}
+
+/// Where `@name` is in the script's TEXT after `selector`, or the selector
+/// if it can't be found there.
+fn placeholder_span(src: &str, selector: &Range<usize>, name: &str) -> Range<usize> {
+    let placeholder = format!("@{name}");
+    let rest = &src[selector.end..];
+    let word = |c: char| c == '_' || c.is_ascii_alphanumeric();
+    rest.match_indices(&placeholder)
+        .map(|(i, _)| i)
+        .find(|&i| !rest[..i].ends_with('@') && !rest[i + placeholder.len()..].starts_with(word))
+        .map_or(selector.clone(), |i| {
+            selector.end + i..selector.end + i + placeholder.len()
+        })
 }
 
 /// The span and text that replace `range` (§5.1). Unless `whole` (`.whole`),
@@ -1890,6 +1914,8 @@ pub enum ExecErrorKind {
     DuplicateCapture { name: String },
     #[error("`@{name}` is nothing the target captured; {fix}")]
     UnknownCapture { name: String, fix: String },
+    #[error("`@_` captures nothing, so TEXT can't use it; write `@@_` for a literal `@`")]
+    WildcardInText,
     #[error(
         "{selector} needs a programming language, but {files} has none; use a regex or literal, or --lang"
     )]
@@ -2350,12 +2376,41 @@ mod tests {
     }
 
     #[test]
+    fn replace_substitutes_captures_from_both_ends_of_a_range() {
+        let text = "fn f() {\n    begin(1);\n    work();\n    end(2);\n}\n";
+        assert_eq!(
+            edited(text, "replace `begin(@a)`..`end(@b)` with \"run(@a, @b);\""),
+            "fn f() {\n    run(1, 2);\n}\n"
+        );
+    }
+
+    #[test]
     fn replace_reindents_multi_line_captures() {
         let text = "fn load() {\n    if let Some(x) = get() {\n        use_it(x);\n        if x > 1 {\n            more();\n        }\n    }\n}\n";
         let script = "replace fn:load>`if let Some(@x) = @e { @body... }` with <<END\nlet Some(@x) = @e else {\n    return;\n};\n@body\nEND\n";
         assert_eq!(
             edited(text, script),
             "fn load() {\n    let Some(x) = get() else {\n        return;\n    };\n    use_it(x);\n    if x > 1 {\n        more();\n    }\n}\n"
+        );
+    }
+
+    #[test]
+    fn replace_substitutes_in_crlf_files() {
+        let text = "fn main() {\r\n    if x {\r\n        a();\r\n        b();\r\n    }\r\n}\r\n";
+        let script = "replace `if @c { @body... }` with <<END\nwhile @c {\n    @body\n}\nEND\n";
+        assert_eq!(
+            edited(text, script),
+            "fn main() {\r\n    while x {\r\n        a();\r\n        b();\r\n    }\r\n}\r\n"
+        );
+    }
+
+    #[test]
+    fn replace_converts_captures_to_the_files_indent() {
+        let text = "package main\n\nfunc f() {\n\tif x {\n\t\ta()\n\t\tb()\n\t}\n}\n";
+        let script = "replace `if @c { @body... }` with <<END\nfor @c {\n    @body\n}\nEND\n";
+        assert_eq!(
+            edited_in("a.go", text, script),
+            "package main\n\nfunc f() {\n\tfor x {\n\t\ta()\n\t\tb()\n\t}\n}\n"
         );
     }
 
@@ -2373,12 +2428,17 @@ mod tests {
         let out = exec_with(&[("a.rs", text)], 1, "replace `foo(@a)` with \"bar(@b)\"");
         assert_eq!(
             out.error(),
-            "error: script:1:9: `@b` is nothing the target captured; use @a, or write `@@b` for a literal `@`"
+            "error: script:1:29: `@b` is nothing the target captured; use @a, or write `@@b` for a literal `@`"
         );
         let none = exec_with(&[("a.rs", text)], 1, "replace `foo(@_)` with \"@app\"");
         assert_eq!(
             none.error(),
-            "error: script:1:9: `@app` is nothing the target captured; write `@@app` for a literal `@`"
+            "error: script:1:25: `@app` is nothing the target captured; write `@@app` for a literal `@`"
+        );
+        let wildcard = exec_with(&[("a.rs", text)], 1, "replace `foo(@a)` with \"x(@_)\"");
+        assert_eq!(
+            wildcard.error(),
+            "error: script:1:27: `@_` captures nothing, so TEXT can't use it; write `@@_` for a literal `@`"
         );
     }
 

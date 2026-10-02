@@ -305,6 +305,7 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::InvalidPattern { .. }
         | ExecErrorKind::DuplicateCapture { .. }
         | ExecErrorKind::UnknownCapture { .. }
+        | ExecErrorKind::WildcardInText
         | ExecErrorKind::NoServer { .. } => 2,
         ExecErrorKind::Io { .. } | ExecErrorKind::NoGlobMatch { .. } | ExecErrorKind::Lsp(_) => 3,
     }

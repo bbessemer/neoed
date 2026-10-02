@@ -261,7 +261,7 @@ impl Fragment {
     pub fn roots(&self) -> Vec<Node<'_>> {
         let r = &self.roots;
         let node = self.spanning(r);
-        if self.span(node) == *r && node.is_named() {
+        if self.is_root(node) {
             return vec![node];
         }
         let mut cursor = node.walk();
@@ -307,11 +307,18 @@ impl Fragment {
     /// The node the roots are children of.
     fn container(&self) -> Option<Node<'_>> {
         let node = self.spanning(&self.roots);
-        if self.span(node) == self.roots && node.is_named() {
+        if self.is_root(node) {
             node.parent()
         } else {
             Some(node)
         }
+    }
+
+    /// Whether `node`, the node spanning the roots, is the one root. The
+    /// grammar's top node isn't: when it spans exactly the fragment (Go's
+    /// `source_file` for statements), its children are the roots.
+    fn is_root(&self, node: Node<'_>) -> bool {
+        self.span(node) == self.roots && node.is_named() && node.parent().is_some()
     }
 
     fn spanning(&self, r: &Range<usize>) -> Node<'_> {
@@ -342,8 +349,12 @@ pub fn parse(lang: Language, template: &Template) -> Result<Vec<Fragment>, Fragm
     let mut readings: Vec<Fragment> = Vec::new();
     let mut fused = None;
     // Runs are left out of the text only if nothing parses with them in.
-    for gaps in [HashSet::new(), runs] {
-        if !readings.is_empty() || (gaps.is_empty() && fused.is_some()) {
+    let passes = match runs.is_empty() {
+        true => vec![HashSet::new()],
+        false => vec![HashSet::new(), runs],
+    };
+    for gaps in passes {
+        if !readings.is_empty() || fused.is_some() {
             break;
         }
         let wraps = std::iter::once(None).chain(lang.builders().iter().enumerate().map(Some));
@@ -388,28 +399,34 @@ fn reading(
     let Some(f) = build(lang, template, wrap, &HashSet::new(), gaps) else {
         return Ok(None);
     };
-    let partial: HashSet<usize> = (0..f.holes.len())
-        .filter(|&i| matches!(&f.holes[i], Slot::Node(r) if f.span(f.spanning(r)) != *r))
-        .collect();
-    if partial.is_empty() {
-        return Ok(Some(f));
-    }
-    // Holes inside a string or comment keep their text, which leaves the
-    // tree's shape unchanged; any other hole that isn't a whole node is
-    // fused into a neighbouring token.
-    match build(lang, template, wrap, &partial, gaps) {
-        Some(literal) if shape(&literal.tree) == shape(&f.tree) => Ok(Some(literal)),
-        _ => {
-            let i = *partial.iter().min().expect("not empty");
+    // A hole inside a string or comment keeps its text, which leaves the
+    // tree's shape unchanged, even where its placeholder is a whole node (all
+    // of a string's content). Any other hole that isn't a whole node is fused
+    // into a neighbouring token.
+    let shape = shape(&f.tree);
+    let mut literal = HashSet::new();
+    for (i, slot) in f.holes.iter().enumerate() {
+        let Slot::Node(r) = slot else { continue };
+        let mut trial = literal.clone();
+        trial.insert(i);
+        let keeps_shape = build(lang, template, wrap, &trial, gaps)
+            .is_some_and(|t| self::shape(&t.tree) == shape);
+        if keeps_shape {
+            literal = trial;
+        } else if f.span(f.spanning(r)) != *r {
             let span = template
                 .holes()
                 .nth(i)
-                .expect("a hole per range")
+                .expect("a hole per slot")
                 .span
                 .clone();
-            Err(FragmentError::Fused { span })
+            return Err(FragmentError::Fused { span });
         }
     }
+    if literal.is_empty() {
+        return Ok(Some(f));
+    }
+    Ok(build(lang, template, wrap, &literal, gaps))
 }
 
 /// Parses `template` inside `wrap`, with the holes in `literal` keeping their
@@ -520,12 +537,25 @@ fn shape(tree: &Tree) -> Vec<u16> {
     out
 }
 
+/// Where parsing failed under `node`: the first missing node, or the token
+/// the first error node gave up at.
 fn first_error(node: Node<'_>) -> Option<Node<'_>> {
-    if node.is_error() || node.is_missing() {
+    if node.is_missing() {
         return Some(node);
     }
+    // Not `children_of`: an error node can be an extra.
     let mut cursor = node.walk();
-    node.children(&mut cursor)
+    let children: Vec<_> = node.children(&mut cursor).collect();
+    if node.is_error() {
+        // An error of only tokens is where parsing failed; one holding nodes
+        // failed at its last child, after the nodes it could build.
+        let last = children
+            .last()
+            .filter(|_| children.iter().any(|c| c.is_named()));
+        return Some(last.copied().unwrap_or(node));
+    }
+    children
+        .into_iter()
         .filter(|c| c.has_error())
         .find_map(first_error)
 }
@@ -677,6 +707,20 @@ mod tests {
             "{}",
             f.text
         );
+    }
+
+    #[test]
+    fn a_placeholder_that_is_a_whole_string_is_literal() {
+        for (lang, src) in [
+            (Language::Rust, "log(\"@who\", @x)"),
+            (Language::Python, "log(\"@who\", @x)"),
+            (Language::JavaScript, "log(\"@who\", @x)"),
+            (Language::Go, "log(\"@who\", @x)"),
+        ] {
+            let f = &readings(lang, src)[0];
+            assert_eq!(f.holes[0], Slot::Literal, "{lang}");
+            assert!(matches!(f.holes[1], Slot::Node(_)), "{lang}");
+        }
     }
 
     #[test]

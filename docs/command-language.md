@@ -651,11 +651,11 @@ any of them: `` `x: u32` `` matches a struct field or a parameter.
 
 **Matching.** Two nodes match when they have the same kind and their children
 match in order; leaves (names, numbers, string contents) must have the same
-text. Comments are skipped on both sides. Punctuation and keyword tokens in the
-file that the pattern leaves out are skipped too, so `` `foo(@a, @b)` `` matches
-`foo(x, y,)`; tokens the pattern has must be there, so `` `@a + @b` `` doesn't
-match `x - y`. Every other node must match: `` `fn @name() {}` `` doesn't match
-`pub fn f() {}`.
+text. Comments are skipped on both sides. Separators in the file that the
+pattern leaves out (`,`, `;` and line breaks) are skipped too, so
+`` `foo(@a, @b)` `` matches `foo(x, y,)`. Every other token and node must match:
+`` `@a + @b` `` doesn't match `x - y`, `` `fn f(self) {}` `` doesn't match
+`fn f(&self) {}`, and `` `fn @name() {}` `` doesn't match `pub fn f() {}`.
 
 **Matches.** A match is a span (§3.8) from the start of the matched node or run
 to its end, with `.lines` but no other parts. It works as any step, like
@@ -663,12 +663,13 @@ to its end, with `.lines` but no other parts. It works as any step, like
 found in source order and don't overlap: a match inside an earlier one is
 skipped, so `foo(foo(1))` matches `` `foo(@a)` `` once.
 
-**Captures.** Each named placeholder captures what it matched, from its first
-character to its last, comments inside included. A span's captures come from
-every pattern step of its selector, so each name may appear in only one step;
-`` `impl @t { @_... }`>fn:new `` captures `@t` for each `new`.
+**Captures.** Each named placeholder captures what it matched, with the comments
+between it and its neighbours, so `replace` keeps them. A span's captures come
+from every pattern step of its selector, range ends included, so each name may
+appear in only one step; `` `impl @t { @_... }`>fn:new `` captures `@t` for each
+`new`.
 
-**Substitution.** When `replace`'s target has captures, `@name` in `TEXT`
+**Substitution.** When `replace`'s target has pattern steps, `@name` in `TEXT`
 expands to the selected span's capture (`@name...` is the same), and `@@` to
 `@`. An `@name` that nothing captured is a script error.
 
@@ -735,7 +736,7 @@ END
 Notes:
 
 - `replace` never expands `$`. Only `sub` does. `replace` expands `@name` only
-  when its target has pattern captures (§3.10).
+  when its target has pattern steps (§3.10).
 - `sub` inserts its replacement verbatim after `$` expansion; the whole-line
   rules of §5.1 don't apply.
 - The `all` prefix belongs to the target: `delete all fn:test_*`. In `sub`, the
@@ -1046,9 +1047,11 @@ Errors go to stderr, in the form `error: LOC: message`.
 | Invalid query                                             | The closest node type or field name in the grammar                                                                                                                                                                                                                                                      |
 | Unterminated pattern                                      | Ending it with as many backquotes as opened it                                                                                                                                                                                                                                                          |
 | Pattern that no searched file's language parses           | The first syntax error in it; adding the code around it, or `query{}`                                                                                                                                                                                                                                   |
+| Pattern with no code                                      | Writing the code to match between the backquotes                                                                                                                                                                                                                                                        |
 | Placeholder that isn't a whole node                       | `@@` for a literal `@`                                                                                                                                                                                                                                                                                  |
 | Capture name in two pattern steps                         | Renaming one of them                                                                                                                                                                                                                                                                                    |
 | `@name` in `replace` TEXT that nothing captured           | The names captured, or `@@name` for a literal                                                                                                                                                                                                                                                           |
+| `@_` in `replace` TEXT                                    | `@@_` for a literal `@`                                                                                                                                                                                                                                                                                 |
 | Pattern searching only files without a code language      | A regex or literal, or `--lang`                                                                                                                                                                                                                                                                         |
 | Syntax step or `outline` in a file without a language     | `--lang`                                                                                                                                                                                                                                                                                                |
 | Kind the language doesn't have                            | The kinds it has                                                                                                                                                                                                                                                                                        |

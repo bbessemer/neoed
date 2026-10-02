@@ -166,6 +166,17 @@ pub enum Primary {
     },
 }
 
+impl Primary {
+    /// The syntax patterns in the primary: its own, or its range's ends.
+    pub fn patterns(&self) -> Vec<&str> {
+        match self {
+            Primary::Code(code) => vec![code],
+            Primary::Range { from, to } => [from.patterns(), to.patterns()].concat(),
+            _ => Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Text {
     pub value: String,
