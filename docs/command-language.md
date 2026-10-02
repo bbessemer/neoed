@@ -927,8 +927,9 @@ and regex matches are not.
 
 - **Whole-line target:** the edit operates on the full lines, including the
   leading indentation and the line ending. `TEXT` is **line-oriented**: a final
-  newline is added, and its lines are re-based (§5.2). For example,
-  `insert after` puts new lines after the target's last line.
+  newline is added (a string that already ends in one gets no other), and its
+  lines are re-based (§5.2). For example, `insert after` puts new lines after
+  the target's last line.
 - **Partial-line target:** `TEXT` is inserted **verbatim** at the span.
   - If `TEXT` has several lines, the first is inserted as-is. The rest are
     re-based relative to the line the span starts on.
@@ -940,7 +941,8 @@ and regex matches are not.
 
 Blank or whitespace-only lines in `TEXT` are written as empty lines. Leading and
 trailing blank lines in `TEXT` are kept. This is how an agent adds a separating
-blank line.
+blank line. A string's final `\n` ends its last line, so `"x\n"` adds one line
+and `"x\n\n"` adds it and a blank line.
 
 ### 5.2 Re-basing
 

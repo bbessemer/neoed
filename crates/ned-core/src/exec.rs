@@ -1709,20 +1709,23 @@ fn separated<'t>(
         return Cow::Borrowed(new);
     }
     let blank = |line: Option<&str>| line.is_some_and(|l| l.trim().is_empty());
-    let mut value = new.value.clone();
+    // The target is whole-line, so a string is lines as a heredoc's are, and
+    // its final newline only ends its last line (§5.1).
+    let (lines, kind) = match new.kind {
+        TextKind::Str => (lines_of(new), TextKind::Heredoc),
+        kind => (new.value.as_str(), kind),
+    };
+    let mut value = lines.to_string();
     match position {
-        Position::After if !blank(new.value.split('\n').next()) => value.insert(0, '\n'),
+        Position::After if !blank(lines.split('\n').next()) => value.insert(0, '\n'),
         // Doc comments and attributes attach to the item.
-        Position::Before if only_leading(f, &new.value) => {
+        Position::Before if only_leading(f, lines) => {
             return Cow::Borrowed(new);
         }
-        Position::Before if !blank(new.value.split('\n').next_back()) => value.push('\n'),
+        Position::Before if !blank(lines.split('\n').next_back()) => value.push('\n'),
         _ => return Cow::Borrowed(new),
     }
-    Cow::Owned(Text {
-        value,
-        kind: new.kind,
-    })
+    Cow::Owned(Text { value, kind })
 }
 
 /// The text `move` carries from `range`: its full lines, to be re-based, if
@@ -1837,10 +1840,19 @@ fn removal(f: &SourceFile, range: Range<usize>) -> Range<usize> {
 fn line_oriented(new: &Text, indent: &str, unit: &str) -> String {
     let mut out = match new.kind {
         TextKind::RawHeredoc => new.value.clone(),
-        TextKind::Str | TextKind::Heredoc => text::rebase(&new.value, indent, unit),
+        TextKind::Str | TextKind::Heredoc => text::rebase(lines_of(new), indent, unit),
     };
     out.push('\n');
     out
+}
+
+/// The lines of line-oriented `new`: a string's final newline only ends its
+/// last line (§5.1).
+fn lines_of(new: &Text) -> &str {
+    match new.kind {
+        TextKind::Str => new.value.strip_suffix('\n').unwrap_or(&new.value),
+        _ => &new.value,
+    }
 }
 
 /// The Markdown list item that list-item `new` placed on the line holding
@@ -3158,6 +3170,18 @@ mod tests {
     }
 
     #[test]
+    fn a_string_ending_in_a_newline_inserts_no_blank_line() {
+        assert_eq!(
+            edited(MOVE, r#"insert after fn:helper_y "fn z() {}\n""#),
+            edited(MOVE, r#"insert after fn:helper_y "fn z() {}""#)
+        );
+        assert_eq!(
+            edited(MOVE, r#"insert after fn:helper_y "fn z() {}\n\n""#),
+            MOVE.replace("fn helper_y() {}\n", "fn helper_y() {}\n\nfn z() {}\n\n")
+        );
+    }
+
+    #[test]
     fn insert_adds_no_blank_line_next_to_unseparated_items_or_imports() {
         assert_eq!(
             edited(
@@ -3344,6 +3368,35 @@ mod tests {
         );
         let empty = exec_with(&[], 0, "create {dir}/e.txt \"\"");
         assert_eq!(empty.result.unwrap()[0].new, "");
+    }
+
+    #[test]
+    fn create_ends_a_string_with_one_newline() {
+        let new = |script| exec_with(&[], 0, script).result.unwrap()[0].new.clone();
+        assert_eq!(new("create {dir}/b.rs \"fn a() {}\\n\""), "fn a() {}\n");
+        assert_eq!(
+            new("create {dir}/b.rs \"fn a() {}\\n\\n\""),
+            "fn a() {}\n\n"
+        );
+    }
+
+    #[test]
+    fn insert_next_to_a_created_item_separates_it_as_on_disk() {
+        let insert = |file: &str| {
+            let script = format!("create {{dir}}/b.rs {file:?}\ninsert after fn:a \"fn b() {{}}\"");
+            let created = exec_with(&[], 0, &script).result.unwrap()[0].new.clone();
+            assert_eq!(
+                created,
+                edited(file, r#"insert after fn:a "fn b() {}""#),
+                "{file:?}"
+            );
+            created
+        };
+        assert_eq!(insert("fn a() {}\n"), "fn a() {}\nfn b() {}\n");
+        assert_eq!(
+            insert("fn a() {}\n\nfn c() {}\n"),
+            "fn a() {}\n\nfn b() {}\n\nfn c() {}\n"
+        );
     }
 
     const MOVE: &str = "\

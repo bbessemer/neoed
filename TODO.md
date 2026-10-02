@@ -221,7 +221,7 @@ of either kind.
 
 Each fix is a patch; a fix that changes documented behaviour is a minor.
 
-- [ ] `create a.rs "fn a() {}\n"` followed by `insert after fn:a ...` in the
+- [x] `create a.rs "fn a() {}\n"` followed by `insert after fn:a ...` in the
       same script leaves a trailing blank line (rustfmt removes it)
 - [ ] The did-you-mean-another-kind hint only fires for a selector's last step:
       `show fn:tests>fn:exec` says "`outline` lists the items" where
