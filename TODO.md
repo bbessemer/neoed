@@ -240,7 +240,7 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [ ] `insert after "LINE1\n...LASTLINE" <<END` re-based the text to the
       literal's first line's indentation, not its last line's, though the text
       goes after the last line
-- [ ] rustfmt formats a `.rs` file with edition 2015 when the script also
+- [x] rustfmt formats a `.rs` file with edition 2015 when the script also
       `create`s its crate's `Cargo.toml`: `rust_edition` (`format.rs`) reads
       manifests from disk, not the script's created files, so 2024-style code is
       reformatted (`if c { a } else { b }` split over five lines)

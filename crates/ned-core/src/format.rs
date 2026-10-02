@@ -1,5 +1,6 @@
 //! External formatters and their configuration (command-language spec, §6.4).
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -41,10 +42,14 @@ pub enum Outcome {
 
 /// Formats the new text of each of `changes`, in parallel.
 pub fn run(changes: &[Change], config: &mut Config) -> Result<Vec<Outcome>, ConfigError> {
+    let written: HashMap<PathBuf, &str> = changes
+        .iter()
+        .filter_map(|c| Some((std::path::absolute(&c.path).ok()?, c.new.as_str())))
+        .collect();
     let found = changes
         .iter()
         .map(|c| match c.lang {
-            Some(lang) => config.formatter(Path::new(&c.path), lang),
+            Some(lang) => config.formatter(Path::new(&c.path), lang, &written),
             None => Ok(None),
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -112,11 +117,13 @@ fn apply(text: &str, edits: &[TextEdit]) -> Option<String> {
 }
 
 impl Config {
-    /// The formatter for `path` in `lang`, or `None` if it has none.
+    /// The formatter for `path` in `lang`, or `None` if it has none. Manifests
+    /// are read from `written`, the new texts by absolute path, before the disk.
     pub fn formatter(
         &mut self,
         path: &Path,
         lang: Language,
+        written: &HashMap<PathBuf, &str>,
     ) -> Result<Option<Formatter>, ConfigError> {
         let path = std::path::absolute(path).map_err(|err| crate::config::io_error(path, &err))?;
         let dir = path.parent().unwrap_or(&path).to_path_buf();
@@ -137,7 +144,7 @@ impl Config {
             if arg.contains("{edition}") {
                 arg.replace(
                     "{edition}",
-                    edition.get_or_insert_with(|| rust_edition(&dir)),
+                    edition.get_or_insert_with(|| rust_edition(&dir, written)),
                 )
             } else {
                 arg
@@ -244,10 +251,14 @@ fn name(program: &str) -> String {
 
 /// The Rust edition of the package holding `dir`, from its `Cargo.toml` or,
 /// for `edition.workspace = true`, its workspace's.
-fn rust_edition(dir: &Path) -> String {
+fn rust_edition(dir: &Path, written: &HashMap<PathBuf, &str>) -> String {
     let edition = |table: &toml::Table| table.get("edition").cloned();
     let manifests = dir.ancestors().filter_map(|a| {
-        let text = fs::read_to_string(a.join("Cargo.toml")).ok()?;
+        let path = a.join("Cargo.toml");
+        let text = match written.get(&path) {
+            Some(text) => text.to_string(),
+            None => fs::read_to_string(&path).ok()?,
+        };
         text.parse::<toml::Table>().ok()
     });
     let mut inherit = false;
@@ -305,7 +316,7 @@ mod tests {
             fs::write(&path, text).unwrap();
             path
         });
-        Config::new(user.as_deref())?.formatter(&root.path().join(file), lang)
+        Config::new(user.as_deref())?.formatter(&root.path().join(file), lang, &HashMap::new())
     }
 
     fn commands(
@@ -377,7 +388,7 @@ mod tests {
         let missing = root.path().join("nope/config.toml");
         let found = Config::new(Some(&missing))
             .unwrap()
-            .formatter(&root.path().join("a.go"), Language::Go)
+            .formatter(&root.path().join("a.go"), Language::Go, &HashMap::new())
             .unwrap();
         assert_eq!(found.unwrap().commands, [argv(&["gofmt"])]);
     }
@@ -647,6 +658,46 @@ mod tests {
                 Outcome::Unchanged,
                 Outcome::Unchanged,
                 formatted("sh", "STRUCT S;\n"),
+            ]
+        );
+    }
+
+    #[test]
+    fn run_reads_the_edition_from_manifests_the_script_writes() {
+        let root = tree(&[
+            (
+                ".ned.toml",
+                "[format]\nrust = [\"sh\", \"-c\", \"echo {edition}\"]\n",
+            ),
+            ("old/Cargo.toml", "[package]\nedition = \"2018\"\n"),
+            (
+                "ws/crates/x/Cargo.toml",
+                "[package]\nedition.workspace = true\n",
+            ),
+        ]);
+        let manifest = |path: &str, text: &str| change(&root.path().join(path), None, text);
+        let rust = |path: &str| change(&root.path().join(path), Some(Language::Rust), "");
+        let changes = [
+            manifest("new/Cargo.toml", "[package]\nedition = \"2024\"\n"),
+            rust("new/src/a.rs"),
+            manifest("old/Cargo.toml", "[package]\nedition = \"2021\"\n"),
+            rust("old/src/a.rs"),
+            rust("ws/crates/x/src/a.rs"),
+            manifest(
+                "ws/Cargo.toml",
+                "[workspace]\n\n[workspace.package]\nedition = \"2024\"\n",
+            ),
+        ];
+        let outcomes = run(&changes, &mut Config::new(None).unwrap()).unwrap();
+        assert_eq!(
+            outcomes,
+            [
+                Outcome::Unchanged,
+                formatted("sh", "2024\n"),
+                Outcome::Unchanged,
+                formatted("sh", "2021\n"),
+                formatted("sh", "2024\n"),
+                Outcome::Unchanged,
             ]
         );
     }

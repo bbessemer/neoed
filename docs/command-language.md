@@ -1086,7 +1086,7 @@ python = false
   `~/.config/ned/config.toml`), then every `.ned.toml` from the filesystem root
   down to the file's directory.
 - In a command, `{path}` is the file's absolute path, and `{edition}` is the
-  Rust edition from the nearest `Cargo.toml` (following
+  Rust edition from the nearest `Cargo.toml` as the script leaves it (following
   `edition.workspace = true`), or `2015` if there is none.
 - A bare program name is looked up in `node_modules/.bin` in the file's
   directory and each one above it, then on `PATH`. A program path containing `/`
