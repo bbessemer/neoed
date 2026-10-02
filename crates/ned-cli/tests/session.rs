@@ -314,3 +314,152 @@ fn an_unsafe_session_dir_is_refused_before_editing() {
     assert!(stderr.contains("XDG_STATE_HOME"), "{stderr}");
     assert_eq!(ws.read("a.rs"), "fn a() {}\n");
 }
+
+#[test]
+fn undo_reverts_the_last_edit_and_records_it() {
+    let ws = Workspace::new(&[("a.rs", "fn a() {}\n")]);
+    ws.ned(&[
+        "-s",
+        "agent",
+        "a.rs",
+        "-e",
+        r#"replace fn:a with "fn b() {}""#,
+    ]);
+    ws.ned(&["-s", "agent", "a.rs", "-e", "show 1"]);
+    assert_snapshot!(ws.report(&["undo", "-s", "agent"]), @r#"
+    exit: 0
+    --- stdout
+    undo 1: replace fn:a with "fn b() {}"
+    a.rs: 1 edit, +1 -1
+    @@ -1,1 +1,1 @@
+    -fn b() {}
+    +fn a() {}
+    --- stderr
+    "#);
+    assert_eq!(ws.read("a.rs"), "fn a() {}\n");
+
+    let entry = &ws.entries("agent")[2];
+    assert_eq!(entry["script"], Value::Null);
+    assert_eq!(entry["undoes"], 1);
+    assert_eq!(entry["changes"][0]["before"], "fn b() {}\n");
+    assert_eq!(entry["changes"][0]["after"], "fn a() {}\n");
+    assert_snapshot!(ws.report(&["history", "-s", "agent"]), @r#"
+    exit: 0
+    --- stdout
+    1 ok, 1 file, undone: replace fn:a with "fn b() {}"
+    2 ok: show 1
+    3 undo 1, 1 file
+    --- stderr
+    "#);
+}
+
+#[test]
+fn repeated_undo_walks_back_until_nothing_is_left() {
+    let ws = Workspace::new(&[("a.rs", "fn a() {}\n")]);
+    ws.ned_with(
+        Some("agent"),
+        &["a.rs", "-e", r#"replace fn:a with "fn b() {}""#],
+    );
+    ws.ned_with(
+        Some("agent"),
+        &["a.rs", "-e", r#"replace fn:b with "fn c() {}""#],
+    );
+    for expected in ["fn b() {}\n", "fn a() {}\n"] {
+        let output = ws.ned_with(Some("agent"), &["undo"]);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(ws.read("a.rs"), expected);
+    }
+    assert_snapshot!(ws.report(&["undo", "-s", "agent"]), @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: nothing to undo; `ned history` lists the session's entries
+    ");
+}
+
+#[test]
+fn undo_removes_a_created_file_and_restores_every_file() {
+    let ws = Workspace::new(&[("a.rs", "fn a() {}\n")]);
+    let script = "replace fn:a with \"fn a2() {}\"\ncreate src/c.rs \"fn c() {}\"";
+    ws.ned(&["-s", "agent", "a.rs", "-e", script]);
+    assert_snapshot!(ws.report(&["undo", "-s", "agent"]), @r#"
+    exit: 0
+    --- stdout
+    undo 1: replace fn:a with "fn a2() {}" (+1 line)
+    a.rs: 1 edit, +1 -1
+    @@ -1,1 +1,1 @@
+    -fn a2() {}
+    +fn a() {}
+    src/c.rs: removed, -1
+    @@ -1,1 +0,0 @@
+    -fn c() {}
+    --- stderr
+    "#);
+    assert_eq!(ws.read("a.rs"), "fn a() {}\n");
+    assert!(!ws.dir.path().join("src/c.rs").exists());
+}
+
+#[test]
+fn undo_of_a_file_changed_since_needs_force_to_merge() {
+    let ws = Workspace::new(&[("a.rs", "fn a() {}\n\nfn z() {}\n")]);
+    ws.ned(&[
+        "-s",
+        "agent",
+        "a.rs",
+        "-e",
+        r#"replace fn:a with "fn b() {}""#,
+    ]);
+    fs::write(ws.dir.path().join("a.rs"), "fn b() {}\n\nfn y() {}\n").unwrap();
+    assert_snapshot!(ws.report(&["undo", "-s", "agent"]), @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: a.rs changed since entry 1 wrote it; use --force to merge the undo into its current text
+    ");
+    assert_eq!(ws.read("a.rs"), "fn b() {}\n\nfn y() {}\n");
+
+    let output = ws.ned(&["undo", "-s", "agent", "--force"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(ws.read("a.rs"), "fn a() {}\n\nfn y() {}\n");
+}
+
+#[test]
+fn a_forced_undo_that_conflicts_writes_nothing() {
+    let ws = Workspace::new(&[("a.rs", "fn a() {}\n"), ("b.rs", "fn b() {}\n")]);
+    let script = "replace fn:a with \"fn a2() {}\"\nreplace fn:b with \"fn b2() {}\"";
+    ws.ned(&["-s", "agent", "a.rs", "b.rs", "-e", script]);
+    fs::write(ws.dir.path().join("b.rs"), "fn b3() {}\n").unwrap();
+    assert_snapshot!(ws.report(&["undo", "-s", "agent", "--force"]), @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: b.rs:1: undoing entry 1 conflicts with a later change; edit the file by hand
+    ");
+    assert_eq!(ws.read("a.rs"), "fn a2() {}\n");
+}
+
+#[test]
+fn undo_of_a_file_removed_since_is_refused_even_forced() {
+    let ws = Workspace::new(&[("a.rs", "fn a() {}\n")]);
+    ws.ned(&[
+        "-s",
+        "agent",
+        "a.rs",
+        "-e",
+        r#"replace fn:a with "fn b() {}""#,
+    ]);
+    fs::remove_file(ws.dir.path().join("a.rs")).unwrap();
+    assert_snapshot!(ws.report(&["undo", "-s", "agent", "--force"]), @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: a.rs was removed since entry 1 wrote it, so it can't be undone; restore it by hand (`ned history` lists the entries)
+    ");
+}
+
+#[test]
+fn undo_without_a_session_is_a_usage_error() {
+    let ws = Workspace::new(&[("a.rs", "fn a() {}\n")]);
+    let output = ws.ned(&["undo"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+}

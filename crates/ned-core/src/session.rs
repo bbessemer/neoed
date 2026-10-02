@@ -825,4 +825,165 @@ mod tests {
         assert_eq!(history(&entries, true), every.concat());
         assert_eq!(history(&[], true), "");
     }
+
+    fn edit(id: u64, files: &[(&str, Option<&str>, Option<&str>)]) -> Entry {
+        let mut entry = recorded(id, Some("edit"), 0, 0);
+        entry.changes = files
+            .iter()
+            .map(|(path, before, after)| FileChange {
+                path: PathBuf::from(path),
+                before: before.map(String::from),
+                after: after.map(String::from),
+            })
+            .collect();
+        entry
+    }
+
+    fn undo_of(id: u64, undoes: u64, files: &[(&str, Option<&str>, Option<&str>)]) -> Entry {
+        let mut entry = edit(id, files);
+        entry.script = None;
+        entry.undoes = Some(undoes);
+        entry
+    }
+
+    /// Plans an undo of `entries` over files holding `disk`.
+    fn plan(entries: &[Entry], disk: &[(&str, &str)], force: bool) -> Result<Undo, UndoError> {
+        let disk: std::collections::HashMap<_, _> = disk
+            .iter()
+            .map(|(path, text)| (PathBuf::from(path), text.to_string()))
+            .collect();
+        undo(entries, |path| Ok(disk.get(path).cloned()), force)
+    }
+
+    fn change(path: &str, before: Option<&str>, after: Option<&str>) -> FileChange {
+        FileChange {
+            path: PathBuf::from(path),
+            before: before.map(String::from),
+            after: after.map(String::from),
+        }
+    }
+
+    #[test]
+    fn undo_restores_the_last_entry_that_wrote_files() {
+        let entries = [
+            edit(1, &[("/p/a.rs", Some("a0\n"), Some("a1\n"))]),
+            edit(
+                2,
+                &[
+                    ("/p/a.rs", Some("a1\n"), Some("a2\n")),
+                    ("/p/b.rs", None, Some("b\n")),
+                ],
+            ),
+            recorded(3, Some("show 1"), 0, 0),
+            recorded(4, Some("delete fn:x"), 1, 0),
+        ];
+        let undo = plan(&entries, &[("/p/a.rs", "a2\n"), ("/p/b.rs", "b\n")], false).unwrap();
+        assert_eq!(
+            undo,
+            Undo {
+                id: 2,
+                script: Some("edit".into()),
+                changes: vec![
+                    change("/p/a.rs", Some("a2\n"), Some("a1\n")),
+                    change("/p/b.rs", Some("b\n"), None),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn undo_walks_back_past_undone_entries() {
+        let entries = [
+            edit(1, &[("/p/a.rs", Some("a0\n"), Some("a1\n"))]),
+            edit(2, &[("/p/a.rs", Some("a1\n"), Some("a2\n"))]),
+            undo_of(3, 2, &[("/p/a.rs", Some("a2\n"), Some("a1\n"))]),
+        ];
+        let undo = plan(&entries, &[("/p/a.rs", "a1\n")], false).unwrap();
+        assert_eq!(undo.id, 1);
+        assert_eq!(
+            undo.changes,
+            [change("/p/a.rs", Some("a1\n"), Some("a0\n"))]
+        );
+
+        let mut entries = entries.to_vec();
+        entries.push(undo_of(4, 1, &[("/p/a.rs", Some("a1\n"), Some("a0\n"))]));
+        assert!(matches!(
+            plan(&entries, &[("/p/a.rs", "a0\n")], false),
+            Err(UndoError::Nothing)
+        ));
+    }
+
+    #[test]
+    fn nothing_to_undo_without_an_entry_that_wrote_files() {
+        assert!(matches!(plan(&[], &[], false), Err(UndoError::Nothing)));
+        let mut dry = recorded(2, Some("delete fn:a"), 0, 0);
+        dry.dry_run = true;
+        let entries = [recorded(1, Some("show 1"), 0, 0), dry];
+        assert!(matches!(plan(&entries, &[], true), Err(UndoError::Nothing)));
+    }
+
+    #[test]
+    fn a_file_changed_since_is_refused_unless_forced() {
+        let entries = [edit(
+            1,
+            &[("/p/a.rs", Some("a\nb\nc\n"), Some("A\nb\nc\n"))],
+        )];
+        let disk = [("/p/a.rs", "A\nb\nC\n")];
+        let err = plan(&entries, &disk, false).unwrap_err();
+        assert!(matches!(err, UndoError::Changed { id: 1, .. }), "{err}");
+        assert!(err.to_string().contains("--force"), "{err}");
+
+        let undo = plan(&entries, &disk, true).unwrap();
+        assert_eq!(
+            undo.changes,
+            [change("/p/a.rs", Some("A\nb\nC\n"), Some("a\nb\nC\n"))]
+        );
+    }
+
+    #[test]
+    fn a_forced_undo_that_overlaps_a_later_change_conflicts() {
+        let entries = [edit(1, &[("/p/a.rs", Some("a\nb\n"), Some("A\nb\n"))])];
+        let err = plan(&entries, &[("/p/a.rs", "x\nA2\nb\n")], true).unwrap_err();
+        assert!(
+            matches!(err, UndoError::Conflict { line: 1, id: 1, .. }),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_file_removed_since_cannot_be_undone() {
+        let entries = [edit(1, &[("/p/a.rs", Some("a\n"), Some("b\n"))])];
+        for force in [false, true] {
+            let err = plan(&entries, &[], force).unwrap_err();
+            assert!(matches!(err, UndoError::Removed { id: 1, .. }), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_forced_undo_removes_a_created_file_it_empties() {
+        let entries = [edit(1, &[("/p/c.rs", None, Some("c\n"))])];
+        let undo = plan(&entries, &[("/p/c.rs", "c\n")], true).unwrap();
+        assert_eq!(undo.changes, [change("/p/c.rs", Some("c\n"), None)]);
+        let err = plan(&entries, &[("/p/c.rs", "c\nlater\n")], true).unwrap_err();
+        assert!(matches!(err, UndoError::Conflict { line: 2, .. }), "{err}");
+    }
+
+    #[test]
+    fn undo_errors_name_paths_relative_to_a_dir() {
+        let err = UndoError::Changed {
+            path: PathBuf::from("/p/src/a.rs"),
+            id: 3,
+        };
+        let err = err.relative_to(Path::new("/p"));
+        assert!(err.to_string().starts_with("src/a.rs changed"), "{err}");
+        let err = UndoError::Removed {
+            path: PathBuf::from("/q/a.rs"),
+            id: 3,
+        };
+        assert!(
+            err.relative_to(Path::new("/p"))
+                .to_string()
+                .starts_with("/q/a.rs ")
+        );
+    }
 }

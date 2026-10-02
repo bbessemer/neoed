@@ -258,4 +258,70 @@ impl Parser {
         let new = "a\r\nB\r\nc\r\n";
         assert_eq!(hunks(old, new, 1), "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n");
     }
+
+    #[test]
+    fn removed_summary_line() {
+        let stat = DiffStat::between("a\nb\n", "");
+        assert_eq!(removed_summary("src/a.rs", stat), "src/a.rs: removed, -2");
+    }
+
+    #[test]
+    fn regions_count_separate_changes() {
+        assert_eq!(regions("a\nb\nc\n", "a\nb\nc\n"), 0);
+        assert_eq!(regions("a\nb\nc\n", "A\nB\nc\n"), 1);
+        assert_eq!(regions("a\nb\nc\n", "A\nb\nC\n"), 2);
+    }
+
+    #[test]
+    fn merge_keeps_each_sides_changes() {
+        let base = "a\nb\nc\nd\n";
+        assert_eq!(merge(base, base, base), Ok(base.to_string()));
+        assert_eq!(merge(base, "a\nB\nc\nd\n", base), Ok("a\nB\nc\nd\n".into()));
+        assert_eq!(merge(base, base, "a\nb\nC\nd\n"), Ok("a\nb\nC\nd\n".into()));
+        assert_eq!(
+            merge(base, "a\nb\nc\nD\n", "A\nb\nc\nd\n"),
+            Ok("A\nb\nc\nD\n".into())
+        );
+        assert_eq!(
+            merge(base, "a\nnew\nb\nc\nd\n", "a\nb\nc\n"),
+            Ok("a\nnew\nb\nc\n".into())
+        );
+    }
+
+    #[test]
+    fn identical_changes_merge_once() {
+        let base = "a\nb\nc\n";
+        assert_eq!(
+            merge(base, "a\nB\nc\n", "a\nB\nc\n"),
+            Ok("a\nB\nc\n".into())
+        );
+    }
+
+    #[test]
+    fn overlapping_changes_conflict_at_their_line_in_ours() {
+        let base = "a\nb\nc\nd\n";
+        assert_eq!(merge(base, "a\nX\nc\nd\n", "a\nY\nc\nd\n"), Err(2));
+        assert_eq!(merge(base, "a\nnew\nb\nc\nX\n", "a\nb\nc\nY\n"), Err(5));
+        assert_eq!(merge(base, "a\nx\nb\nc\nd\n", "a\ny\nb\nc\nd\n"), Err(2));
+    }
+
+    #[test]
+    fn a_change_beside_the_other_sides_change_conflicts() {
+        assert_eq!(merge("x\n", "x\ny\n", ""), Err(2));
+        assert_eq!(merge("a\nb\nc\n", "a\nb\nc\nd\n", ""), Err(4));
+        assert_eq!(
+            merge("a\nb\nc\n", "a\nb\nc\nd\n", "A\nb\nc\n"),
+            Ok("A\nb\nc\nd\n".into())
+        );
+    }
+
+    #[test]
+    fn merge_keeps_line_endings_and_a_missing_final_newline() {
+        assert_eq!(
+            merge("a\r\nb\r\n", "a\r\nB\r\n", "A\r\nb\r\n"),
+            Ok("A\r\nB\r\n".into())
+        );
+        assert_eq!(merge("a\nb", "a\nb\nc", "A\nb"), Ok("A\nb\nc".into()));
+        assert_eq!(merge("a\nb", "a\nb\nc", "a\nB"), Err(2));
+    }
 }
