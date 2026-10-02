@@ -16,6 +16,7 @@ pub mod script;
 pub mod select;
 pub mod session;
 pub mod span;
+pub mod style;
 pub mod syntax;
 pub mod template;
 pub mod text;

@@ -42,6 +42,7 @@ be the first argument; write a file with one of those names as `./help`, say.
 | `--no-fmt`                | Don't run formatters (§6.4).                                                                                                              |
 | `--lang LANG`             | Use this language for every file: `rust`, `python`, `typescript`, `tsx`, `javascript`, `go`, `markdown`, or `text` to parse none of them. |
 | `--context N`             | Context lines around diff hunks (default 1).                                                                                              |
+| `--color WHEN`            | Colour output for a terminal: `auto` (default), `always` or `never` (§6.6).                                                               |
 | `-s`, `--session NAME`    | Record the invocation in session `NAME`, overriding `NED_SESSION` (§1.2).                                                                 |
 | `-V`, `--version`         | Print the version: the package version and the build's git commit (the version alone for a release build, or one built without git).      |
 
@@ -1152,6 +1153,31 @@ Positions don't count, since edits move them.
 - If the edit isn't written, the servers are sent the original text again.
 - Checks a server runs on save (rust-analyzer's `cargo check`) don't run, since
   the edit isn't written yet; run `check` after the edit for those.
+
+### 6.6 Terminal output
+
+With `--color auto`, `ned` colours stdout when it is a terminal and stderr when
+that is one, unless `NO_COLOR` is set to a non-empty value. `--color always`
+colours both, and `--color never` neither, whatever `NO_COLOR` says. A
+subcommand takes `--color` after its name: `ned undo --color always`. Uncoloured
+output is exactly as §6.1–6.5 and §7 give it, so output read by a program never
+changes.
+
+Colour changes only how output looks, not what it says:
+
+- `show` prints each line's number right-aligned to the widest in its region,
+  dimmed and followed by a space instead of `:`, then the line's code,
+  highlighted with its language's highlight query.
+- `outline` dims each item's lines and colours its kind.
+- The headers naming a file, a `show` region's or `outline`'s, are bold.
+- An edit's summary line and `fmt` header are bold; in its hunks, `@@` headers
+  are cyan, removed lines red and added lines green, and each line's code is
+  highlighted from the text it belongs to.
+- `check` colours each diagnostic's severity: errors red, warnings yellow, info
+  and hints blue.
+- On stderr, only the `error:` and `note:` that start a message are coloured,
+  except in an error in the command line's options, which also colours the
+  arguments it quotes and its usage.
 
 ## 7. Errors and exit codes
 

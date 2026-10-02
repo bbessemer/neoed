@@ -20,6 +20,7 @@ use crate::script::ast::{
 use crate::script::error::{excerpt, location};
 use crate::select::{self, Match, SourceFile, line_numbers, same_path};
 use crate::span::Span;
+use crate::style::{Role, Style};
 use crate::syntax::{self, Item};
 use crate::template::Template;
 use crate::text;
@@ -67,6 +68,8 @@ pub struct Options {
     pub lang: Option<Option<Language>>,
     /// Skip the parse-error guard (§4.3).
     pub force: bool,
+    /// How reads paint their output (§6.6).
+    pub style: Style,
 }
 
 /// Runs `script` (parsed from `src`) on the `initial` file set. Nothing is
@@ -979,12 +982,23 @@ impl Executor<'_> {
             } else {
                 format!("{}-{}", first + 1, last + 1)
             };
-            self.output.push_str(&format!("{}:{lines}\n", f.path));
+            let style = self.options.style;
+            let header = format!("{}:{lines}", f.path);
+            self.output
+                .push_str(&format!("{}\n", style.paint(Role::Header, &header)));
+            let width = (last + 1).to_string().len();
             for line in first..=last {
                 let range = f.buffer.line_range(line).expect("line within the file");
                 let content = f.text[range].trim_end_matches('\n');
                 let content = content.strip_suffix('\r').unwrap_or(content);
-                self.output.push_str(&format!("{}:{content}\n", line + 1));
+                let numbered = match style {
+                    Style::Plain => format!("{}:{content}\n", line + 1),
+                    Style::Color => {
+                        let number = format!("{:>width$}", line + 1);
+                        format!("{} {content}\n", style.paint(Role::LineNumber, &number))
+                    }
+                };
+                self.output.push_str(&numbered);
             }
         }
         Ok(())
@@ -1025,10 +1039,12 @@ impl Executor<'_> {
                 continue;
             }
             if last != Some(i) {
-                self.output.push_str(&format!("{}\n", f.path));
+                let header = self.options.style.paint(Role::Header, &f.path);
+                self.output.push_str(&format!("{header}\n"));
                 last = Some(i);
             }
-            self.output.push_str(&outline::render(f, range.as_ref()));
+            self.output
+                .push_str(&outline::render(f, range.as_ref(), self.options.style));
         }
         Ok(())
     }
@@ -1124,7 +1140,7 @@ impl Executor<'_> {
                 if !ranges.is_empty() && !ranges.iter().any(|r| start < r.end && end > r.start) {
                     continue;
                 }
-                out.push_str(&render(&f.path, &f.buffer, d));
+                out.push_str(&render(&f.path, &f.buffer, d, self.options.style));
             }
         }
         if out.is_empty() {
@@ -2143,6 +2159,7 @@ mod tests {
         LspFailure, Position, Renamed, TextEdit,
     };
     use crate::script::parse;
+    use crate::style::shown;
 
     const TEXT: &str =
         "fn a() {\n    let x = 1;\n    let y = 2;\n}\n\nfn b() {\n    let x = 3;\n}\n";
@@ -2251,6 +2268,26 @@ mod tests {
         assert_eq!(out.output, "a.rs:2-3\n2:    let x = 1;\n3:    let y = 2;\n");
         assert_eq!(out.result, Ok(vec![]));
         assert_eq!(exec("a\r\nb\r\n", "show $").output, "a.rs:2\n2:b\n");
+    }
+
+    #[test]
+    fn colored_show_right_aligns_dimmed_line_numbers() {
+        let text: String = (1..=12).map(|i| format!("line {i}\n")).collect();
+        let color = Options {
+            style: Style::Color,
+            ..Options::default()
+        };
+        let out = exec_with_options(&[("a.txt", &text)], 1, "show 8-10; show 3", &color);
+        let expected = [
+            r"\e[1ma.txt:8-10\e[0m",
+            r"\e[2m 8\e[0m line 8",
+            r"\e[2m 9\e[0m line 9",
+            r"\e[2m10\e[0m line 10",
+            r"\e[1ma.txt:3\e[0m",
+            r"\e[2m3\e[0m line 3",
+            "",
+        ];
+        assert_eq!(shown(&out.output), expected.join("\n"));
     }
 
     #[test]
