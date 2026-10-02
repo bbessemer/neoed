@@ -44,6 +44,7 @@ be the first argument; write a file with one of those names as `./help`, say.
 | `--context N`             | Context lines around diff hunks (default 1).                                                                                              |
 | `--color WHEN`            | Colour output for a terminal: `auto` (default), `always` or `never` (§6.6).                                                               |
 | `-s`, `--session NAME`    | Record the invocation in session `NAME`, overriding `NED_SESSION` (§1.2).                                                                 |
+| `--commit MSG`            | Commit the edits the invocation writes, and nothing else, to git with message `MSG` (§1.3).                                               |
 | `-V`, `--version`         | Print the version: the package version and the build's git commit (the version alone for a release build, or one built without git).      |
 
 Otherwise, a file's language is detected from its extension, then from its
@@ -245,6 +246,43 @@ it:
 | `exit`      | The exit code                                                                                  |
 | `error`     | The error message, or `null`                                                                   |
 | `changes`   | Per written file: `path` (absolute), `before` (`null` if created), `after` (`null` if removed) |
+
+### 1.3 Committing
+
+`--commit MSG` turns the edits an invocation writes into one git commit with
+message `MSG`, on top of `HEAD`, and moves `HEAD` (or the branch it names) to
+it. Nothing else goes into the commit: `ned` builds it from `HEAD`'s tree with
+each edit applied, not from the index, so other changes, staged or not, are left
+as they were, in the files and in the index.
+
+- A file's edit is the change from its text before the script to the text
+  written, formatting included. If the file has changes that aren't committed,
+  the edit is applied to `HEAD`'s version for the commit (to the staged version,
+  for a file `HEAD` lacks), and to the staged version in the index, so those
+  changes stay uncommitted. An edit that overlaps them is an error naming the
+  line (exit 1).
+- A file the script creates is added. Every edited file must be inside the
+  repository and not ignored by git.
+- The commit is made with git's plumbing (`commit-tree`): hooks don't run, it is
+  signed if `commit.gpgSign` says so, and its author and committer come from
+  git's configuration and environment, as for `git commit`.
+- After the summaries (§6.3), `ned` prints `commit SHA: SUBJECT`, with the
+  commit's abbreviated name and its message's first line.
+- `--commit` with `-n`, without git, or outside a git repository is a usage
+  error (exit 2). A merge in progress, a script that changes no file or nothing
+  that differs from `HEAD` ("nothing to commit"), a file outside the repository
+  or ignored, a file whose version in `HEAD` or the index isn't UTF-8, and an
+  overlap are rejected (exit 1). A failing git command is an I/O error (exit 3).
+  In every case, nothing is written and `HEAD` doesn't move; if `HEAD` moved
+  while the script ran, the commit is refused.
+
+```
+$ ned src/parser.rs --commit "Say what input ended" -e 'replace fn:parse>"end" with "end of input"'
+src/parser.rs: 1 edit, +1 -1
+@@ -14,3 +14,3 @@
+...
+commit 3f9c2a1: Say what input ended
+```
 
 ## 2. Scripts
 
@@ -1323,12 +1361,12 @@ error: script:2:28: unterminated heredoc <<END (started here); end it with a lin
                              ^
 ```
 
-| Code | Meaning                                                                                                                                                                                                                                                                                                                                                                                           |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | Success, including dry runs and skipped formatters                                                                                                                                                                                                                                                                                                                                                |
-| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unknown kind, text file, line past the end, file not in the set, `create` of an existing file, parse-error guard, introduced diagnostics, move into its own source, rename refused, reaching outside the file set, ambiguous `.refs`/`.def` result, nothing to undo, undo of a file changed or removed since, undo merge overlap |
-| 2    | Usage error (bad flags or arguments, a command's name given as a `FILE`, no script on a terminal, no files to edit, a bad session name, no session, a bad `!!`), script syntax error, invalid query, pattern or config, or no language server                                                                                                                                                     |
-| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, write failure, language server failure, or an unsafe or unknown-version session store                                                                                                                                                                                                                                              |
+| Code | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0    | Success, including dry runs and skipped formatters                                                                                                                                                                                                                                                                                                                                                                             |
+| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unknown kind, text file, line past the end, file not in the set, `create` of an existing file, parse-error guard, introduced diagnostics, move into its own source, rename refused, reaching outside the file set, ambiguous `.refs`/`.def` result, nothing to undo, undo of a file changed or removed since, undo merge overlap, a refused `--commit` (§1.3) |
+| 2    | Usage error (bad flags or arguments, a command's name given as a `FILE`, no script on a terminal, no files to edit, a bad session name, no session, a bad `!!`, `--commit` with `-n` or outside a git repository), script syntax error, invalid query, pattern or config, or no language server                                                                                                                                |
+| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, write failure, language server failure, an unsafe or unknown-version session store, or a failing git command                                                                                                                                                                                                                                                    |
 
 On any non-zero exit, no file is modified. Reads that ran before the failure
 still print their output.

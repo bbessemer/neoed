@@ -9,6 +9,7 @@ pub mod exec;
 pub mod format;
 pub mod fragment;
 pub mod fs;
+pub mod git;
 pub mod highlight;
 pub mod lang;
 pub mod lsp;

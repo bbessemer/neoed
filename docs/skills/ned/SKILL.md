@@ -72,6 +72,13 @@ ned -e '!!:s/prase/parse/'
 ned undo
 ```
 
+Commit just your edit with `--commit MSG`: nothing else in the working tree or
+index goes in, staged or not, and the commit line follows the diff:
+
+```sh
+ned src/parser.rs --commit "Say what input ended" -e 'replace fn:parse>"end" with "end of input"'
+```
+
 ## Workflow
 
 1. `outline` to find the item. Each line is a selector you can paste back.
