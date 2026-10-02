@@ -66,6 +66,7 @@ fn ned(dir: &Path, args: &[&str], stdin: &str) -> String {
     let output = cargo_bin_cmd!("ned")
         .current_dir(dir)
         .env("XDG_CONFIG_HOME", config.path())
+        .env_remove("NED_SESSION")
         .args(args)
         .write_stdin(stdin)
         .output()
@@ -806,6 +807,26 @@ fn outline_of_a_selector_lists_the_items_inside() {
     10-12 fn:new
     14-17 fn:parse
     19-21 fn:debug_dump
+    --- stderr
+    ");
+}
+
+#[test]
+fn outline_can_come_before_a_pipe() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let out = ned(dir.path(), &["parser.rs", "-e", "outline | show 1"], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    parser.rs
+    1 import (1)
+    3-7 struct:Parser
+    9-22 impl:Parser
+      10-12 fn:new
+      14-17 fn:parse
+      19-21 fn:debug_dump
+    parser.rs:1
+    1:use std::fmt;
     --- stderr
     ");
 }

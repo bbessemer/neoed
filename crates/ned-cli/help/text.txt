@@ -6,6 +6,7 @@ TEXT is a string, "..." on one line, or a heredoc:
              becomes one indent unit of the file (tabs or spaces).
   <<'END'    verbatim.
 Line-oriented text (for whole-line spans) gets a final newline and is
-indented to the target: the span's first line for replace/before/after, the
-first line inside the span for start/end. Several heredocs on one line take
-their bodies in order. Write the text at column 0; ned indents it.
+indented to the target: the span's first line for replace/before/after (its
+last line after a literal or regex), the first line inside the span for
+start/end (one unit in, if the body is blank). Several heredocs on one line
+take their bodies in order. Write the text at column 0; ned indents it.

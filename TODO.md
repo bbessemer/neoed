@@ -5,7 +5,7 @@ too large for one PR: they carry a checklist of coarse chunks to plan with the
 engineer before starting each one; a single-PR item has none, and moves to Done
 when it lands.
 
-Versions follow semver at 0.x (currently 0.4.0): a change to the command
+Versions follow semver at 0.x (currently 0.6.2): a change to the command
 language or any new user-visible feature bumps the minor version, and a release
 that only fixes bugs or adds hints bumps the patch version. Each item below says
 which it is. When to release 1.0 is TBD.
@@ -41,6 +41,9 @@ which it is. When to release 1.0 is TBD.
   `.whole`; bare kinds (`fn` = `fn:*`); `.lines` splitting into lines;
   whole-line ranges; span types; `[...]` filters with `&&`, `||` and
   parentheses.
+- **Sessions** (0.6.0): `-s NAME`/`NED_SESSION` record each invocation in a
+  versioned, locked per-workspace log; `ned history`, `ned undo` (`--force`
+  merges into later changes) and `!!:s/OLD/NEW/` repeats.
 - **Text language**: `--lang text` reads every file without parsing; files with
   unknown extensions are read as text, with one note naming the extensions.
 
@@ -88,25 +91,6 @@ art: ast-grep's metavariables.
 Version: minor once matching works; a further minor if capture substitution
 ships separately. The spec, reader and builder chunks alone release nothing.
 
-### Sessions _(split)_
-
-With `-s, --session [NAME]` or `NED_SESSION`, `ned` records each invocation
-(script, file set, outcome and per-file edits) in an append-only log under a
-per-workspace state directory, guarded by an advisory lock so several frontends
-can share it. An agent repeats its last command with a correction using a
-shell-style `!!` shorthand instead of resending the script, and undoes the last
-invocation's edits. The REPL and MCP server use a session automatically, and the
-same session is visible from every mode, so a human can follow an agent's
-progress from the REPL. The store is a `ned-core` module and needs no daemon;
-the CLI keeps working without one.
-
-- [ ] Store and log format, lock, per-workspace location
-- [ ] `-s`/`NED_SESSION`, `history` and `undo`
-- [ ] Repeat-with-correction shorthand
-
-Version: minor for the flag and store; the log format is versioned, and a format
-change before 1.0 is another minor. The shorthand is a minor if it ships after.
-
 ### Commit from ned
 
 An agent turns its edits into one git commit without touching anything else in
@@ -146,7 +130,8 @@ output doesn't.
 
 `ned-repl`: a human edits interactively with persistent buffers, undo and an
 explicit write, using the same command language, and can attach to an agent's
-session to watch and correct its work. Depends on Sessions and Terminal output.
+session to watch and correct its work. It records into a session automatically.
+Depends on Sessions and Terminal output.
 
 Version: minor; a new binary.
 
@@ -154,7 +139,8 @@ Version: minor; a new binary.
 
 `ned-mcp`: an MCP server exposes script execution, `outline` and `show` as
 tools, so agent frameworks call `ned` without a shell. It is a thin client of
-`ned-core` and the session store, with no logic of its own. Depends on Sessions.
+`ned-core` and the session store, with no logic of its own, and records into a
+session automatically. Depends on Sessions.
 
 Version: minor; a new binary.
 
@@ -195,16 +181,16 @@ Version: minor when a first plugin can load; the spike releases nothing.
 Hints and relaxed errors: each is a patch, and they batch into the next release
 of either kind.
 
-- [ ] A `sub` replacement that names a group its regex doesn't have is an error,
+- [x] A `sub` replacement that names a group its regex doesn't have is an error,
       not an empty expansion: `$1deletions` is the group `1deletions`, so
       suggest `${1}deletions` (or `$$` for a literal `$`)
-- [ ] An invalid escape in a string suggests doubling the backslash, for text
+- [x] An invalid escape in a string suggests doubling the backslash, for text
       copied from source: "invalid escape `\r`; write `\\r` for a backslash and
       r"
 - [ ] `show` with a line range past the end of the file shows up to the last
       line, with a note, instead of an error (`show 1-60` on a 57-line file);
       edits keep the error
-- [ ] `sub all /re/ with "x"` says "`sub` needs a regex before `with`", since
+- [x] `sub all /re/ with "x"` says "`sub` needs a regex before `with`", since
       `all /re/` parses as the scope; say instead that `sub` already replaces
       every match, so `all` goes: `sub /re/ with "x"`
 - [ ] `-e` plus a script on stdin runs both: the `-e` scripts first, then stdin,
@@ -212,41 +198,95 @@ of either kind.
       silently, so `ned -e 'file X' <<'EOF' ... EOF` drops the heredoc). A
       minor, since §1 changes. Decide how not to wait on an open pipe that never
       closes, which `-e` alone doesn't read today
+- [x] A dotted name whose tail isn't a part suggests quoting it:
+      `import:app.models.user` says "unknown part `.models`" and should suggest
+      `import:"app.models.user"`
+- [x] `insert end` or `insert start` with no selector says it needs one, and
+      that `insert after $` appends to the file, instead of "expected text (a
+      string or heredoc), found end of line"
+- [x] A `..` followed by `+N` (`show /re/+0..+70`) suggests `show /re/ +70`
+      rather than "expected end of command, found '..'"
+- [x] A Python `.sig` replacement ending in `:` that the guard rejects
+      (`-> None::`) says `.sig` stops before the `:`; spec §3.4,
+      `ned help selectors` and the skill say so too
+- [x] `ned help selectors` says `..` binds tighter than `>`, with the example
+      `class:Server>fn:start..fn:run` (not `...fn:start..class:Server>fn:run`)
+- [x] The skill and agent guide say to use a heredoc whenever TEXT holds a
+      quote, rather than `-e` with shell escapes such as `'"'"'`
+- [ ] An any-kind selector matches a name whatever its kind, when that is
+      unique, so a long script needn't guess `const:` versus `var:` (syntax to
+      decide: `item:NAME`, `*:NAME` or a bare name). A minor
+- [ ] `show --raw` prints the selected lines without `N:` prefixes, for copying
+      text verbatim. A minor
+- [ ] A sed-style `sub SEL /a/b/` says "`sub` takes `/re/ with TEXT`", instead
+      of "unknown regex flag" or a hint about `SEL..SEL` ranges
+- [ ] `sub` with a literal before `with` (`sub 3 "- [ ]" with "- [x]"`) suggests
+      `replace 3>"- [ ]" with "- [x]"`, since `sub` takes only a regex
+- [ ] Context written `-N` (`show all "x" -3`) says context is `+N`, not a hint
+      about `SEL..SEL` ranges
+- [ ] A file path as a selector step (`a.rs>fn:x`) suggests `file:a.rs>fn:x`
+      rather than quoting `a` as a literal
+- [ ] A name with `{` (`import:a::b::{A, B}`) suggests the quoted name `outline`
+      prints (`import:"a::b::{A, B}"`), not "unexpected character `{`"
+- [ ] A part or filter picks the Nth line of a multi-line match, since `.lines`
+      splits a match into every line and there is no `.lines.first` (syntax to
+      decide). A minor
+- [ ] `!!` repeats the last script that edited or failed, not a read-only call
+      in between: after a failed edit, an `outline` to look around makes `!!`
+      refer to the `outline`. A minor, since §1.2 changes
 
 ## Bugs
 
 Each fix is a patch; a fix that changes documented behaviour is a minor.
 
-- [ ] `create a.rs "fn a() {}\n"` followed by `insert after fn:a ...` in the
+- [x] `create a.rs "fn a() {}\n"` followed by `insert after fn:a ...` in the
       same script leaves a trailing blank line (rustfmt removes it)
-- [ ] The did-you-mean-another-kind hint only fires for a selector's last step:
+- [x] The did-you-mean-another-kind hint only fires for a selector's last step:
       `show fn:tests>fn:exec` says "`outline` lists the items" where
       `show fn:tests` suggests `mod:tests`
-- [ ] `show`, `outline` or `check` without a selector can't come before a `|`:
+- [x] `show`, `outline` or `check` without a selector can't come before a `|`:
       `outline | show 1` is a parse error ("expected a selector, found '|'"),
       because `optional_target` (`script/parser.rs`) doesn't treat `|` as the
       end of the command
-- [ ] Re-basing a `<<END` heredoc into `crates/ned-core/src/syntax.rs` indented
+- [x] Re-basing a `<<END` heredoc into `crates/ned-core/src/syntax.rs` indented
       its nested lines with tabs, though the file's Rust code is indented with
       spaces (rustfmt fixed it). The indent unit seems to come from tab-indented
       lines elsewhere in the file (the Go test fixtures in raw strings), not
       from the lines around the target
-- [ ] `insert end mod:tests <<END` in a Rust file put the text at column 0, not
+- [x] `insert end mod:tests <<END` in a Rust file put the text at column 0, not
       at the module body's indentation (`insert end fn:...` re-bases correctly)
-- [ ] `insert after "LINE1\n...LASTLINE" <<END` re-based the text to the
+- [x] `insert after "LINE1\n...LASTLINE" <<END` re-based the text to the
       literal's first line's indentation, not its last line's, though the text
       goes after the last line
-- [ ] rustfmt formats a `.rs` file with edition 2015 when the script also
+- [x] rustfmt formats a `.rs` file with edition 2015 when the script also
       `create`s its crate's `Cargo.toml`: `rust_edition` (`format.rs`) reads
       manifests from disk, not the script's created files, so 2024-style code is
       reformatted (`if c { a } else { b }` split over five lines)
-- [ ] A nested selector whose earlier step matches nothing reports the whole
+- [x] A nested selector whose earlier step matches nothing reports the whole
       selector with the last step's hint: `impl:"Lexer<'a>">fn:next>"x"` says
       "matches nothing; `show` prints the text to match against" instead of
       naming the failing step and suggesting `impl:Lexer`
-- [ ] The parse-error guard misses a Python class left with no body (`delete` of
+- [x] The parse-error guard misses a Python class left with no body (`delete` of
       its only methods): tree-sitter-python parses `class A:` at the end of a
       file without an error node; only ruff reports it
+- [x] `impl:"Log<'_>"` matches nothing in a file with `impl Log<'_>`, and the
+      hint is only "`outline` lists the items": suggest `impl:Log`, the name
+      without its generic arguments
+- [ ] A `.ned.toml` the script creates or edits is ignored: `Config::layers`
+      (`config.rs`) loads layers from disk, though `{edition}` now reads
+      manifests the script writes
+- [ ] `replace "LINE\n" with ""` leaves an empty line where the whole line was
+      selected; empty TEXT for whole lines should remove them, as `delete` does
+- [ ] `.lines` on a multi-line literal that matches once
+      (`insert after "- a b\n  c d".lines "x"`) says "matches 2 items" and lists
+      identical candidates
+- [ ] Rust `show fn:f.sig` prints the whole first line, `{` included, though
+      `.sig` ends before the `{`: `replace fn:f.sig with "fn f(b: u8) {"`
+      doubles the brace, and the guard's error points at 1:1, not at the edit
+- [ ] An escape such as `\x27` in a heredoc inside a single-quoted `-e` script
+      goes in literally (heredocs don't read escapes): the skill should say to
+      pass a script with `'` on stdin, or `ned` could hint at it when the guard
+      rejects text holding `\x27`
 
 ## Future improvements
 
@@ -265,3 +305,10 @@ change is a minor, because it lifts a documented error.
       multi-line string replacing part of an item gives its later lines the
       item's continuation indent, as line-oriented text gets (§5.2), not the
       indentation of the line the span starts on (column 0 for a top-level item)
+- [ ] Compact session logs, which keep each written file's whole text before and
+      after: diffs against the previous entry, or pruning old entries (a log
+      format change, so a minor)
+- [ ] TOML syntax selectors (`table`, `key`), for `pyproject.toml`, `Cargo.toml`
+      and lock files (a new language, so a minor)
+- [ ] Relative range ends: `/re/..+70` is the match and the 70 lines after it (a
+      minor)

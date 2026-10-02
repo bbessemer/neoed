@@ -107,6 +107,10 @@ cp -r neoed/docs/skills/ned ~/.claude/skills/
 
 Claude then uses ned when it reads, searches or edits files.
 
+To let each conversation undo its own edits and repeat a failed command with a
+fix, give it a session with a `SessionStart` hook; the
+[agent guide](docs/agent-guide.md#setup) has the snippet.
+
 **Other agents:** add the system-prompt snippet from
 [`docs/agent-guide.md`](docs/agent-guide.md). It points the agent at `ned help`
 for the rest.
@@ -117,6 +121,7 @@ for the rest.
 ned [FLAGS] [FILE... | -w [DIR]] -e SCRIPT   (or the script on stdin)
 ned help [TOPIC]
 ned daemon start|status|stop [DIR]
+ned history|undo [-s NAME] [-w DIR]
 ```
 
 A script is a list of commands, one per line or separated by `;`:
@@ -165,6 +170,10 @@ between commands starts a stage that sees the edits before it.
 respecting `.gitignore`. `ned help` prints the whole language on one screen;
 [`docs/command-language.md`](docs/command-language.md) is the full spec.
 
+With `-s NAME`, or `NED_SESSION=NAME` in the environment, `ned` records each
+invocation in a session: `ned history` lists them, `ned undo` reverts the last
+edit, and `ned -e '!!:s/prase/parse/'` repeats the last script with a fix.
+
 ## Languages
 
 | Language        | Syntax items                                                                     |
@@ -212,8 +221,6 @@ to develop ned itself, but the language may still change before 1.0.
 
 In order, with details in [`TODO.md`](TODO.md):
 
-- Sessions (`-s NAME`): a shared edit history across invocations, with repeat,
-  `undo` and `history`
 - Git: commit exactly an invocation's or a session's edits; edit and resolve
   files with merge-conflict markers
 - Human-friendly output on a terminal: syntax highlighting, aligned line

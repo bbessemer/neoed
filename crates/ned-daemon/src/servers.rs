@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use ned_core::config::Config;
-use ned_core::text::indent_unit;
+use ned_core::select::SourceFile;
 use std::time::Duration;
 
 use ned_core::lsp::{Diagnosis, Formatting, Locate, Located, Position, Renamed, Severity};
@@ -186,7 +186,13 @@ impl Servers {
         if !server.formats() {
             return Ok(Formatting::NoServer);
         }
-        let indent = indent_unit(&document.text, document.lang.default_indent());
+        let indent = SourceFile::new(
+            document.path.display().to_string(),
+            document.text.clone(),
+            Some(document.lang),
+        )
+        .indent_unit()
+        .to_owned();
         let edits = server.format(&document.path, &indent, timeout).await?;
         Ok(Formatting::Edits {
             server: server.name().into(),

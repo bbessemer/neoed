@@ -1,11 +1,10 @@
 //! Where a workspace's daemon listens, locks and logs.
 
-use std::fs::{self, DirBuilder};
+use std::env;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
-use std::{env, io};
 
+use ned_core::fs::{PrivateDirError, private_dir, uid};
 use thiserror::Error;
 
 /// The files of one workspace's daemon, for one build of `ned`.
@@ -21,13 +20,8 @@ pub struct Paths {
 
 #[derive(Debug, Error)]
 pub enum PathsError {
-    #[error("{}: {source}", path.display())]
-    Io { path: PathBuf, source: io::Error },
-    #[error(
-        "{} is {why}; remove it, or set XDG_RUNTIME_DIR to a private directory",
-        dir.display()
-    )]
-    UnsafeDir { dir: PathBuf, why: &'static str },
+    #[error("{0}; remove it, or set XDG_RUNTIME_DIR to a private directory")]
+    Dir(#[from] PrivateDirError),
 }
 
 impl Paths {
@@ -71,47 +65,9 @@ fn name(root: &Path, version: &str) -> String {
     format!("{hash:016x}")
 }
 
-fn private_dir(dir: &Path) -> Result<(), PathsError> {
-    let io_error = |source| PathsError::Io {
-        path: dir.to_path_buf(),
-        source,
-    };
-    match DirBuilder::new().mode(0o700).create(dir) {
-        Ok(()) => return Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(err) => return Err(io_error(err)),
-    }
-    let meta = fs::symlink_metadata(dir).map_err(io_error)?;
-    let why = if !meta.is_dir() {
-        "not a directory"
-    } else if meta.uid() != uid() {
-        "owned by another user"
-    } else if meta.mode() & 0o077 != 0 {
-        "accessible to other users"
-    } else {
-        return Ok(());
-    };
-    Err(PathsError::UnsafeDir {
-        dir: dir.to_path_buf(),
-        why,
-    })
-}
-
-fn uid() -> u32 {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    unsafe { libc::getuid() }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-
     use super::*;
-
-    fn mode(path: &Path) -> u32 {
-        fs::metadata(path).unwrap().permissions().mode() & 0o777
-    }
 
     #[test]
     fn paths_are_stable_and_distinct_per_root_and_version() {
@@ -133,36 +89,5 @@ mod tests {
         assert_ne!(a.socket, a.lock);
         assert_ne!(a.socket, a.log);
         assert_ne!(a.lock, a.log);
-    }
-
-    #[test]
-    fn a_missing_runtime_dir_is_created_private() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("ned");
-        private_dir(&dir).unwrap();
-        assert_eq!(mode(&dir), 0o700);
-        private_dir(&dir).unwrap();
-    }
-
-    #[test]
-    fn a_runtime_dir_others_can_access_is_rejected() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("ned");
-        fs::create_dir(&dir).unwrap();
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o770)).unwrap();
-        let err = private_dir(&dir).unwrap_err();
-        assert!(matches!(err, PathsError::UnsafeDir { .. }), "{err}");
-        assert!(err.to_string().contains("XDG_RUNTIME_DIR"), "{err}");
-    }
-
-    #[test]
-    fn a_runtime_path_that_is_a_file_is_rejected() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("ned");
-        fs::write(&dir, "").unwrap();
-        assert!(matches!(
-            private_dir(&dir),
-            Err(PathsError::UnsafeDir { .. })
-        ));
     }
 }

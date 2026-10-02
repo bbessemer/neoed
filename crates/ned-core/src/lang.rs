@@ -99,6 +99,18 @@ impl Language {
         })
     }
 
+    /// The compiled `queries/<lang>/errors.scm`: syntax errors the grammar
+    /// accepts, for the parse-error guard (§4.3).
+    pub fn errors(self) -> &'static Query {
+        static QUERIES: [OnceLock<Query>; 7] = [const { OnceLock::new() }; 7];
+        let source = match self {
+            Language::Python => include_str!("../../../queries/python/errors.scm"),
+            _ => "",
+        };
+        QUERIES[self as usize]
+            .get_or_init(|| Query::new(&self.grammar(), source).expect("error queries are valid"))
+    }
+
     /// The builders of fragments that only parse inside other code,
     /// `queries/<lang>/builders.scm` (§3.10).
     pub fn builders(self) -> &'static [Builder] {

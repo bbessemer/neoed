@@ -7,7 +7,7 @@ use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use tree_sitter::Node;
+use tree_sitter::{Node, QueryCursor, StreamingIterator, Tree};
 
 use crate::edit::{Edit, EditError, EditSet};
 use crate::lang::{self, Language};
@@ -121,6 +121,9 @@ struct Loaded {
     edits: EditSet,
     /// The whole-line deletions among `edits`, for merging neighbours.
     deletions: Vec<Deletion>,
+    /// Whether `edits` replace a Python `.sig` with text ending in `:`, which
+    /// the parse-error guard's error then explains (§4.3).
+    sig_colon: bool,
     /// Made by `create`: its original text is what `create` gave it.
     created: bool,
     /// The text before the first `|` changed it (§2.3), and the edits
@@ -217,7 +220,7 @@ impl Executor<'_> {
             .collect();
         if !self.options.force {
             for (l, change) in changed.iter().zip(&changes) {
-                guard(&stage_input(l), &change.new)?;
+                guard(l, &change.new)?;
             }
         }
         Ok(changes)
@@ -232,13 +235,14 @@ impl Executor<'_> {
             }
             let new = l.edits.apply();
             if !self.options.force {
-                guard(&stage_input(l), &new)?;
+                guard(l, &new)?;
             }
             l.applied += l.edits.len();
             l.original.get_or_insert_with(|| l.file.text.clone());
             l.file = SourceFile::new(&l.file.path, new, l.file.lang);
             l.edits = EditSet::new(&l.file.buffer);
             l.deletions.clear();
+            l.sig_colon = false;
         }
         Ok(())
     }
@@ -275,6 +279,7 @@ impl Executor<'_> {
             file,
             edits,
             deletions: Vec::new(),
+            sig_colon: false,
             original: None,
             applied: 0,
             created: true,
@@ -392,6 +397,7 @@ impl Executor<'_> {
             file,
             edits,
             deletions: Vec::new(),
+            sig_colon: false,
             original: None,
             applied: 0,
             created: false,
@@ -424,11 +430,8 @@ impl Executor<'_> {
             CommandKind::Show { target, context } => self.show(target.as_ref(), *context)?,
             CommandKind::Outline(target) => self.outline(span, target.as_ref())?,
             CommandKind::Replace { target, text } => {
-                let whole = target
-                    .selector
-                    .steps
-                    .last()
-                    .is_some_and(|s| s.parts.last() == Some(&Part::Whole));
+                let last = target.selector.steps.last().and_then(|s| s.parts.last());
+                let whole = last == Some(&Part::Whole);
                 let patterns = target
                     .selector
                     .steps
@@ -452,6 +455,10 @@ impl Executor<'_> {
                         self.notes.push(note);
                     }
                     let (range, new) = replace(f, m.range, text, whole);
+                    if last == Some(&Part::Sig) && text.value.trim_end().ends_with(':') {
+                        let l = &mut self.files[m.file];
+                        l.sig_colon |= l.file.lang == Some(Language::Python);
+                    }
                     self.push(index, span, m.file, range, new)?;
                 }
             }
@@ -464,7 +471,7 @@ impl Executor<'_> {
                     let f = &self.files[m.file].file;
                     let range = heredoc_lines(f, target, *position, text, m.range);
                     let text = separated(f, target, *position, &range, text);
-                    let (range, new) = insert(f, range, *position, &text);
+                    let (range, new) = insert(f, range, *position, &text, &target.selector);
                     self.push(index, span, m.file, range, new)?;
                 }
             }
@@ -892,7 +899,7 @@ impl Executor<'_> {
                 }
             }
             let moved = with_trailing_comma(target, &at, &moved);
-            let (range, new) = insert(target, at, position, &moved);
+            let (range, new) = insert(target, at, position, &moved, &dest.selector);
             if from.file == to.file && removal.start < range.start && range.end < removal.end {
                 let location = format!(
                     "{}:{}",
@@ -1229,9 +1236,7 @@ impl Executor<'_> {
         pattern: &Pattern,
         text: &Text,
     ) -> Result<(), ExecError> {
-        let regex = pattern
-            .regex()
-            .expect("regexes are validated when the script is parsed");
+        let regex = pattern.regex();
         let scopes: Vec<Match> = match scope {
             // A scope's whole lines, as a nested step searches them (§3.4).
             Some(target) => self
@@ -1299,7 +1304,7 @@ impl Executor<'_> {
                 filters: Vec::new(),
                 span: span.clone(),
             };
-            let hint = select::hint(&step, &set, &parents, &selector);
+            let hint = select::hint(&step, &set, &parents, &selector, 0);
             return Err(ExecError::new(
                 ExecErrorKind::NoMatch {
                     selector,
@@ -1403,6 +1408,11 @@ fn empty_body<'f>(f: &'f SourceFile, range: &Range<usize>) -> Option<&'f Item> {
     if !range.is_empty() {
         return None;
     }
+    body_of(f, range)
+}
+
+/// The item whose `.body` is `range`, if any.
+fn body_of<'f>(f: &'f SourceFile, range: &Range<usize>) -> Option<&'f Item> {
     f.items()?
         .iter()
         .find(|i| syntax::part(i, Part::Body, &f.text).as_ref() == Some(range))
@@ -1418,12 +1428,12 @@ fn fill_body(
     new: &Text,
 ) -> (Range<usize>, String) {
     let t = &f.text;
-    let unit = indent_unit(f);
+    let unit = f.indent_unit();
     if item.undelimited {
         // The lines right after the heading or docstring, which may end the
         // file, at that line's indentation.
         let indent = text::indent_at(t, range.start.saturating_sub(1));
-        let lines = line_oriented(new, indent, &unit);
+        let lines = line_oriented(new, indent, unit);
         let lead = if t[..range.start].ends_with('\n') {
             ""
         } else {
@@ -1432,7 +1442,7 @@ fn fill_body(
         return (range, format!("{lead}{lines}"));
     }
     let indent = format!("{}{unit}", text::indent_at(t, item.node.start));
-    let lines = line_oriented(new, &indent, &unit);
+    let lines = line_oriented(new, &indent, unit);
     let body = item.body.clone().expect("an empty body is a body");
     let inner = body.start + 1..body.end - 1;
     if t[inner.clone()].contains('\n') {
@@ -1453,15 +1463,16 @@ fn stage_input(l: &Loaded) -> Cow<'_, SourceFile> {
     }
 }
 
-/// Rejects `new`, the edited text of `f`, if it has more tree-sitter error
-/// nodes than the original (§4.3).
-fn guard(f: &SourceFile, new: &str) -> Result<(), ExecError> {
+/// Rejects `new`, the edited text of `l`, if it has more syntax errors than
+/// its stage input (§4.3).
+fn guard(l: &Loaded, new: &str) -> Result<(), ExecError> {
+    let f = stage_input(l);
     let (Some(lang), Some(old)) = (f.lang, f.tree()) else {
         return Ok(());
     };
-    let before = error_nodes(old.root_node()).len();
+    let before = error_nodes(lang, old, &f.text).len();
     let tree = lang.parse(new);
-    let errors = error_nodes(tree.root_node());
+    let errors = error_nodes(lang, &tree, new);
     if errors.len() <= before {
         return Ok(());
     }
@@ -1478,6 +1489,10 @@ fn guard(f: &SourceFile, new: &str) -> Result<(), ExecError> {
     Err(ExecError::new(
         ExecErrorKind::SyntaxError {
             location: format!("{}:{line}:{column}", f.path),
+            hint: match l.sig_colon {
+                true => "; Python `.sig` stops before the `:`, so leave it out of TEXT".into(),
+                false => String::new(),
+            },
             excerpt: excerpt(new, node.start_byte())
                 .map(|e| format!("\n{e}"))
                 .unwrap_or_default(),
@@ -1486,10 +1501,11 @@ fn guard(f: &SourceFile, new: &str) -> Result<(), ExecError> {
     ))
 }
 
-/// The `ERROR` and `MISSING` nodes under `root`, in source order.
-fn error_nodes(root: Node<'_>) -> Vec<Node<'_>> {
+/// The `ERROR` and `MISSING` nodes of `tree`, a parse of `text`, and the
+/// matches of `lang`'s error query, in source order.
+fn error_nodes<'t>(lang: Language, tree: &'t Tree, text: &str) -> Vec<Node<'t>> {
     let mut out = Vec::new();
-    let mut stack = vec![root];
+    let mut stack = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
         if node.is_error() || node.is_missing() {
             out.push(node);
@@ -1498,17 +1514,17 @@ fn error_nodes(root: Node<'_>) -> Vec<Node<'_>> {
             stack.extend(node.children(&mut node.walk()));
         }
     }
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(lang.errors(), tree.root_node(), text.as_bytes());
+    while let Some(m) = matches.next() {
+        out.extend(m.captures().iter().map(|c| c.node));
+    }
     out.sort_by_key(|n| (n.start_byte(), n.end_byte()));
     out
 }
 
 fn common_len(a: impl Iterator<Item = u8>, b: impl Iterator<Item = u8>) -> usize {
     a.zip(b).take_while(|(x, y)| x == y).count()
-}
-
-/// The indent unit of `f`, falling back to its language's default (§5.2).
-fn indent_unit(f: &SourceFile) -> String {
-    text::indent_unit(&f.text, f.lang.map_or("    ", Language::default_indent))
 }
 
 /// `text` with the pattern captures of a match in `f` substituted (§3.10).
@@ -1575,21 +1591,21 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text, whole: bool) -> (Ran
         true => range,
         false => without_leading(f, range, new),
     };
-    let unit = indent_unit(f);
+    let unit = f.indent_unit();
     if text::is_whole_line(t, &range) {
         let full = text::full_lines(t, range);
         let indent = match list_anchor(f, full.start, new) {
             Some(item) => text::indent_at(t, item.range.start),
             None => text::indent_at(t, full.start),
         };
-        let mut new = line_oriented(new, indent, &unit);
+        let mut new = line_oriented(new, indent, unit);
         if !t[..full.end].ends_with('\n') {
             new.pop();
         }
         (full, new)
     } else {
         let indent = text::indent_at(t, range.start);
-        (range, verbatim(new, indent, &unit))
+        (range, verbatim(new, indent, unit))
     }
 }
 
@@ -1740,20 +1756,23 @@ fn separated<'t>(
         return Cow::Borrowed(new);
     }
     let blank = |line: Option<&str>| line.is_some_and(|l| l.trim().is_empty());
-    let mut value = new.value.clone();
+    // The target is whole-line, so a string is lines as a heredoc's are, and
+    // its final newline only ends its last line (§5.1).
+    let (lines, kind) = match new.kind {
+        TextKind::Str => (lines_of(new), TextKind::Heredoc),
+        kind => (new.value.as_str(), kind),
+    };
+    let mut value = lines.to_string();
     match position {
-        Position::After if !blank(new.value.split('\n').next()) => value.insert(0, '\n'),
+        Position::After if !blank(lines.split('\n').next()) => value.insert(0, '\n'),
         // Doc comments and attributes attach to the item.
-        Position::Before if only_leading(f, &new.value) => {
+        Position::Before if only_leading(f, lines) => {
             return Cow::Borrowed(new);
         }
-        Position::Before if !blank(new.value.split('\n').next_back()) => value.push('\n'),
+        Position::Before if !blank(lines.split('\n').next_back()) => value.push('\n'),
         _ => return Cow::Borrowed(new),
     }
-    Cow::Owned(Text {
-        value,
-        kind: new.kind,
-    })
+    Cow::Owned(Text { value, kind })
 }
 
 /// The text `move` carries from `range`: its full lines, to be re-based, if
@@ -1807,29 +1826,28 @@ fn heredoc_lines(
 }
 
 /// The span and text of an insertion at `position` of `range` (§4.2, §5):
-/// an empty span, unless it opens an empty body.
+/// an empty span, unless it opens an empty body. Text after a match of
+/// `selector` takes the indentation of its last line (§5.2).
 fn insert(
     f: &SourceFile,
     range: Range<usize>,
     position: Position,
     new: &Text,
+    selector: &Selector,
 ) -> (Range<usize>, String) {
     if let Some(item) = empty_body(f, &range) {
         return fill_body(f, item, range, new);
     }
     let t = &f.text;
-    let unit = indent_unit(f);
+    let unit = f.indent_unit();
     if !text::is_whole_line(t, &range) {
         let at = match position {
             Position::Before | Position::Start => range.start,
             Position::After | Position::End => range.end,
         };
-        return (
-            at..at,
-            verbatim(new, text::indent_at(t, range.start), &unit),
-        );
+        return (at..at, verbatim(new, text::indent_at(t, range.start), unit));
     }
-    let full = text::full_lines(t, range);
+    let full = text::full_lines(t, range.clone());
     // List-item text next to a list item's line goes beside the whole item.
     let anchor = match position {
         Position::Before => list_anchor(f, full.start, new),
@@ -1838,14 +1856,29 @@ fn insert(
     };
     let full = anchor.map_or(full, |item| text::full_lines(t, item.range.clone()));
     let first = text::indent_at(t, full.start);
-    let inner = text::first_indent(t, full.clone()).unwrap_or(first);
+    let inner = match text::first_indent(t, full.clone()) {
+        Some(indent) => indent.to_string(),
+        // A blank delimited body is filled like an empty one.
+        None => body_of(f, &range)
+            .filter(|i| !i.undelimited)
+            .map_or(first.to_string(), |i| {
+                format!("{}{unit}", text::indent_at(t, i.node.start))
+            }),
+    };
+    let match_end = selector.steps.last().is_some_and(|s| {
+        s.parts.is_empty() && matches!(s.primary, Primary::Regex(_) | Primary::Literal(_))
+    });
+    let after = match anchor {
+        None if match_end => text::last_indent(t, full.clone()).unwrap_or(first),
+        _ => first,
+    };
     let (at, indent) = match position {
         Position::Before => (full.start, first),
-        Position::After => (full.end, first),
-        Position::Start => (full.start, inner),
-        Position::End => (full.end, inner),
+        Position::After => (full.end, after),
+        Position::Start => (full.start, inner.as_str()),
+        Position::End => (full.end, inner.as_str()),
     };
-    let mut new = line_oriented(new, indent, &unit);
+    let mut new = line_oriented(new, indent, unit);
     if at == full.end && !full.is_empty() && !t[..at].ends_with('\n') {
         // The span's last line has no line ending; give it one instead.
         new.pop();
@@ -1868,10 +1901,19 @@ fn removal(f: &SourceFile, range: Range<usize>) -> Range<usize> {
 fn line_oriented(new: &Text, indent: &str, unit: &str) -> String {
     let mut out = match new.kind {
         TextKind::RawHeredoc => new.value.clone(),
-        TextKind::Str | TextKind::Heredoc => text::rebase(&new.value, indent, unit),
+        TextKind::Str | TextKind::Heredoc => text::rebase(lines_of(new), indent, unit),
     };
     out.push('\n');
     out
+}
+
+/// The lines of line-oriented `new`: a string's final newline only ends its
+/// last line (§5.1).
+fn lines_of(new: &Text) -> &str {
+    match new.kind {
+        TextKind::Str => new.value.strip_suffix('\n').unwrap_or(&new.value),
+        _ => &new.value,
+    }
 }
 
 /// The Markdown list item that list-item `new` placed on the line holding
@@ -1996,10 +2038,16 @@ pub enum ExecErrorKind {
     /// `note` is empty, or where relative paths start.
     #[error("glob `{glob}` matched nothing{note}")]
     NoGlobMatch { glob: String, note: String },
-    /// `location` is `PATH:LINE:COL`; `excerpt` is empty, or a newline and
-    /// the offending line with a caret.
-    #[error("{location}: edit introduces a syntax error (use --force to apply anyway){excerpt}")]
-    SyntaxError { location: String, excerpt: String },
+    /// `location` is `PATH:LINE:COL`; `hint` is empty or a `; ` and a fix;
+    /// `excerpt` is empty, or a newline and the offending line with a caret.
+    #[error(
+        "{location}: edit introduces a syntax error (use --force to apply anyway){hint}{excerpt}"
+    )]
+    SyntaxError {
+        location: String,
+        hint: String,
+        excerpt: String,
+    },
     /// The message ends with its fix.
     #[error("{0}")]
     Lsp(String),
@@ -2217,6 +2265,14 @@ mod tests {
         let out = exec(TEXT, "show all /zzz/; replace 2 with \"x\"");
         assert_eq!(out.output, "no matches for /zzz/ in 1 file\n");
         assert_eq!(out.result.map(|changes| changes.len()), Ok(1));
+    }
+
+    #[test]
+    fn show_all_fails_when_an_earlier_step_matches_nothing() {
+        assert_eq!(
+            exec(TEXT, "show all fn:zzz>\"x\"").error(),
+            "error: script:1:10: fn:zzz matches nothing in a.rs; `outline` lists the items"
+        );
     }
 
     #[test]
@@ -2590,6 +2646,47 @@ mod tests {
     }
 
     #[test]
+    fn insert_after_a_match_takes_its_last_lines_indent() {
+        let text = "fn a() {\n    if x {\n        y();\n    }\n}\n";
+        assert_eq!(
+            edited(
+                text,
+                "insert after \"if x {\\n        y();\" <<END\nv();\nEND"
+            ),
+            text.replace("y();\n", "y();\n        v();\n")
+        );
+        let expected = APP_PY.replace("run()\n", "run()\n            z()\n");
+        for script in [
+            "insert after /if self.ok:\\n.*run\\(\\)/ \"z()\"",
+            "insert after fn:start>\"if self.ok:\\n            run()\" \"z()\"",
+        ] {
+            assert_eq!(edited_in("a.py", APP_PY, script), expected, "{script}");
+        }
+    }
+
+    #[test]
+    fn insert_after_lines_and_items_takes_the_first_lines_indent() {
+        let text = "def f():\n    if x:\n        a()\n    b()\n";
+        assert_eq!(
+            edited_in("a.py", text, "insert after 2-3 \"c()\""),
+            text.replace("a()\n", "a()\n    c()\n")
+        );
+        let text = "def f():\n    if x:\n        a()\n";
+        assert_eq!(
+            edited_in("a.py", text, "insert after fn:f.body \"c()\""),
+            format!("{text}    c()\n")
+        );
+        assert_eq!(
+            edited_in("a.py", APP_PY, "insert after fn:start \"x = 1\""),
+            APP_PY.replace("run()\n", "run()\n\n    x = 1\n")
+        );
+        assert_eq!(
+            edited_in("a.py", APP_PY, "insert after class:App \"x = 1\""),
+            APP_PY.replace("pass\n", "pass\n\nx = 1\n")
+        );
+    }
+
+    #[test]
     fn python_decorators_stay_with_their_item() {
         assert_eq!(
             edited_in(
@@ -2733,6 +2830,23 @@ mod tests {
             ),
             "fn a() {\n\tx();\n\tif y {\n\t\tz();\n\t}\n}\n"
         );
+    }
+
+    #[test]
+    fn the_indent_unit_skips_strings_and_comments() {
+        let code = "fn a() {\n    x();\n}\n";
+        let script = "insert after 2 <<END\nif y {\n\tz();\n}\nEND\n";
+        let expected = "fn a() {\n    x();\n    if y {\n        z();\n    }\n}\n";
+        for rest in [
+            "\nconst S: &str = \"\n\tb\n\";\n",
+            "\n/*\n\tb\n*/\n",
+            "\nconst S: &str = r#\"\nb\n\tc\n\t\"#;\n",
+        ] {
+            assert_eq!(
+                edited(&format!("{code}{rest}"), script),
+                format!("{expected}{rest}")
+            );
+        }
     }
 
     #[test]
@@ -3193,6 +3307,18 @@ mod tests {
     }
 
     #[test]
+    fn a_string_ending_in_a_newline_inserts_no_blank_line() {
+        assert_eq!(
+            edited(MOVE, r#"insert after fn:helper_y "fn z() {}\n""#),
+            edited(MOVE, r#"insert after fn:helper_y "fn z() {}""#)
+        );
+        assert_eq!(
+            edited(MOVE, r#"insert after fn:helper_y "fn z() {}\n\n""#),
+            MOVE.replace("fn helper_y() {}\n", "fn helper_y() {}\n\nfn z() {}\n\n")
+        );
+    }
+
+    #[test]
     fn insert_adds_no_blank_line_next_to_unseparated_items_or_imports() {
         assert_eq!(
             edited(
@@ -3381,6 +3507,35 @@ mod tests {
         assert_eq!(empty.result.unwrap()[0].new, "");
     }
 
+    #[test]
+    fn create_ends_a_string_with_one_newline() {
+        let new = |script| exec_with(&[], 0, script).result.unwrap()[0].new.clone();
+        assert_eq!(new("create {dir}/b.rs \"fn a() {}\\n\""), "fn a() {}\n");
+        assert_eq!(
+            new("create {dir}/b.rs \"fn a() {}\\n\\n\""),
+            "fn a() {}\n\n"
+        );
+    }
+
+    #[test]
+    fn insert_next_to_a_created_item_separates_it_as_on_disk() {
+        let insert = |file: &str| {
+            let script = format!("create {{dir}}/b.rs {file:?}\ninsert after fn:a \"fn b() {{}}\"");
+            let created = exec_with(&[], 0, &script).result.unwrap()[0].new.clone();
+            assert_eq!(
+                created,
+                edited(file, r#"insert after fn:a "fn b() {}""#),
+                "{file:?}"
+            );
+            created
+        };
+        assert_eq!(insert("fn a() {}\n"), "fn a() {}\nfn b() {}\n");
+        assert_eq!(
+            insert("fn a() {}\n\nfn c() {}\n"),
+            "fn a() {}\n\nfn b() {}\n\nfn c() {}\n"
+        );
+    }
+
     const MOVE: &str = "\
 impl A {
     fn a() {
@@ -3551,6 +3706,54 @@ fn main() {}
     }
 
     #[test]
+    fn guard_rejects_an_emptied_python_body() {
+        let text = "class A:\n    def f(self):\n        pass\n";
+        let out = guarded("a.py", text, "delete fn:f");
+        assert!(
+            out.error().starts_with("error: a.py:1:9:"),
+            "{}",
+            out.error()
+        );
+        let text = "def f():\n    return 1\n\n\nx = 1\n";
+        let out = guarded("a.py", text, "delete fn:f.body");
+        assert!(out.error().contains(GUARD_ERROR), "{}", out.error());
+    }
+
+    #[test]
+    fn guard_allows_python_bodies_that_were_already_empty() {
+        let text = "class A:\n\n\ndef f():\n    return 1\n";
+        let out = guarded("a.py", text, "replace \"return 1\" with \"return 2\"");
+        assert!(out.result.is_ok(), "{}", out.error());
+        let out = guarded(
+            "a.py",
+            "class A:\n    x = 1\n",
+            "replace \"x = 1\" with \"pass\"",
+        );
+        assert!(out.result.is_ok(), "{}", out.error());
+    }
+
+    const SIG_HINT: &str = "Python `.sig` stops before the `:`";
+
+    #[test]
+    fn guard_says_a_python_sig_stops_before_the_colon() {
+        let text = "def f():\n    pass\n";
+        let out = guarded("a.py", text, "replace fn:f.sig with \"def f() -> None:\"");
+        assert!(out.error().contains(GUARD_ERROR), "{}", out.error());
+        assert!(out.error().contains(SIG_HINT), "{}", out.error());
+        let out = guarded("a.py", text, "replace fn:f.sig with \"def f(:\"");
+        assert!(out.error().contains(SIG_HINT), "{}", out.error());
+    }
+
+    #[test]
+    fn guard_hints_at_the_colon_only_for_a_python_sig() {
+        let text = "def f():\n    pass\n";
+        let out = guarded("a.py", text, "replace fn:f.sig with \"def f(\"");
+        assert!(!out.error().contains(SIG_HINT), "{}", out.error());
+        let out = guarded("a.py", text, "replace \"def f()\" with \"def f():\"");
+        assert!(!out.error().contains(SIG_HINT), "{}", out.error());
+    }
+
+    #[test]
     fn guard_skips_files_without_a_language() {
         let out = guarded("a.txt", TEXT, "replace \"let y = 2;\" with \"(\"");
         assert!(out.result.is_ok(), "{}", out.error());
@@ -3710,6 +3913,33 @@ fn main() {}
         assert_eq!(
             edited(ITEMS, "insert after fn:main \"fn b() {}\""),
             format!("{ITEMS}\nfn b() {{}}\n")
+        );
+    }
+
+    #[test]
+    fn blank_bodies_take_the_items_indent_plus_a_unit() {
+        let text = "mod tests {\n\n}\n";
+        assert_eq!(
+            edited(text, "insert end mod:tests \"fn a() {}\""),
+            "mod tests {\n\n    fn a() {}\n}\n"
+        );
+        assert_eq!(
+            edited(text, "insert start mod:tests \"fn a() {}\""),
+            "mod tests {\n    fn a() {}\n\n}\n"
+        );
+        let text = "impl A {\n    fn f() {\n  \n    }\n}\n";
+        assert_eq!(
+            edited(text, "insert end fn:f \"x();\""),
+            "impl A {\n    fn f() {\n  \n        x();\n    }\n}\n"
+        );
+        let text = "mod tests {\n\n    fn b() {}\n}\n";
+        assert_eq!(
+            edited(text, "insert end mod:tests \"fn a() {}\""),
+            "mod tests {\n\n    fn b() {}\n    fn a() {}\n}\n"
+        );
+        assert_eq!(
+            edited(text, "insert start mod:tests \"fn a() {}\""),
+            "mod tests {\n    fn a() {}\n\n    fn b() {}\n}\n"
         );
     }
 

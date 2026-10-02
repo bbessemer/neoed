@@ -120,6 +120,11 @@ propose the feature to the engineer and add it to TODO.md once approved;
 otherwise add guidance to `docs/skills/ned/SKILL.md`. Commit these to the
 current feature branch (prefix `todo:`), not a new branch.
 
+**Feedback from other agents** (reports on `ned` from sessions in other
+projects) goes in the same places. This repo is public: keep those projects'
+names, paths, identifiers and code out of every file and commit message, and
+rewrite examples with generic names.
+
 ## Project Overview
 
 Neoed (`ned`) is a line editor for AI coding agents, replacing `sed`/ad-hoc
@@ -150,7 +155,10 @@ edits checked while a daemon runs (introduced errors block unless
 `-w` workspace); the version names the build commit, and a daemon serves only
 its own build. With a daemon running, language servers format files whose
 formatters aren't installed, and `check` also waits for save-time checks
-(`cargo check`). §9 is done. Syntax selectors cover Rust, Python, Go,
+(`cargo check`). §9 is done. Sessions (spec §1.2): `session` in `ned-core` keeps
+the per-workspace log, plans `undo` (`--force` merges with `diff::merge`) and
+expands `!!`; the CLI records every script run under `-s`/`NED_SESSION` and has
+`ned history` and `ned undo`. Syntax selectors cover Rust, Python, Go,
 JavaScript, TypeScript/TSX and Markdown. Syntax patterns (spec §3.10) select
 code by writing it: `ned-scheme` reads the Scheme dialect (tree-sitter query
 syntax plus Scheme data) that builders and, later, plugins are written in;

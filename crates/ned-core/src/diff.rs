@@ -47,6 +47,94 @@ pub fn created_summary(path: &str, stat: DiffStat, dry_run: bool) -> String {
     format!("{prefix}{path}: created, +{}", stat.added)
 }
 
+/// The summary line of a file removed by an undo: `PATH: removed, -D`.
+pub fn removed_summary(path: &str, stat: DiffStat) -> String {
+    format!("{path}: removed, -{}", stat.removed)
+}
+
+/// The number of separate changed regions between two texts.
+pub fn regions(old: &str, new: &str) -> usize {
+    TextDiff::from_lines(old, new).grouped_ops(0).len()
+}
+
+/// A three-way merge of whole lines: `ours` and `theirs` are both edits of
+/// `base`, and the result keeps the changes of each. Changes that overlap,
+/// or insert at the same point, conflict unless identical: the error is the
+/// first one's line in `ours` (from 1).
+pub fn merge(base: &str, ours: &str, theirs: &str) -> Result<String, usize> {
+    let lines = |text| -> Vec<&str> { str::split_inclusive(text, '\n').collect() };
+    let (base, ours, theirs) = (lines(base), lines(ours), lines(theirs));
+    let (mine, other) = (changes(&base, &ours), changes(&base, &theirs));
+    let mut all: Vec<&Change> = Vec::new();
+    for change in &mine {
+        if other
+            .iter()
+            .any(|o| overlaps(&change.base, &o.base) && o != change)
+        {
+            return Err(change.at + 1);
+        }
+        all.push(change);
+    }
+    all.extend(other.iter().filter(|o| !mine.contains(o)));
+    all.sort_by_key(|change| (change.base.start, change.base.end));
+    let mut out = String::new();
+    let mut pos = 0;
+    for change in all {
+        out.extend(base[pos..change.base.start].iter().copied());
+        out.extend(change.lines.iter().copied());
+        pos = change.base.end;
+    }
+    out.extend(base[pos..].iter().copied());
+    Ok(out)
+}
+
+/// One side's change to a merge's base: base lines `base` become `lines`,
+/// which start at line `at` (from 0) of that side.
+#[derive(Debug)]
+struct Change<'a> {
+    base: Range<usize>,
+    lines: Vec<&'a str>,
+    at: usize,
+}
+
+impl PartialEq for Change<'_> {
+    /// The same edit, wherever it lands in its side.
+    fn eq(&self, other: &Self) -> bool {
+        self.base == other.base && self.lines == other.lines
+    }
+}
+
+fn changes<'a>(base: &[&str], side: &[&'a str]) -> Vec<Change<'a>> {
+    let mut out: Vec<Change> = Vec::new();
+    for op in similar::capture_diff_slices(similar::Algorithm::Myers, base, side) {
+        if op.tag() == similar::DiffTag::Equal {
+            continue;
+        }
+        let (old, new) = (op.old_range(), op.new_range());
+        match out.last_mut() {
+            Some(last) if last.base.end == old.start => {
+                last.base.end = old.end;
+                last.lines.extend(&side[new]);
+            }
+            _ => out.push(Change {
+                base: old,
+                lines: side[new.clone()].to_vec(),
+                at: new.start,
+            }),
+        }
+    }
+    out
+}
+
+/// Whether two changes touch the same base lines. An insertion conflicts
+/// with a change it borders, as it may continue or depend on it.
+fn overlaps(a: &Range<usize>, b: &Range<usize>) -> bool {
+    match a.is_empty() || b.is_empty() {
+        true => a.start <= b.end && b.start <= a.end,
+        false => a.start < b.end && b.start < a.end,
+    }
+}
+
 /// Unified-diff hunks with `@@ -a,b +c,d @@` headers and no file headers,
 /// rendered with `\n` line endings.
 pub fn hunks(old: &str, new: &str, context: usize) -> String {
@@ -239,5 +327,71 @@ impl Parser {
         let old = "a\r\nb\r\nc\r\n";
         let new = "a\r\nB\r\nc\r\n";
         assert_eq!(hunks(old, new, 1), "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n");
+    }
+
+    #[test]
+    fn removed_summary_line() {
+        let stat = DiffStat::between("a\nb\n", "");
+        assert_eq!(removed_summary("src/a.rs", stat), "src/a.rs: removed, -2");
+    }
+
+    #[test]
+    fn regions_count_separate_changes() {
+        assert_eq!(regions("a\nb\nc\n", "a\nb\nc\n"), 0);
+        assert_eq!(regions("a\nb\nc\n", "A\nB\nc\n"), 1);
+        assert_eq!(regions("a\nb\nc\n", "A\nb\nC\n"), 2);
+    }
+
+    #[test]
+    fn merge_keeps_each_sides_changes() {
+        let base = "a\nb\nc\nd\n";
+        assert_eq!(merge(base, base, base), Ok(base.to_string()));
+        assert_eq!(merge(base, "a\nB\nc\nd\n", base), Ok("a\nB\nc\nd\n".into()));
+        assert_eq!(merge(base, base, "a\nb\nC\nd\n"), Ok("a\nb\nC\nd\n".into()));
+        assert_eq!(
+            merge(base, "a\nb\nc\nD\n", "A\nb\nc\nd\n"),
+            Ok("A\nb\nc\nD\n".into())
+        );
+        assert_eq!(
+            merge(base, "a\nnew\nb\nc\nd\n", "a\nb\nc\n"),
+            Ok("a\nnew\nb\nc\n".into())
+        );
+    }
+
+    #[test]
+    fn identical_changes_merge_once() {
+        let base = "a\nb\nc\n";
+        assert_eq!(
+            merge(base, "a\nB\nc\n", "a\nB\nc\n"),
+            Ok("a\nB\nc\n".into())
+        );
+    }
+
+    #[test]
+    fn overlapping_changes_conflict_at_their_line_in_ours() {
+        let base = "a\nb\nc\nd\n";
+        assert_eq!(merge(base, "a\nX\nc\nd\n", "a\nY\nc\nd\n"), Err(2));
+        assert_eq!(merge(base, "a\nnew\nb\nc\nX\n", "a\nb\nc\nY\n"), Err(5));
+        assert_eq!(merge(base, "a\nx\nb\nc\nd\n", "a\ny\nb\nc\nd\n"), Err(2));
+    }
+
+    #[test]
+    fn a_change_beside_the_other_sides_change_conflicts() {
+        assert_eq!(merge("x\n", "x\ny\n", ""), Err(2));
+        assert_eq!(merge("a\nb\nc\n", "a\nb\nc\nd\n", ""), Err(4));
+        assert_eq!(
+            merge("a\nb\nc\n", "a\nb\nc\nd\n", "A\nb\nc\n"),
+            Ok("A\nb\nc\nd\n".into())
+        );
+    }
+
+    #[test]
+    fn merge_keeps_line_endings_and_a_missing_final_newline() {
+        assert_eq!(
+            merge("a\r\nb\r\n", "a\r\nB\r\n", "A\r\nb\r\n"),
+            Ok("A\r\nB\r\n".into())
+        );
+        assert_eq!(merge("a\nb", "a\nb\nc", "A\nb"), Ok("A\nb\nc".into()));
+        assert_eq!(merge("a\nb", "a\nb\nc", "a\nB"), Err(2));
     }
 }
