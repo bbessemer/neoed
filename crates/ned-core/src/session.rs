@@ -120,6 +120,25 @@ pub fn sessions(state_dir: &Path, root: &Path) -> Result<Vec<String>, SessionErr
     Ok(names)
 }
 
+#[derive(Debug, PartialEq, Eq, Error)]
+pub enum RepeatError {
+    #[error("`!!` repeats the session's last script, but it has none; write the script out")]
+    NoScript,
+    #[error("`{old}` isn't in the last script, which is:\n{script}")]
+    NotFound { old: String, script: String },
+    #[error("malformed `!!` modifier `{0}`; usage: !![:s/OLD/NEW/][:gs/OLD/NEW/]...")]
+    Malformed(String),
+}
+
+/// If `src` is a `!!` script, the last script entry of `entries` and its
+/// script with the modifiers applied (spec §1.2); `None` for another script.
+pub fn repeat<'a>(
+    src: &str,
+    entries: &'a [Entry],
+) -> Option<Result<(&'a Entry, String), RepeatError>> {
+    todo!()
+}
+
 /// Seconds since the Unix epoch, for an entry's `time`.
 pub fn now() -> u64 {
     SystemTime::now()

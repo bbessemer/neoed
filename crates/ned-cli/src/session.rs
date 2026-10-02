@@ -114,6 +114,20 @@ pub fn undo(flag: Option<String>, force: bool) -> Result<(), Failure> {
     Ok(())
 }
 
+/// Expands a `!!` script from `session`'s log, printing a note of what it
+/// repeats; another script is returned as it is. Without FILE arguments or
+/// -w, the repeat takes the last script's, and with its -w, its `root`.
+pub fn repeat(
+    session: Option<&Session>,
+    src: String,
+    cwd: &Path,
+    files: &mut Vec<String>,
+    workspace: &mut Option<Option<PathBuf>>,
+    root: &mut PathBuf,
+) -> Result<String, Failure> {
+    todo!()
+}
+
 /// The working directory, canonical so recorded paths can be shown relative
 /// to it, and its workspace's root.
 fn here() -> (PathBuf, PathBuf) {

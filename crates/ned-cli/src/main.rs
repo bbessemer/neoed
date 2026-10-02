@@ -116,7 +116,7 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     match cli.command {
         Some(Command::Help { topic }) => {
             out!("{}", help::text(topic));
@@ -131,7 +131,7 @@ fn main() -> ExitCode {
         eprintln!("error: {err}");
         return ExitCode::from(2);
     }
-    let src = if cli.scripts.is_empty() {
+    let mut src = if cli.scripts.is_empty() {
         let mut src = String::new();
         if let Err(err) = io::stdin().read_to_string(&mut src) {
             eprintln!("error: cannot read the script from stdin: {err}");
@@ -142,7 +142,7 @@ fn main() -> ExitCode {
         cli.scripts.join("\n")
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let root = match &cli.workspace {
+    let mut root = match &cli.workspace {
         Some(Some(dir)) => match dir.canonicalize() {
             Ok(dir) => dir,
             Err(err) => {
@@ -161,6 +161,17 @@ fn main() -> ExitCode {
                 return ExitCode::from(code);
             }
         },
+    };
+    src = match session::repeat(
+        session.as_ref(),
+        src,
+        &cwd,
+        &mut cli.files,
+        &mut cli.workspace,
+        &mut root,
+    ) {
+        Ok(src) => src,
+        Err(failure) => return finish(Err(failure)),
     };
 
     let ran = run(&cli, &src, &cwd, root.clone());
