@@ -4,8 +4,9 @@ description:
   Read, search, create and edit source files with ned, a syntax-aware line
   editor. Outline a file, show an item (fn:parse, impl:Parser>fn:new), a line
   range or every match of a regex or literal across a glob or the whole
-  workspace (-w); create files; replace, insert, delete or move code in one
-  all-or-nothing call that prints a diff; find a symbol's references or
+  workspace (-w); select code by writing it, with @ placeholders, and rewrite it
+  from what they captured; create files; replace, insert, delete or move code in
+  one all-or-nothing call that prints a diff; find a symbol's references or
   definition, rename it across the workspace, and check language-server
   diagnostics without a build. Use it instead of grep, sed, cat, inline Python
   or str_replace.
@@ -252,6 +253,11 @@ insert start class:App>fn:handle "metrics.count(req)"
   decorator: `` `@@app.route(@path)` ``. A pattern holding backquotes opens and
   closes with a longer run of them, as in Markdown: ``` `` `${x}` `` ```. A Rust
   macro's arguments are tokens, so match one with a run: `` `dbg!(@x...)` ``.
+- **Patterns match strictly.** Only separators the pattern leaves out (`,`, `;`,
+  line breaks) and comments are skipped; every other token and node must match,
+  so `` `fn f(self) {}` `` doesn't match `fn f(&self) {}`, nor
+  `` `fn @f() {}` `` `pub fn f() {}`. Put `@_` or `@_...` where code may vary.
+  Captures keep the comments at their ends.
 - **Use `delete` to remove lines.** `replace 12 with ""` leaves an empty line,
   because line-oriented text always ends with a newline.
 - **Partial matches get verbatim text.** `insert after /re/ "x"` inserts right
