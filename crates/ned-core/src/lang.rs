@@ -111,6 +111,36 @@ impl Language {
             .get_or_init(|| Query::new(&self.grammar(), source).expect("error queries are valid"))
     }
 
+    /// The compiled highlight query of the language's grammar crate, for
+    /// terminal output (§6.6).
+    pub fn highlights(self) -> &'static Query {
+        static QUERIES: [OnceLock<Query>; 7] = [const { OnceLock::new() }; 7];
+        // TypeScript's query adds to JavaScript's; its own patterns go last, so they
+        // win where both mark a node.
+        let sources: &[&str] = match self {
+            Language::Rust => &[tree_sitter_rust::HIGHLIGHTS_QUERY],
+            Language::Markdown => &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK],
+            Language::Python => &[tree_sitter_python::HIGHLIGHTS_QUERY],
+            Language::Go => &[tree_sitter_go::HIGHLIGHTS_QUERY],
+            Language::JavaScript => &[
+                tree_sitter_javascript::HIGHLIGHT_QUERY,
+                tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
+            ],
+            Language::TypeScript => &[
+                tree_sitter_javascript::HIGHLIGHT_QUERY,
+                tree_sitter_typescript::HIGHLIGHTS_QUERY,
+            ],
+            Language::Tsx => &[
+                tree_sitter_javascript::HIGHLIGHT_QUERY,
+                tree_sitter_typescript::HIGHLIGHTS_QUERY,
+                tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
+            ],
+        };
+        QUERIES[self as usize].get_or_init(|| {
+            Query::new(&self.grammar(), &sources.concat()).expect("highlight queries are valid")
+        })
+    }
+
     /// The builders of fragments that only parse inside other code,
     /// `queries/<lang>/builders.scm` (§3.10).
     pub fn builders(self) -> &'static [Builder] {
@@ -353,6 +383,13 @@ mod tests {
     fn every_grammar_parses() {
         for lang in Language::ALL {
             assert!(!lang.parse("").root_node().has_error(), "{lang}");
+        }
+    }
+
+    #[test]
+    fn every_language_has_a_highlight_query() {
+        for lang in Language::ALL {
+            assert!(lang.highlights().pattern_count() > 0, "{lang}");
         }
     }
 
