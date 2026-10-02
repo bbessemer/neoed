@@ -45,8 +45,9 @@ re-read the file to check the edit. Errors end with a fix; apply it and rerun.
 With a language server: `check` for diagnostics, `rename SEL to NAME`,
 `SEL.refs` and `SEL.def`; after `ned daemon start`, edits that introduce
 errors are rejected. With NED_SESSION set, `ned undo` reverts your last edit
-and `ned -e '!!:s/old/new/'` reruns your last command corrected. `ned help`
-and `ned help TOPIC` document the rest.
+and `ned -e '!!:s/old/new/'` reruns your last command corrected. Merge
+conflicts don't stop parsing; `resolve conflict:N ours|theirs|both` keeps
+sides of one. `ned help` and `ned help TOPIC` document the rest.
 
 ```
 

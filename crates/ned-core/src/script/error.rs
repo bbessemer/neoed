@@ -148,7 +148,7 @@ pub enum ParseErrorKind {
 
 /// Every command, as error messages list them.
 pub const COMMANDS: &str =
-    "show outline check replace insert delete sub move rename file create allow";
+    "show outline check replace insert delete sub move rename resolve file create allow";
 
 fn quote_hint(c: char) -> &'static str {
     match c {

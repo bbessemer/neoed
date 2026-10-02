@@ -17,7 +17,8 @@ edits before it (it binds looser than `;`: `a; b | c` is a;b then c):
   delete SEL
   sub [SEL] /re/ with TEXT      regex replace inside SEL; $1 ${name} $0
   move SEL before|after|start|end DEST
-  rename SEL to NAME            rename a symbol everywhere, via its language server
+  rename SEL to NAME            rename a symbol everywhere (language server)
+  resolve SEL ours|theirs|base|both   keep conflict sides
   file PATH...                  set the files later commands act on; globs ok
   create PATH TEXT              make a new file; later commands can edit it
 
@@ -29,13 +30,13 @@ Selectors (a selector must match exactly one span unless prefixed with `all`):
   fn:parse.body                 parts: .body .sig .params .name .doc .whole
   const:C.value                 .attrs .ret .type .value .lines (each line)
   all fn  impl:P>fn             a kind alone is kind:*
-  fn[.doc == ""]  fn[.len > 50]   filter: keep the spans where it holds
-  all fn:parse.refs  "f(".def    uses and definition, via the language server
+  fn[.doc == ""]  fn[.len > 50]   filter: spans where it holds
+  all fn:parse.refs  "f(".def    uses and definition (language server)
   file:src/a.rs>fn:new          scope to one file
   query{(call_expression) @sel} raw tree-sitter query
   `foo(@a, @rest...)`           syntax pattern: code with placeholders
   /^## 6/../^## 7/  fn:a..fn:c  range: whole lines, a match to the next
-  conflict:2.ours               a merge conflict's side
+  conflict:2.ours               a conflict's side
 
 TEXT is "a string" or a heredoc: <<END ... END is re-indented to fit its
 target; <<'END' is inserted verbatim. Selectors resolve against the text at
@@ -49,12 +50,11 @@ Flags: -n dry run   -q summaries only   --force skip the guards (syntax, check)
 
 Examples:
     replace fn:parse>"unexpected end" with "end of input"
-    delete fn:debug_dump
     insert end impl:Parser <<END
     fn peek(&self) -> Option<char> {
         self.src[self.pos..].chars().next()
     }
     END
 
-Topics: show outline check allow replace insert delete sub move rename file
-create selectors filters patterns conflicts text config session
+Topics: show outline check allow replace insert delete sub move rename resolve
+file create selectors filters patterns conflicts text config session

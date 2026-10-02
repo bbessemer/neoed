@@ -118,7 +118,7 @@ parts work above.
 
 - [x] Marker tolerance: conflict markers hidden from the grammar and the guard
 - [x] The `conflict` kind and its `.ours`, `.theirs` and `.base` parts
-- [ ] The `resolve` verb
+- [x] The `resolve` verb
 
 Version: patch for marker tolerance (existing scripts start working on
 conflicted files); minor for the `conflict` kind, its parts and `resolve`.

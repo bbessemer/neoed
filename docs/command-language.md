@@ -294,7 +294,7 @@ script     = { line } ;
 line       = [ command { ( ";" | "|" ) command } [ "|" ] ] [ comment ] NEWLINE
              { heredoc-body } ;
 command    = show | outline | replace | insert | delete | sub | move | create
-           | file | check | allow | rename ;
+           | file | check | allow | rename | resolve ;
 
 show       = "show" [ target [ context ] ] ;
 outline    = "outline" [ target ] ;
@@ -306,6 +306,7 @@ move       = "move" target position selector ;
 file       = "file" path { path } ;
 create     = "create" path text ;
 rename     = "rename" selector "to" name ;
+resolve    = "resolve" target ( "ours" | "theirs" | "base" | "both" ) ;
 check      = "check" [ target ] [ level ] ;
 level      = "error" | "warning" | "info" | "hint" ;
 allow      = "allow" ( "errors" | "warnings" ) ;
@@ -854,11 +855,13 @@ note that it is already empty. `replace`, `insert` and `move` put their text on
 lines of their own there. Conflicts nest like other spans:
 `conflict:2.theirs>fn:parse`, `fn:main>conflict`. Numbers count every conflict
 in the file, not only those in scope: `fn:main>conflict:2` is the file's second
-conflict, which must lie in `fn:main`. `replace conflict:2 with TEXT` replaces
-the whole conflict, markers included.
+conflict, which must lie in `fn:main`. `resolve conflict:2 theirs` (§4.2) keeps
+one side, and `replace conflict:2 with TEXT` replaces the whole conflict,
+markers included, with new text.
 
 ```ned
 show conflict:1.theirs
+resolve conflict:1 theirs
 replace conflict:2 with <<END
 let limit = config.limit.max(1);
 END
@@ -907,6 +910,7 @@ END
 | `move SEL before\|after\|start\|end DEST` | Deletes each span of `SEL` and inserts its text at `DEST`, which must resolve to one span. The destination may be in another file in the set. Moved text is re-based.                                |
 | `create PATH TEXT`                        | Creates `PATH` holding `TEXT` (line-oriented, re-based to column 0) as if it had existed when the script started: it joins the file set and later commands can edit it. `PATH` must not exist.       |
 | `rename SEL to NAME`                      | Renames the symbol at `SEL`, which must resolve to one span, wherever the language server finds it (below).                                                                                          |
+| `resolve SEL ours\|theirs\|base\|both`    | Replaces each selected conflict (§3.11) with the lines of one side as they are: `both` is ours, then theirs. Each span must be a whole conflict. An empty result deletes it as `delete` does.        |
 
 Notes:
 
@@ -1300,6 +1304,7 @@ Errors go to stderr, in the form `error: LOC: message`.
 | Command's name given as a `FILE`                                                | The `-e` form of the arguments                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Ambiguous selector                                                              | Candidate selectors (§3.5), or longer text for matches that share a line                                                                                                                                                                                                                                                                                                                                                                                                |
 | Missing part, part on a non-syntax step                                         | The parts the item has, or an example                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `resolve` of a span that isn't a whole conflict                                 | Selecting one with `conflict:N`, or `replace`                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | Invalid query                                                                   | The closest node type or field name in the grammar                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | Unterminated pattern                                                            | Ending it with as many backquotes as opened it                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Pattern that no searched file's language parses                                 | The first syntax error in it; adding the code around it, or `query{}`                                                                                                                                                                                                                                                                                                                                                                                                   |
