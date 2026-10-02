@@ -57,6 +57,18 @@ results, logs), pipe it to grep as usual.
 Read with `outline` and `show SEL` instead of cat (`show all 1-$` for several
 whole files), and make new files with `create` (see `ned help create`).
 
+If `NED_SESSION` is set (or with `-s NAME`), each call is recorded. Fix a failed
+call by repeating it with a correction instead of resending the script: `!!` is
+the last script, `:s/OLD/NEW/` replaces the first `OLD` in it and `:gs/OLD/NEW/`
+every one, and the repeat runs on the same files. `ned undo` reverts the last
+edit (`--force` if the file changed since), and `ned history` lists the calls:
+
+```sh
+ned src/parser.rs -e 'replace fn:prase>"end" with "end of input"'
+ned -e '!!:s/prase/parse/'
+ned undo
+```
+
 ## Workflow
 
 1. `outline` to find the item. Each line is a selector you can paste back.

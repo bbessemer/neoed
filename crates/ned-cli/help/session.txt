@@ -20,3 +20,8 @@ wrote, and the script's first line:
 prints its diff; repeat it to go further back. If a file changed since, it's
 refused; --force merges the undo into the file's current text instead,
 unless a later change overlaps the entry's.
+
+A script that is `!!` repeats the last script, on its files unless others are
+given; `:s/OLD/NEW/` corrects the first OLD in it and `:gs/OLD/NEW/` every one:
+
+  ned -e '!!:s/fn:prase/fn:parse/'

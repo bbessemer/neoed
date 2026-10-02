@@ -41,6 +41,9 @@ which it is. When to release 1.0 is TBD.
   `.whole`; bare kinds (`fn` = `fn:*`); `.lines` splitting into lines;
   whole-line ranges; span types; `[...]` filters with `&&`, `||` and
   parentheses.
+- **Sessions** (0.6.0): `-s NAME`/`NED_SESSION` record each invocation in a
+  versioned, locked per-workspace log; `ned history`, `ned undo` (`--force`
+  merges into later changes) and `!!:s/OLD/NEW/` repeats.
 
 ## Phase 2
 
@@ -86,25 +89,6 @@ art: ast-grep's metavariables.
 Version: minor once matching works; a further minor if capture substitution
 ships separately. The spec, reader and builder chunks alone release nothing.
 
-### Sessions _(split)_
-
-With `-s, --session [NAME]` or `NED_SESSION`, `ned` records each invocation
-(script, file set, outcome and per-file edits) in an append-only log under a
-per-workspace state directory, guarded by an advisory lock so several frontends
-can share it. An agent repeats its last command with a correction using a
-shell-style `!!` shorthand instead of resending the script, and undoes the last
-invocation's edits. The REPL and MCP server use a session automatically, and the
-same session is visible from every mode, so a human can follow an agent's
-progress from the REPL. The store is a `ned-core` module and needs no daemon;
-the CLI keeps working without one.
-
-- [x] Store and log format, lock, per-workspace location
-- [x] `-s`/`NED_SESSION`, `history` and `undo`
-- [ ] Repeat-with-correction shorthand
-
-Version: minor for the flag and store; the log format is versioned, and a format
-change before 1.0 is another minor. The shorthand is a minor if it ships after.
-
 ### Commit from ned
 
 An agent turns its edits into one git commit without touching anything else in
@@ -144,7 +128,8 @@ output doesn't.
 
 `ned-repl`: a human edits interactively with persistent buffers, undo and an
 explicit write, using the same command language, and can attach to an agent's
-session to watch and correct its work. Depends on Sessions and Terminal output.
+session to watch and correct its work. It records into a session automatically.
+Depends on Sessions and Terminal output.
 
 Version: minor; a new binary.
 
@@ -152,7 +137,8 @@ Version: minor; a new binary.
 
 `ned-mcp`: an MCP server exposes script execution, `outline` and `show` as
 tools, so agent frameworks call `ned` without a shell. It is a thin client of
-`ned-core` and the session store, with no logic of its own. Depends on Sessions.
+`ned-core` and the session store, with no logic of its own, and records into a
+session automatically. Depends on Sessions.
 
 Version: minor; a new binary.
 
@@ -245,6 +231,9 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [ ] The parse-error guard misses a Python class left with no body (`delete` of
       its only methods): tree-sitter-python parses `class A:` at the end of a
       file without an error node; only ruff reports it
+- [ ] `impl:"Log<'_>"` matches nothing in a file with `impl Log<'_>`, and the
+      hint is only "`outline` lists the items": suggest `impl:Log`, the name
+      without its generic arguments
 
 ## Future improvements
 
@@ -263,3 +252,6 @@ change is a minor, because it lifts a documented error.
       multi-line string replacing part of an item gives its later lines the
       item's continuation indent, as line-oriented text gets (§5.2), not the
       indentation of the line the span starts on (column 0 for a top-level item)
+- [ ] Compact session logs, which keep each written file's whole text before and
+      after: diffs against the previous entry, or pruning old entries (a log
+      format change, so a minor)

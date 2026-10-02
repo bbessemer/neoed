@@ -43,8 +43,19 @@ Write inserted code at column 0 in a `<<END` heredoc; ned re-indents it
 re-read the file to check the edit. Errors end with a fix; apply it and rerun.
 With a language server: `check` for diagnostics, `rename SEL to NAME`,
 `SEL.refs` and `SEL.def`; after `ned daemon start`, edits that introduce
-errors are rejected. `ned help` and `ned help TOPIC` document the rest.
+errors are rejected. With NED_SESSION set, `ned undo` reverts your last edit
+and `ned -e '!!:s/old/new/'` reruns your last command corrected. `ned help`
+and `ned help TOPIC` document the rest.
 
+```
+
+**Sessions.** Set `NED_SESSION` in the agent's environment, so `ned` records its
+invocations: the agent can then undo an edit and repeat a failed command with a
+fix, and you can follow its work with `ned history`. In Claude Code, add it to
+`.claude/settings.json`:
+
+```json
+{ "env": { "NED_SESSION": "claude" } }
 ```
 
 ## Example
