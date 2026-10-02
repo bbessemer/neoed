@@ -70,7 +70,8 @@ fn reads_disk(kind: &CommandKind) -> Option<&'static str> {
         CommandKind::Sub { scope, .. } => scope.iter().map(|t| &t.selector).collect(),
         CommandKind::Replace { target, .. }
         | CommandKind::Insert { target, .. }
-        | CommandKind::Delete(target) => vec![&target.selector],
+        | CommandKind::Delete(target)
+        | CommandKind::Resolve { target, .. } => vec![&target.selector],
         CommandKind::Move { target, dest, .. } => vec![&target.selector, dest],
         CommandKind::File(_) | CommandKind::Create { .. } | CommandKind::Allow(_) => vec![],
     };
@@ -221,6 +222,7 @@ impl Parser<'_> {
             "check" => self.check()?,
             "allow" => self.allow()?,
             "rename" => self.rename()?,
+            "resolve" => self.resolve()?,
             _ => {
                 return Err(ParseError::new(
                     E::UnknownCommand(word.into()),
@@ -291,6 +293,20 @@ impl Parser<'_> {
             _ => return Err(expected("a name", &token)),
         };
         Ok(CommandKind::Rename { selector, name })
+    }
+
+    /// After `resolve`: `SEL ours|theirs|base|both`.
+    fn resolve(&mut self) -> Result<CommandKind, ParseError> {
+        let target = self.target()?;
+        let token = self.bump()?;
+        let keep = match &token.kind {
+            TokenKind::Word(word) if word == "ours" => Keep::Ours,
+            TokenKind::Word(word) if word == "theirs" => Keep::Theirs,
+            TokenKind::Word(word) if word == "base" => Keep::Base,
+            TokenKind::Word(word) if word == "both" => Keep::Both,
+            _ => return Err(expected("ours, theirs, base, or both", &token)),
+        };
+        Ok(CommandKind::Resolve { target, keep })
     }
 
     fn target(&mut self) -> Result<Target, ParseError> {
@@ -690,6 +706,7 @@ pub fn usage(verb: &str) -> Option<&'static str> {
         "check" => "check [SEL] [LEVEL]",
         "allow" => "allow errors|warnings",
         "rename" => "rename SEL to NAME",
+        "resolve" => "resolve [all] SEL ours|theirs|base|both",
         _ => return None,
     })
 }
@@ -812,6 +829,10 @@ mod tests {
                 text,
             },
             Delete(t) => Delete(unspan_target(t)),
+            Resolve { target, keep } => Resolve {
+                target: unspan_target(target),
+                keep,
+            },
             Sub {
                 scope,
                 pattern,
@@ -1208,6 +1229,37 @@ mod tests {
                 format!(
                     "`conflict:{n}` isn't a conflict's number; conflicts count from 1 in file order, as in conflict:1, and `conflict` is each of them"
                 )
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_keeps_a_side() {
+        let conflict = |n| step(Primary::Conflict(n));
+        assert_eq!(
+            one("resolve conflict:2 theirs"),
+            CommandKind::Resolve {
+                target: target(vec![conflict(Some(2))]),
+                keep: Keep::Theirs,
+            }
+        );
+        assert_eq!(
+            one("resolve all conflict both"),
+            CommandKind::Resolve {
+                target: all(vec![conflict(None)]),
+                keep: Keep::Both,
+            }
+        );
+        for (word, keep) in [("ours", Keep::Ours), ("base", Keep::Base)] {
+            assert!(
+                matches!(one(&format!("resolve conflict:1 {word}")), CommandKind::Resolve { keep: k, .. } if k == keep)
+            );
+        }
+        for src in ["resolve conflict:1 mine", "resolve conflict:1"] {
+            assert!(
+                message(src).starts_with("expected ours, theirs, base, or both, found"),
+                "{src}: {}",
+                message(src)
             );
         }
     }
@@ -1698,7 +1750,7 @@ mod tests {
         assert_eq!(
             message(r#""x""#),
             "expected a command, found a string; \
-             commands are show outline check replace insert delete sub move rename file create allow"
+             commands are show outline check replace insert delete sub move rename resolve file create allow"
         );
     }
 

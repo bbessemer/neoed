@@ -17,7 +17,8 @@ use crate::lsp::{self, Document, Locate, Located, Lsp, LspFailure, Renamed, Seve
 use crate::outline;
 use crate::script::Script;
 use crate::script::ast::{
-    Command, CommandKind, Part, Pattern, Position, Primary, Selector, Step, Target, Text, TextKind,
+    Command, CommandKind, Keep, Part, Pattern, Position, Primary, Selector, Step, Target, Text,
+    TextKind,
 };
 use crate::script::error::{excerpt, location};
 use crate::select::{self, Match, SourceFile, line_numbers, same_path};
@@ -490,6 +491,50 @@ impl Executor<'_> {
                         continue;
                     }
                     self.delete(index, span, m.file, m.range)?;
+                }
+            }
+            CommandKind::Resolve { target, keep } => {
+                let at = || Some(target.selector.span.clone());
+                let sides: &[Part] = match keep {
+                    Keep::Ours => &[Part::Ours],
+                    Keep::Theirs => &[Part::Theirs],
+                    Keep::Base => &[Part::Base],
+                    Keep::Both => &[Part::Ours, Part::Theirs],
+                };
+                for m in self.resolve(target)? {
+                    let t = &self.files[m.file].file.text;
+                    let conflicts = self.files[m.file].file.conflicts();
+                    let Some(n) = conflicts.iter().position(|c| c.span() == m.range) else {
+                        let selector = self.src[target.selector.span.clone()].to_string();
+                        return Err(ExecError::new(
+                            ExecErrorKind::NotAConflict { selector },
+                            at(),
+                        ));
+                    };
+                    let conflict = Span {
+                        range: m.range.clone(),
+                        of: Of::Conflict(n + 1, &conflicts[n]),
+                    };
+                    let mut new = String::new();
+                    for &side in sides {
+                        for s in conflict
+                            .part(side, t)
+                            .map_err(|kind| ExecError::new(kind, at()))?
+                        {
+                            new.push_str(&t[s.range]);
+                        }
+                    }
+                    if new.is_empty() {
+                        self.delete(index, span, m.file, m.range)?;
+                        continue;
+                    }
+                    if !t[..m.range.end].ends_with('\n') {
+                        new.pop();
+                        if new.ends_with('\r') {
+                            new.pop();
+                        }
+                    }
+                    self.push(index, span, m.file, m.range, new)?;
                 }
             }
             CommandKind::Sub {
@@ -2070,6 +2115,10 @@ pub enum ExecErrorKind {
     PartNeedsItem { part: String },
     #[error(".{part} needs a conflict, e.g. conflict:1.{part}")]
     PartNeedsConflict { part: String },
+    #[error(
+        "resolve needs a whole conflict, but {selector} isn't one; select one with conflict:N, or use replace"
+    )]
+    NotAConflict { selector: String },
     #[error("invalid {lang} query: {message}")]
     InvalidQuery { lang: String, message: String },
     #[error("{selector} {message}")]
@@ -4148,6 +4197,77 @@ fn main() {}
         assert_eq!(
             edited(CONFLICTS, "replace conflict:1 with \"one_and_two();\""),
             "fn a() {\n    one_and_two();\n}\n\n<<<<<<< HEAD\nfn b() {}\n=======\n>>>>>>> topic\n"
+        );
+    }
+
+    #[test]
+    fn resolve_keeps_a_side_as_it_is() {
+        let rest = "\n\n<<<<<<< HEAD\nfn b() {}\n=======\n>>>>>>> topic\n";
+        for (keep, lines) in [
+            ("ours", "    one();\n"),
+            ("base", "    zero();\n"),
+            ("theirs", "    two();\n"),
+            ("both", "    one();\n    two();\n"),
+        ] {
+            assert_eq!(
+                edited(CONFLICTS, &format!("resolve conflict:1 {keep}")),
+                format!("fn a() {{\n{lines}}}{rest}"),
+                "{keep}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_all_resolves_every_conflict() {
+        let out = guarded("a.rs", CONFLICTS, "resolve all conflict theirs");
+        assert_eq!(out.new_text(), "fn a() {\n    two();\n}\n");
+    }
+
+    #[test]
+    fn resolve_to_a_missing_base_is_an_error() {
+        let out = exec(CONFLICTS, "resolve conflict:2 base");
+        assert!(
+            out.error().contains("conflict:2 has no .base"),
+            "{}",
+            out.error()
+        );
+    }
+
+    #[test]
+    fn resolve_needs_whole_conflicts() {
+        for sel in ["fn:b", "conflict:1.ours"] {
+            let out = exec(CONFLICTS, &format!("resolve {sel} ours"));
+            assert!(
+                out.error().contains(&format!(
+                    "resolve needs a whole conflict, but {sel} isn't one"
+                )),
+                "{}",
+                out.error()
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_keeps_a_missing_final_newline() {
+        let text = "a\n<<<<<<< HEAD\none\n=======\ntwo\n>>>>>>> topic";
+        assert_eq!(edited_in("a.txt", text, "resolve conflict ours"), "a\none");
+        let crlf = text.replace('\n', "\r\n");
+        assert_eq!(
+            edited_in("a.txt", &crlf, "resolve conflict both"),
+            "a\r\none\r\ntwo"
+        );
+    }
+
+    #[test]
+    fn resolve_to_an_empty_side_deletes_the_conflict() {
+        let text = "a\n\n<<<<<<< HEAD\n=======\nb\n>>>>>>> topic\n\nc\n";
+        assert_eq!(
+            edited_in("a.txt", text, "resolve conflict ours"),
+            "a\n\nc\n"
+        );
+        assert_eq!(
+            edited_in("a.txt", text, "resolve conflict ours"),
+            edited_in("a.txt", text, "delete conflict")
         );
     }
 

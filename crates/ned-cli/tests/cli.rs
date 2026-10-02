@@ -1487,6 +1487,47 @@ fn conflict_sides_in_a_text_file() {
 }
 
 #[test]
+fn resolve_keeps_one_side_of_a_conflict() {
+    let dir = dir_with(&[("app.py", CONFLICTED)]);
+    let out = ned(dir.path(), &["app.py", "-e", "resolve conflict theirs"], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    app.py: 1 edit, +0 -5
+    @@ -1,7 +1,2 @@
+    -<<<<<<< HEAD
+    -def ours():
+    -    return 1
+    -=======
+     def theirs():
+         return 2
+    ->>>>>>> topic
+    --- stderr
+    ");
+    assert_eq!(read(&dir, "app.py"), "def theirs():\n    return 2\n");
+}
+
+#[test]
+fn resolve_and_replace_keep_crlf_line_endings() {
+    let text = "a\r\n<<<<<<< HEAD\r\none\r\n=======\r\ntwo\r\n>>>>>>> topic\r\nb\r\n";
+    let dir = dir_with(&[("a.txt", text), ("b.txt", text)]);
+    let out = ned(
+        dir.path(),
+        &["a.txt", "-q", "-e", "resolve conflict theirs"],
+        "",
+    );
+    assert!(out.starts_with("exit: 0\n"), "{out}");
+    assert_eq!(read(&dir, "a.txt"), "a\r\ntwo\r\nb\r\n");
+    let out = ned(
+        dir.path(),
+        &["b.txt", "-q", "-e", "replace conflict with \"x\\ny\""],
+        "",
+    );
+    assert!(out.starts_with("exit: 0\n"), "{out}");
+    assert_eq!(read(&dir, "b.txt"), "a\r\nx\r\ny\r\nb\r\n");
+}
+
+#[test]
 fn go_outline_and_edits() {
     let text = "package main\n\ntype T struct{}\n\nfunc (t T) Run() {\n\tstart()\n}\n";
     let dir = dir_with(&[("main.go", text)]);

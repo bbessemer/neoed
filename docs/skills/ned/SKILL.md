@@ -217,11 +217,13 @@ insert start class:App>fn:handle "metrics.count(req)"
 
 Merge conflicts don't stop parsing: items on either side of a conflict are
 found. `conflict:N` is a file's Nth conflict (`outline` lists them), with
-`.ours`, `.theirs` and, in diff3 style, `.base`. Replace one to resolve it:
+`.ours`, `.theirs` and, in diff3 style, `.base`. `resolve` keeps one side, or
+`both` (ours, then theirs); `replace` resolves it with new text:
 
 ```ned
 show conflict:1.theirs
-replace conflict:1 with <<END
+resolve conflict:1 theirs
+replace conflict:2 with <<END
 let limit = config.limit.max(1);
 END
 ```

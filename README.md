@@ -139,6 +139,7 @@ A script is a list of commands, one per line or separated by `;`:
 | `file PATH...`                              | set the files later commands act on (globs work)    |
 | `check [SEL] [LEVEL]`                       | language-server diagnostics, without a build        |
 | `rename SEL to NAME`                        | rename a symbol everywhere, via the language server |
+| `resolve SEL ours\|theirs\|base\|both`      | resolve a merge conflict by keeping its sides       |
 
 A selector can be:
 
@@ -152,6 +153,7 @@ A selector can be:
 - a range (`fn:a..fn:c`);
 - a filter (`fn[.doc == ""]`, `fn:parse.lines[.len > 80]`);
 - scoped to one file (`file:src/a.rs>fn:new`);
+- a merge conflict (`conflict:2`), with `.ours`, `.theirs` and `.base`;
 - a syntax pattern: code with placeholders, matched whatever its spacing and
   comments (`` `foo(@x, @rest...)` ``);
 - a raw tree-sitter query (`query{...}`).

@@ -1,0 +1,12 @@
+resolve [all] SEL ours|theirs|base|both
+
+Replaces each conflict that SEL selects (conflict:N; ned help conflicts) with
+the lines of one side, as they are: both is ours, then theirs, and base needs
+a diff3-style conflict. SEL must select whole conflicts; to resolve one with
+new text, replace it. The parse-error guard checks the result, as for any
+edit.
+
+Examples:
+    resolve conflict:2 theirs
+    resolve all conflict both
+    resolve fn:main>conflict ours

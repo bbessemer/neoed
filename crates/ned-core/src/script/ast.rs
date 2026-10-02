@@ -70,6 +70,21 @@ pub enum CommandKind {
         selector: Selector,
         name: String,
     },
+    /// `resolve SEL ours|theirs|base|both` (§4.2).
+    Resolve {
+        target: Target,
+        keep: Keep,
+    },
+}
+
+/// What `resolve` keeps of a conflict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keep {
+    Ours,
+    Theirs,
+    Base,
+    /// Ours, then theirs.
+    Both,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
