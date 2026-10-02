@@ -130,13 +130,72 @@ pub enum RepeatError {
     Malformed(String),
 }
 
+/// Whether `src` is a `!!` script, which [`repeat`] expands.
+pub fn is_repeat(src: &str) -> bool {
+    src.trim_start().starts_with("!!")
+}
+
 /// If `src` is a `!!` script, the last script entry of `entries` and its
 /// script with the modifiers applied (spec §1.2); `None` for another script.
 pub fn repeat<'a>(
     src: &str,
     entries: &'a [Entry],
 ) -> Option<Result<(&'a Entry, String), RepeatError>> {
-    todo!()
+    let mut rest = src.trim().strip_prefix("!!")?;
+    let Some(entry) = entries.iter().rev().find(|entry| entry.script.is_some()) else {
+        return Some(Err(RepeatError::NoScript));
+    };
+    let mut script = entry.script.clone().unwrap_or_default();
+    while !rest.is_empty() {
+        let modifier = rest;
+        let malformed = || RepeatError::Malformed(modifier.to_string());
+        let Some(body) = modifier.strip_prefix(':') else {
+            return Some(Err(malformed()));
+        };
+        let (global, body) = match body.strip_prefix("gs") {
+            Some(body) => (true, body),
+            None => match body.strip_prefix('s') {
+                Some(body) => (false, body),
+                None => return Some(Err(malformed())),
+            },
+        };
+        let mut chars = body.chars();
+        let Some(delimiter) = chars.next().filter(char::is_ascii_punctuation) else {
+            return Some(Err(malformed()));
+        };
+        let (old, after, closed) = field(chars.as_str(), delimiter);
+        if !closed || old.is_empty() {
+            return Some(Err(malformed()));
+        }
+        let (new, after, _) = field(after, delimiter);
+        if !script.contains(&old) {
+            return Some(Err(RepeatError::NotFound { old, script }));
+        }
+        script = match global {
+            true => script.replace(&old, &new),
+            false => script.replacen(&old, &new, 1),
+        };
+        rest = after;
+    }
+    Some(Ok((entry, script)))
+}
+
+/// Reads a `!!` modifier's field up to `delimiter`, which `\` makes literal:
+/// the field, the text after it, and whether the delimiter ended it.
+fn field(text: &str, delimiter: char) -> (String, &str, bool) {
+    let mut out = String::new();
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if c == '\\' && chars.peek().is_some_and(|&(_, next)| next == delimiter) {
+            out.push(delimiter);
+            chars.next();
+        } else if c == delimiter {
+            return (out, &text[i + c.len_utf8()..], true);
+        } else {
+            out.push(c);
+        }
+    }
+    (out, "", false)
 }
 
 /// Seconds since the Unix epoch, for an entry's `time`.

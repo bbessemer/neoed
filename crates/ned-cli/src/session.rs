@@ -125,7 +125,43 @@ pub fn repeat(
     workspace: &mut Option<Option<PathBuf>>,
     root: &mut PathBuf,
 ) -> Result<String, Failure> {
-    todo!()
+    if !session::is_repeat(&src) {
+        return Ok(src);
+    }
+    let Some(session) = session else {
+        let error = "error: `!!` repeats a session's last script; give the session with -s NAME or NED_SESSION";
+        return Err((error.to_string(), 2));
+    };
+    let entries = session.lock().and_then(|log| log.entries());
+    let entries = entries.map_err(failure)?;
+    let (entry, script) = match session::repeat(&src, &entries) {
+        None => return Ok(src),
+        Some(result) => result.map_err(|err| (format!("error: {err}"), 2))?,
+    };
+    eprintln!(
+        "note: repeating {}: {}",
+        entry.id,
+        session::script_summary(&script)
+    );
+    if files.is_empty() && workspace.is_none() {
+        match &entry.workspace {
+            Some(dir) => {
+                *workspace = Some(Some(dir.clone()));
+                *root = dir.clone();
+            }
+            None => {
+                *files = entry
+                    .files
+                    .iter()
+                    .map(|file| match entry.cwd == cwd {
+                        true => file.clone(),
+                        false => entry.cwd.join(file).to_string_lossy().into_owned(),
+                    })
+                    .collect();
+            }
+        }
+    }
+    Ok(script)
 }
 
 /// The working directory, canonical so recorded paths can be shown relative
