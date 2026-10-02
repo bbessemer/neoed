@@ -6,7 +6,7 @@ use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use tree_sitter::Node;
+use tree_sitter::{Node, QueryCursor, StreamingIterator, Tree};
 
 use crate::edit::{Edit, EditError, EditSet};
 use crate::lang::Language;
@@ -102,6 +102,9 @@ struct Loaded {
     edits: EditSet,
     /// The whole-line deletions among `edits`, for merging neighbours.
     deletions: Vec<Deletion>,
+    /// Whether `edits` replace a Python `.sig` with text ending in `:`, which
+    /// the parse-error guard's error then explains (§4.3).
+    sig_colon: bool,
     /// Made by `create`: its original text is what `create` gave it.
     created: bool,
     /// The text before the first `|` changed it (§2.3), and the edits
@@ -196,7 +199,7 @@ impl Executor<'_> {
             .collect();
         if !self.options.force {
             for (l, change) in changed.iter().zip(&changes) {
-                guard(&stage_input(l), &change.new)?;
+                guard(l, &change.new)?;
             }
         }
         Ok(changes)
@@ -211,13 +214,14 @@ impl Executor<'_> {
             }
             let new = l.edits.apply();
             if !self.options.force {
-                guard(&stage_input(l), &new)?;
+                guard(l, &new)?;
             }
             l.applied += l.edits.len();
             l.original.get_or_insert_with(|| l.file.text.clone());
             l.file = SourceFile::new(&l.file.path, new, l.file.lang);
             l.edits = EditSet::new(&l.file.buffer);
             l.deletions.clear();
+            l.sig_colon = false;
         }
         Ok(())
     }
@@ -244,6 +248,7 @@ impl Executor<'_> {
             file,
             edits,
             deletions: Vec::new(),
+            sig_colon: false,
             original: None,
             applied: 0,
             created: true,
@@ -361,6 +366,7 @@ impl Executor<'_> {
             file,
             edits,
             deletions: Vec::new(),
+            sig_colon: false,
             original: None,
             applied: 0,
             created: false,
@@ -393,11 +399,8 @@ impl Executor<'_> {
             CommandKind::Show { target, context } => self.show(target.as_ref(), *context)?,
             CommandKind::Outline(target) => self.outline(span, target.as_ref())?,
             CommandKind::Replace { target, text } => {
-                let whole = target
-                    .selector
-                    .steps
-                    .last()
-                    .is_some_and(|s| s.parts.last() == Some(&Part::Whole));
+                let last = target.selector.steps.last().and_then(|s| s.parts.last());
+                let whole = last == Some(&Part::Whole);
                 let patterns = target
                     .selector
                     .steps
@@ -421,6 +424,10 @@ impl Executor<'_> {
                         self.notes.push(note);
                     }
                     let (range, new) = replace(f, m.range, text, whole);
+                    if last == Some(&Part::Sig) && text.value.trim_end().ends_with(':') {
+                        let l = &mut self.files[m.file];
+                        l.sig_colon |= l.file.lang == Some(Language::Python);
+                    }
                     self.push(index, span, m.file, range, new)?;
                 }
             }
@@ -1420,15 +1427,16 @@ fn stage_input(l: &Loaded) -> Cow<'_, SourceFile> {
     }
 }
 
-/// Rejects `new`, the edited text of `f`, if it has more tree-sitter error
-/// nodes than the original (§4.3).
-fn guard(f: &SourceFile, new: &str) -> Result<(), ExecError> {
+/// Rejects `new`, the edited text of `l`, if it has more syntax errors than
+/// its stage input (§4.3).
+fn guard(l: &Loaded, new: &str) -> Result<(), ExecError> {
+    let f = stage_input(l);
     let (Some(lang), Some(old)) = (f.lang, f.tree()) else {
         return Ok(());
     };
-    let before = error_nodes(old.root_node()).len();
+    let before = error_nodes(lang, old, &f.text).len();
     let tree = lang.parse(new);
-    let errors = error_nodes(tree.root_node());
+    let errors = error_nodes(lang, &tree, new);
     if errors.len() <= before {
         return Ok(());
     }
@@ -1445,6 +1453,10 @@ fn guard(f: &SourceFile, new: &str) -> Result<(), ExecError> {
     Err(ExecError::new(
         ExecErrorKind::SyntaxError {
             location: format!("{}:{line}:{column}", f.path),
+            hint: match l.sig_colon {
+                true => "; Python `.sig` stops before the `:`, so leave it out of TEXT".into(),
+                false => String::new(),
+            },
             excerpt: excerpt(new, node.start_byte())
                 .map(|e| format!("\n{e}"))
                 .unwrap_or_default(),
@@ -1453,10 +1465,11 @@ fn guard(f: &SourceFile, new: &str) -> Result<(), ExecError> {
     ))
 }
 
-/// The `ERROR` and `MISSING` nodes under `root`, in source order.
-fn error_nodes(root: Node<'_>) -> Vec<Node<'_>> {
+/// The `ERROR` and `MISSING` nodes of `tree`, a parse of `text`, and the
+/// matches of `lang`'s error query, in source order.
+fn error_nodes<'t>(lang: Language, tree: &'t Tree, text: &str) -> Vec<Node<'t>> {
     let mut out = Vec::new();
-    let mut stack = vec![root];
+    let mut stack = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
         if node.is_error() || node.is_missing() {
             out.push(node);
@@ -1464,6 +1477,11 @@ fn error_nodes(root: Node<'_>) -> Vec<Node<'_>> {
         if node.has_error() {
             stack.extend(node.children(&mut node.walk()));
         }
+    }
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(lang.errors(), tree.root_node(), text.as_bytes());
+    while let Some(m) = matches.next() {
+        out.extend(m.captures().iter().map(|c| c.node));
     }
     out.sort_by_key(|n| (n.start_byte(), n.end_byte()));
     out
@@ -1971,10 +1989,16 @@ pub enum ExecErrorKind {
     /// `note` is empty, or where relative paths start.
     #[error("glob `{glob}` matched nothing{note}")]
     NoGlobMatch { glob: String, note: String },
-    /// `location` is `PATH:LINE:COL`; `excerpt` is empty, or a newline and
-    /// the offending line with a caret.
-    #[error("{location}: edit introduces a syntax error (use --force to apply anyway){excerpt}")]
-    SyntaxError { location: String, excerpt: String },
+    /// `location` is `PATH:LINE:COL`; `hint` is empty or a `; ` and a fix;
+    /// `excerpt` is empty, or a newline and the offending line with a caret.
+    #[error(
+        "{location}: edit introduces a syntax error (use --force to apply anyway){hint}{excerpt}"
+    )]
+    SyntaxError {
+        location: String,
+        hint: String,
+        excerpt: String,
+    },
     /// The message ends with its fix.
     #[error("{0}")]
     Lsp(String),
@@ -3572,6 +3596,54 @@ fn main() {}
             out.new_text(),
             "fn a() {\n    let x = (1;\n}\n\nfn b() {\n    let y = 3;\n}\n"
         );
+    }
+
+    #[test]
+    fn guard_rejects_an_emptied_python_body() {
+        let text = "class A:\n    def f(self):\n        pass\n";
+        let out = guarded("a.py", text, "delete fn:f");
+        assert!(
+            out.error().starts_with("error: a.py:1:9:"),
+            "{}",
+            out.error()
+        );
+        let text = "def f():\n    return 1\n\n\nx = 1\n";
+        let out = guarded("a.py", text, "delete fn:f.body");
+        assert!(out.error().contains(GUARD_ERROR), "{}", out.error());
+    }
+
+    #[test]
+    fn guard_allows_python_bodies_that_were_already_empty() {
+        let text = "class A:\n\n\ndef f():\n    return 1\n";
+        let out = guarded("a.py", text, "replace \"return 1\" with \"return 2\"");
+        assert!(out.result.is_ok(), "{}", out.error());
+        let out = guarded(
+            "a.py",
+            "class A:\n    x = 1\n",
+            "replace \"x = 1\" with \"pass\"",
+        );
+        assert!(out.result.is_ok(), "{}", out.error());
+    }
+
+    const SIG_HINT: &str = "Python `.sig` stops before the `:`";
+
+    #[test]
+    fn guard_says_a_python_sig_stops_before_the_colon() {
+        let text = "def f():\n    pass\n";
+        let out = guarded("a.py", text, "replace fn:f.sig with \"def f() -> None:\"");
+        assert!(out.error().contains(GUARD_ERROR), "{}", out.error());
+        assert!(out.error().contains(SIG_HINT), "{}", out.error());
+        let out = guarded("a.py", text, "replace fn:f.sig with \"def f(:\"");
+        assert!(out.error().contains(SIG_HINT), "{}", out.error());
+    }
+
+    #[test]
+    fn guard_hints_at_the_colon_only_for_a_python_sig() {
+        let text = "def f():\n    pass\n";
+        let out = guarded("a.py", text, "replace fn:f.sig with \"def f(\"");
+        assert!(!out.error().contains(SIG_HINT), "{}", out.error());
+        let out = guarded("a.py", text, "replace \"def f()\" with \"def f():\"");
+        assert!(!out.error().contains(SIG_HINT), "{}", out.error());
     }
 
     #[test]

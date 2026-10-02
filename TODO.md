@@ -204,10 +204,10 @@ of either kind.
       string or heredoc), found end of line"
 - [x] A `..` followed by `+N` (`show /re/+0..+70`) suggests `show /re/ +70`
       rather than "expected end of command, found '..'"
-- [ ] A Python `.sig` replacement ending in `:` that the guard rejects
+- [x] A Python `.sig` replacement ending in `:` that the guard rejects
       (`-> None::`) says `.sig` stops before the `:`; spec §3.4,
       `ned help selectors` and the skill say so too
-- [ ] `ned help selectors` says `..` binds tighter than `>`, with the example
+- [x] `ned help selectors` says `..` binds tighter than `>`, with the example
       `class:Server>fn:start..fn:run` (not `...fn:start..class:Server>fn:run`)
 - [x] The skill and agent guide say to use a heredoc whenever TEXT holds a
       quote, rather than `-e` with shell escapes such as `'"'"'`
@@ -248,7 +248,7 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       selector with the last step's hint: `impl:"Lexer<'a>">fn:next>"x"` says
       "matches nothing; `show` prints the text to match against" instead of
       naming the failing step and suggesting `impl:Lexer`
-- [ ] The parse-error guard misses a Python class left with no body (`delete` of
+- [x] The parse-error guard misses a Python class left with no body (`delete` of
       its only methods): tree-sitter-python parses `class A:` at the end of a
       file without an error node; only ruff reports it
 - [x] `impl:"Log<'_>"` matches nothing in a file with `impl Log<'_>`, and the

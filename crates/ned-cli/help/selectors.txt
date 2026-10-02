@@ -1,25 +1,26 @@
 selectors
 
 Lines: 12, 12-20, 12-$, $ (last line).
-Regex: /re/ with flags i, s. Literal: "text" (escapes \n \t \" \\).
-Block: <<END heredoc matches whole lines, ignoring indentation.
+Regex: /re/, flags i s. Literal: "text" (escapes \n \t \" \\).
+Block: <<END heredoc, whole lines, indentation ignored.
 Syntax: kind:name, * a wildcard (fn alone is fn:*); quote others: import:"a.b".
   Kinds: fn class struct enum variant trait interface impl type const var
-  field mod import, and in Markdown section item table code (which depend on
-  the language; outline shows them). section:"Intro" is a # heading and its
-  content; its .body is the content after the heading, subsections included.
+  field mod import, and in Markdown section item table code (per language;
+  outline lists them). section:"Intro" is a # heading and its content; its
+  .body is what follows the heading, subsections too.
   impl:Name is the impl's self type; a trait impl is also impl:"Trait for Name".
-  A Go method is fn:"Recv.Name", and fn:Name matches every Name.
-  A syntax item includes its doc comments and attributes (decorators, and in
-  JS/TS its export); a Python item's .doc is its docstring, and its .body the
-  lines after it. In JS/TS, const f = () => {} is both fn:f and const:f.
+  A Go method is fn:"Recv.Name"; fn:Name matches every Name.
+  An item includes its docs and attributes (decorators; in JS/TS, export).
+  A Python item's .doc is its docstring, its .body the lines after it, and
+  its .sig stops before the colon. In JS/TS, const f = () => {} is fn:f
+  and const:f.
 Parts: .body .params (inside delimiters) .name .sig .doc .attrs .ret .type
   .value .whole (with docs); .lines splits into lines (fn:f>12 picks one).
-  Via the language server, on any step: .refs (each use), .def (the defining
+  Via the language server, any step: .refs (each use), .def (the defining
   item): all fn:parse.refs, "helper(".def. With -w they reach every file.
 Nest with > (no spaces): impl:Parser>fn:new>"x". Scope: 40-80>fn:new,
 file:src/a.rs>fn:new. Raw: query{(node) @sel}.
-Range: A..B, whole lines from a match of A to the next match of B:
-/^## 6/../^## 7/, fn:a..fn:c.
-Filter: fn[.name ~= /^test_/] (ned help filters). Ambiguous matches are errors
-listing selectors to paste; `all SEL` takes every match.
+Range: A..B, whole lines from a match of A to the next B: /^## 6/../^## 7/,
+fn:a..fn:c. `..` binds tighter than `>`: class:Server>fn:start..fn:run.
+Filter: fn[.name ~= /^test_/] (ned help filters). Ambiguity is an error listing
+selectors to paste; `all SEL` takes every match.

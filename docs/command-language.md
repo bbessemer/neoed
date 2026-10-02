@@ -585,7 +585,8 @@ The kinds each language supports, and the items they cover there:
     `variant`.
 - In Python, `.doc` is the docstring, and `.body` is the block's whole lines
   after it, so `insert start fn:f` goes after the docstring. `.sig` runs from
-  `def` or `class` up to the `:` (decorators are attributes).
+  `def` or `class` up to, but not including, the `:` (decorators are
+  attributes).
 - `.refs` and `.def` ask the language server (§1.1) about the symbol at the
   start of the step's `.name` (for a syntax item) or of its span, so they work
   on any step: `fn:parse.refs`, `fn:main>"helper(".def`. Their spans may be in
@@ -906,9 +907,12 @@ rename impl:Parser>fn:new>"tokens" to toks
 ### 4.3 Parse-error guard
 
 For each modified file that has a language, `ned` counts the tree-sitter `ERROR`
-and `MISSING` nodes before and after each stage's edits (§2.3). If the count
-rises, the script is rejected (exit 1) and the error shows the first new error
-node. `--force` skips this check.
+and `MISSING` nodes, and the matches of the language's
+`queries/<lang>/errors.scm` (code the grammar accepts but the language does not,
+such as an empty Python block), before and after each stage's edits (§2.3). If
+the count rises, the script is rejected (exit 1) and the error shows the first
+new error node. If the edits replace a Python `.sig` with text ending in `:`,
+the error adds that `.sig` stops before the `:`. `--force` skips this check.
 
 ### 4.4 Directives
 
