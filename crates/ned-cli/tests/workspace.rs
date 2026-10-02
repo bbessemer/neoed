@@ -32,6 +32,7 @@ fn ned(cwd: &Path, args: &[&str]) -> Output {
         .args(args)
         .current_dir(cwd)
         .env("XDG_RUNTIME_DIR", runtime.path())
+        .env_remove("NED_SESSION")
         .write_stdin("")
         .output()
         .unwrap()

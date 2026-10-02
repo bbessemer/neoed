@@ -685,4 +685,58 @@ mod tests {
             .collect();
         assert_eq!(scripts, [(1, "show 1".into()), (2, "show 2".into())]);
     }
+
+    fn recorded(id: u64, script: Option<&str>, exit: u8, files: usize) -> Entry {
+        let mut entry = entry(script.unwrap_or_default());
+        entry.id = id;
+        entry.script = script.map(String::from);
+        entry.exit = exit;
+        entry.changes.truncate(files);
+        entry
+    }
+
+    #[test]
+    fn history_lines_give_each_entry_outcome_files_and_script() {
+        let mut dry = recorded(3, Some("delete fn:a"), 0, 0);
+        dry.dry_run = true;
+        let mut undo = recorded(6, None, 0, 1);
+        undo.undoes = Some(5);
+        let mut two = recorded(4, Some("sub /a/ with \"b\""), 0, 1);
+        two.changes.push(two.changes[0].clone());
+        let entries = [
+            recorded(1, Some("show fn:parse"), 0, 0),
+            recorded(2, Some("replace fn:prase>\"x\" with \"y\""), 1, 0),
+            dry,
+            two,
+            recorded(5, Some("replace fn:parse>\"x\" with \"y\"\n"), 0, 1),
+            undo,
+            recorded(7, Some("file a.rs\ndelete fn:a\ndelete fn:b\n"), 0, 1),
+            recorded(8, Some("show 1\nshow 2"), 2, 0),
+        ];
+        assert_eq!(
+            history(&entries, false),
+            "\
+    1 ok: show fn:parse
+    2 exit 1: replace fn:prase>\"x\" with \"y\"
+    3 dry run: delete fn:a
+    4 ok, 2 files: sub /a/ with \"b\"
+    5 ok, 1 file, undone: replace fn:parse>\"x\" with \"y\"
+    6 undo 5, 1 file
+    7 ok, 1 file: file a.rs (+2 lines)
+    8 exit 2: show 1 (+1 line)
+    "
+        );
+    }
+
+    #[test]
+    fn history_shows_the_last_ten_entries_unless_all() {
+        let entries: Vec<_> = (1..=12)
+            .map(|id| recorded(id, Some(&format!("show {id}")), 0, 0))
+            .collect();
+        let last: Vec<_> = (3..=12).map(|id| format!("{id} ok: show {id}\n")).collect();
+        assert_eq!(history(&entries, false), last.concat());
+        let every: Vec<_> = (1..=12).map(|id| format!("{id} ok: show {id}\n")).collect();
+        assert_eq!(history(&entries, true), every.concat());
+        assert_eq!(history(&[], true), "");
+    }
 }

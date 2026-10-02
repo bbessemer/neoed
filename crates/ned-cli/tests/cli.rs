@@ -66,6 +66,7 @@ fn ned(dir: &Path, args: &[&str], stdin: &str) -> String {
     let output = cargo_bin_cmd!("ned")
         .current_dir(dir)
         .env("XDG_CONFIG_HOME", config.path())
+        .env_remove("NED_SESSION")
         .args(args)
         .write_stdin(stdin)
         .output()
