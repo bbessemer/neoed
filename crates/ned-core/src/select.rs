@@ -10,6 +10,7 @@ use std::cmp::Reverse;
 use tree_sitter::{Node, Query, QueryCursor, QueryError, QueryErrorKind, StreamingIterator, Tree};
 
 use crate::buffer::{Buffer, LineEnding};
+use crate::conflict;
 use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
 use crate::lang::Language;
 use crate::pattern;
@@ -77,7 +78,7 @@ impl SourceFile {
         let tree = self.tree()?;
         Some(
             self.items
-                .get_or_init(|| syntax::items(query, tree, &self.text)),
+                .get_or_init(|| syntax::items(query, tree, &conflict::mask(&self.text))),
         )
     }
 

@@ -105,7 +105,7 @@ commit. Depends on Sessions for the session case.
 
 Version: minor; a new flag.
 
-### Merge conflicts
+### Merge conflicts _(split)_
 
 A file with `<<<<<<<`/`=======`/`>>>>>>>` markers still parses: markers are
 hidden from the grammar, so syntax selectors find items inside either side and
@@ -115,6 +115,10 @@ resolves conflicts structurally: a `conflict` kind (numbered in file order) with
 `replace conflict:2 with ...`) replaces the whole conflict with one side or new
 text. The marker tolerance is independent; the resolution verb depends on the
 parts work above.
+
+- [x] Marker tolerance: conflict markers hidden from the grammar and the guard
+- [ ] The `conflict` kind and its `.ours`, `.theirs` and `.base` parts
+- [ ] The `resolve` verb
 
 Version: patch for marker tolerance (existing scripts start working on
 conflicted files); minor for the `conflict` kind, its parts and `resolve`.

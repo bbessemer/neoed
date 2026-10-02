@@ -2,6 +2,7 @@
 
 pub mod buffer;
 pub mod config;
+pub mod conflict;
 pub mod diff;
 pub mod edit;
 pub mod exec;

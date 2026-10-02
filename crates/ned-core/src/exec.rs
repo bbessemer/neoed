@@ -3824,6 +3824,48 @@ fn main() {}
         assert!(out.result.is_ok(), "{}", out.error());
     }
 
+    const CONFLICTED: &str = "fn a() {}\n\n<<<<<<< HEAD\n/// Ours.\nfn b() -> u8 {\n    1\n}\n=======\nfn c() {}\n>>>>>>> topic\n";
+
+    #[test]
+    fn syntax_selectors_find_items_on_both_sides_of_a_conflict() {
+        let out = exec(CONFLICTED, "show fn:b; show fn:c");
+        assert_eq!(
+            out.output,
+            "a.rs:4-7\n4:/// Ours.\n5:fn b() -> u8 {\n6:    1\n7:}\na.rs:9\n9:fn c() {}\n"
+        );
+    }
+
+    #[test]
+    fn an_item_on_both_sides_is_ambiguous() {
+        let text = "<<<<<<< HEAD\nfn a() -> u8 {\n    1\n}\n=======\nfn a() {}\n>>>>>>> topic\n";
+        let out = exec(text, "show fn:a");
+        assert!(out.error().contains("2-4>fn:a"), "{}", out.error());
+        assert!(out.error().contains("6>fn:a"), "{}", out.error());
+    }
+
+    #[test]
+    fn guard_allows_edits_to_a_conflicted_file() {
+        let out = guarded(
+            "a.rs",
+            CONFLICTED,
+            "replace fn:c with \"fn c() -> u8 {\\n    2\\n}\"",
+        );
+        assert_eq!(
+            out.new_text(),
+            CONFLICTED.replace("fn c() {}", "fn c() -> u8 {\n    2\n}")
+        );
+    }
+
+    #[test]
+    fn guard_still_rejects_new_errors_in_a_conflicted_file() {
+        let out = guarded(
+            "a.rs",
+            CONFLICTED,
+            "replace \"fn c() {}\" with \"fn c() {\"",
+        );
+        assert!(out.error().starts_with("error: a.rs:"), "{}", out.error());
+    }
+
     #[test]
     fn force_skips_the_guard() {
         let out = exec(TEXT, "replace \"let y = 2;\" with \"(\"");

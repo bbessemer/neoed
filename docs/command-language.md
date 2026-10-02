@@ -527,6 +527,14 @@ The kinds each language supports, and the items they cover there:
   and `TEXT` doesn't end with `,`, one is appended.
 - Syntax steps skip text files. If every searched file is text, the selector is
   an error that suggests `--lang`.
+- A file with merge conflicts still parses. The marker lines of each conflict
+  that git writes are hidden from the grammar: `<<<<<<< ...`, `||||||| ...`
+  (diff3 style), `=======` and `>>>>>>> ...`, each starting its line, in that
+  order. The grammar sees the sides one after the other, so items on either side
+  are found, and an item on both sides matches twice, which is ambiguous (§3.5)
+  unless it is scoped by lines. Spans are still of the file's text, so an item
+  that spans a conflict includes its marker lines. Marker lines that don't form
+  a whole conflict (a lone `=======`, say) are not hidden.
 - `file:PATH` is a special step that selects the whole of one file in the
   current set. It exists to scope the steps after it:
   `file:src/lexer.rs>fn:new`. `PATH` may contain `/` and `.`, and ends at `>` or
@@ -919,7 +927,9 @@ and `MISSING` nodes, and the matches of the language's
 such as an empty Python block), before and after each stage's edits (§2.3). If
 the count rises, the script is rejected (exit 1) and the error shows the first
 new error node. If the edits replace a Python `.sig` with text ending in `:`,
-the error adds that `.sig` stops before the `:`. `--force` skips this check.
+the error adds that `.sig` stops before the `:`. Conflict markers are hidden
+from the grammar (§3.3), so a file with merge conflicts can be edited. `--force`
+skips this check.
 
 ### 4.4 Directives
 
@@ -1078,6 +1088,9 @@ formatted.
   `note: rustfmt not found; skipped formatting src/parser.rs`, or
   `note: rustfmt failed: <first stderr line>; skipped formatting src/parser.rs`.
   The file is written unformatted and the exit code stays 0.
+- A file that still has merge conflicts (§3.3) isn't formatted, by its formatter
+  or a language server, since formatting may rewrite its marker lines:
+  `note: skipped formatting src/a.rs: it has merge conflicts`.
 - `--dry-run` still runs formatters, on in-memory copies.
 
 When no formatter for the language is installed and a daemon is running (§6.5),
