@@ -1,5 +1,6 @@
 //! Resolving selectors to spans of files (command-language spec, §3).
 
+use std::borrow::Cow;
 use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -56,6 +57,8 @@ pub struct SourceFile {
     tree: OnceCell<Tree>,
     items: OnceCell<Vec<Item>>,
     conflicts: OnceCell<Vec<Conflict>>,
+    /// The text with its conflicts' markers hidden, if it has any.
+    masked: OnceCell<Option<String>>,
     indent_unit: OnceCell<String>,
 }
 
@@ -70,6 +73,7 @@ impl SourceFile {
             tree: OnceCell::new(),
             items: OnceCell::new(),
             conflicts: OnceCell::new(),
+            masked: OnceCell::new(),
             indent_unit: OnceCell::new(),
         }
     }
@@ -80,7 +84,7 @@ impl SourceFile {
         let tree = self.tree()?;
         Some(
             self.items
-                .get_or_init(|| syntax::items(query, tree, &conflict::mask(&self.text))),
+                .get_or_init(|| syntax::items(query, tree, self.masked())),
         )
     }
 
@@ -90,11 +94,32 @@ impl SourceFile {
             .get_or_init(|| conflict::conflicts(&self.text))
     }
 
+    /// The file's conflict, numbered from 1, that `range` is or is an empty side
+    /// of.
+    pub fn conflict_at(&self, range: &Range<usize>) -> Option<(usize, &Conflict)> {
+        self.conflicts()
+            .iter()
+            .enumerate()
+            .find(|(_, c)| c.span() == *range || (range.is_empty() && c.side_at(range).is_some()))
+            .map(|(i, c)| (i + 1, c))
+    }
+
+    /// The text with its conflicts' marker lines hidden from the grammar (§3.3).
+    fn masked(&self) -> &str {
+        self.masked
+            .get_or_init(|| match conflict::mask(&self.text, self.conflicts()) {
+                Cow::Owned(masked) => Some(masked),
+                Cow::Borrowed(_) => None,
+            })
+            .as_deref()
+            .unwrap_or(&self.text)
+    }
+
     /// The syntax tree of the text, parsed on first use; `None` without a
     /// language.
     pub fn tree(&self) -> Option<&Tree> {
         let lang = self.lang?;
-        Some(self.tree.get_or_init(|| lang.parse(&self.text)))
+        Some(self.tree.get_or_init(|| lang.parse_masked(self.masked())))
     }
 
     /// The indent unit of the text (§5.2), measured on lines that don't start
@@ -306,11 +331,8 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
                     .find(|i| i.kind == kind && i.range == range)
                     .map_or(Of::Plain, Of::Item),
                 Primary::Conflict(_) => f
-                    .conflicts()
-                    .iter()
-                    .enumerate()
-                    .find(|(_, c)| c.span() == range)
-                    .map_or(Of::Plain, |(i, c)| Of::Conflict(i + 1, c)),
+                    .conflict_at(&range)
+                    .map_or(Of::Plain, |(n, c)| Of::Conflict(n, c)),
                 _ => Of::Plain,
             };
             let mut spans = vec![Span { range, of }];
@@ -1261,12 +1283,10 @@ fn candidates(
                 }
                 // Each of several conflicts is named by its number.
                 (None, Some(step)) if step.primary == Primary::Conflict(None) => {
-                    let n = files[c.m.file]
-                        .conflicts()
-                        .iter()
-                        .position(|k| k.span() == c.core)
+                    let (n, _) = files[c.m.file]
+                        .conflict_at(&c.core)
                         .expect("a conflict step matches conflicts");
-                    format!("conflict:{}{}", n + 1, parts(step))
+                    format!("conflict:{n}{}", parts(step))
                 }
                 _ => src[split..filters.clone().map_or(selector.span.end, |f| f.start)].to_string(),
             };

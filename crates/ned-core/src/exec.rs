@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use tree_sitter::{Node, QueryCursor, StreamingIterator, Tree};
 
-use crate::conflict::Conflict;
+use crate::conflict::{Conflict, Side};
 use crate::edit::{Edit, EditError, EditSet};
 use crate::highlight;
 use crate::lang::{self, Language};
@@ -22,7 +22,7 @@ use crate::script::ast::{
 };
 use crate::script::error::{excerpt, location};
 use crate::select::{self, Match, SourceFile, line_numbers, same_path};
-use crate::span::{Of, Span};
+use crate::span::{self, Of, Span};
 use crate::style::{Role, Style};
 use crate::syntax::{self, Item};
 use crate::template::Template;
@@ -495,35 +495,31 @@ impl Executor<'_> {
             }
             CommandKind::Resolve { target, keep } => {
                 let at = || Some(target.selector.span.clone());
-                let sides: &[Part] = match keep {
-                    Keep::Ours => &[Part::Ours],
-                    Keep::Theirs => &[Part::Theirs],
-                    Keep::Base => &[Part::Base],
-                    Keep::Both => &[Part::Ours, Part::Theirs],
+                let sides: &[Side] = match keep {
+                    Keep::Ours => &[Side::Ours],
+                    Keep::Theirs => &[Side::Theirs],
+                    Keep::Base => &[Side::Base],
+                    Keep::Both => &[Side::Ours, Side::Theirs],
                 };
                 for m in self.resolve(target)? {
-                    let t = &self.files[m.file].file.text;
-                    let conflicts = self.files[m.file].file.conflicts();
-                    let Some(n) = conflicts.iter().position(|c| c.span() == m.range) else {
+                    let f = &self.files[m.file].file;
+                    let Some((n, conflict)) =
+                        f.conflict_at(&m.range).filter(|(_, c)| c.span() == m.range)
+                    else {
                         let selector = self.src[target.selector.span.clone()].to_string();
                         return Err(ExecError::new(
                             ExecErrorKind::NotAConflict { selector },
                             at(),
                         ));
                     };
-                    let conflict = Span {
-                        range: m.range.clone(),
-                        of: Of::Conflict(n + 1, &conflicts[n]),
-                    };
                     let mut new = String::new();
                     for &side in sides {
-                        for s in conflict
-                            .part(side, t)
-                            .map_err(|kind| ExecError::new(kind, at()))?
-                        {
-                            new.push_str(&t[s.range]);
-                        }
+                        let lines = conflict
+                            .side(side)
+                            .ok_or_else(|| ExecError::new(span::missing_base(n), at()))?;
+                        new.push_str(&f.text[lines]);
                     }
+                    let t = &f.text;
                     if new.is_empty() {
                         self.delete(index, span, m.file, m.range)?;
                         continue;
@@ -1681,7 +1677,7 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text, whole: bool) -> (Ran
         false => without_leading(f, range, new),
     };
     let unit = f.indent_unit();
-    if let Some(c) = conflict_at(f, &range) {
+    if let Some((_, c)) = f.conflict_at(&range) {
         let mut new = line_oriented(new, side_indent(t, c), unit);
         if !range.is_empty() && !t[..range.end].ends_with('\n') {
             new.pop();
@@ -1705,22 +1701,10 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text, whole: bool) -> (Ran
     }
 }
 
-/// The conflict of `f` that `range` is, or is an empty side of.
-fn conflict_at<'f>(f: &'f SourceFile, range: &Range<usize>) -> Option<&'f Conflict> {
-    f.conflicts()
-        .iter()
-        .find(|c| c.span() == *range || (range.is_empty() && c.sides().any(|s| s == *range)))
-}
-
 /// The empty conflict side of `f` that `range` is, as `conflict:2.theirs`.
 fn empty_side(f: &SourceFile, range: &Range<usize>) -> Option<String> {
-    if !range.is_empty() {
-        return None;
-    }
-    f.conflicts()
-        .iter()
-        .enumerate()
-        .find_map(|(i, c)| Some(format!("conflict:{}.{}", i + 1, c.side_at(range)?.name())))
+    let (n, c) = f.conflict_at(range).filter(|_| range.is_empty())?;
+    Some(format!("conflict:{n}.{}", c.side_at(range)?.name()))
 }
 
 /// The indentation of the first non-blank line of `c`'s sides, which text
@@ -1970,7 +1954,7 @@ fn insert(
     let t = &f.text;
     let unit = f.indent_unit();
     if range.is_empty()
-        && let Some(c) = conflict_at(f, &range)
+        && let Some((_, c)) = f.conflict_at(&range)
     {
         return (range, line_oriented(new, side_indent(t, c), unit));
     }

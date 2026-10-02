@@ -140,10 +140,9 @@ pub fn conflicts(text: &str) -> Vec<Conflict> {
     found
 }
 
-/// `text` with the marker lines of its conflicts blanked to spaces, so a
-/// parse sees the sides one after the other at their own offsets.
-pub fn mask(text: &str) -> Cow<'_, str> {
-    let found = conflicts(text);
+/// `text` with the marker lines of `found`, its conflicts, blanked to spaces,
+/// so a parse sees the sides one after the other at their own offsets.
+pub fn mask<'t>(text: &'t str, found: &[Conflict]) -> Cow<'t, str> {
     if found.is_empty() {
         return Cow::Borrowed(text);
     }
@@ -265,7 +264,7 @@ mod tests {
     #[test]
     fn masks_marker_lines_with_spaces() {
         let text = "a\n<<<<<<< HEAD\nb\n||||||| base\n=======\r\nc\n>>>>>>> topic";
-        let masked = mask(text);
+        let masked = mask(text, &conflicts(text));
         assert_eq!(
             masked,
             "a\n            \nb\n            \n       \r\nc\n             "
@@ -276,6 +275,6 @@ mod tests {
     #[test]
     fn masking_text_without_conflicts_borrows_it() {
         let text = "a\n=======\n";
-        assert!(matches!(mask(text), Cow::Borrowed(t) if t == text));
+        assert!(matches!(mask(text, &conflicts(text)), Cow::Borrowed(t) if t == text));
     }
 }
