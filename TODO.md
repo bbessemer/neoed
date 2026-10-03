@@ -295,7 +295,7 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       goes in literally (heredocs don't read escapes): the skill should say to
       pass a script with `'` on stdin, or `ned` could hint at it when the guard
       rejects text holding `\x27`
-- [ ] `--commit` runs about six git processes per file (`ls-tree`, `ls-files`,
+- [x] `--commit` runs about six git processes per file (`ls-tree`, `ls-files`,
       `cat-file`, `check-ignore`, `hash-object`, `rev-parse --show-toplevel`),
       and `update-index --cacheinfo` takes every entry on one command line, so a
       large `-w` edit is slow and can exceed the argument-length limit: list

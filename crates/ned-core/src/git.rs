@@ -1,6 +1,7 @@
 //! Committing an invocation's edits to git (command-language spec, §1.3),
 //! through git's plumbing commands.
 
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -55,6 +56,13 @@ impl Drop for IndexLock {
         let _ = std::fs::remove_file(&self.lock);
     }
 }
+
+/// The empty blob's name, with SHA-1 and SHA-256, which an intent-to-add
+/// entry holds.
+const EMPTY_BLOBS: [&str; 2] = [
+    "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+    "473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813",
+];
 
 /// An index entry to write: `blob` at `path` with `mode`, or with no blob,
 /// the path removed.
@@ -143,20 +151,66 @@ impl Repo {
                 None => files.push((path, i, vec![edit])),
             }
         }
-        for (path, first, steps) in files {
-            let head = match parent {
-                Some(ref parent) => self.entry(&["ls-tree", "-z", parent, "--", &path])?,
-                None => None,
-            };
-            let index = self.index_entry(&path)?;
-            if index
-                .as_ref()
-                .is_some_and(|e| e.stage.as_deref() != Some("0"))
-            {
-                return Err(GitError::Merging);
+        let mut heads = match parent {
+            Some(ref parent) => listing(
+                &self.git(&["ls-tree", "-r", "-z", parent], &[], None)?,
+                true,
+            ),
+            None => HashMap::new(),
+        };
+        let mut indexed = listing(&self.git(&["ls-files", "-s", "-z"], &[], None)?, false);
+        // An intent-to-add entry holds the empty blob; only diff-files tells it
+        // apart, as a file added in the working tree.
+        let intent = files.iter().any(|(path, _, _)| {
+            indexed
+                .get(path)
+                .is_some_and(|e| EMPTY_BLOBS.contains(&e.blob.as_str()))
+        });
+        if intent {
+            for path in self.intents()? {
+                indexed.remove(&path);
             }
-            let mut commit = head.as_ref().map(|e| self.text(e, &path)).transpose()?;
-            let mut index_text = index.as_ref().map(|e| self.text(e, &path)).transpose()?;
+        }
+        let entries = |path| [heads.get(path), indexed.get(path)];
+        if files
+            .iter()
+            .any(|(path, _, _)| entries(path)[1].is_some_and(|e| e.stage.as_deref() != Some("0")))
+        {
+            return Err(GitError::Merging);
+        }
+        let wanted: Vec<(&Listed, &str)> = files
+            .iter()
+            .flat_map(|(path, _, _)| {
+                entries(path)
+                    .into_iter()
+                    .flatten()
+                    .map(|e| (e, path.as_str()))
+            })
+            .collect();
+        let mut texts = self.texts(&wanted)?.into_iter();
+        let new: Vec<&str> = files
+            .iter()
+            .filter(|(path, _, _)| entries(path).iter().all(Option::is_none))
+            .map(|(path, _, _)| path.as_str())
+            .collect();
+        let ignored = match new.is_empty() {
+            true => HashSet::new(),
+            false => self.ignored(&new)?,
+        };
+        for (path, first, steps) in files {
+            let head = heads.remove(&path);
+            let index = indexed.remove(&path);
+            let mut text = |entry: &Option<Listed>| {
+                entry
+                    .as_ref()
+                    .map(|_| {
+                        let text = texts.next().expect("a text for each entry");
+                        text.ok_or_else(|| GitError::NotUtf8(path.clone()))
+                    })
+                    .transpose()
+            };
+            let mut commit = text(&head)?;
+            let mut index_text = text(&index)?;
             // What to stage: `None` leaves the index as it is, `Some(None)`
             // removes the file.
             let mut stage: Option<Option<String>> = None;
@@ -182,7 +236,7 @@ impl Repo {
                     stage = Some(Some(next_stage));
                 }
             }
-            if commit.is_some() && head.is_none() && index.is_none() && self.ignored(&path)? {
+            if commit.is_some() && head.is_none() && index.is_none() && ignored.contains(&path) {
                 return Err(GitError::Ignored { path, edit: first });
             }
             let last = steps.last().expect("a file has edits").path;
@@ -190,17 +244,25 @@ impl Repo {
                 .as_ref()
                 .or(index.as_ref())
                 .map_or_else(|| new_mode(last), |e| e.mode.clone());
+            let blob = commit
+                .as_ref()
+                .map(|text| self.blob(text, &path))
+                .transpose()?;
             if commit.is_some() || head.is_some() {
                 committed.push(Entry {
                     mode: mode.clone(),
-                    blob: commit.map(|text| self.blob(&text, &path)).transpose()?,
+                    blob: blob.clone(),
                     path: path.clone(),
                 });
             }
             if let Some(stage) = stage {
+                let blob = match stage {
+                    Some(text) if Some(&text) == commit.as_ref() => blob,
+                    stage => stage.map(|text| self.blob(&text, &path)).transpose()?,
+                };
                 staged.push(Entry {
                     mode: index.map_or(mode, |e| e.mode),
-                    blob: stage.map(|text| self.blob(&text, &path)).transpose()?,
+                    blob,
                     path,
                 });
             }
@@ -333,7 +395,11 @@ impl Repo {
         let Ok(rel) = path.strip_prefix(&self.top) else {
             return Ok(None);
         };
-        if toplevel(existing_dir(&path))?.as_ref() != Some(&self.top) {
+        let nested = existing_dir(&path)
+            .ancestors()
+            .take_while(|dir| *dir != self.top)
+            .any(|dir| dir.join(".git").exists());
+        if nested {
             return Ok(None);
         }
         let parts: Option<Vec<&str>> = rel
@@ -346,60 +412,30 @@ impl Repo {
         Ok(parts.map(|p| p.join("/")))
     }
 
-    /// The one entry that `ls-tree -z` or `ls-files -s -z` (`args`) lists.
-    fn entry(&self, args: &[&str]) -> Result<Option<Listed>, GitError> {
-        let out = self.git(args, &[], None)?;
-        Ok(out.split('\0').find(|l| !l.is_empty()).and_then(|line| {
-            let (fields, _) = line.split_once('\t')?;
-            let fields: Vec<&str> = fields.split(' ').collect();
-            Some(match args[0] {
-                // MODE TYPE BLOB
-                "ls-tree" => Listed {
-                    mode: fields.first()?.to_string(),
-                    blob: fields.get(2)?.to_string(),
-                    stage: None,
-                },
-                // MODE BLOB STAGE
-                _ => Listed {
-                    mode: fields.first()?.to_string(),
-                    blob: fields.get(1)?.to_string(),
-                    stage: Some(fields.get(2)?.to_string()),
-                },
-            })
-        }))
+    /// The paths that the index only marks an intent to add (`git add -N`).
+    fn intents(&self) -> Result<HashSet<String>, GitError> {
+        let args = ["diff-files", "--diff-filter=A", "--name-only", "-z"];
+        Ok(self
+            .git(&args, &[], None)?
+            .split('\0')
+            .filter(|p| !p.is_empty())
+            .map(String::from)
+            .collect())
     }
 
-    /// The index's entry for `path`, unless it only marks an intent to add it
-    /// (`git add -N`).
-    fn index_entry(&self, path: &str) -> Result<Option<Listed>, GitError> {
-        let Some(entry) = self.entry(&["ls-files", "-s", "-z", "--", path])? else {
-            return Ok(None);
-        };
-        // An intent-to-add entry holds the empty blob; only diff-files tells it
-        // apart, as a file added in the working tree.
-        let args = [
-            "diff-files",
-            "--diff-filter=A",
-            "--name-only",
-            "-z",
-            "--",
-            path,
-        ];
-        Ok(self.git(&args, &[], None)?.is_empty().then_some(entry))
-    }
-
-    fn ignored(&self, path: &str) -> Result<bool, GitError> {
+    /// Which of `paths` git ignores.
+    fn ignored(&self, paths: &[&str]) -> Result<HashSet<String>, GitError> {
         // check-ignore takes paths, not pathspecs, and refuses literal ones.
-        let args = ["check-ignore", "-q", "--", path];
-        let out = run(
-            &self.top,
-            &args,
-            &[("GIT_LITERAL_PATHSPECS", Path::new("0"))],
-            None,
-        )?;
+        let args = ["check-ignore", "--stdin", "-z"];
+        let input: String = paths.iter().map(|p| format!("{p}\0")).collect();
+        let env = [("GIT_LITERAL_PATHSPECS", Path::new("0"))];
+        let out = run(&self.top, &args, &env, Some(&input))?;
         match out.status.code() {
-            Some(0) => Ok(true),
-            Some(1) => Ok(false),
+            Some(0 | 1) => Ok(String::from_utf8_lossy(&out.stdout)
+                .split('\0')
+                .filter(|p| !p.is_empty())
+                .map(String::from)
+                .collect()),
             _ => Err(failed(&args, &out)),
         }
     }
@@ -415,15 +451,65 @@ impl Repo {
         }
     }
 
-    /// The text of `entry`'s blob, as the working tree would have it.
-    fn text(&self, entry: &Listed, path: &str) -> Result<String, GitError> {
+    /// The text of `entry`'s blob, as the working tree would have it; `None` if
+    /// it isn't UTF-8.
+    fn text(&self, entry: &Listed, path: &str) -> Result<Option<String>, GitError> {
         let flag = format!("--path={path}");
         let args = ["cat-file", "--filters", &flag, &entry.blob];
         let out = run(&self.top, &args, &[], None)?;
         if !out.status.success() {
             return Err(failed(&args, &out));
         }
-        String::from_utf8(out.stdout).map_err(|_| GitError::NotUtf8(path.into()))
+        Ok(String::from_utf8(out.stdout).ok())
+    }
+
+    /// The text of each of `entries`' blobs at its path, as the working tree
+    /// would have it, read in one batch; `None` for one that isn't UTF-8.
+    fn texts(&self, entries: &[(&Listed, &str)]) -> Result<Vec<Option<String>>, GitError> {
+        // A batch line can't hold a path with a line break; those take a call each.
+        let batched = |path: &str| !path.contains('\n');
+        let input: String = entries
+            .iter()
+            .filter(|(_, path)| batched(path))
+            .map(|(entry, path)| format!("{} {path}\n", entry.blob))
+            .collect();
+        let args = ["cat-file", "--batch", "--filters"];
+        let mut rest: &[u8] = &[];
+        let out;
+        if !input.is_empty() {
+            out = run(&self.top, &args, &[], Some(&input))?;
+            if !out.status.success() {
+                return Err(failed(&args, &out));
+            }
+            rest = &out.stdout;
+        }
+        let malformed = |message: String| GitError::Failed {
+            command: args[0].into(),
+            message,
+        };
+        entries
+            .iter()
+            .map(|(entry, path)| {
+                if !batched(path) {
+                    return self.text(entry, path);
+                }
+                // OBJECT TYPE SIZE, or OBJECT missing
+                let end = rest.iter().position(|&b| b == b'\n');
+                let header = String::from_utf8_lossy(&rest[..end.unwrap_or(rest.len())]);
+                let size = header
+                    .rsplit(' ')
+                    .next()
+                    .and_then(|s| s.parse::<usize>().ok());
+                let (Some(end), Some(size)) = (end, size) else {
+                    return Err(malformed(header.into_owned()));
+                };
+                let body = rest
+                    .get(end + 1..end + 1 + size)
+                    .ok_or_else(|| malformed("its output ended early".into()))?;
+                rest = rest.get(end + 2 + size..).unwrap_or_default();
+                Ok(String::from_utf8(body.to_vec()).ok())
+            })
+            .collect()
     }
 
     /// Writes `text` as the blob of `path`, as `git add` would; its name.
@@ -489,19 +575,19 @@ impl Repo {
 
     /// Writes `entries` to the index, or the one `env` names.
     fn update_index(&self, entries: &[Entry], env: &[(&str, &Path)]) -> Result<(), GitError> {
-        let mut add = Vec::new();
-        let mut remove = Vec::new();
+        let mut add = String::new();
+        let mut remove = String::new();
         for e in entries {
             match &e.blob {
-                Some(blob) => add.extend(["--cacheinfo", &e.mode, blob, &e.path]),
-                None => remove.push(e.path.as_str()),
+                Some(blob) => add.push_str(&format!("{} {blob}\t{}\0", e.mode, e.path)),
+                None => remove.push_str(&format!("{}\0", e.path)),
             }
         }
-        let add_command = ["update-index", "--add"].as_slice();
-        let remove_command = ["update-index", "--force-remove", "--"].as_slice();
-        for (command, args) in [(add_command, add), (remove_command, remove)] {
-            if !args.is_empty() {
-                self.git(&[command, &args].concat(), env, None)?;
+        let add_command = ["update-index", "--add", "-z", "--index-info"];
+        let remove_command = ["update-index", "--force-remove", "-z", "--stdin"];
+        for (command, input) in [(add_command, add), (remove_command, remove)] {
+            if !input.is_empty() {
+                self.git(&command, env, Some(&input))?;
             }
         }
         Ok(())
@@ -515,6 +601,32 @@ struct Listed {
     blob: String,
     /// `None` for a tree's entry.
     stage: Option<String>,
+}
+
+/// The entries that `ls-tree -r -z` (`tree`) or `ls-files -s -z` lists in
+/// `out`, by path.
+fn listing(out: &str, tree: bool) -> HashMap<String, Listed> {
+    out.split('\0')
+        .filter_map(|line| {
+            let (fields, path) = line.split_once('\t')?;
+            let fields: Vec<&str> = fields.split(' ').collect();
+            let listed = match tree {
+                // MODE TYPE BLOB
+                true => Listed {
+                    mode: fields.first()?.to_string(),
+                    blob: fields.get(2)?.to_string(),
+                    stage: None,
+                },
+                // MODE BLOB STAGE; an unmerged path's stages are all non-0.
+                false => Listed {
+                    mode: fields.first()?.to_string(),
+                    blob: fields.get(1)?.to_string(),
+                    stage: Some(fields.get(2)?.to_string()),
+                },
+            };
+            Some((path.to_string(), listed))
+        })
+        .collect()
 }
 
 /// The mode of a file that isn't in `HEAD` or the index.
@@ -604,10 +716,21 @@ fn run(
         std::io::ErrorKind::NotFound => GitError::NoGit,
         _ => io_failed(err),
     })?;
-    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
-        stdin.write_all(input.as_bytes()).map_err(io_failed)?;
-    }
-    child.wait_with_output().map_err(io_failed)
+    // Write the input while git's output is read, so a batch can't fill both
+    // pipes and deadlock.
+    let stdin = child.stdin.take();
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(move || match (input, stdin) {
+            (Some(input), Some(mut stdin)) => stdin.write_all(input.as_bytes()),
+            _ => Ok(()),
+        });
+        let out = child.wait_with_output().map_err(io_failed)?;
+        match writer.join().expect("writing git's input doesn't panic") {
+            // git failing before it read all its input is git's error to report.
+            Err(err) if out.status.success() => Err(io_failed(err)),
+            _ => Ok(out),
+        }
+    })
 }
 
 fn failed(args: &[&str], out: &Output) -> GitError {
@@ -779,5 +902,182 @@ mod tests {
             .filter(|name| name.starts_with("index") || name.starts_with("ned-"))
             .collect();
         assert_eq!(left, ["index"]);
+    }
+
+    #[test]
+    fn listing_reads_trees_and_the_index_by_path() {
+        let tree = "100644 blob aaa\ta b/c\td.txt\x00160000 commit bbb\tsub\x00";
+        let listed = listing(tree, true);
+        assert_eq!(listed.len(), 2);
+        let file = &listed["a b/c\td.txt"];
+        assert_eq!((file.mode.as_str(), file.blob.as_str()), ("100644", "aaa"));
+        assert_eq!(file.stage, None);
+        assert_eq!(listed["sub"].mode, "160000");
+        let index = "100755 ccc 0\tx.sh\x00100644 ddd 1\tm.txt\x00100644 eee 2\tm.txt\x00100644 fff 3\tm.txt\x00";
+        let listed = listing(index, false);
+        assert_eq!(listed.len(), 2);
+        let script = &listed["x.sh"];
+        assert_eq!(
+            (script.mode.as_str(), script.blob.as_str()),
+            ("100755", "ccc")
+        );
+        assert_eq!(script.stage.as_deref(), Some("0"));
+        assert_ne!(listed["m.txt"].stage.as_deref(), Some("0"));
+        assert!(listing("", false).is_empty());
+    }
+
+    #[test]
+    fn texts_reads_every_blob_in_order() {
+        let (dir, repo) = repo();
+        let blob = |bytes: &[u8]| {
+            let file = dir.path().join("blob");
+            std::fs::write(&file, bytes).unwrap();
+            let args = ["hash-object", "-w", file.to_str().unwrap()];
+            let blob = repo.git(&args, &[], None).unwrap().trim_end().to_string();
+            Listed {
+                mode: "100644".into(),
+                blob,
+                stage: None,
+            }
+        };
+        let lines = blob(b"x\ny\n");
+        let empty = blob(b"");
+        let binary = blob(b"\xff\xfe\n");
+        let entries = [
+            (&lines, "a b.txt"),
+            (&empty, "e.txt"),
+            (&binary, "bin"),
+            (&lines, "new\nline.txt"),
+            (&empty, "last.txt"),
+        ];
+        assert_eq!(
+            repo.texts(&entries).unwrap(),
+            [
+                Some("x\ny\n".to_string()),
+                Some(String::new()),
+                None,
+                Some("x\ny\n".to_string()),
+                Some(String::new()),
+            ]
+        );
+        assert_eq!(repo.texts(&[]).unwrap(), Vec::<Option<String>>::new());
+    }
+
+    #[test]
+    fn ignored_names_the_ignored_paths() {
+        let (dir, repo) = repo();
+        std::fs::write(dir.path().join(".gitignore"), "*.log\nbuild/\n").unwrap();
+        let ignored = repo
+            .ignored(&["a.log", "b.txt", "build/x", "c d.log"])
+            .unwrap();
+        let expected = ["a.log", "build/x", "c d.log"].map(String::from);
+        assert_eq!(ignored, HashSet::from(expected));
+        assert!(repo.ignored(&["b.txt"]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn intents_names_the_files_added_with_intent() {
+        let (dir, repo) = repo();
+        std::fs::write(dir.path().join("n w.txt"), "x\n").unwrap();
+        std::fs::write(dir.path().join("staged.txt"), "x\n").unwrap();
+        repo.git(&["add", "-N", "n w.txt"], &[], None).unwrap();
+        repo.git(&["add", "staged.txt"], &[], None).unwrap();
+        assert_eq!(
+            repo.intents().unwrap(),
+            HashSet::from(["n w.txt".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_path_in_a_nested_repository_or_submodule_is_outside() {
+        let (dir, repo) = repo();
+        for (nested, git) in [("nested", true), ("sub", false)] {
+            let inner = dir.path().join(nested).join("deep");
+            std::fs::create_dir_all(&inner).unwrap();
+            let marker = dir.path().join(nested).join(".git");
+            match git {
+                true => std::fs::create_dir(&marker).unwrap(),
+                false => std::fs::write(&marker, "gitdir: ../.git/modules/sub\n").unwrap(),
+            }
+            assert_eq!(repo.relative(&inner.join("f.txt")).unwrap(), None);
+        }
+        let path = dir.path().join("plain dir/new.txt");
+        assert_eq!(
+            repo.relative(&path).unwrap().as_deref(),
+            Some("plain dir/new.txt")
+        );
+    }
+
+    #[test]
+    fn prepare_commits_and_stages_every_files_edit() {
+        let (dir, repo) = repo();
+        let path = |p: &str| dir.path().join(p);
+        std::fs::create_dir_all(path("d 1")).unwrap();
+        std::fs::write(path("d 1/ü.txt"), HEAD).unwrap();
+        std::fs::write(path("gone.txt"), "x\n").unwrap();
+        repo.git(&["add", "."], &[], None).unwrap();
+        repo.git(&["commit", "-qm", "more"], &[], None).unwrap();
+        let staged = "a\nb\nC\n";
+        std::fs::write(path("f.txt"), staged).unwrap();
+        repo.git(&["add", "f.txt"], &[], None).unwrap();
+        let (f, u, gone, new) = (
+            path("f.txt"),
+            path("d 1/ü.txt"),
+            path("gone.txt"),
+            path("new dir/n w.txt"),
+        );
+        let edits = [
+            FileEdit {
+                path: &u,
+                before: Some(HEAD),
+                after: Some("A\nb\nc\n"),
+            },
+            FileEdit {
+                path: &gone,
+                before: Some("x\n"),
+                after: None,
+            },
+            FileEdit {
+                path: &new,
+                before: None,
+                after: Some("n\n"),
+            },
+            FileEdit {
+                path: &f,
+                before: Some(staged),
+                after: Some("A\nb\nC\n"),
+            },
+        ];
+        let mut prepared = repo.prepare(&edits, "m").unwrap();
+        repo.advance(&prepared).unwrap();
+        repo.stage(&mut prepared).unwrap();
+        let show = |rev: &str| repo.git(&["show", rev], &[], None).ok();
+        assert_eq!(show("HEAD:d 1/ü.txt").as_deref(), Some("A\nb\nc\n"));
+        assert_eq!(show(":d 1/ü.txt").as_deref(), Some("A\nb\nc\n"));
+        assert_eq!(show("HEAD:new dir/n w.txt").as_deref(), Some("n\n"));
+        assert_eq!(show(":new dir/n w.txt").as_deref(), Some("n\n"));
+        assert_eq!(show("HEAD:f.txt").as_deref(), Some("A\nb\nc\n"));
+        assert_eq!(show(":f.txt").as_deref(), Some("A\nb\nC\n"));
+        assert_eq!(show("HEAD:gone.txt"), None);
+        assert_eq!(show(":gone.txt"), None);
+    }
+
+    #[test]
+    fn prepare_refuses_a_new_ignored_file() {
+        let (dir, repo) = repo();
+        std::fs::write(dir.path().join(".gitignore"), "*.log\n").unwrap();
+        let (ok, log) = (dir.path().join("ok.txt"), dir.path().join("x.log"));
+        let edits = [&ok, &log].map(|path| FileEdit {
+            path,
+            before: None,
+            after: Some("x\n"),
+        });
+        assert_eq!(
+            repo.prepare(&edits, "m").unwrap_err(),
+            GitError::Ignored {
+                path: "x.log".into(),
+                edit: 1
+            }
+        );
     }
 }
