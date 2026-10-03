@@ -302,7 +302,12 @@ impl Executor<'_> {
         let text = if new.value.is_empty() {
             String::new()
         } else {
-            line_oriented(new, "", lang.map_or("    ", |l| l.default_indent()))
+            line_oriented(
+                new,
+                "",
+                lang.map_or("    ", |l| l.default_indent()),
+                text::rebase,
+            )
         };
         let file = SourceFile::new(path, text, lang);
         let edits = EditSet::new(&file.buffer);
@@ -1476,7 +1481,7 @@ fn fill_body(
         // The lines right after the heading or docstring, which may end the
         // file, at that line's indentation.
         let indent = text::indent_at(t, range.start.saturating_sub(1));
-        let lines = line_oriented(new, indent, unit);
+        let lines = line_oriented(new, indent, unit, text::rebase);
         let lead = if t[..range.start].ends_with('\n') {
             ""
         } else {
@@ -1485,7 +1490,7 @@ fn fill_body(
         return (range, format!("{lead}{lines}"));
     }
     let indent = format!("{}{unit}", text::indent_at(t, item.node.start));
-    let lines = line_oriented(new, &indent, unit);
+    let lines = line_oriented(new, &indent, unit, text::rebase);
     let body = item.body.clone().expect("an empty body is a body");
     let inner = body.start + 1..body.end - 1;
     if t[inner.clone()].contains('\n') {
@@ -1661,7 +1666,7 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text, whole: bool) -> (Ran
             Some(item) => text::indent_at(t, item.range.start),
             None => text::indent_at(t, full.start),
         };
-        let mut new = line_oriented(new, indent, unit);
+        let mut new = line_oriented(new, indent, unit, text::rebase_replacing);
         if !t[..full.end].ends_with('\n') {
             new.pop();
         }
@@ -1943,7 +1948,7 @@ fn insert(
         Position::Start => (full.start, inner.as_str()),
         Position::End => (full.end, inner.as_str()),
     };
-    let mut new = line_oriented(new, indent, unit);
+    let mut new = line_oriented(new, indent, unit, text::rebase);
     if at == full.end && !full.is_empty() && !t[..at].ends_with('\n') {
         // The span's last line has no line ending; give it one instead.
         new.pop();
@@ -1962,11 +1967,17 @@ fn removal(f: &SourceFile, range: Range<usize>) -> Range<usize> {
     }
 }
 
-/// `new` as line-oriented text: re-based (unless raw), with a final newline.
-fn line_oriented(new: &Text, indent: &str, unit: &str) -> String {
+/// `new` as line-oriented text: re-based with `rebase` (unless raw), with a
+/// final newline.
+fn line_oriented(
+    new: &Text,
+    indent: &str,
+    unit: &str,
+    rebase: fn(&str, &str, &str) -> String,
+) -> String {
     let mut out = match new.kind {
         TextKind::RawHeredoc => new.value.clone(),
-        TextKind::Str | TextKind::Heredoc => text::rebase(lines_of(new), indent, unit),
+        TextKind::Str | TextKind::Heredoc => rebase(lines_of(new), indent, unit),
     };
     out.push('\n');
     out
@@ -2537,6 +2548,42 @@ mod tests {
         assert_eq!(
             edited(TEXT, "replace 2-3 with <<END\nif a {\n    b();\n}\nEND\n"),
             "fn a() {\n    if a {\n        b();\n    }\n}\n\nfn b() {\n    let x = 3;\n}\n"
+        );
+    }
+
+    #[test]
+    fn replace_text_dedenting_its_first_line_steps_out_of_the_target() {
+        assert_eq!(
+            edited(
+                TEXT,
+                "replace 3 with <<END\n    z;\n}\n\nfn c() {\n    w;\nEND\n"
+            ),
+            TEXT.replace("    let y = 2;\n", "    z;\n}\n\nfn c() {\n    w;\n")
+        );
+        let text = "class A:\n    def f(self):\n        return 1\n";
+        assert_eq!(
+            edited_in(
+                "a.py",
+                text,
+                "replace 3 with <<END\n        return 2\n\n    def g(self):\n        pass\nEND\n"
+            ),
+            text.replace("return 1\n", "return 2\n\n    def g(self):\n        pass\n")
+        );
+    }
+
+    #[test]
+    fn inserted_text_dedenting_its_first_line_keeps_the_target_indentation() {
+        let text = "def f():\n    if x:\n        a()\n    else:\n        d()\n";
+        assert_eq!(
+            edited_in(
+                "a.py",
+                text,
+                "insert after 2 <<END\n    b()\nelif y:\n    c()\nEND\n"
+            ),
+            text.replace(
+                "    if x:\n",
+                "    if x:\n        b()\n    elif y:\n        c()\n"
+            )
         );
     }
 

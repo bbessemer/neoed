@@ -295,7 +295,10 @@ insert start class:App>fn:handle "metrics.count(req)"
   (`- ...`) next to any line of a list item goes beside the whole item, at its
   marker's column; other text next to a wrapped item's continuation line gets
   the hanging indent, continuing its paragraph. For code, use `<<END`: a quoted
-  `<<'END'` inside the script, a shell habit, leaves code at column 0.
+  `<<'END'` inside the script, a shell habit, leaves code at column 0. A
+  `replace` whose text dedents below its first line (`x;`, `}`, `fn g() {`)
+  keeps that first line at the target's indentation, so write it as indented as
+  the line it replaces.
 - **Whole-line string TEXT gets its own newline.** A literal that runs from a
   line's indentation to its end (`"    x,\n"`, or `"    s\n}"`) is a whole-line
   target: string TEXT for it is re-based like a heredoc, and it ends in a

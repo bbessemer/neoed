@@ -316,7 +316,7 @@ change is a minor, because it lifts a documented error.
       aligned to a delimiter rather than indented by levels) and preserve it
 - [ ] Re-basing keeps block-quote prefixes (`> `): inserted lines take the
       target line's `>` markers, not just its whitespace
-- [ ] Re-basing follows the text's own dedent: `replace LINE with` text that
+- [x] Re-basing follows the text's own dedent: `replace LINE with` text that
       closes the enclosing block and starts a top-level item (`}` then `fn g()`)
       keeps the item at column 0, not the replaced line's indentation
 - [ ] `insert after N` where line N continues a statement (`.collect();`)
