@@ -878,6 +878,10 @@ Notes:
   attributes unless `TEXT` starts with its own, so replacing a test function
   keeps its `#[test]`. To replace them too, start `TEXT` with them, or select
   `ITEM.whole`.
+- `replace` with empty `TEXT` (`""`, or a heredoc with no lines) on a whole-line
+  span removes its lines, exactly as `delete` does, blank-line tidy included. To
+  leave one empty line, use `"\n"`. On a partial span, empty `TEXT` removes just
+  the span.
 - A `replace` that looks off by one gets a note on stderr (never an error),
   ignoring lines without a letter or digit (`}`):
   - a whole-line span whose `TEXT` starts with a copy of the line just above it,

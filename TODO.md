@@ -275,7 +275,7 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [x] A `.ned.toml` the script creates or edits is ignored: `Config::layers`
       (`config.rs`) loads layers from disk, though `{edition}` now reads
       manifests the script writes
-- [ ] `replace "LINE\n" with ""` leaves an empty line where the whole line was
+- [x] `replace "LINE\n" with ""` leaves an empty line where the whole line was
       selected; empty TEXT for whole lines should remove them, as `delete` does
 - [ ] `.lines` on a multi-line literal that matches once
       (`insert after "- a b\n  c d".lines "x"`) says "matches 2 items" and lists

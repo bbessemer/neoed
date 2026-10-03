@@ -275,8 +275,6 @@ insert start class:App>fn:handle "metrics.count(req)"
   so `` `fn f(self) {}` `` doesn't match `fn f(&self) {}`, nor
   `` `fn @f() {}` `` `pub fn f() {}`. Put `@_` or `@_...` where code may vary.
   Captures keep the comments at their ends.
-- **Use `delete` to remove lines.** `replace 12 with ""` leaves an empty line,
-  because line-oriented text always ends with a newline.
 - **Partial matches get verbatim text.** `insert after /re/ "x"` inserts right
   after the match, even mid-line, and `insert start|end /re/` does the same at
   the span's start or end. A heredoc `insert before|after` goes on lines of its

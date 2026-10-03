@@ -450,6 +450,13 @@ impl Executor<'_> {
                         }
                         false => text,
                     };
+                    if text.value.is_empty()
+                        && !m.range.is_empty()
+                        && text::is_whole_line(&f.text, &m.range)
+                    {
+                        self.delete(index, span, m.file, m.range)?;
+                        continue;
+                    }
                     let selector = &self.src[target.selector.span.clone()];
                     if let Some(note) = off_by_one(f, &m.range, text, selector) {
                         self.notes.push(note);
@@ -2436,6 +2443,31 @@ mod tests {
     #[test]
     fn replace_last_line_keeps_missing_final_newline() {
         assert_eq!(edited("a\nb", "replace $ with \"c\""), "a\nc");
+    }
+
+    #[test]
+    fn replace_whole_lines_with_empty_text_deletes_them() {
+        assert_eq!(edited("a\nb\nc\n", "replace 2 with \"\""), "a\nc\n");
+        assert_eq!(edited("a\nb\nc\n", "replace \"b\\n\" with \"\""), "a\nc\n");
+        assert_eq!(edited("a\nb\nc\n", "replace 2 with <<END\nEND\n"), "a\nc\n");
+        assert_eq!(edited("a\n\nb\n\nc\n", "replace 3 with \"\""), "a\n\nc\n");
+        assert_eq!(
+            edited(TEXT, "replace fn:b with \"\""),
+            edited(TEXT, "delete fn:b")
+        );
+    }
+
+    #[test]
+    fn replace_with_a_newline_leaves_an_empty_line() {
+        assert_eq!(edited("a\nb\nc\n", "replace 2 with \"\\n\""), "a\n\nc\n");
+    }
+
+    #[test]
+    fn replace_partial_span_with_empty_text_removes_only_the_span() {
+        assert_eq!(
+            edited(TEXT, "replace \" = 2\" with \"\""),
+            TEXT.replace(" = 2", "")
+        );
     }
 
     #[test]
