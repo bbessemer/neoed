@@ -15,7 +15,7 @@ pub struct DiffStat {
 impl DiffStat {
     pub fn between(old: &str, new: &str) -> Self {
         let mut stat = DiffStat::default();
-        for change in TextDiff::from_lines(old, new).iter_all_changes() {
+        for change in TextDiff::from_slices(&lines(old), &lines(new)).iter_all_changes() {
             match change.tag() {
                 ChangeTag::Insert => stat.added += 1,
                 ChangeTag::Delete => stat.removed += 1,
@@ -54,7 +54,15 @@ pub fn removed_summary(path: &str, stat: DiffStat) -> String {
 
 /// The number of separate changed regions between two texts.
 pub fn regions(old: &str, new: &str) -> usize {
-    TextDiff::from_lines(old, new).grouped_ops(0).len()
+    TextDiff::from_slices(&lines(old), &lines(new))
+        .grouped_ops(0)
+        .len()
+}
+
+/// A text's lines, each with its line ending. Only `\n` ends a line, as
+/// everywhere in ned; `similar`'s own line splitting also breaks at a lone `\r`.
+fn lines(text: &str) -> Vec<&str> {
+    text.split_inclusive('\n').collect()
 }
 
 /// A three-way merge of whole lines: `ours` and `theirs` are both edits of
@@ -62,7 +70,6 @@ pub fn regions(old: &str, new: &str) -> usize {
 /// or insert at the same point, conflict unless identical: the error is the
 /// first one's line in `ours` (from 1).
 pub fn merge(base: &str, ours: &str, theirs: &str) -> Result<String, usize> {
-    let lines = |text| -> Vec<&str> { str::split_inclusive(text, '\n').collect() };
     let (base, ours, theirs) = (lines(base), lines(ours), lines(theirs));
     let (mine, other) = (changes(&base, &ours), changes(&base, &theirs));
     let mut all: Vec<&Change> = Vec::new();
@@ -138,7 +145,8 @@ fn overlaps(a: &Range<usize>, b: &Range<usize>) -> bool {
 /// Unified-diff hunks with `@@ -a,b +c,d @@` headers and no file headers,
 /// rendered with `\n` line endings.
 pub fn hunks(old: &str, new: &str, context: usize) -> String {
-    let diff = TextDiff::from_lines(old, new);
+    let (old, new) = (lines(old), lines(new));
+    let diff = TextDiff::from_slices(&old, &new);
     let mut out = String::new();
     for hunk in diff.unified_diff().context_radius(context).iter_hunks() {
         let ops = hunk.ops();
@@ -327,6 +335,34 @@ impl Parser {
         let old = "a\r\nb\r\nc\r\n";
         let new = "a\r\nB\r\nc\r\n";
         assert_eq!(hunks(old, new, 1), "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n");
+    }
+
+    #[test]
+    fn a_lone_cr_does_not_end_a_line() {
+        let old = "a\rb\nc\nd\ne\n";
+        let new = "a\rb\nc\nD\ne\n";
+        assert_eq!(hunks(old, new, 1), "@@ -2,3 +2,3 @@\n c\n-d\n+D\n e\n");
+        assert_eq!(
+            DiffStat::between(old, new),
+            DiffStat {
+                added: 1,
+                removed: 1
+            }
+        );
+    }
+
+    #[test]
+    fn a_change_to_a_line_with_a_lone_cr_is_one_line() {
+        let (old, new) = ("a\rb\nc\n", "a\rB\nc\n");
+        assert_eq!(hunks(old, new, 0), "@@ -1,1 +1,1 @@\n-a\rb\n+a\rB\n");
+        assert_eq!(
+            DiffStat::between(old, new),
+            DiffStat {
+                added: 1,
+                removed: 1
+            }
+        );
+        assert_eq!(regions(old, new), 1);
     }
 
     #[test]

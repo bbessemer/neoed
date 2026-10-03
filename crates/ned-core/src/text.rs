@@ -46,15 +46,6 @@ pub fn first_indent(text: &str, range: Range<usize>) -> Option<&str> {
     None
 }
 
-/// The indentation of the last non-blank line of the whole lines `range`.
-pub fn last_indent(text: &str, range: Range<usize>) -> Option<&str> {
-    text[range]
-        .lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .map(leading_whitespace)
-}
-
 /// The indent unit of a file's `lines`: the smallest non-zero increase in
 /// indentation between consecutive non-blank lines, in the style (tabs or
 /// spaces) that indents most of them, or `default` if there is none.
@@ -84,6 +75,24 @@ pub fn indent_unit<'a>(lines: impl IntoIterator<Item = &'a str>, default: &str) 
 /// converts its indent style to `unit`'s, and prefixes each non-blank line
 /// with `indent`. Blank lines become empty. No final newline is added.
 pub fn rebase(text: &str, indent: &str, unit: &str) -> String {
+    prefix(&relative(text, unit), indent)
+}
+
+/// Re-bases line-oriented `text` that replaces lines at `indent` (§5.2): as
+/// `rebase`, but when its first non-blank line is indented more than another,
+/// that line lands at `indent` and the rest shift with it, down to column 0.
+pub fn rebase_replacing(text: &str, indent: &str, unit: &str) -> String {
+    let lines = relative(text, unit);
+    let first = lines
+        .iter()
+        .find(|l| !l.is_empty())
+        .map_or("", |l| leading_whitespace(l));
+    prefix(&lines, &indent[..indent.len().saturating_sub(first.len())])
+}
+
+/// `text`'s lines with its common indentation stripped, its indent style
+/// converted to `unit`'s, and blank lines emptied.
+fn relative(text: &str, unit: &str) -> Vec<String> {
     let lines = strip_indent(text);
     let level = lines
         .iter()
@@ -93,10 +102,20 @@ pub fn rebase(text: &str, indent: &str, unit: &str) -> String {
     let convert = level.filter(|level| !unit.starts_with(&level[..1]));
     lines
         .iter()
-        .map(|line| match (line.is_empty(), convert) {
-            (true, _) => String::new(),
-            (false, Some(level)) => format!("{indent}{}", convert_indent(line, level, unit)),
-            (false, None) => format!("{indent}{line}"),
+        .map(|line| match convert {
+            Some(level) if !line.is_empty() => convert_indent(line, level, unit),
+            _ => line.clone(),
+        })
+        .collect()
+}
+
+/// `lines` joined, each non-blank one prefixed with `indent`.
+fn prefix(lines: &[String], indent: &str) -> String {
+    lines
+        .iter()
+        .map(|line| match line.is_empty() {
+            true => String::new(),
+            false => format!("{indent}{line}"),
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -214,7 +233,8 @@ fn line_end(text: &str, end: usize, start: usize) -> usize {
     }
 }
 
-fn line_start(text: &str, offset: usize) -> usize {
+/// The start of the line containing `offset`.
+pub fn line_start(text: &str, offset: usize) -> usize {
     text[..offset].rfind('\n').map_or(0, |i| i + 1)
 }
 
@@ -345,6 +365,40 @@ mod tests {
             rebase("a\n  b\n    c\n     d", "\t", "\t"),
             "\ta\n\t\tb\n\t\t\tc\n\t\t\t d"
         );
+    }
+
+    #[test]
+    fn rebase_replacing_puts_a_deeper_first_line_at_the_target() {
+        assert_eq!(
+            rebase_replacing("    x;\n}\n\nfn g() {\n    y;", "    ", "    "),
+            "    x;\n}\n\nfn g() {\n    y;"
+        );
+        assert_eq!(
+            rebase_replacing("    x;\n}\nz;", "        ", "    "),
+            "        x;\n    }\n    z;"
+        );
+        assert_eq!(
+            rebase_replacing("\tx;\n}", "        ", "    "),
+            "        x;\n    }"
+        );
+    }
+
+    #[test]
+    fn rebase_replacing_stops_at_column_zero() {
+        assert_eq!(
+            rebase_replacing("        x;\n    }\n}\nfn g() {}", "    ", "    "),
+            "        x;\n    }\n}\nfn g() {}"
+        );
+    }
+
+    #[test]
+    fn rebase_replacing_text_not_dedenting_its_first_line_rebases() {
+        for text in ["if a {\n    b();\n}", "a\n\n  b\n", "use std::io;"] {
+            assert_eq!(
+                rebase_replacing(text, "    ", "    "),
+                rebase(text, "    ", "    ")
+            );
+        }
     }
 
     #[test]

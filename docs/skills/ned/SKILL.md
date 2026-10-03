@@ -41,8 +41,9 @@ EOF
 ```
 
 Short scripts with no `'` in them can use `-e`:
-`ned src/parser.rs -e 'delete fn:debug_dump'`. Add `-n` to preview without
-writing.
+`ned src/parser.rs -e 'delete fn:debug_dump'`. Don't escape a `'` into an `-e`
+script: `ned`'s heredocs read no escapes, so a `\x27` in one goes in as written.
+Add `-n` to preview without writing.
 
 Search with `show all` instead of grep. It prints each match's line with its
 number, under the file's name, across a glob or the whole workspace (`-w`, which
@@ -71,6 +72,9 @@ ned src/parser.rs -e 'replace fn:prase>"end" with "end of input"'
 ned -e '!!:s/prase/parse/'
 ned undo
 ```
+
+A subagent inherits `NED_SESSION`, so its `undo` or `!!` could act on its
+parent's calls: give each subagent its own `-s NAME`, which overrides it.
 
 ## Workflow
 
@@ -241,8 +245,9 @@ insert start class:App>fn:handle "metrics.count(req)"
   Apply it and rerun; nothing was written.
 - **Syntax guard.** An edit that introduces a parse error is rejected. Fix the
   text; use `--force` only if the error is intended.
-- **A Python `.sig` stops before the `:`**: replace it with `def f(x) -> int`,
-  not `def f(x) -> int:`.
+- **`.sig` stops before the body**: `show` prints its whole lines, but leave out
+  the `{` (or Python's `:`): replace it with `fn f(x: u8) -> u8`, not
+  `fn f(x: u8) -> u8 {`.
 - **Introduced errors block edits** while a daemon runs (`ned daemon start`;
   `status` and `stop` too; Unix only): the error lists what the edit broke. Fix
   the text, or add `allow errors` to the script when the code is knowingly
@@ -275,8 +280,6 @@ insert start class:App>fn:handle "metrics.count(req)"
   so `` `fn f(self) {}` `` doesn't match `fn f(&self) {}`, nor
   `` `fn @f() {}` `` `pub fn f() {}`. Put `@_` or `@_...` where code may vary.
   Captures keep the comments at their ends.
-- **Use `delete` to remove lines.** `replace 12 with ""` leaves an empty line,
-  because line-oriented text always ends with a newline.
 - **Partial matches get verbatim text.** `insert after /re/ "x"` inserts right
   after the match, even mid-line, and `insert start|end /re/` does the same at
   the span's start or end. A heredoc `insert before|after` goes on lines of its
@@ -288,11 +291,15 @@ insert start class:App>fn:handle "metrics.count(req)"
   the rest by the first line's indentation, so leave that indentation off.
 - **Re-basing follows the target line.** `<<END` text takes the indentation of
   the target's first line (after a literal or regex, its last line), or, for
-  `insert start|end`, of the first line inside it. In Markdown, a new list item
-  (`- ...`) next to any line of a list item goes beside the whole item, at its
-  marker's column; other text next to a wrapped item's continuation line gets
-  the hanging indent, continuing its paragraph. For code, use `<<END`: a quoted
-  `<<'END'` inside the script, a shell habit, leaves code at column 0.
+  `insert start|end`, of the first line inside it; `insert after` the last line
+  of a statement split across lines takes the statement's indentation. In
+  Markdown, a new list item (`- ...`) next to any line of a list item goes
+  beside the whole item, at its marker's column; other text next to a wrapped
+  item's continuation line gets the hanging indent, continuing its paragraph.
+  For code, use `<<END`: a quoted `<<'END'` inside the script, a shell habit,
+  leaves code at column 0. A `replace` whose text dedents below its first line
+  (`x;`, `}`, `fn g() {`) keeps that first line at the target's indentation, so
+  write it as indented as the line it replaces.
 - **Whole-line string TEXT gets its own newline.** A literal that runs from a
   line's indentation to its end (`"    x,\n"`, or `"    s\n}"`) is a whole-line
   target: string TEXT for it is re-based like a heredoc, and it ends in a

@@ -348,11 +348,51 @@ impl<'p, 't> Matcher<'p, 't> {
                 return n.map(|n| i + 1 + n);
             }
             self.binds.truncate(saved);
+            if let Some(n) = self.rest_of(p, t, rest, &ts[i + 1..], all) {
+                return Some(i + 1 + n);
+            }
             // Only a separator the pattern leaves out can be skipped: any other
             // token, such as `async` or `&`, changes what the code means.
             if !self.separator(t) {
                 return None;
             }
+        }
+        None
+    }
+
+    /// Matches pattern node `p`, then the run `rest[0]`, against target `t`, a
+    /// node that starts with a match of `p` (the run takes the rest of `t`, as
+    /// the tail of a method chain), then `rest[1..]` against `ts`. The number
+    /// of `ts` matched, if they match.
+    fn rest_of(
+        &mut self,
+        p: Node<'p>,
+        t: Node<'t>,
+        rest: &[Elem<'p>],
+        ts: &[Node<'t>],
+        all: bool,
+    ) -> Option<usize> {
+        let (Elem::Run(name), rest) = rest.split_first()? else {
+            return None;
+        };
+        if !p.is_named() || !t.is_named() {
+            return None;
+        }
+        let saved = self.binds.len();
+        let mut start = t;
+        while let Some(first) = children_of(start)
+            .into_iter()
+            .next()
+            .filter(|c| c.is_named())
+        {
+            start = first;
+            if self.node(p, start)
+                && self.bind(name, Vec::new(), start.end_byte()..t.end_byte())
+                && let Some(n) = self.seq(rest, ts, all)
+            {
+                return Some(n);
+            }
+            self.binds.truncate(saved);
         }
         None
     }
@@ -363,6 +403,12 @@ impl<'p, 't> Matcher<'p, 't> {
             return true;
         };
         if let Some(earlier) = self.binds.iter().find(|b| b.name == *name) {
+            if earlier.nodes.is_empty() || nodes.is_empty() {
+                // The rest of a longer node has no nodes of its own.
+                let code =
+                    |r: &Range<usize>| self.text[r.clone()].split_whitespace().collect::<String>();
+                return code(&earlier.range) == code(&range);
+            }
             return earlier.nodes.len() == nodes.len()
                 && earlier
                     .nodes
@@ -550,6 +596,45 @@ mod tests {
         assert_eq!(
             captured("if @c { @body... }", "fn main() { if x { a(); b(); } }"),
             [pairs(&[("c", "x"), ("body", "a(); b();")])]
+        );
+    }
+
+    #[test]
+    fn a_run_after_a_node_matches_the_rest_of_a_longer_node() {
+        assert_eq!(
+            captured(
+                "let n = items[i] @rest...;",
+                "fn main() { let n = items[i].iter().count(); let n = items[i]; let n = other[i].len(); }"
+            ),
+            [
+                pairs(&[("rest", ".iter().count()")]),
+                pairs(&[("rest", "")])
+            ]
+        );
+        assert_eq!(
+            found(
+                "Kind::A(_) => x @_...,",
+                "fn main() { match k { Kind::A(_) => x.foo().bar(), Kind::A(_) => y.foo(), } }"
+            ),
+            ["Kind::A(_) => x.foo().bar(),"]
+        );
+        assert_eq!(
+            found(
+                "let n = x.foo() @_...;",
+                "fn main() { let n = x.foo().bar(); let n = x.baz().bar(); }"
+            ),
+            ["let n = x.foo().bar();"]
+        );
+    }
+
+    #[test]
+    fn a_repeated_name_matches_equal_rests() {
+        assert_eq!(
+            found(
+                "foo(a @t..., b @t...)",
+                "fn main() { foo(a.x(), b.x()); foo(a.x(), b.y()); foo(a, b); }"
+            ),
+            ["foo(a.x(), b.x())", "foo(a, b)"]
         );
     }
 
