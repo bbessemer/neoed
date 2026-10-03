@@ -234,7 +234,7 @@ of either kind.
 - [ ] `!!` repeats the last script that edited or failed, not a read-only call
       in between: after a failed edit, an `outline` to look around makes `!!`
       refer to the `outline`. A minor, since §1.2 changes
-- [ ] Several selectors after one `show` (`show fn:a fn:b`) suggest a `;` or a
+- [x] Several selectors after one `show` (`show fn:a fn:b`) suggest a `;` or a
       new line between `show`s, instead of only "expected end of command"
 - [ ] A `-n` dry run's output says `!!` applies it: an agent that runs `!!`
       after `-n` and then sends the script again applies the edit twice

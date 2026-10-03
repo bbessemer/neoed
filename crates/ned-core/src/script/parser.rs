@@ -45,14 +45,23 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
                 return Ok(Script { commands, stages });
             }
             _ => {
-                commands.push(parser.command()?);
-                let next = parser.peek()?;
+                let command = parser.command()?;
+                let next = parser.peek()?.clone();
                 if !matches!(
                     next.kind,
                     TokenKind::Newline | TokenKind::Semicolon | TokenKind::Pipe | TokenKind::Eof
                 ) {
-                    return Err(expected("end of command", next));
+                    let mut err = expected("end of command", &next);
+                    if let (E::Expected { hint, .. }, Some(split)) =
+                        (&mut err.kind, parser.one_selector_each(&command))
+                    {
+                        *hint = format!(
+                            "; one selector per command; separate commands with `;` or a new line: {split}"
+                        );
+                    }
+                    return Err(err);
                 }
+                commands.push(command);
             }
         }
     }
@@ -297,6 +306,29 @@ impl Parser<'_> {
             all,
             selector: self.selector()?,
         })
+    }
+
+    /// `command`, a `show`, `outline` or `delete`, and the selector after it as
+    /// two commands: `show fn:a; show fn:b`.
+    fn one_selector_each(&mut self, command: &Command) -> Option<String> {
+        {
+            let (CommandKind::Show {
+                target: Some(target),
+                ..
+            }
+            | CommandKind::Outline(Some(target))
+            | CommandKind::Delete(target)) = &command.kind
+            else {
+                return None;
+            };
+            let next = self.selector().ok()?;
+            let verb = &self.src[command.span.start..target.selector.span.start];
+            Some(format!(
+                "{}; {verb}{}",
+                &self.src[command.span.clone()],
+                &self.src[next.span]
+            ))
+        }
     }
 
     fn dest(&mut self) -> Result<Selector, ParseError> {
@@ -1645,6 +1677,39 @@ mod tests {
             message(r#""x""#),
             "expected a command, found a string; \
              commands are show outline check replace insert delete sub move rename file create allow"
+        );
+    }
+
+    #[test]
+    fn a_second_selector_suggests_a_command_each() {
+        for (src, split) in [
+            ("show fn:a fn:b", "show fn:a; show fn:b"),
+            (
+                "show all /x/ impl:P>fn:new.body",
+                "show all /x/; show all impl:P>fn:new.body",
+            ),
+            ("show fn:a +3 10..12", "show fn:a +3; show 10..12"),
+            ("outline impl:P \"x\"", "outline impl:P; outline \"x\""),
+            ("delete 3 4", "delete 3; delete 4"),
+        ] {
+            let message = message(src);
+            assert!(
+                message.starts_with("expected end of command, found ")
+                    && message.ends_with(&format!(
+                        "; one selector per command; \
+                         separate commands with `;` or a new line: {split}"
+                    )),
+                "{src:?}: {message}"
+            );
+        }
+        assert_eq!(error("show fn:a fn:b").span, 10..14);
+        assert_eq!(
+            message("show 1 with"),
+            "expected end of command, found `with`"
+        );
+        assert_eq!(
+            message(r#"replace 3 with "x" fn:a"#),
+            "expected end of command, found `fn:a`"
         );
     }
 
