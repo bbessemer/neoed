@@ -234,10 +234,11 @@ of either kind.
 - [ ] `!!` repeats the last script that edited or failed, not a read-only call
       in between: after a failed edit, an `outline` to look around makes `!!`
       refer to the `outline`. A minor, since §1.2 changes
+- [x] `!!` after a `-n` dry run is an error unless it has `-n` too: it would
+      apply what was only previewed, and an agent that then sends the script
+      again applies the edit twice
 - [x] Several selectors after one `show` (`show fn:a fn:b`) suggest a `;` or a
       new line between `show`s, instead of only "expected end of command"
-- [ ] A `-n` dry run's output says `!!` applies it: an agent that runs `!!`
-      after `-n` and then sends the script again applies the edit twice
 - [x] A selector that matches nothing, where an earlier command in the script
       inserts matching text, says selectors resolve against the stage's input
       and suggests a `|` before the command

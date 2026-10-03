@@ -127,6 +127,10 @@ pub fn sessions(state_dir: &Path, root: &Path) -> Result<Vec<String>, SessionErr
 pub enum RepeatError {
     #[error("`!!` repeats the session's last script, but it has none; write the script out")]
     NoScript,
+    #[error(
+        "`!!` would apply entry {0}, a dry run; send the script again to apply it, or add -n to preview it again"
+    )]
+    DryRun(u64),
     #[error("`{old}` isn't in the last script, which is:\n{script}")]
     NotFound { old: String, script: String },
     #[error("malformed `!!` modifier `{0}`; usage: !![:s/OLD/NEW/][:gs/OLD/NEW/]...")]
@@ -140,14 +144,19 @@ pub fn is_repeat(src: &str) -> bool {
 
 /// If `src` is a `!!` script, the last script entry of `entries` and its
 /// script with the modifiers applied (spec §1.2); `None` for another script.
+/// Repeating a dry run is an error unless `dry_run`, as flags aren't repeated.
 pub fn repeat<'a>(
     src: &str,
     entries: &'a [Entry],
+    dry_run: bool,
 ) -> Option<Result<(&'a Entry, String), RepeatError>> {
     let mut rest = src.trim().strip_prefix("!!")?;
     let Some(entry) = entries.iter().rev().find(|entry| entry.script.is_some()) else {
         return Some(Err(RepeatError::NoScript));
     };
+    if entry.dry_run && !dry_run {
+        return Some(Err(RepeatError::DryRun(entry.id)));
+    }
     let mut script = entry.script.clone().unwrap_or_default();
     while !rest.is_empty() {
         let modifier = rest;
@@ -1280,7 +1289,7 @@ mod tests {
             .enumerate()
             .map(|(i, script)| recorded(i as u64 + 1, Some(script), 0, 0))
             .collect();
-        repeat(src, &entries).map(|result| result.map(|(_, script)| script))
+        repeat(src, &entries, false).map(|result| result.map(|(_, script)| script))
     }
 
     fn expanded(src: &str, script: &str) -> String {
@@ -1294,7 +1303,7 @@ mod tests {
             recorded(2, Some("delete fn:prase"), 1, 0),
             undo_of(3, 1, &[]),
         ];
-        let (entry, script) = repeat("!!", &entries).unwrap().unwrap();
+        let (entry, script) = repeat("!!", &entries, false).unwrap().unwrap();
         assert_eq!((entry.id, script.as_str()), (2, "delete fn:prase"));
         assert_eq!(expanded("  !!\n", "show 2"), "show 2");
     }
@@ -1327,9 +1336,22 @@ mod tests {
         assert_eq!(expand("!!", &[]), Some(Err(RepeatError::NoScript)));
         let entries = [undo_of(1, 1, &[])];
         assert!(matches!(
-            repeat("!!", &entries),
+            repeat("!!", &entries, false),
             Some(Err(RepeatError::NoScript))
         ));
+    }
+
+    #[test]
+    fn a_dry_run_is_repeated_only_as_one() {
+        let mut dry = recorded(2, Some("delete fn:a"), 0, 0);
+        dry.dry_run = true;
+        let entries = [recorded(1, Some("show 1"), 0, 0), dry];
+        assert_eq!(
+            repeat("!!:s/a/b/", &entries, false),
+            Some(Err(RepeatError::DryRun(2)))
+        );
+        let (entry, script) = repeat("!!:s/a/b/", &entries, true).unwrap().unwrap();
+        assert_eq!((entry.id, script.as_str()), (2, "delete fn:b"));
     }
 
     #[test]

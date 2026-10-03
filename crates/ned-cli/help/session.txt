@@ -8,8 +8,8 @@ A session records each invocation in the workspace: its script, files and
 outcome, and the text of each file it wrote, before and after. -s overrides
 NED_SESSION; a name is letters, digits, `.`, `_` and `-`, not starting with
 `.`. Without a session, nothing is recorded. Sessions live in
-$XDG_STATE_HOME/ned/sessions (or ~/.local/state/ned/sessions). A run with
--w DIR is recorded in DIR's sessions: give history, undo or `!!` -w DIR too.
+$XDG_STATE_HOME/ned/sessions (default ~/.local/state). A run with -w DIR is
+recorded in DIR's sessions: give history, undo or `!!` -w DIR too.
 
 `ned history` prints the last 10 entries (--all: every one), a line each:
 the entry's number, its outcome (ok, dry run, exit N, or undo N), how many
@@ -18,16 +18,16 @@ files it wrote, `undone` if it has been, and the script's first line:
   3 ok, 1 file: replace fn:parse>"end" with "end of input"
 
 `ned undo` reverts the last entry that wrote files and isn't undone, removing
-files it created, and prints the diff; repeat it to go further back. If a
-file changed since, it's refused; --force merges the undo into the file's
-current text instead, unless a later change overlaps the entry's.
+files it created, and prints the diff; repeat it to go further back. A file
+changed since is refused; --force merges the undo into it instead, unless
+a later change overlaps the entry's.
 
---commit MSG makes a git commit of just the edits written, or in a session
-all its edits since its last commit; nothing else goes in. Hooks don't
-run. An edit overlapping uncommitted changes is refused.
+--commit MSG commits just the edits written to git (in a session, all since
+its last commit); nothing else goes in, hooks don't run, and an edit
+overlapping uncommitted changes is refused.
 
 A script that is `!!` repeats the last script, on its files or -w workspace
-unless others are given; `:s/OLD/NEW/` corrects the first OLD in it and
-`:gs/OLD/NEW/` every one:
+unless others are given, but not its flags: after a dry run it needs -n.
+`:s/OLD/NEW/` corrects the first OLD in it and `:gs/OLD/NEW/` every one:
 
   ned -e '!!:s/fn:prase/fn:parse/'
