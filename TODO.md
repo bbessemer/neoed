@@ -283,7 +283,7 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [x] Rust `show fn:f.sig` prints the whole first line, `{` included, though
       `.sig` ends before the `{`: `replace fn:f.sig with "fn f(b: u8) {"`
       doubles the brace, and the guard's error points at 1:1, not at the edit
-- [ ] An escape such as `\x27` in a heredoc inside a single-quoted `-e` script
+- [x] An escape such as `\x27` in a heredoc inside a single-quoted `-e` script
       goes in literally (heredocs don't read escapes): the skill should say to
       pass a script with `'` on stdin, or `ned` could hint at it when the guard
       rejects text holding `\x27`

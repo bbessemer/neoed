@@ -1508,13 +1508,29 @@ fn guard(l: &Loaded, new: &str) -> Result<(), ExecError> {
                     format!("; `.sig` stops before the `{c}`, so leave it out of TEXT")
                 }
                 None => String::new(),
-            },
+            } + &escape_hint(&new[changed]),
             excerpt: excerpt(new, start)
                 .map(|e| format!("\n{e}"))
                 .unwrap_or_default(),
         },
         None,
     ))
+}
+
+/// The guard's hint for `text`, edited text that holds an escape such as
+/// `\x27`, which a heredoc takes as written; empty if it holds none.
+fn escape_hint(text: &str) -> String {
+    text.match_indices("\\x")
+        .find_map(|(i, _)| {
+            let digits = text.get(i + 2..i + 4)?;
+            digits.bytes().all(|b| b.is_ascii_hexdigit()).then_some(digits)
+        })
+        .map(|digits| {
+            format!(
+                "; heredocs read no escapes, so `\\x{digits}` went in as written: pass a script that holds a ' on stdin (ned FILE <<'EOF') instead of escaping it into -e"
+            )
+        })
+        .unwrap_or_default()
 }
 
 /// The `ERROR` and `MISSING` nodes of `tree`, a parse of `text`, and the
@@ -3839,6 +3855,33 @@ fn main() {}
             "{}",
             out.error()
         );
+    }
+
+    const ESCAPE_HINT: &str = "heredocs read no escapes";
+
+    #[test]
+    fn guard_says_a_heredoc_reads_no_escapes() {
+        let script = "insert end fn:a <<END\nlet c = \\x27x\\x27;\nEND";
+        let out = guarded("a.rs", TEXT, script);
+        let err = out.error();
+        assert!(err.contains(GUARD_ERROR), "{err}");
+        assert!(err.contains(ESCAPE_HINT), "{err}");
+        assert!(err.contains("`\\x27`"), "{err}");
+        assert!(err.contains("on stdin"), "{err}");
+    }
+
+    #[test]
+    fn guard_hints_at_escapes_only_in_the_edited_text() {
+        let text = "fn a() {\n    let s = \"\\x27\";\n    let y = 2;\n}\n";
+        let out = guarded("a.rs", text, "replace \"let y = 2;\" with \"let y = (2;\"");
+        assert!(out.error().contains(GUARD_ERROR), "{}", out.error());
+        assert!(!out.error().contains(ESCAPE_HINT), "{}", out.error());
+        let out = guarded(
+            "a.rs",
+            TEXT,
+            "replace \"let y = 2;\" with \"let y = (2; // \\\\x\"",
+        );
+        assert!(!out.error().contains(ESCAPE_HINT), "{}", out.error());
     }
 
     #[test]

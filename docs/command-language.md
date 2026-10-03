@@ -268,7 +268,8 @@ it:
   content, with surrounding whitespace trimmed, is `TAG`. When one line holds
   several heredocs (in one command or across `;`-separated commands), their
   bodies follow in order, as in the shell. The heredoc's value is its body lines
-  joined with `\n`, with no final newline.
+  joined with `\n`, with no final newline. A body reads no escapes: `\x27` is
+  four characters.
   - `<<TAG` bodies are **re-based** (§5) when inserted, and match
     indentation-insensitively when used as selectors (§3.2).
   - `<<'TAG'` bodies are **verbatim**: no re-basing, and exact matching.
@@ -924,8 +925,10 @@ the count rises, the script is rejected (exit 1) and the error shows the first
 new error node the edits touch, from where the text first changes if the node
 starts before that (an `ERROR` node can span the whole file). If the edits
 replace a `.sig` with text ending in the character that follows it (Python's
-`:`, or the `{` of a body), the error adds that `.sig` stops before it.
-`--force` skips this check.
+`:`, or the `{` of a body), the error adds that `.sig` stops before it. If the
+edited text holds an escape such as `\x27`, the error adds that heredocs read no
+escapes, and to pass a script that holds a `'` on stdin (§1). `--force` skips
+this check.
 
 ### 4.4 Directives
 

@@ -41,8 +41,9 @@ EOF
 ```
 
 Short scripts with no `'` in them can use `-e`:
-`ned src/parser.rs -e 'delete fn:debug_dump'`. Add `-n` to preview without
-writing.
+`ned src/parser.rs -e 'delete fn:debug_dump'`. Don't escape a `'` into an `-e`
+script: `ned`'s heredocs read no escapes, so a `\x27` in one goes in as written.
+Add `-n` to preview without writing.
 
 Search with `show all` instead of grep. It prints each match's line with its
 number, under the file's name, across a glob or the whole workspace (`-w`, which
