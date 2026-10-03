@@ -210,7 +210,7 @@ crates/ned-daemon/ per-workspace daemon (Unix socket), its sync client, language
 crates/ned-scheme/ reader for the Scheme dialect of query files, builders and plugins
 queries/<lang>/    tree-sitter selector queries (.scm), one dir per language
 docs/              specs, agent guide, Claude Code skill
-bench/             token-cost benchmark (uv project; cases/ back spec §8's table)
+bench/             token-cost (cases/ back spec §8's table) and --commit git-process benchmarks (uv project)
 ```
 
 Planned crates: `ned-repl`, `ned-mcp`. All logic lives in `ned-core` so
@@ -254,17 +254,18 @@ frontends stay thin.
 
 ## Local Development
 
-| Target / Script                             | Description                       |
-| ------------------------------------------- | --------------------------------- |
-| `cargo build`                               | Build workspace                   |
-| `cargo test`                                | Run all tests                     |
-| `cargo clippy --all-targets -- -D warnings` | Lint                              |
-| `cargo fmt --check`                         | Format check                      |
-| `prettier --check '**/*.md'`                | Docs format check (`.prettierrc`) |
-| `cargo run -q -p ned-cli -- ARGS`           | Run `ned` from source             |
-| `cargo test -p ned-daemon -- --ignored`     | Smoke test real LSP servers       |
-| `cd bench && uv run bench.py --check`       | Token benchmark vs spec §8        |
-| `cd bench && uv run pytest`                 | Benchmark unit tests              |
+| Target / Script                             | Description                            |
+| ------------------------------------------- | -------------------------------------- |
+| `cargo build`                               | Build workspace                        |
+| `cargo test`                                | Run all tests                          |
+| `cargo clippy --all-targets -- -D warnings` | Lint                                   |
+| `cargo fmt --check`                         | Format check                           |
+| `prettier --check '**/*.md'`                | Docs format check (`.prettierrc`)      |
+| `cargo run -q -p ned-cli -- ARGS`           | Run `ned` from source                  |
+| `cargo test -p ned-daemon -- --ignored`     | Smoke test real LSP servers            |
+| `cd bench && uv run bench.py --check`       | Token benchmark vs spec §8             |
+| `cd bench && uv run git_procs.py --check`   | `--commit`'s git processes vs baseline |
+| `cd bench && uv run pytest`                 | Benchmark unit tests                   |
 
 ## Deployment Notes
 
