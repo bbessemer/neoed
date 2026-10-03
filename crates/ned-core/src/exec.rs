@@ -121,9 +121,9 @@ struct Loaded {
     edits: EditSet,
     /// The whole-line deletions among `edits`, for merging neighbours.
     deletions: Vec<Deletion>,
-    /// Whether `edits` replace a Python `.sig` with text ending in `:`, which
-    /// the parse-error guard's error then explains (§4.3).
-    sig_colon: bool,
+    /// The character after a `.sig` that `edits` replace with text ending in
+    /// it, which the parse-error guard's error then explains (§4.3).
+    sig_end: Option<char>,
     /// Made by `create`: its original text is what `create` gave it.
     created: bool,
     /// The text before the first `|` changed it (§2.3), and the edits
@@ -242,7 +242,7 @@ impl Executor<'_> {
             l.file = SourceFile::new(&l.file.path, new, l.file.lang);
             l.edits = EditSet::new(&l.file.buffer);
             l.deletions.clear();
-            l.sig_colon = false;
+            l.sig_end = None;
         }
         Ok(())
     }
@@ -279,7 +279,7 @@ impl Executor<'_> {
             file,
             edits,
             deletions: Vec::new(),
-            sig_colon: false,
+            sig_end: None,
             original: None,
             applied: 0,
             created: true,
@@ -397,7 +397,7 @@ impl Executor<'_> {
             file,
             edits,
             deletions: Vec::new(),
-            sig_colon: false,
+            sig_end: None,
             original: None,
             applied: 0,
             created: false,
@@ -461,10 +461,15 @@ impl Executor<'_> {
                     if let Some(note) = off_by_one(f, &m.range, text, selector) {
                         self.notes.push(note);
                     }
+                    let after = f.text[m.range.end..].trim_start_matches([' ', '\t']);
+                    let sig_end = after.chars().next().filter(|&c| {
+                        last == Some(&Part::Sig)
+                            && c.is_ascii_punctuation()
+                            && text.value.trim_end().ends_with(c)
+                    });
                     let (range, new) = replace(f, m.range, text, whole);
-                    if last == Some(&Part::Sig) && text.value.trim_end().ends_with(':') {
-                        let l = &mut self.files[m.file];
-                        l.sig_colon |= l.file.lang == Some(Language::Python);
+                    if sig_end.is_some() {
+                        self.files[m.file].sig_end = sig_end;
                     }
                     self.push(index, span, m.file, range, new)?;
                 }
@@ -1492,15 +1497,19 @@ fn guard(l: &Loaded, new: &str) -> Result<(), ExecError> {
         .iter()
         .find(|n| n.start_byte() <= changed.end && changed.start <= n.end_byte())
         .unwrap_or(&errors[0]);
-    let (line, column) = location(new, node.start_byte());
+    // An `ERROR` node can start well before the edits, even span the file.
+    let start = node.start_byte().max(changed.start.min(node.end_byte()));
+    let (line, column) = location(new, start);
     Err(ExecError::new(
         ExecErrorKind::SyntaxError {
             location: format!("{}:{line}:{column}", f.path),
-            hint: match l.sig_colon {
-                true => "; Python `.sig` stops before the `:`, so leave it out of TEXT".into(),
-                false => String::new(),
+            hint: match l.sig_end {
+                Some(c) => {
+                    format!("; `.sig` stops before the `{c}`, so leave it out of TEXT")
+                }
+                None => String::new(),
             },
-            excerpt: excerpt(new, node.start_byte())
+            excerpt: excerpt(new, start)
                 .map(|e| format!("\n{e}"))
                 .unwrap_or_default(),
         },
@@ -3764,7 +3773,7 @@ fn main() {}
         assert!(out.result.is_ok(), "{}", out.error());
     }
 
-    const SIG_HINT: &str = "Python `.sig` stops before the `:`";
+    const SIG_HINT: &str = "`.sig` stops before the `:`";
 
     #[test]
     fn guard_says_a_python_sig_stops_before_the_colon() {
@@ -3783,6 +3792,53 @@ fn main() {}
         assert!(!out.error().contains(SIG_HINT), "{}", out.error());
         let out = guarded("a.py", text, "replace \"def f()\" with \"def f():\"");
         assert!(!out.error().contains(SIG_HINT), "{}", out.error());
+    }
+
+    const RUST_FN: &str = "fn f(a: u8) {\n    let x = a;\n}\n";
+
+    #[test]
+    fn guard_says_a_sig_stops_before_the_brace() {
+        let out = guarded("a.rs", RUST_FN, "replace fn:f.sig with \"fn f(b: u8) {\"");
+        assert!(out.error().contains(GUARD_ERROR), "{}", out.error());
+        assert!(
+            out.error().contains("`.sig` stops before the `{`"),
+            "{}",
+            out.error()
+        );
+        let out = guarded(
+            "a.go",
+            "package a\n\nfunc f() {\n}\n",
+            "replace fn:f.sig with \"func f(x int) {\"",
+        );
+        assert!(
+            out.error().contains("`.sig` stops before the `{`"),
+            "{}",
+            out.error()
+        );
+    }
+
+    #[test]
+    fn guard_hints_at_the_brace_only_when_text_ends_with_it() {
+        let out = guarded("a.rs", RUST_FN, "replace fn:f.sig with \"fn f(b: u8\"");
+        assert!(out.error().contains(GUARD_ERROR), "{}", out.error());
+        assert!(!out.error().contains("stops before"), "{}", out.error());
+    }
+
+    #[test]
+    fn guard_points_at_the_edit_inside_a_file_wide_error_node() {
+        let out = guarded("a.rs", RUST_FN, "replace fn:f.sig with \"fn f(b: u8) {\"");
+        assert!(
+            out.error().starts_with("error: a.rs:1:6:"),
+            "{}",
+            out.error()
+        );
+        let text = format!("{RUST_FN}\n{}", RUST_FN.replace("f(", "g("));
+        let out = guarded("a.rs", &text, "replace fn:g.sig with \"fn g(b: u8) {\"");
+        assert!(
+            out.error().starts_with("error: a.rs:5:6:"),
+            "{}",
+            out.error()
+        );
     }
 
     #[test]

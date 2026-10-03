@@ -280,7 +280,7 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [ ] `.lines` on a multi-line literal that matches once
       (`insert after "- a b\n  c d".lines "x"`) says "matches 2 items" and lists
       identical candidates
-- [ ] Rust `show fn:f.sig` prints the whole first line, `{` included, though
+- [x] Rust `show fn:f.sig` prints the whole first line, `{` included, though
       `.sig` ends before the `{`: `replace fn:f.sig with "fn f(b: u8) {"`
       doubles the brace, and the guard's error points at 1:1, not at the edit
 - [ ] An escape such as `\x27` in a heredoc inside a single-quoted `-e` script

@@ -921,8 +921,11 @@ and `MISSING` nodes, and the matches of the language's
 `queries/<lang>/errors.scm` (code the grammar accepts but the language does not,
 such as an empty Python block), before and after each stage's edits (§2.3). If
 the count rises, the script is rejected (exit 1) and the error shows the first
-new error node. If the edits replace a Python `.sig` with text ending in `:`,
-the error adds that `.sig` stops before the `:`. `--force` skips this check.
+new error node the edits touch, from where the text first changes if the node
+starts before that (an `ERROR` node can span the whole file). If the edits
+replace a `.sig` with text ending in the character that follows it (Python's
+`:`, or the `{` of a body), the error adds that `.sig` stops before it.
+`--force` skips this check.
 
 ### 4.4 Directives
 

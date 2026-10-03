@@ -241,8 +241,9 @@ insert start class:App>fn:handle "metrics.count(req)"
   Apply it and rerun; nothing was written.
 - **Syntax guard.** An edit that introduces a parse error is rejected. Fix the
   text; use `--force` only if the error is intended.
-- **A Python `.sig` stops before the `:`**: replace it with `def f(x) -> int`,
-  not `def f(x) -> int:`.
+- **`.sig` stops before the body**: `show` prints its whole lines, but leave out
+  the `{` (or Python's `:`): replace it with `fn f(x: u8) -> u8`, not
+  `fn f(x: u8) -> u8 {`.
 - **Introduced errors block edits** while a daemon runs (`ned daemon start`;
   `status` and `stop` too; Unix only): the error lists what the edit broke. Fix
   the text, or add `allow errors` to the script when the code is knowingly
