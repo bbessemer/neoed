@@ -299,6 +299,13 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       goes in literally (heredocs don't read escapes): the skill should say to
       pass a script with `'` on stdin, or `ned` could hint at it when the guard
       rejects text holding `\x27`
+- [x] `--commit` runs about six git processes per file (`ls-tree`, `ls-files`,
+      `cat-file`, `check-ignore`, `hash-object`, `rev-parse --show-toplevel`),
+      and `update-index --cacheinfo` takes every entry on one command line, so a
+      large `-w` edit is slow and can exceed the argument-length limit: list
+      paths with one `ls-tree -z` and one `ls-files -s -z`, read blobs with
+      `cat-file --batch`, and feed `check-ignore --stdin`,
+      `hash-object --stdin-paths` and `update-index --index-info` on stdin
 - [x] With a lone `\r` line ending, diff hunk headers count it as a line break
       (`similar` splits lines there), so their line numbers disagree with ned's
       `\n`-only ones
