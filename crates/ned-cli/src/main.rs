@@ -258,6 +258,7 @@ fn main() -> ExitCode {
         &mut cli.files,
         &mut cli.workspace,
         &mut root,
+        cli.dry_run,
     ) {
         Ok(src) => src,
         Err(failure) => return finish(Err(failure)),

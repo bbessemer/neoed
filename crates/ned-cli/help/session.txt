@@ -31,3 +31,6 @@ unless others are given; `:s/OLD/NEW/` corrects the first OLD in it and
 `:gs/OLD/NEW/` every one:
 
   ned -e '!!:s/fn:prase/fn:parse/'
+
+Flags aren't repeated, so `!!` after a dry run is an error unless it has -n
+too: send the script again to apply it.

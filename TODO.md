@@ -242,6 +242,9 @@ of either kind.
       the `show /re/+0..+70` hint). A minor
 - [ ] `insert end` or `insert start` with no selector appends to or prepends to
       the file, instead of the hint to use `insert after $`. A minor
+- [x] `!!` after a `-n` dry run is an error unless it has `-n` too: it would
+      apply what was only previewed, and an agent that then sends the script
+      again applies the edit twice
 
 ## Bugs
 

@@ -209,8 +209,11 @@ src/parser.rs: 1 edit, +1 -1
 The repeat runs on the last script's file set — its `FILE` arguments, relative
 to the directory they were given in, or its `-w` workspace — unless the new
 invocation gives `FILE` arguments or `-w`. Flags (`-n`, `--force`, ...) are not
-repeated. `!!` without a session, with no earlier script in it, or with an `OLD`
-the script doesn't contain is a usage error; the last says what the script is.
+repeated, so a repeat of a dry run without `-n` would apply what was only
+previewed: it is a usage error saying to send the script again to apply it, or
+to add `-n` to preview it again. `!!` without a session, with no earlier script
+in it, or with an `OLD` the script doesn't contain is a usage error; the last
+says what the script is.
 
 `history` and `undo` take the session from `-s` or `NED_SESSION` like a script
 does; with neither, or a session the workspace has no log for, they're a usage
@@ -1351,6 +1354,7 @@ Errors go to stderr, in the form `error: LOC: message`.
 | Session name with other characters                                              | Letters, digits, `.`, `_` and `-`                                                                                                                                                                                                                                                                                                                                                              |
 | `!!`, `history` or `undo` without a session                                     | `-s NAME` or `NED_SESSION`, with the workspace's sessions                                                                                                                                                                                                                                                                                                                                      |
 | `!!` with no earlier script                                                     | Writing the script out                                                                                                                                                                                                                                                                                                                                                                         |
+| `!!` without `-n` after a dry run                                               | Sending the script again to apply it, or `-n` to preview it again                                                                                                                                                                                                                                                                                                                              |
 | `!!:s/OLD/NEW/` whose `OLD` the script doesn't contain                          | The script                                                                                                                                                                                                                                                                                                                                                                                     |
 | Malformed `!!` modifier                                                         | `usage: !![:s/OLD/NEW/][:gs/OLD/NEW/]...`                                                                                                                                                                                                                                                                                                                                                      |
 | Nothing to undo                                                                 | `ned history`                                                                                                                                                                                                                                                                                                                                                                                  |

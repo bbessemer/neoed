@@ -595,6 +595,24 @@ fn repeat_errors_are_usage_errors_and_not_recorded() {
 }
 
 #[test]
+fn a_repeat_of_a_dry_run_must_be_one() {
+    let ws = Workspace::new(&[("a.rs", "fn a() {}\n")]);
+    ws.ned(&["-s", "agent", "a.rs", "-n", "-e", "delete fn:a"]);
+    assert_snapshot!(ws.report(&["-s", "agent", "-e", "!!"]), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: `!!` would apply entry 1, a dry run; send the script again to apply it, or add -n to preview it again
+    ");
+    assert_eq!(ws.read("a.rs"), "fn a() {}\n");
+    assert_eq!(ws.entries("agent").len(), 1);
+
+    let output = ws.ned(&["-s", "agent", "-n", "-e", "!!"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(ws.read("a.rs"), "fn a() {}\n");
+}
+
+#[test]
 fn a_damaged_log_blocks_only_what_reads_it() {
     let ws = Workspace::new(&[("a.rs", "fn a() {}\n")]);
     ws.ned(&["-s", "agent", "a.rs", "-e", "show 1"]);

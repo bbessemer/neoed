@@ -138,6 +138,7 @@ pub fn repeat(
     files: &mut Vec<String>,
     workspace: &mut Option<Option<PathBuf>>,
     root: &mut PathBuf,
+    dry_run: bool,
 ) -> Result<String, Failure> {
     if !session::is_repeat(&src) {
         return Ok(src);
@@ -148,7 +149,7 @@ pub fn repeat(
     };
     let entries = session.lock().and_then(|log| log.entries());
     let entries = entries.map_err(failure)?;
-    let (entry, script) = match session::repeat(&src, &entries) {
+    let (entry, script) = match session::repeat(&src, &entries, dry_run) {
         None => return Ok(src),
         Some(result) => result.map_err(|err| (format!("error: {err}"), 2))?,
     };
