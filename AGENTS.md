@@ -175,6 +175,8 @@ CI (`.github/workflows/`) gates PRs.
   changing behaviour.
 - `docs/agent-guide.md`, `docs/skills/ned/SKILL.md` — how agents use `ned`; keep
   in step with behaviour (every ```ned block is parsed by a test).
+- `docs/plugins.md` — plugin language and API spec (not yet implemented);
+  `crates/ned-scheme/DESIGN.md` — the VM that will run it.
 
 ## Tech Stack / Dependencies
 

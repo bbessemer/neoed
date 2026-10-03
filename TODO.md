@@ -160,21 +160,47 @@ a grammar plus queries is data, as the built-in languages are.
 Version: minor when loading works; the registry refactor alone is a patch if
 released on its own, since nothing visible changes.
 
-### Plugins
+### Plugins _(split)_
 
-Later. A Scheme extending tree-sitter's query syntax, embedded with Steel or a
-hand-rolled R5RS, for new languages whose items need logic, custom commands,
-complex tree manipulations and procedural code generation: a language-generic
-but syntax-aware macro system. Not for external processes, I/O outside the
-editing core, or Emacs-style scope creep; `ned` stays a focused tool. First step
-is a spike comparing Steel with a hand-rolled evaluator on one real use case;
-`ned-scheme`'s reader (from syntax patterns) is the front end either way. It
-reads tree-sitter query syntax natively (`@capture`, `[...]` alternation, `#eq?`
-predicates, `.` anchors, so no dotted pairs), which counts toward a hand-rolled
-evaluator unless Steel's reader can be made to read it too (to check in the
-spike).
+Scheme plugins add verbs and selector kinds whose edits need logic: code
+generation, conditional rewrites, complex tree manipulation. Spec:
+`docs/plugins.md`; VM design: `crates/ned-scheme/DESIGN.md`. Not for external
+processes, I/O outside the editing core, or Emacs-style scope creep: plugins are
+sandboxed to the file set and deterministic.
 
-Version: minor when a first plugin can load; the spike releases nothing.
+- **Hand-rolled VM, not Steel**: values borrow `ned`'s trees through a lifetime,
+  and the reader already speaks query syntax (DESIGN.md §1).
+- **Nodes are values**, taken apart with query syntax and `match`, and built
+  with syntax literals (`` #`fn @name() {}` ``), the dual of §3.10 patterns.
+- Language-defining plugins come later, after user-supplied grammars.
+- **Plugins see an AST, not tree-sitter's CST.** `node->datum` leaves out the
+  tokens a kind always has (`fn`, parentheses, separators) and keeps those that
+  carry meaning (`async`, operators). Builders convert between the two, one kind
+  at a time: ``(build 'function_item #`... fn @name @parameters ...`)`` is
+  matched against a node to read it, and filled to write one (spec §11).
+- **Builders are generated, then fixed by hand**: a dev tool turns each
+  `grammar.json` into `builders.gen.scm`, and a hand-written `builders.scm`
+  overrides it where generation falls short. A round-trip test over a corpus per
+  language checks the whole set, which answers the unreliability noted above for
+  an unparser driven by the grammar alone.
+- **Contexts come from builders**: the code a fragment needs around it to parse
+  is a chain of builders from the start rule, so there's no separate list.
+
+- [x] Spec and VM design
+- [ ] Builder generator: the reader reads syntax literals and builder
+      placeholders, the placeholder lexer moves from `ned-core`, the generator
+      writes `builders.gen.scm` for every language, and a corpus test reads
+      every builder against some node
+- [ ] Builders in use: hand-written `builders.scm` fixes, contexts derived from
+      builders (replacing today's builder list), `node->datum` and
+      `datum->node`, the round-trip corpus
+- [ ] Core VM: expander, compiler, bytecode VM, tier-1 library
+- [ ] Nodes and the host: syntax literals, `match`, `find-all`
+- [ ] Plugin loading, verbs, kinds, sandbox (command-language spec first)
+- [ ] Tier 2: `syntax-rules`, characters, vectors, escape continuations
+
+Version: patch for each chunk before plugins load (nothing visible); minor when
+a first plugin can load, and minor for tier 2.
 
 ## Agent ergonomics
 
