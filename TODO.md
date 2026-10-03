@@ -260,6 +260,9 @@ of either kind.
 - [ ] `!!` repeats the last script that edited or failed, not a read-only call
       in between: after a failed edit, an `outline` to look around makes `!!`
       refer to the `outline`. A minor, since §1.2 changes
+- [ ] Line numbers count back from the end with `$-N`, so `show $-4..$` shows
+      the last five lines (today `$-4` is "unexpected character `-`"). A minor,
+      since §3.1 changes
 
 ## Bugs
 
