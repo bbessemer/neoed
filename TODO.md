@@ -238,7 +238,7 @@ of either kind.
       new line between `show`s, instead of only "expected end of command"
 - [ ] A `-n` dry run's output says `!!` applies it: an agent that runs `!!`
       after `-n` and then sends the script again applies the edit twice
-- [ ] A selector that matches nothing, where an earlier command in the script
+- [x] A selector that matches nothing, where an earlier command in the script
       inserts matching text, says selectors resolve against the stage's input
       and suggests a `|` before the command
 - [x] The off-by-one note fires when TEXT repeats the rest of the span's last

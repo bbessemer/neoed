@@ -192,7 +192,9 @@ impl Executor<'_> {
             if script.stages.contains(&index) {
                 self.commit()?;
             }
-            self.command(index, command)?;
+            if let Err(e) = self.command(index, command) {
+                return Err(self.pipe_hint(index, command, e));
+            }
         }
         // Files are read as commands need them, so they're reported in the
         // order the script named them instead.
@@ -245,6 +247,35 @@ impl Executor<'_> {
             l.sig_end = None;
         }
         Ok(())
+    }
+
+    /// Hints at a `|` when `error` is a selector that matches nothing in this
+    /// stage's input but matches once the stage's earlier edits apply (§2.3).
+    fn pipe_hint(&mut self, index: usize, command: &Command, mut error: ExecError) -> ExecError {
+        let ExecErrorKind::NoMatch { hint, .. } = &mut error.kind else {
+            return error;
+        };
+        if self.files.iter().all(|l| l.edits.is_empty()) {
+            return error;
+        }
+        // The script has failed, so this run's state can be spent on the trial,
+        // as long as it prints nothing and asks no language server.
+        let (output, notes) = (self.output.len(), self.notes.len());
+        self.lsp = None;
+        if self.commit().is_err() {
+            return error;
+        }
+        let retry = self.command(index, command);
+        self.output.truncate(output);
+        self.notes.truncate(notes);
+        let unmatched =
+            |e: &ExecError| e.span == error.span && matches!(e.kind, ExecErrorKind::NoMatch { .. });
+        if !retry.as_ref().is_err_and(unmatched) {
+            *hint = "; it matches only after the edits before it, which a stage's selectors \
+                don't see: put a `|` before the command"
+                .into();
+        }
+        error
     }
 
     /// The language of the file at `path`, holding `text`, from `--lang` or
@@ -2339,6 +2370,56 @@ mod tests {
             ),
             "y\r\nz\r\n"
         );
+    }
+
+    #[test]
+    fn a_selector_matching_only_the_stages_edits_suggests_a_pipe() {
+        let hint = "; it matches only after the edits before it, which a stage's selectors \
+            don't see: put a `|` before the command";
+        assert_eq!(
+            guarded(
+                "a.rs",
+                TEXT,
+                "insert after fn:a <<END\n\nfn p() { a(); }\nEND\nsub fn:p /a/ with \"b\""
+            )
+            .error(),
+            format!("error: script:5:5: fn:p matches nothing in a.rs{hint}")
+        );
+        assert_eq!(
+            exec(
+                TEXT,
+                "insert after fn:b \"zzz\"; replace \"zzz\" with \"y\""
+            )
+            .error(),
+            format!("error: script:1:34: \"zzz\" matches nothing in a.rs{hint}")
+        );
+    }
+
+    #[test]
+    fn a_selector_the_stages_edits_dont_match_keeps_its_hint() {
+        assert_eq!(
+            exec(TEXT, "insert after fn:b \"fn p() {}\"; delete fn:zzzzzz").error(),
+            "error: script:1:39: fn:zzzzzz matches nothing in a.rs; `outline` lists the items"
+        );
+        assert_eq!(
+            exec(TEXT, "insert after fn:b \"fn p() {}\" | delete fn:zzzzzz").error(),
+            "error: script:1:40: fn:zzzzzz matches nothing in a.rs; `outline` lists the items"
+        );
+    }
+
+    #[test]
+    fn trying_the_stages_edits_prints_nothing() {
+        let out = exec(
+            TEXT,
+            "show fn:b; insert after fn:b \"fn p() {}\"; show fn:p",
+        );
+        assert!(
+            out.error().ends_with("put a `|` before the command"),
+            "{}",
+            out.error()
+        );
+        assert_eq!(out.output, exec(TEXT, "show fn:b").output);
+        assert!(out.notes.is_empty(), "{:?}", out.notes);
     }
 
     #[test]
