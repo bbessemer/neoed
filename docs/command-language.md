@@ -750,6 +750,10 @@ common to the pattern's lines is ignored.
   matches one token; write a run for an argument: `` `dbg!(@x...)` ``.
 - A run may stand where no name would parse, as among an impl's items:
   `` `impl Display for @t { @_... }` ``.
+- A run right after a node, where no name would parse, also matches the rest of
+  a longer node that starts with that node, such as the tail of a method chain:
+  `` `let n = items[i] @rest...;` `` matches `let n = items[i].iter().count();`,
+  and `@rest` captures `.iter().count()`.
 
 **Parsing.** Many fragments only parse inside some other code: a method inside
 an `impl` or a class, a match arm inside a `match`, a field inside a struct.

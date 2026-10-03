@@ -290,6 +290,9 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [x] With a lone `\r` line ending, diff hunk headers count it as a line break
       (`similar` splits lines there), so their line numbers disagree with ned's
       `\n`-only ones
+- [x] A syntax pattern can't match the tail of a method chain after a receiver
+      (`` `let n = files[i] @_...;` ``), nor a match arm whose value is a chain
+      (`` `Primary::Conflict(_) => f @_...,` ``)
 
 ## Future improvements
 
