@@ -988,14 +988,23 @@ Every line-oriented `TEXT` is re-based, except a `<<'TAG'` heredoc.
 | `insert after`, `move` (after)              | indentation of the target span's first line, or of its last non-blank line when the selector's last step is a literal or regex with no parts                    |
 | `insert start\|end`, `move` (start/end)     | indentation of the first non-blank line inside the span. If the span is empty or blank, the indentation of the enclosing item's first line plus one indent unit |
 
+For `insert after` (and `move ... after`) in a file with a syntax tree, when
+that line ends a construct begun on an earlier line, such as the last line of a
+statement split across lines (`        .collect();`), the target indentation is
+that of the construct's first line. The construct is the largest syntax node
+that ends on the line and starts a line, holding the line's first token and
+inside the innermost node that lays out its children on lines of their own (a
+block's statements, a list's items). A line in the middle of a construct, or one
+that starts or closes an item of such a layout, keeps its own indentation.
+
 `replace` puts `TEXT`'s first non-blank line in place of the target's first
 line, so when that line is indented more than another of `TEXT`'s lines (the
 text closes blocks it didn't open, such as `x;`, then `}`, then a new item), the
 first line takes the target indentation instead: every line is shifted by the
 same amount, so the lines `TEXT` dedents step out of the target's enclosing
 blocks, and the least indented never goes left of column 0. Insertions keep the
-rule above, since text indented below its first line there continues a block the
-target line opens.
+rules above, since text indented below its first line there continues a block
+the target line opens.
 
 In Markdown, when `TEXT` starts with a list item (`-`, `*`, `+`, `1.` or `1)`)
 and the target line lies in a list item (not in a code block inside it), the

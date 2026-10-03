@@ -319,7 +319,7 @@ change is a minor, because it lifts a documented error.
 - [x] Re-basing follows the text's own dedent: `replace LINE with` text that
       closes the enclosing block and starts a top-level item (`}` then `fn g()`)
       keeps the item at column 0, not the replaced line's indentation
-- [ ] `insert after N` where line N continues a statement (`.collect();`)
+- [x] `insert after N` where line N continues a statement (`.collect();`)
       indents to the statement's first line, not the continuation's deeper
       indent
 - [ ] `insert before` an item's first line (its doc comment or attributes) keeps

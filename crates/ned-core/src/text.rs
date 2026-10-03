@@ -46,15 +46,6 @@ pub fn first_indent(text: &str, range: Range<usize>) -> Option<&str> {
     None
 }
 
-/// The indentation of the last non-blank line of the whole lines `range`.
-pub fn last_indent(text: &str, range: Range<usize>) -> Option<&str> {
-    text[range]
-        .lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .map(leading_whitespace)
-}
-
 /// The indent unit of a file's `lines`: the smallest non-zero increase in
 /// indentation between consecutive non-blank lines, in the style (tabs or
 /// spaces) that indents most of them, or `default` if there is none.
@@ -242,7 +233,8 @@ fn line_end(text: &str, end: usize, start: usize) -> usize {
     }
 }
 
-fn line_start(text: &str, offset: usize) -> usize {
+/// The start of the line containing `offset`.
+pub fn line_start(text: &str, offset: usize) -> usize {
     text[..offset].rfind('\n').map_or(0, |i| i + 1)
 }
 

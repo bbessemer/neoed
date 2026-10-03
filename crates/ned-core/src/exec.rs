@@ -1938,13 +1938,18 @@ fn insert(
     let match_end = selector.steps.last().is_some_and(|s| {
         s.parts.is_empty() && matches!(s.primary, Primary::Regex(_) | Primary::Literal(_))
     });
-    let after = match anchor {
-        None if match_end => text::last_indent(t, full.clone()).unwrap_or(first),
-        _ => first,
-    };
     let (at, indent) = match position {
         Position::Before => (full.start, first),
-        Position::After => (full.end, after),
+        Position::After => {
+            let indent = anchor.map_or_else(
+                || {
+                    let line = after_line(t, full.clone(), match_end);
+                    construct_indent(f, line).unwrap_or(text::indent_at(t, line))
+                },
+                |_| first,
+            );
+            (full.end, indent)
+        }
         Position::Start => (full.start, inner.as_str()),
         Position::End => (full.end, inner.as_str()),
     };
@@ -1990,6 +1995,55 @@ fn lines_of(new: &Text) -> &str {
         TextKind::Str => new.value.strip_suffix('\n').unwrap_or(&new.value),
         _ => &new.value,
     }
+}
+
+/// The start of the line `insert after` takes its indentation from (§5.2):
+/// the first line of the whole lines `full`, or its last non-blank line after
+/// a match.
+fn after_line(t: &str, full: Range<usize>, match_end: bool) -> usize {
+    if !match_end {
+        return full.start;
+    }
+    let end = full.start + t[full.clone()].trim_end().len();
+    text::line_start(t, end).max(full.start)
+}
+
+/// The indentation of the construct that the line starting at `line` ends,
+/// when it begins on an earlier line (§5.2).
+fn construct_indent(f: &SourceFile, line: usize) -> Option<&str> {
+    let t = &f.text;
+    let content = &t[line..t[line..].find('\n').map_or(t.len(), |i| line + i)];
+    let first = line + content.len() - content.trim_start().len();
+    let end = line + content.trim_end().len();
+    if first >= end {
+        return None;
+    }
+    let mut node = f
+        .tree()?
+        .root_node()
+        .descendant_for_byte_range(first, first)?;
+    while let Some(parent) = node.parent() {
+        if parent.end_byte() > end || lays_out_lines(t, parent) {
+            break;
+        }
+        node = parent;
+    }
+    let start = node.start_byte();
+    (start < line && starts_line(t, start)).then(|| text::indent_at(t, start))
+}
+
+/// Whether `node` puts a named child after its first at the start of a line,
+/// as a block does its statements.
+fn lays_out_lines(t: &str, node: Node) -> bool {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .skip(1)
+        .any(|c| starts_line(t, c.start_byte()))
+}
+
+/// Whether only indentation comes before `offset` on its line.
+fn starts_line(t: &str, offset: usize) -> bool {
+    t[text::line_start(t, offset)..offset].trim().is_empty()
 }
 
 /// The Markdown list item that list-item `new` placed on the line holding
@@ -2870,6 +2924,48 @@ mod tests {
         assert_eq!(
             edited_in("a.py", APP_PY, "insert after class:App \"x = 1\""),
             APP_PY.replace("pass\n", "pass\n\nx = 1\n")
+        );
+    }
+
+    #[test]
+    fn insert_after_a_continuation_line_takes_its_statements_indent() {
+        let text = "fn f() {\n    let v: Vec<_> = xs\n        .iter()\n        .collect();\n}\n";
+        let expected = text.replace("collect();\n", "collect();\n    let y = 2;\n");
+        for script in [
+            "insert after 4 \"let y = 2;\"",
+            "insert after \".collect();\" <<END\nlet y = 2;\nEND",
+            "insert after 2-4 \"let y = 2;\"",
+        ] {
+            assert_eq!(edited(text, script), expected, "{script}");
+        }
+        let text = "def f():\n    total = (a\n             + b)\n    return total\n";
+        assert_eq!(
+            edited_in("a.py", text, "insert after 3 \"c()\""),
+            text.replace("+ b)\n", "+ b)\n    c()\n")
+        );
+    }
+
+    #[test]
+    fn insert_after_a_line_that_ends_no_construct_keeps_its_indent() {
+        let text = "fn f() {\n    let v: Vec<_> = xs\n        .iter()\n        .collect();\n}\n";
+        assert_eq!(
+            edited(text, "insert after 3 \".map(g)\""),
+            text.replace("iter()\n", "iter()\n        .map(g)\n")
+        );
+        let text = "fn f() {\n    let s = S {\n        b: T {\n            x: 1,\n            y: 2,\n        },\n    };\n}\n";
+        assert_eq!(
+            edited(text, "insert after 6 \"c: 3,\""),
+            text.replace("},\n", "},\n        c: 3,\n")
+        );
+        let text = "def f():\n    if x:\n        a()\n";
+        assert_eq!(
+            edited_in("a.py", text, "insert after 3 \"b()\""),
+            format!("{text}        b()\n")
+        );
+        let text = "let v = xs\n    .collect();\n";
+        assert_eq!(
+            edited_in("a.txt", text, "insert after 2 \"y\""),
+            format!("{text}    y\n")
         );
     }
 
