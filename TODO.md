@@ -287,6 +287,9 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       goes in literally (heredocs don't read escapes): the skill should say to
       pass a script with `'` on stdin, or `ned` could hint at it when the guard
       rejects text holding `\x27`
+- [x] With a lone `\r` line ending, diff hunk headers count it as a line break
+      (`similar` splits lines there), so their line numbers disagree with ned's
+      `\n`-only ones
 
 ## Future improvements
 
