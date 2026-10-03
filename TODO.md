@@ -322,7 +322,7 @@ change is a minor, because it lifts a documented error.
 - [x] `insert after N` where line N continues a statement (`.collect();`)
       indents to the statement's first line, not the continuation's deeper
       indent
-- [ ] `insert before` an item's first line (its doc comment or attributes) keeps
+- [x] `insert before` an item's first line (its doc comment or attributes) keeps
       a blank line between the inserted item and the next, as
       `insert before fn:x` does
 - [ ] `check`, `rename`, `.refs` and `.def` after a `|`: send the daemon each

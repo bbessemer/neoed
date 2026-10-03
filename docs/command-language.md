@@ -878,7 +878,11 @@ Notes:
   new text from it with one blank line, unless the text already starts (for
   `after`) or ends (for `before`) with a blank line. Text inserted before an
   item that is only doc comments and attributes (`#[inline]`, `/// ...`) gets no
-  blank line: it attaches to the item.
+  blank line: it attaches to the item. `insert before` a line, regex or literal
+  target whose first line starts such an item's doc comments or attributes
+  treats it as that item when the text ends with an item, so with
+  `insert before 12`, where line 12 is `/// Docs.` above `fn x`, a new function
+  is separated as with `insert before fn:x`.
 - `replace` of a syntax item keeps the item's leading doc comments and
   attributes unless `TEXT` starts with its own, so replacing a test function
   keeps its `#[test]`. To replace them too, start `TEXT` with them, or select

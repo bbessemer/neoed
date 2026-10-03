@@ -1806,7 +1806,9 @@ fn with_trailing_comma<'t>(f: &SourceFile, range: &Range<usize>, new: &'t Text) 
 }
 
 /// `new`, with a blank line separating it from the syntax item at `range`
-/// when inserting before or after an item that has one (§4.2).
+/// when inserting before or after an item that has one (§4.2). Inserting an
+/// item before the line or match that starts an item's docs is inserting
+/// before the item.
 fn separated<'t>(
     f: &SourceFile,
     target: &Target,
@@ -1814,15 +1816,27 @@ fn separated<'t>(
     range: &Range<usize>,
     new: &'t Text,
 ) -> Cow<'t, Text> {
-    let item = matches!(
-        target.selector.steps.last(),
-        Some(Step { primary: Primary::Syntax { kind, .. }, parts, .. }) if parts.is_empty() && !syntax::find_kind(kind).is_some_and(|k| k.stacked)
-    );
     let t = &f.text;
-    if !item
-        || !text::is_whole_line(t, range)
-        || !text::blank_separated(t, text::full_lines(t, range.clone()))
-    {
+    if !text::is_whole_line(t, range) {
+        return Cow::Borrowed(new);
+    }
+    let item = match target.selector.steps.last() {
+        Some(Step {
+            primary: Primary::Syntax { kind, .. },
+            parts,
+            ..
+        }) => (parts.is_empty() && !syntax::find_kind(kind).is_some_and(|k| k.stacked))
+            .then(|| text::full_lines(t, range.clone())),
+        Some(Step { parts, .. })
+            if parts.is_empty()
+                && matches!(position, Position::Before)
+                && ends_with_item(f, &new.value) =>
+        {
+            item_lines_at(f, range.start)
+        }
+        _ => None,
+    };
+    if !item.is_some_and(|full| text::blank_separated(t, full)) {
         return Cow::Borrowed(new);
     }
     let blank = |line: Option<&str>| line.is_some_and(|l| l.trim().is_empty());
@@ -1843,6 +1857,32 @@ fn separated<'t>(
         _ => return Cow::Borrowed(new),
     }
     Cow::Owned(Text { value, kind })
+}
+
+/// Whether `text` ends with a syntax item that isn't stacked, in `f`'s
+/// language.
+fn ends_with_item(f: &SourceFile, text: &str) -> bool {
+    let Some(lang) = f.lang else {
+        return false;
+    };
+    let end = text.trim_end().len();
+    syntax::items(lang.selectors(), &lang.parse(text), text)
+        .iter()
+        .any(|i| i.range.end >= end && !syntax::find_kind(i.kind).is_some_and(|k| k.stacked))
+}
+
+/// The full lines of the widest unstacked item in `f` that has leading doc
+/// comments or attributes and whose first line starts at `start`.
+fn item_lines_at(f: &SourceFile, start: usize) -> Option<Range<usize>> {
+    let t = &f.text;
+    f.items()?
+        .iter()
+        .filter(|i| {
+            i.range.start < i.node.start && !syntax::find_kind(i.kind).is_some_and(|k| k.stacked)
+        })
+        .map(|i| text::full_lines(t, i.range.clone()))
+        .filter(|full| full.start == start)
+        .max_by_key(|full| full.end)
 }
 
 /// The text `move` carries from `range`: its full lines, to be re-based, if
@@ -3617,6 +3657,56 @@ mod tests {
         assert_eq!(
             edited(MOVE, r#"insert after 13 "fn z() {}""#),
             MOVE.replace("fn helper_y() {}\n", "fn helper_y() {}\nfn z() {}\n")
+        );
+    }
+
+    #[test]
+    fn inserting_an_item_before_an_items_docs_separates_it() {
+        let text = "fn z() {}\n\n/// Doc.\n#[inline]\nfn a() {}\n";
+        let separated = "fn z() {}\n\nfn b() {}\n\n/// Doc.\n#[inline]\nfn a() {}\n";
+        assert_eq!(edited(text, "insert before 3 \"fn b() {}\""), separated);
+        assert_eq!(
+            edited(text, "insert before \"/// Doc.\" <<END\nfn b() {}\nEND\n"),
+            separated
+        );
+        assert_eq!(
+            edited(
+                "fn z() {}\n#[test]\nfn a() {}\n\n",
+                "insert before 2 \"fn b() {}\""
+            ),
+            "fn z() {}\nfn b() {}\n\n#[test]\nfn a() {}\n\n"
+        );
+    }
+
+    #[test]
+    fn inserting_before_other_lines_adds_no_blank_line() {
+        let text = "fn z() {}\n\n/// Doc.\n#[inline]\nfn a() {}\n";
+        assert_eq!(
+            edited(text, "insert before 4 \"/// More.\""),
+            "fn z() {}\n\n/// Doc.\n/// More.\n#[inline]\nfn a() {}\n"
+        );
+        assert_eq!(
+            edited(text, "insert before 3 \"// c\""),
+            "fn z() {}\n\n// c\n/// Doc.\n#[inline]\nfn a() {}\n"
+        );
+        assert_eq!(
+            edited(text, "insert before 3 \"x();\""),
+            "fn z() {}\n\nx();\n/// Doc.\n#[inline]\nfn a() {}\n"
+        );
+        assert_eq!(
+            edited(text, "insert before 3 <<END\nfn b() {}\n\nEND\n"),
+            "fn z() {}\n\nfn b() {}\n\n/// Doc.\n#[inline]\nfn a() {}\n"
+        );
+        assert_eq!(
+            edited(
+                "fn z() {}\n/// Doc.\nfn a() {}\n",
+                "insert before 2 \"fn b() {}\""
+            ),
+            "fn z() {}\nfn b() {}\n/// Doc.\nfn a() {}\n"
+        );
+        assert_eq!(
+            edited("fn z() {}\n\nfn a() {}\n", "insert before 3 \"fn b() {}\""),
+            "fn z() {}\n\nfn b() {}\nfn a() {}\n"
         );
     }
 
