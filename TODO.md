@@ -234,6 +234,18 @@ of either kind.
 - [ ] `!!` repeats the last script that edited or failed, not a read-only call
       in between: after a failed edit, an `outline` to look around makes `!!`
       refer to the `outline`. A minor, since §1.2 changes
+- [ ] Several selectors after one `show` (`show fn:a fn:b`) suggest a `;` or a
+      new line between `show`s, instead of only "expected end of command"
+- [ ] A `-n` dry run's output says `!!` applies it: an agent that runs `!!`
+      after `-n` and then sends the script again applies the edit twice
+- [ ] A selector that matches nothing, where an earlier command in the script
+      inserts matching text, says selectors resolve against the stage's input
+      and suggests a `|` before the command
+- [ ] The off-by-one note fires when TEXT repeats the rest of the span's last
+      line wrapped across a line break: compare ignoring whitespace and line
+      breaks, not just whether TEXT ends with that rest
+- [ ] The skill says a subagent inherits its parent's `NED_SESSION`, so its
+      `ned undo` can revert the parent's edits; give a subagent its own `-s`
 
 ## Bugs
 
@@ -304,6 +316,15 @@ change is a minor, because it lifts a documented error.
       aligned to a delimiter rather than indented by levels) and preserve it
 - [ ] Re-basing keeps block-quote prefixes (`> `): inserted lines take the
       target line's `>` markers, not just its whitespace
+- [ ] Re-basing follows the text's own dedent: `replace LINE with` text that
+      closes the enclosing block and starts a top-level item (`}` then `fn g()`)
+      keeps the item at column 0, not the replaced line's indentation
+- [ ] `insert after N` where line N continues a statement (`.collect();`)
+      indents to the statement's first line, not the continuation's deeper
+      indent
+- [ ] `insert before` an item's first line (its doc comment or attributes) keeps
+      a blank line between the inserted item and the next, as
+      `insert before fn:x` does
 - [ ] `check`, `rename`, `.refs` and `.def` after a `|`: send the daemon each
       changed file's stage text instead of relying on the files on disk, and
       lift the syntax error
