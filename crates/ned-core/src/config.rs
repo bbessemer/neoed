@@ -19,6 +19,8 @@ pub struct Config {
     user: Option<Layer>,
     /// Parsed `.ned.toml` files by directory; `None` where there is none.
     layers: HashMap<PathBuf, Option<Layer>>,
+    /// New texts of config files by absolute path, read before the disk.
+    written: HashMap<PathBuf, String>,
 }
 
 /// The settings from one config file.
@@ -102,7 +104,19 @@ impl Config {
         Ok(Config {
             user: user.map(load).transpose()?.flatten(),
             layers: HashMap::new(),
+            written: HashMap::new(),
         })
+    }
+
+    /// Reads config files from `written`, the new texts by absolute path,
+    /// before the disk.
+    pub(crate) fn overlay(&mut self, written: &HashMap<PathBuf, &str>) {
+        for (path, text) in written {
+            if path.file_name() == Some(CONFIG_FILE.as_ref()) {
+                self.layers.remove(path.parent().unwrap_or(path));
+                self.written.insert(path.clone(), text.to_string());
+            }
+        }
     }
 
     /// The config files that apply in `dir` (absolute), nearest first, then
@@ -110,7 +124,11 @@ impl Config {
     pub(crate) fn layers(&mut self, dir: &Path) -> Result<Vec<&Layer>, ConfigError> {
         for ancestor in dir.ancestors() {
             if !self.layers.contains_key(ancestor) {
-                let layer = load(&ancestor.join(CONFIG_FILE))?;
+                let path = ancestor.join(CONFIG_FILE);
+                let layer = match self.written.get(&path) {
+                    Some(text) => Some(parse(&path, text)?),
+                    None => load(&path)?,
+                };
                 self.layers.insert(ancestor.to_path_buf(), layer);
             }
         }
@@ -177,16 +195,21 @@ fn load(path: &Path) -> Result<Option<Layer>, ConfigError> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(io_error(path, &err)),
     };
+    parse(path, &text).map(Some)
+}
+
+/// The config file at `path`, whose text is `text`.
+fn parse(path: &Path, text: &str) -> Result<Layer, ConfigError> {
     let error = |span: Option<std::ops::Range<usize>>, message: String| {
         let mut location = display(path);
         if let Some(span) = span {
-            let (line, col) = crate::script::error::location(&text, span.start);
+            let (line, col) = crate::script::error::location(text, span.start);
             location = format!("{location}:{line}:{col}");
         }
         ConfigError { location, message }
     };
     let raw: RawConfig =
-        toml::from_str(&text).map_err(|err| error(err.span(), err.message().trim().into()))?;
+        toml::from_str(text).map_err(|err| error(err.span(), err.message().trim().into()))?;
     let entries = |table: BTreeMap<Spanned<String>, Spanned<Value>>| {
         let mut entries = HashMap::new();
         for (key, value) in table {
@@ -227,7 +250,7 @@ fn load(path: &Path) -> Result<Option<Layer>, ConfigError> {
             }
         },
     };
-    Ok(Some(Layer {
+    Ok(Layer {
         dir: path.parent().unwrap_or(path).to_path_buf(),
         format: entries(raw.format)?,
         lsp: entries(lsp)?,
@@ -244,7 +267,7 @@ fn load(path: &Path) -> Result<Option<Layer>, ConfigError> {
                 return Err(error(None, "`block` must be a level or false".into()));
             }
         },
-    }))
+    })
 }
 
 /// Where to run `program`: relative to `base`, the directory of the config
@@ -310,6 +333,36 @@ pub(crate) mod tests {
             Ok(Some(1800))
         );
         assert_eq!(config.idle_timeout(root.path()), Ok(Some(60)));
+    }
+
+    #[test]
+    fn overlay_texts_replace_the_disk_even_once_read() {
+        let root = tree(&[
+            (".ned.toml", "[daemon]\nidle_timeout = 60\n"),
+            ("ws/.ned.toml", "[daemon]\nidle_timeout = 1800\n"),
+        ]);
+        let (ws, new) = (root.path().join("ws"), root.path().join("ws/new"));
+        let mut config = Config::new(None).unwrap();
+        assert_eq!(config.idle_timeout(&new), Ok(Some(1800)));
+        config.overlay(&HashMap::from([
+            (ws.join(".ned.toml"), "[daemon]\nidle_timeout = 5\n"),
+            (new.join(".ned.toml"), "[check]\nshow = \"error\"\n"),
+        ]));
+        assert_eq!(config.idle_timeout(&new), Ok(Some(5)));
+        assert_eq!(config.check_show(&new), Ok(Some(Severity::Error)));
+        assert_eq!(config.idle_timeout(root.path()), Ok(Some(60)));
+    }
+
+    #[test]
+    fn overlay_errors_point_into_the_new_text() {
+        let root = tree(&[]);
+        let mut config = Config::new(None).unwrap();
+        config.overlay(&HashMap::from([(
+            root.path().join(".ned.toml"),
+            "\n[lsp]\nrust = \"rust-analyzer\"\n",
+        )]));
+        let err = config.layers(root.path()).map(|_| ()).unwrap_err();
+        assert!(err.location.ends_with(".ned.toml:3:8"), "{err}");
     }
 
     #[test]

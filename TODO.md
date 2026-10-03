@@ -272,7 +272,7 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [x] `impl:"Log<'_>"` matches nothing in a file with `impl Log<'_>`, and the
       hint is only "`outline` lists the items": suggest `impl:Log`, the name
       without its generic arguments
-- [ ] A `.ned.toml` the script creates or edits is ignored: `Config::layers`
+- [x] A `.ned.toml` the script creates or edits is ignored: `Config::layers`
       (`config.rs`) loads layers from disk, though `{edition}` now reads
       manifests the script writes
 - [ ] `replace "LINE\n" with ""` leaves an empty line where the whole line was

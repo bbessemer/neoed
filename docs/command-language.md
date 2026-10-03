@@ -1103,7 +1103,7 @@ python = false
 - Settings are merged per language, with later sources winning: the defaults,
   then the user config (`$XDG_CONFIG_HOME/ned/config.toml`, or
   `~/.config/ned/config.toml`), then every `.ned.toml` from the filesystem root
-  down to the file's directory.
+  down to the file's directory, as the script leaves them.
 - In a command, `{path}` is the file's absolute path, and `{edition}` is the
   Rust edition from the nearest `Cargo.toml` as the script leaves it (following
   `edition.workspace = true`), or `2015` if there is none.
