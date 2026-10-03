@@ -892,8 +892,9 @@ Notes:
   - a whole-line span whose `TEXT` starts with a copy of the line just above it,
     or ends with a copy of the line just below;
   - a partial span whose `TEXT` ends with the rest of the span's last line, or
-    starts with what precedes the span on its first line. On a single-line span,
-    the note suggests selecting its line with `.lines`.
+    starts with what precedes the span on its first line, ignoring whitespace
+    and line breaks (`TEXT` may re-wrap them). On a single-line span, the note
+    suggests selecting its line with `.lines`.
 - **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
   lines in a row, a blank line right after an opening delimiter (or a line
   ending in `:`, as in Python) or right before a closing one, or a blank line at

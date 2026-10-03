@@ -1683,6 +1683,8 @@ fn only_leading(f: &SourceFile, text: &str) -> bool {
 fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) -> Option<String> {
     let t = &f.text;
     let counts = |s: &str| s.chars().any(char::is_alphanumeric);
+    // `TEXT` may re-wrap what it repeats, so whitespace doesn't count either.
+    let squash = |s: &str| s.split_whitespace().collect::<String>();
     let line_of = |offset: usize| f.buffer.byte_to_line(offset).map_or(0, |l| l + 1);
     let at = format!("{}:{}", f.path, line_of(range.start));
     let value = new.value.trim_matches(['\n', '\r']);
@@ -1733,13 +1735,13 @@ fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) 
         true => String::new(),
         false => format!("; to replace whole lines, select {selector}.lines"),
     };
-    if counts(after) && value.trim_end().ends_with(after) {
+    if counts(after) && squash(value).ends_with(&squash(after)) {
         return Some(format!(
             "{at}: the new text ends with `{after}`, which already follows the replaced \
              text on its line{fix}"
         ));
     }
-    if counts(before) && value.trim_start().starts_with(before) {
+    if counts(before) && squash(value).starts_with(&squash(before)) {
         return Some(format!(
             "{at}: the new text starts with `{before}`, which already precedes the \
              replaced text on its line{fix}"
@@ -3507,6 +3509,28 @@ mod tests {
               replaced text on its line"
             ]
         );
+    }
+
+    #[test]
+    fn rewrapping_the_rest_of_a_line_still_leaves_a_note() {
+        let notes = |script: &str| exec("let a = f(b) + c(d);\n", script).notes;
+        assert_eq!(
+            notes("replace \"let a\" with \"let x = f(b) +\\n    c( d );\""),
+            [
+                "a.rs:1: the new text ends with `= f(b) + c(d);`, which already follows \
+              the replaced text on its line; to replace whole lines, select \"let a\".lines"
+            ]
+        );
+        assert_eq!(
+            notes("replace \"c(d)\" with \"let a = f(b)\\n    + e(d)\""),
+            [
+                "a.rs:1: the new text starts with `let a = f(b) +`, which already precedes \
+              the replaced text on its line; to replace whole lines, select \"c(d)\".lines"
+            ]
+        );
+        // A changed rest is no copy, and an empty rest counts for nothing.
+        assert!(notes("replace \"let a\" with \"let x =\\n    g(b) + c(d);\"").is_empty());
+        assert!(notes("replace \"c(d);\" with \"e(d);\\n\"").is_empty());
     }
 
     #[test]

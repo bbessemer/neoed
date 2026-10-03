@@ -241,7 +241,7 @@ of either kind.
 - [ ] A selector that matches nothing, where an earlier command in the script
       inserts matching text, says selectors resolve against the stage's input
       and suggests a `|` before the command
-- [ ] The off-by-one note fires when TEXT repeats the rest of the span's last
+- [x] The off-by-one note fires when TEXT repeats the rest of the span's last
       line wrapped across a line break: compare ignoring whitespace and line
       breaks, not just whether TEXT ends with that rest
 - [x] The skill says a subagent inherits its parent's `NED_SESSION`, so its
