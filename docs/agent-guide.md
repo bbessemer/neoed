@@ -53,10 +53,11 @@ and `ned help TOPIC` document the rest.
 **Sessions.** With `NED_SESSION` set in the agent's environment, `ned` records
 its invocations, so the agent can undo an edit and repeat a failed command with
 a fix, and you can follow its work with `ned history`. Give each conversation
-its own session, so one agent's `undo` never reverts another's edit. In Claude
-Code, a `SessionStart` hook names the session after the conversation: add it to
-`.claude/settings.json` (for one project) or `~/.claude/settings.json` (for all
-of them). It needs `jq`.
+its own session, so one agent's `undo` never reverts another's edit; give a
+subagent its own `-s NAME`, which overrides the `NED_SESSION` it inherits. In
+Claude Code, a `SessionStart` hook names the session after the conversation: add
+it to `.claude/settings.json` (for one project) or `~/.claude/settings.json`
+(for all of them). It needs `jq`.
 
 ```json
 {

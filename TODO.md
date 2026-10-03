@@ -244,7 +244,7 @@ of either kind.
 - [ ] The off-by-one note fires when TEXT repeats the rest of the span's last
       line wrapped across a line break: compare ignoring whitespace and line
       breaks, not just whether TEXT ends with that rest
-- [ ] The skill says a subagent inherits its parent's `NED_SESSION`, so its
+- [x] The skill says a subagent inherits its parent's `NED_SESSION`, so its
       `ned undo` can revert the parent's edits; give a subagent its own `-s`
 
 ## Bugs

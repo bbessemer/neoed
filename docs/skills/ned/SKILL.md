@@ -73,6 +73,9 @@ ned -e '!!:s/prase/parse/'
 ned undo
 ```
 
+A subagent inherits `NED_SESSION`, so its `undo` or `!!` could act on its
+parent's calls: give each subagent its own `-s NAME`, which overrides it.
+
 ## Workflow
 
 1. `outline` to find the item. Each line is a selector you can paste back.
