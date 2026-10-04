@@ -1,0 +1,22 @@
+```ned
+$ ned src/parser.rs <<'EOF'
+replace fn:parse>"unexpected end" with "empty input"
+delete fn:debug_dump
+EOF
+```
+
+```diff
+src/parser.rs: 2 edits, +1 -5
+@@ -19,3 +19,3 @@
+     pub fn parse(&mut self) -> Result<Expr, Error> {
+-        let tok = self.lex.next().ok_or(Error::new("unexpected end"))?;
++        let tok = self.lex.next().ok_or(Error::new("empty input"))?;
+         self.parse_expr(tok)
+@@ -29,6 +29,2 @@
+         }
+-    }
+-
+-    fn debug_dump(&self) {
+-        eprintln!("{:?}", self.depth);
+     }
+```
