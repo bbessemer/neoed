@@ -22,7 +22,7 @@ pub struct DiffStat {
 impl DiffStat {
     pub fn between(old: &str, new: &str) -> Self {
         let mut stat = DiffStat::default();
-        for change in TextDiff::from_lines(old, new).iter_all_changes() {
+        for change in TextDiff::from_slices(&lines(old), &lines(new)).iter_all_changes() {
             match change.tag() {
                 ChangeTag::Insert => stat.added += 1,
                 ChangeTag::Delete => stat.removed += 1,
@@ -61,7 +61,15 @@ pub fn removed_summary(path: &str, stat: DiffStat) -> String {
 
 /// The number of separate changed regions between two texts.
 pub fn regions(old: &str, new: &str) -> usize {
-    TextDiff::from_lines(old, new).grouped_ops(0).len()
+    TextDiff::from_slices(&lines(old), &lines(new))
+        .grouped_ops(0)
+        .len()
+}
+
+/// A text's lines, each with its line ending. Only `\n` ends a line, as
+/// everywhere in ned; `similar`'s own line splitting also breaks at a lone `\r`.
+fn lines(text: &str) -> Vec<&str> {
+    text.split_inclusive('\n').collect()
 }
 
 /// A three-way merge of whole lines: `ours` and `theirs` are both edits of
@@ -69,7 +77,6 @@ pub fn regions(old: &str, new: &str) -> usize {
 /// or insert at the same point, conflict unless identical: the error is the
 /// first one's line in `ours` (from 1).
 pub fn merge(base: &str, ours: &str, theirs: &str) -> Result<String, usize> {
-    let lines = |text| -> Vec<&str> { str::split_inclusive(text, '\n').collect() };
     let (base, ours, theirs) = (lines(base), lines(ours), lines(theirs));
     let (mine, other) = (changes(&base, &ours), changes(&base, &theirs));
     let mut all: Vec<&Change> = Vec::new();
@@ -171,14 +178,10 @@ impl<'a> Side<'a> {
 /// rendered with `\n` line endings; in colour, each line's code is
 /// highlighted as its side's language, from the text it belongs to.
 pub fn hunks(old: &Side, new: &Side, context: usize, style: Style) -> String {
-    let diff = TextDiff::from_lines(old.text, new.text);
+    let split = [lines(old.text), lines(new.text)];
+    let diff = TextDiff::from_slices(&split[0], &split[1]);
     let sides = [old, new];
-    let starts = (style == Style::Color).then(|| {
-        [
-            starts(diff.iter_old_slices()),
-            starts(diff.iter_new_slices()),
-        ]
-    });
+    let starts = (style == Style::Color).then(|| split.each_ref().map(|l| starts(l)));
     let mut out = String::new();
     for hunk in diff.unified_diff().context_radius(context).iter_hunks() {
         let ops = hunk.ops();
@@ -229,10 +232,9 @@ pub fn hunks(old: &Side, new: &Side, context: usize, style: Style) -> String {
     out
 }
 
-/// The offset of each of `lines`, and then of their end, as the diff split
-/// them: at `\n`, `\r\n` or a lone `\r`.
-fn starts<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<usize> {
-    let ends = lines.scan(0, |at, line| {
+/// The offset of each of `lines`, and then of their end.
+fn starts(lines: &[&str]) -> Vec<usize> {
+    let ends = lines.iter().scan(0, |at, line| {
         *at += line.len();
         Some(*at)
     });
@@ -585,6 +587,50 @@ impl Parser {
             let last = found.lines().last().unwrap();
             assert!(last.contains(r"\e[34m"), "{found}");
         }
+    }
+
+    #[test]
+    fn a_lone_cr_does_not_end_a_line() {
+        let old = "a\rb\nc\nd\ne\n";
+        let new = "a\rb\nc\nD\ne\n";
+        assert_eq!(
+            hunks(
+                &Side::new(old, None),
+                &Side::new(new, None),
+                1,
+                Style::Plain
+            ),
+            "@@ -2,3 +2,3 @@\n c\n-d\n+D\n e\n"
+        );
+        assert_eq!(
+            DiffStat::between(old, new),
+            DiffStat {
+                added: 1,
+                removed: 1
+            }
+        );
+    }
+
+    #[test]
+    fn a_change_to_a_line_with_a_lone_cr_is_one_line() {
+        let (old, new) = ("a\rb\nc\n", "a\rB\nc\n");
+        assert_eq!(
+            hunks(
+                &Side::new(old, None),
+                &Side::new(new, None),
+                0,
+                Style::Plain
+            ),
+            "@@ -1,1 +1,1 @@\n-a\rb\n+a\rB\n"
+        );
+        assert_eq!(
+            DiffStat::between(old, new),
+            DiffStat {
+                added: 1,
+                removed: 1
+            }
+        );
+        assert_eq!(regions(old, new), 1);
     }
 
     #[test]

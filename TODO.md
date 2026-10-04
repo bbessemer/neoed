@@ -5,7 +5,7 @@ too large for one PR: they carry a checklist of coarse chunks to plan with the
 engineer before starting each one; a single-PR item has none, and moves to Done
 when it lands.
 
-Versions follow semver at 0.x (currently 0.6.2): a change to the command
+Versions follow semver at 0.x (currently 0.6.3): a change to the command
 language or any new user-visible feature bumps the minor version, and a release
 that only fixes bugs or adds hints bumps the patch version. Each item below says
 which it is. When to release 1.0 is TBD.
@@ -245,6 +245,16 @@ of either kind.
 - [x] `!!` after a `-n` dry run is an error unless it has `-n` too: it would
       apply what was only previewed, and an agent that then sends the script
       again applies the edit twice
+- [x] Several selectors after one `show` (`show fn:a fn:b`) suggest a `;` or a
+      new line between `show`s, instead of only "expected end of command"
+- [x] A selector that matches nothing, where an earlier command in the script
+      inserts matching text, says selectors resolve against the stage's input
+      and suggests a `|` before the command
+- [x] The off-by-one note fires when TEXT repeats the rest of the span's last
+      line wrapped across a line break: compare ignoring whitespace and line
+      breaks, not just whether TEXT ends with that rest
+- [x] The skill says a subagent inherits its parent's `NED_SESSION`, so its
+      `ned undo` can revert the parent's edits; give a subagent its own `-s`
 
 ## Bugs
 
@@ -283,18 +293,18 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [x] `impl:"Log<'_>"` matches nothing in a file with `impl Log<'_>`, and the
       hint is only "`outline` lists the items": suggest `impl:Log`, the name
       without its generic arguments
-- [ ] A `.ned.toml` the script creates or edits is ignored: `Config::layers`
+- [x] A `.ned.toml` the script creates or edits is ignored: `Config::layers`
       (`config.rs`) loads layers from disk, though `{edition}` now reads
       manifests the script writes
-- [ ] `replace "LINE\n" with ""` leaves an empty line where the whole line was
+- [x] `replace "LINE\n" with ""` leaves an empty line where the whole line was
       selected; empty TEXT for whole lines should remove them, as `delete` does
 - [ ] `.lines` on a multi-line literal that matches once
       (`insert after "- a b\n  c d".lines "x"`) says "matches 2 items" and lists
       identical candidates
-- [ ] Rust `show fn:f.sig` prints the whole first line, `{` included, though
+- [x] Rust `show fn:f.sig` prints the whole first line, `{` included, though
       `.sig` ends before the `{`: `replace fn:f.sig with "fn f(b: u8) {"`
       doubles the brace, and the guard's error points at 1:1, not at the edit
-- [ ] An escape such as `\x27` in a heredoc inside a single-quoted `-e` script
+- [x] An escape such as `\x27` in a heredoc inside a single-quoted `-e` script
       goes in literally (heredocs don't read escapes): the skill should say to
       pass a script with `'` on stdin, or `ned` could hint at it when the guard
       rejects text holding `\x27`
@@ -305,7 +315,7 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       paths with one `ls-tree -z` and one `ls-files -s -z`, read blobs with
       `cat-file --batch`, and feed `check-ignore --stdin`,
       `hash-object --stdin-paths` and `update-index --index-info` on stdin
-- [ ] With a lone `\r` line ending, diff hunk headers count it as a line break
+- [x] With a lone `\r` line ending, diff hunk headers count it as a line break
       (`similar` splits lines there), so their line numbers disagree with ned's
       `\n`-only ones
 - [ ] Replacing a conflict whose sides are all empty puts the text at column 0
@@ -314,7 +324,7 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       block in the tree
 - [ ] In a session, an untracked file that is edited and then undone still goes
       whole into the next `--commit`
-- [ ] A syntax pattern can't match the tail of a method chain after a receiver
+- [x] A syntax pattern can't match the tail of a method chain after a receiver
       (`` `let n = files[i] @_...;` ``), nor a match arm whose value is a chain
       (`` `Primary::Conflict(_) => f @_...,` ``)
 
@@ -328,6 +338,15 @@ change is a minor, because it lifts a documented error.
       aligned to a delimiter rather than indented by levels) and preserve it
 - [ ] Re-basing keeps block-quote prefixes (`> `): inserted lines take the
       target line's `>` markers, not just its whitespace
+- [x] Re-basing follows the text's own dedent: `replace LINE with` text that
+      closes the enclosing block and starts a top-level item (`}` then `fn g()`)
+      keeps the item at column 0, not the replaced line's indentation
+- [x] `insert after N` where line N continues a statement (`.collect();`)
+      indents to the statement's first line, not the continuation's deeper
+      indent
+- [x] `insert before` an item's first line (its doc comment or attributes) keeps
+      a blank line between the inserted item and the next, as
+      `insert before fn:x` does
 - [ ] `check`, `rename`, `.refs` and `.def` after a `|`: send the daemon each
       changed file's stage text instead of relying on the files on disk, and
       lift the syntax error

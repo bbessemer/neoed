@@ -2,7 +2,8 @@ replace [all] SEL with TEXT
 
 Replaces each span of SEL with TEXT. A whole-line span (a syntax item, a line
 range, a heredoc match) takes TEXT as whole lines, re-indented to the span's
-first line. A partial span, such as a string match, takes TEXT verbatim.
+first line; empty TEXT removes them, as delete does. A partial span, such as a
+string match, takes TEXT verbatim.
 A field or variant keeps its trailing `,`, and a syntax item its doc comments
 and attributes unless TEXT starts with its own. `$` is never expanded; use
 `sub`. With a pattern in SEL, @name in TEXT is its capture (ned help patterns).

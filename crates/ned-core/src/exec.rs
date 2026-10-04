@@ -127,9 +127,9 @@ struct Loaded {
     edits: EditSet,
     /// The whole-line deletions among `edits`, for merging neighbours.
     deletions: Vec<Deletion>,
-    /// Whether `edits` replace a Python `.sig` with text ending in `:`, which
-    /// the parse-error guard's error then explains (§4.3).
-    sig_colon: bool,
+    /// The character after a `.sig` that `edits` replace with text ending in
+    /// it, which the parse-error guard's error then explains (§4.3).
+    sig_end: Option<char>,
     /// Made by `create`: its original text is what `create` gave it.
     created: bool,
     /// The text before the first `|` changed it (§2.3), and the edits
@@ -198,7 +198,9 @@ impl Executor<'_> {
             if script.stages.contains(&index) {
                 self.commit()?;
             }
-            self.command(index, command)?;
+            if let Err(e) = self.command(index, command) {
+                return Err(self.pipe_hint(index, command, e));
+            }
         }
         // Files are read as commands need them, so they're reported in the
         // order the script named them instead.
@@ -248,9 +250,38 @@ impl Executor<'_> {
             l.file = SourceFile::new(&l.file.path, new, l.file.lang);
             l.edits = EditSet::new(&l.file.buffer);
             l.deletions.clear();
-            l.sig_colon = false;
+            l.sig_end = None;
         }
         Ok(())
+    }
+
+    /// Hints at a `|` when `error` is a selector that matches nothing in this
+    /// stage's input but matches once the stage's earlier edits apply (§2.3).
+    fn pipe_hint(&mut self, index: usize, command: &Command, mut error: ExecError) -> ExecError {
+        let ExecErrorKind::NoMatch { hint, .. } = &mut error.kind else {
+            return error;
+        };
+        if self.files.iter().all(|l| l.edits.is_empty()) {
+            return error;
+        }
+        // The script has failed, so this run's state can be spent on the trial,
+        // as long as it prints nothing and asks no language server.
+        let (output, notes) = (self.output.len(), self.notes.len());
+        self.lsp = None;
+        if self.commit().is_err() {
+            return error;
+        }
+        let retry = self.command(index, command);
+        self.output.truncate(output);
+        self.notes.truncate(notes);
+        let unmatched =
+            |e: &ExecError| e.span == error.span && matches!(e.kind, ExecErrorKind::NoMatch { .. });
+        if !retry.as_ref().is_err_and(unmatched) {
+            *hint = "; it matches only after the edits before it, which a stage's selectors \
+                don't see: put a `|` before the command"
+                .into();
+        }
+        error
     }
 
     /// The language of the file at `path`, holding `text`, from `--lang` or
@@ -277,7 +308,12 @@ impl Executor<'_> {
         let text = if new.value.is_empty() {
             String::new()
         } else {
-            line_oriented(new, "", lang.map_or("    ", |l| l.default_indent()))
+            line_oriented(
+                new,
+                "",
+                lang.map_or("    ", |l| l.default_indent()),
+                text::rebase,
+            )
         };
         let file = SourceFile::new(path, text, lang);
         let edits = EditSet::new(&file.buffer);
@@ -285,7 +321,7 @@ impl Executor<'_> {
             file,
             edits,
             deletions: Vec::new(),
-            sig_colon: false,
+            sig_end: None,
             original: None,
             applied: 0,
             created: true,
@@ -403,7 +439,7 @@ impl Executor<'_> {
             file,
             edits,
             deletions: Vec::new(),
-            sig_colon: false,
+            sig_end: None,
             original: None,
             applied: 0,
             created: false,
@@ -456,14 +492,26 @@ impl Executor<'_> {
                         }
                         false => text,
                     };
+                    if text.value.is_empty()
+                        && !m.range.is_empty()
+                        && text::is_whole_line(&f.text, &m.range)
+                    {
+                        self.delete(index, span, m.file, m.range)?;
+                        continue;
+                    }
                     let selector = &self.src[target.selector.span.clone()];
                     if let Some(note) = off_by_one(f, &m.range, text, selector) {
                         self.notes.push(note);
                     }
+                    let after = f.text[m.range.end..].trim_start_matches([' ', '\t']);
+                    let sig_end = after.chars().next().filter(|&c| {
+                        last == Some(&Part::Sig)
+                            && c.is_ascii_punctuation()
+                            && text.value.trim_end().ends_with(c)
+                    });
                     let (range, new) = replace(f, m.range, text, whole);
-                    if last == Some(&Part::Sig) && text.value.trim_end().ends_with(':') {
-                        let l = &mut self.files[m.file];
-                        l.sig_colon |= l.file.lang == Some(Language::Python);
+                    if sig_end.is_some() {
+                        self.files[m.file].sig_end = sig_end;
                     }
                     self.push(index, span, m.file, range, new)?;
                 }
@@ -1518,7 +1566,7 @@ fn fill_body(
         // The lines right after the heading or docstring, which may end the
         // file, at that line's indentation.
         let indent = text::indent_at(t, range.start.saturating_sub(1));
-        let lines = line_oriented(new, indent, unit);
+        let lines = line_oriented(new, indent, unit, text::rebase);
         let lead = if t[..range.start].ends_with('\n') {
             ""
         } else {
@@ -1527,7 +1575,7 @@ fn fill_body(
         return (range, format!("{lead}{lines}"));
     }
     let indent = format!("{}{unit}", text::indent_at(t, item.node.start));
-    let lines = line_oriented(new, &indent, unit);
+    let lines = line_oriented(new, &indent, unit, text::rebase);
     let body = item.body.clone().expect("an empty body is a body");
     let inner = body.start + 1..body.end - 1;
     if t[inner.clone()].contains('\n') {
@@ -1570,20 +1618,40 @@ fn guard(l: &Loaded, new: &str) -> Result<(), ExecError> {
         .iter()
         .find(|n| n.start_byte() <= changed.end && changed.start <= n.end_byte())
         .unwrap_or(&errors[0]);
-    let (line, column) = location(new, node.start_byte());
+    // An `ERROR` node can start well before the edits, even span the file.
+    let start = node.start_byte().max(changed.start.min(node.end_byte()));
+    let (line, column) = location(new, start);
     Err(ExecError::new(
         ExecErrorKind::SyntaxError {
             location: format!("{}:{line}:{column}", f.path),
-            hint: match l.sig_colon {
-                true => "; Python `.sig` stops before the `:`, so leave it out of TEXT".into(),
-                false => String::new(),
-            },
-            excerpt: excerpt(new, node.start_byte())
+            hint: match l.sig_end {
+                Some(c) => {
+                    format!("; `.sig` stops before the `{c}`, so leave it out of TEXT")
+                }
+                None => String::new(),
+            } + &escape_hint(&new[changed]),
+            excerpt: excerpt(new, start)
                 .map(|e| format!("\n{e}"))
                 .unwrap_or_default(),
         },
         None,
     ))
+}
+
+/// The guard's hint for `text`, edited text that holds an escape such as
+/// `\x27`, which a heredoc takes as written; empty if it holds none.
+fn escape_hint(text: &str) -> String {
+    text.match_indices("\\x")
+        .find_map(|(i, _)| {
+            let digits = text.get(i + 2..i + 4)?;
+            digits.bytes().all(|b| b.is_ascii_hexdigit()).then_some(digits)
+        })
+        .map(|digits| {
+            format!(
+                "; heredocs read no escapes, so `\\x{digits}` went in as written: pass a script that holds a ' on stdin (ned FILE <<'EOF') instead of escaping it into -e"
+            )
+        })
+        .unwrap_or_default()
 }
 
 /// The `ERROR` and `MISSING` nodes of `tree`, a parse of `text`, and the
@@ -1678,7 +1746,7 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text, whole: bool) -> (Ran
     };
     let unit = f.indent_unit();
     if let Some((_, c)) = f.conflict_at(&range) {
-        let mut new = line_oriented(new, side_indent(t, c), unit);
+        let mut new = line_oriented(new, side_indent(t, c), unit, text::rebase_replacing);
         if !range.is_empty() && !t[..range.end].ends_with('\n') {
             new.pop();
         }
@@ -1690,7 +1758,7 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text, whole: bool) -> (Ran
             Some(item) => text::indent_at(t, item.range.start),
             None => text::indent_at(t, full.start),
         };
-        let mut new = line_oriented(new, indent, unit);
+        let mut new = line_oriented(new, indent, unit, text::rebase_replacing);
         if !t[..full.end].ends_with('\n') {
             new.pop();
         }
@@ -1764,6 +1832,8 @@ fn only_leading(f: &SourceFile, text: &str) -> bool {
 fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) -> Option<String> {
     let t = &f.text;
     let counts = |s: &str| s.chars().any(char::is_alphanumeric);
+    // `TEXT` may re-wrap what it repeats, so whitespace doesn't count either.
+    let squash = |s: &str| s.split_whitespace().collect::<String>();
     let line_of = |offset: usize| f.buffer.byte_to_line(offset).map_or(0, |l| l + 1);
     let at = format!("{}:{}", f.path, line_of(range.start));
     let value = new.value.trim_matches(['\n', '\r']);
@@ -1814,13 +1884,13 @@ fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) 
         true => String::new(),
         false => format!("; to replace whole lines, select {selector}.lines"),
     };
-    if counts(after) && value.trim_end().ends_with(after) {
+    if counts(after) && squash(value).ends_with(&squash(after)) {
         return Some(format!(
             "{at}: the new text ends with `{after}`, which already follows the replaced \
              text on its line{fix}"
         ));
     }
-    if counts(before) && value.trim_start().starts_with(before) {
+    if counts(before) && squash(value).starts_with(&squash(before)) {
         return Some(format!(
             "{at}: the new text starts with `{before}`, which already precedes the \
              replaced text on its line{fix}"
@@ -1849,7 +1919,9 @@ fn with_trailing_comma<'t>(f: &SourceFile, range: &Range<usize>, new: &'t Text) 
 }
 
 /// `new`, with a blank line separating it from the syntax item at `range`
-/// when inserting before or after an item that has one (§4.2).
+/// when inserting before or after an item that has one (§4.2). Inserting an
+/// item before the line or match that starts an item's docs is inserting
+/// before the item.
 fn separated<'t>(
     f: &SourceFile,
     target: &Target,
@@ -1857,15 +1929,27 @@ fn separated<'t>(
     range: &Range<usize>,
     new: &'t Text,
 ) -> Cow<'t, Text> {
-    let item = matches!(
-        target.selector.steps.last(),
-        Some(Step { primary: Primary::Syntax { kind, .. }, parts, .. }) if parts.is_empty() && !syntax::find_kind(kind).is_some_and(|k| k.stacked)
-    );
     let t = &f.text;
-    if !item
-        || !text::is_whole_line(t, range)
-        || !text::blank_separated(t, text::full_lines(t, range.clone()))
-    {
+    if !text::is_whole_line(t, range) {
+        return Cow::Borrowed(new);
+    }
+    let item = match target.selector.steps.last() {
+        Some(Step {
+            primary: Primary::Syntax { kind, .. },
+            parts,
+            ..
+        }) => (parts.is_empty() && !syntax::find_kind(kind).is_some_and(|k| k.stacked))
+            .then(|| text::full_lines(t, range.clone())),
+        Some(Step { parts, .. })
+            if parts.is_empty()
+                && matches!(position, Position::Before)
+                && ends_with_item(f, &new.value) =>
+        {
+            item_lines_at(f, range.start)
+        }
+        _ => None,
+    };
+    if !item.is_some_and(|full| text::blank_separated(t, full)) {
         return Cow::Borrowed(new);
     }
     let blank = |line: Option<&str>| line.is_some_and(|l| l.trim().is_empty());
@@ -1886,6 +1970,32 @@ fn separated<'t>(
         _ => return Cow::Borrowed(new),
     }
     Cow::Owned(Text { value, kind })
+}
+
+/// Whether `text` ends with a syntax item that isn't stacked, in `f`'s
+/// language.
+fn ends_with_item(f: &SourceFile, text: &str) -> bool {
+    let Some(lang) = f.lang else {
+        return false;
+    };
+    let end = text.trim_end().len();
+    syntax::items(lang.selectors(), &lang.parse(text), text)
+        .iter()
+        .any(|i| i.range.end >= end && !syntax::find_kind(i.kind).is_some_and(|k| k.stacked))
+}
+
+/// The full lines of the widest unstacked item in `f` that has leading doc
+/// comments or attributes and whose first line starts at `start`.
+fn item_lines_at(f: &SourceFile, start: usize) -> Option<Range<usize>> {
+    let t = &f.text;
+    f.items()?
+        .iter()
+        .filter(|i| {
+            i.range.start < i.node.start && !syntax::find_kind(i.kind).is_some_and(|k| k.stacked)
+        })
+        .map(|i| text::full_lines(t, i.range.clone()))
+        .filter(|full| full.start == start)
+        .max_by_key(|full| full.end)
 }
 
 /// The text `move` carries from `range`: its full lines, to be re-based, if
@@ -1956,7 +2066,10 @@ fn insert(
     if range.is_empty()
         && let Some((_, c)) = f.conflict_at(&range)
     {
-        return (range, line_oriented(new, side_indent(t, c), unit));
+        return (
+            range,
+            line_oriented(new, side_indent(t, c), unit, text::rebase),
+        );
     }
     if !text::is_whole_line(t, &range) {
         let at = match position {
@@ -1986,17 +2099,22 @@ fn insert(
     let match_end = selector.steps.last().is_some_and(|s| {
         s.parts.is_empty() && matches!(s.primary, Primary::Regex(_) | Primary::Literal(_))
     });
-    let after = match anchor {
-        None if match_end => text::last_indent(t, full.clone()).unwrap_or(first),
-        _ => first,
-    };
     let (at, indent) = match position {
         Position::Before => (full.start, first),
-        Position::After => (full.end, after),
+        Position::After => {
+            let indent = anchor.map_or_else(
+                || {
+                    let line = after_line(t, full.clone(), match_end);
+                    construct_indent(f, line).unwrap_or(text::indent_at(t, line))
+                },
+                |_| first,
+            );
+            (full.end, indent)
+        }
         Position::Start => (full.start, inner.as_str()),
         Position::End => (full.end, inner.as_str()),
     };
-    let mut new = line_oriented(new, indent, unit);
+    let mut new = line_oriented(new, indent, unit, text::rebase);
     if at == full.end && !full.is_empty() && !t[..at].ends_with('\n') {
         // The span's last line has no line ending; give it one instead.
         new.pop();
@@ -2015,11 +2133,17 @@ fn removal(f: &SourceFile, range: Range<usize>) -> Range<usize> {
     }
 }
 
-/// `new` as line-oriented text: re-based (unless raw), with a final newline.
-fn line_oriented(new: &Text, indent: &str, unit: &str) -> String {
+/// `new` as line-oriented text: re-based with `rebase` (unless raw), with a
+/// final newline.
+fn line_oriented(
+    new: &Text,
+    indent: &str,
+    unit: &str,
+    rebase: fn(&str, &str, &str) -> String,
+) -> String {
     let mut out = match new.kind {
         TextKind::RawHeredoc => new.value.clone(),
-        TextKind::Str | TextKind::Heredoc => text::rebase(lines_of(new), indent, unit),
+        TextKind::Str | TextKind::Heredoc => rebase(lines_of(new), indent, unit),
     };
     out.push('\n');
     out
@@ -2032,6 +2156,55 @@ fn lines_of(new: &Text) -> &str {
         TextKind::Str => new.value.strip_suffix('\n').unwrap_or(&new.value),
         _ => &new.value,
     }
+}
+
+/// The start of the line `insert after` takes its indentation from (§5.2):
+/// the first line of the whole lines `full`, or its last non-blank line after
+/// a match.
+fn after_line(t: &str, full: Range<usize>, match_end: bool) -> usize {
+    if !match_end {
+        return full.start;
+    }
+    let end = full.start + t[full.clone()].trim_end().len();
+    text::line_start(t, end).max(full.start)
+}
+
+/// The indentation of the construct that the line starting at `line` ends,
+/// when it begins on an earlier line (§5.2).
+fn construct_indent(f: &SourceFile, line: usize) -> Option<&str> {
+    let t = &f.text;
+    let content = &t[line..t[line..].find('\n').map_or(t.len(), |i| line + i)];
+    let first = line + content.len() - content.trim_start().len();
+    let end = line + content.trim_end().len();
+    if first >= end {
+        return None;
+    }
+    let mut node = f
+        .tree()?
+        .root_node()
+        .descendant_for_byte_range(first, first)?;
+    while let Some(parent) = node.parent() {
+        if parent.end_byte() > end || lays_out_lines(t, parent) {
+            break;
+        }
+        node = parent;
+    }
+    let start = node.start_byte();
+    (start < line && starts_line(t, start)).then(|| text::indent_at(t, start))
+}
+
+/// Whether `node` puts a named child after its first at the start of a line,
+/// as a block does its statements.
+fn lays_out_lines(t: &str, node: Node) -> bool {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .skip(1)
+        .any(|c| starts_line(t, c.start_byte()))
+}
+
+/// Whether only indentation comes before `offset` on its line.
+fn starts_line(t: &str, offset: usize) -> bool {
+    t[text::line_start(t, offset)..offset].trim().is_empty()
 }
 
 /// The Markdown list item that list-item `new` placed on the line holding
@@ -2471,6 +2644,56 @@ mod tests {
     }
 
     #[test]
+    fn a_selector_matching_only_the_stages_edits_suggests_a_pipe() {
+        let hint = "; it matches only after the edits before it, which a stage's selectors \
+            don't see: put a `|` before the command";
+        assert_eq!(
+            guarded(
+                "a.rs",
+                TEXT,
+                "insert after fn:a <<END\n\nfn p() { a(); }\nEND\nsub fn:p /a/ with \"b\""
+            )
+            .error(),
+            format!("error: script:5:5: fn:p matches nothing in a.rs{hint}")
+        );
+        assert_eq!(
+            exec(
+                TEXT,
+                "insert after fn:b \"zzz\"; replace \"zzz\" with \"y\""
+            )
+            .error(),
+            format!("error: script:1:34: \"zzz\" matches nothing in a.rs{hint}")
+        );
+    }
+
+    #[test]
+    fn a_selector_the_stages_edits_dont_match_keeps_its_hint() {
+        assert_eq!(
+            exec(TEXT, "insert after fn:b \"fn p() {}\"; delete fn:zzzzzz").error(),
+            "error: script:1:39: fn:zzzzzz matches nothing in a.rs; `outline` lists the items"
+        );
+        assert_eq!(
+            exec(TEXT, "insert after fn:b \"fn p() {}\" | delete fn:zzzzzz").error(),
+            "error: script:1:40: fn:zzzzzz matches nothing in a.rs; `outline` lists the items"
+        );
+    }
+
+    #[test]
+    fn trying_the_stages_edits_prints_nothing() {
+        let out = exec(
+            TEXT,
+            "show fn:b; insert after fn:b \"fn p() {}\"; show fn:p",
+        );
+        assert!(
+            out.error().ends_with("put a `|` before the command"),
+            "{}",
+            out.error()
+        );
+        assert_eq!(out.output, exec(TEXT, "show fn:b").output);
+        assert!(out.notes.is_empty(), "{:?}", out.notes);
+    }
+
+    #[test]
     fn reads_show_their_stages_text() {
         let out = exec(TEXT, "show 2 | insert before 1 \"// c\" | show 3");
         assert_eq!(
@@ -2589,6 +2812,42 @@ mod tests {
     }
 
     #[test]
+    fn replace_text_dedenting_its_first_line_steps_out_of_the_target() {
+        assert_eq!(
+            edited(
+                TEXT,
+                "replace 3 with <<END\n    z;\n}\n\nfn c() {\n    w;\nEND\n"
+            ),
+            TEXT.replace("    let y = 2;\n", "    z;\n}\n\nfn c() {\n    w;\n")
+        );
+        let text = "class A:\n    def f(self):\n        return 1\n";
+        assert_eq!(
+            edited_in(
+                "a.py",
+                text,
+                "replace 3 with <<END\n        return 2\n\n    def g(self):\n        pass\nEND\n"
+            ),
+            text.replace("return 1\n", "return 2\n\n    def g(self):\n        pass\n")
+        );
+    }
+
+    #[test]
+    fn inserted_text_dedenting_its_first_line_keeps_the_target_indentation() {
+        let text = "def f():\n    if x:\n        a()\n    else:\n        d()\n";
+        assert_eq!(
+            edited_in(
+                "a.py",
+                text,
+                "insert after 2 <<END\n    b()\nelif y:\n    c()\nEND\n"
+            ),
+            text.replace(
+                "    if x:\n",
+                "    if x:\n        b()\n    elif y:\n        c()\n"
+            )
+        );
+    }
+
+    #[test]
     fn replace_with_raw_heredoc_is_verbatim() {
         assert_eq!(
             edited(TEXT, "replace 2-3 with <<'END'\nz();\nEND\n"),
@@ -2599,6 +2858,31 @@ mod tests {
     #[test]
     fn replace_last_line_keeps_missing_final_newline() {
         assert_eq!(edited("a\nb", "replace $ with \"c\""), "a\nc");
+    }
+
+    #[test]
+    fn replace_whole_lines_with_empty_text_deletes_them() {
+        assert_eq!(edited("a\nb\nc\n", "replace 2 with \"\""), "a\nc\n");
+        assert_eq!(edited("a\nb\nc\n", "replace \"b\\n\" with \"\""), "a\nc\n");
+        assert_eq!(edited("a\nb\nc\n", "replace 2 with <<END\nEND\n"), "a\nc\n");
+        assert_eq!(edited("a\n\nb\n\nc\n", "replace 3 with \"\""), "a\n\nc\n");
+        assert_eq!(
+            edited(TEXT, "replace fn:b with \"\""),
+            edited(TEXT, "delete fn:b")
+        );
+    }
+
+    #[test]
+    fn replace_with_a_newline_leaves_an_empty_line() {
+        assert_eq!(edited("a\nb\nc\n", "replace 2 with \"\\n\""), "a\n\nc\n");
+    }
+
+    #[test]
+    fn replace_partial_span_with_empty_text_removes_only_the_span() {
+        assert_eq!(
+            edited(TEXT, "replace \" = 2\" with \"\""),
+            TEXT.replace(" = 2", "")
+        );
     }
 
     #[test]
@@ -2846,6 +3130,48 @@ mod tests {
         assert_eq!(
             edited_in("a.py", APP_PY, "insert after class:App \"x = 1\""),
             APP_PY.replace("pass\n", "pass\n\nx = 1\n")
+        );
+    }
+
+    #[test]
+    fn insert_after_a_continuation_line_takes_its_statements_indent() {
+        let text = "fn f() {\n    let v: Vec<_> = xs\n        .iter()\n        .collect();\n}\n";
+        let expected = text.replace("collect();\n", "collect();\n    let y = 2;\n");
+        for script in [
+            "insert after 4 \"let y = 2;\"",
+            "insert after \".collect();\" <<END\nlet y = 2;\nEND",
+            "insert after 2-4 \"let y = 2;\"",
+        ] {
+            assert_eq!(edited(text, script), expected, "{script}");
+        }
+        let text = "def f():\n    total = (a\n             + b)\n    return total\n";
+        assert_eq!(
+            edited_in("a.py", text, "insert after 3 \"c()\""),
+            text.replace("+ b)\n", "+ b)\n    c()\n")
+        );
+    }
+
+    #[test]
+    fn insert_after_a_line_that_ends_no_construct_keeps_its_indent() {
+        let text = "fn f() {\n    let v: Vec<_> = xs\n        .iter()\n        .collect();\n}\n";
+        assert_eq!(
+            edited(text, "insert after 3 \".map(g)\""),
+            text.replace("iter()\n", "iter()\n        .map(g)\n")
+        );
+        let text = "fn f() {\n    let s = S {\n        b: T {\n            x: 1,\n            y: 2,\n        },\n    };\n}\n";
+        assert_eq!(
+            edited(text, "insert after 6 \"c: 3,\""),
+            text.replace("},\n", "},\n        c: 3,\n")
+        );
+        let text = "def f():\n    if x:\n        a()\n";
+        assert_eq!(
+            edited_in("a.py", text, "insert after 3 \"b()\""),
+            format!("{text}        b()\n")
+        );
+        let text = "let v = xs\n    .collect();\n";
+        assert_eq!(
+            edited_in("a.txt", text, "insert after 2 \"y\""),
+            format!("{text}    y\n")
         );
     }
 
@@ -3500,6 +3826,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn inserting_an_item_before_an_items_docs_separates_it() {
+        let text = "fn z() {}\n\n/// Doc.\n#[inline]\nfn a() {}\n";
+        let separated = "fn z() {}\n\nfn b() {}\n\n/// Doc.\n#[inline]\nfn a() {}\n";
+        assert_eq!(edited(text, "insert before 3 \"fn b() {}\""), separated);
+        assert_eq!(
+            edited(text, "insert before \"/// Doc.\" <<END\nfn b() {}\nEND\n"),
+            separated
+        );
+        assert_eq!(
+            edited(
+                "fn z() {}\n#[test]\nfn a() {}\n\n",
+                "insert before 2 \"fn b() {}\""
+            ),
+            "fn z() {}\nfn b() {}\n\n#[test]\nfn a() {}\n\n"
+        );
+    }
+
+    #[test]
+    fn inserting_before_other_lines_adds_no_blank_line() {
+        let text = "fn z() {}\n\n/// Doc.\n#[inline]\nfn a() {}\n";
+        assert_eq!(
+            edited(text, "insert before 4 \"/// More.\""),
+            "fn z() {}\n\n/// Doc.\n/// More.\n#[inline]\nfn a() {}\n"
+        );
+        assert_eq!(
+            edited(text, "insert before 3 \"// c\""),
+            "fn z() {}\n\n// c\n/// Doc.\n#[inline]\nfn a() {}\n"
+        );
+        assert_eq!(
+            edited(text, "insert before 3 \"x();\""),
+            "fn z() {}\n\nx();\n/// Doc.\n#[inline]\nfn a() {}\n"
+        );
+        assert_eq!(
+            edited(text, "insert before 3 <<END\nfn b() {}\n\nEND\n"),
+            "fn z() {}\n\nfn b() {}\n\n/// Doc.\n#[inline]\nfn a() {}\n"
+        );
+        assert_eq!(
+            edited(
+                "fn z() {}\n/// Doc.\nfn a() {}\n",
+                "insert before 2 \"fn b() {}\""
+            ),
+            "fn z() {}\nfn b() {}\n/// Doc.\nfn a() {}\n"
+        );
+        assert_eq!(
+            edited("fn z() {}\n\nfn a() {}\n", "insert before 3 \"fn b() {}\""),
+            "fn z() {}\n\nfn b() {}\nfn a() {}\n"
+        );
+    }
+
     const ATTRS: &str = "/// Doc.\n#[test]\nfn a() {\n    old();\n}\n";
 
     #[test]
@@ -3613,6 +3989,28 @@ mod tests {
               replaced text on its line"
             ]
         );
+    }
+
+    #[test]
+    fn rewrapping_the_rest_of_a_line_still_leaves_a_note() {
+        let notes = |script: &str| exec("let a = f(b) + c(d);\n", script).notes;
+        assert_eq!(
+            notes("replace \"let a\" with \"let x = f(b) +\\n    c( d );\""),
+            [
+                "a.rs:1: the new text ends with `= f(b) + c(d);`, which already follows \
+              the replaced text on its line; to replace whole lines, select \"let a\".lines"
+            ]
+        );
+        assert_eq!(
+            notes("replace \"c(d)\" with \"let a = f(b)\\n    + e(d)\""),
+            [
+                "a.rs:1: the new text starts with `let a = f(b) +`, which already precedes \
+              the replaced text on its line; to replace whole lines, select \"c(d)\".lines"
+            ]
+        );
+        // A changed rest is no copy, and an empty rest counts for nothing.
+        assert!(notes("replace \"let a\" with \"let x =\\n    g(b) + c(d);\"").is_empty());
+        assert!(notes("replace \"c(d);\" with \"e(d);\\n\"").is_empty());
     }
 
     #[test]
@@ -3895,7 +4293,7 @@ fn main() {}
         assert!(out.result.is_ok(), "{}", out.error());
     }
 
-    const SIG_HINT: &str = "Python `.sig` stops before the `:`";
+    const SIG_HINT: &str = "`.sig` stops before the `:`";
 
     #[test]
     fn guard_says_a_python_sig_stops_before_the_colon() {
@@ -3914,6 +4312,80 @@ fn main() {}
         assert!(!out.error().contains(SIG_HINT), "{}", out.error());
         let out = guarded("a.py", text, "replace \"def f()\" with \"def f():\"");
         assert!(!out.error().contains(SIG_HINT), "{}", out.error());
+    }
+
+    const RUST_FN: &str = "fn f(a: u8) {\n    let x = a;\n}\n";
+
+    #[test]
+    fn guard_says_a_sig_stops_before_the_brace() {
+        let out = guarded("a.rs", RUST_FN, "replace fn:f.sig with \"fn f(b: u8) {\"");
+        assert!(out.error().contains(GUARD_ERROR), "{}", out.error());
+        assert!(
+            out.error().contains("`.sig` stops before the `{`"),
+            "{}",
+            out.error()
+        );
+        let out = guarded(
+            "a.go",
+            "package a\n\nfunc f() {\n}\n",
+            "replace fn:f.sig with \"func f(x int) {\"",
+        );
+        assert!(
+            out.error().contains("`.sig` stops before the `{`"),
+            "{}",
+            out.error()
+        );
+    }
+
+    #[test]
+    fn guard_hints_at_the_brace_only_when_text_ends_with_it() {
+        let out = guarded("a.rs", RUST_FN, "replace fn:f.sig with \"fn f(b: u8\"");
+        assert!(out.error().contains(GUARD_ERROR), "{}", out.error());
+        assert!(!out.error().contains("stops before"), "{}", out.error());
+    }
+
+    #[test]
+    fn guard_points_at_the_edit_inside_a_file_wide_error_node() {
+        let out = guarded("a.rs", RUST_FN, "replace fn:f.sig with \"fn f(b: u8) {\"");
+        assert!(
+            out.error().starts_with("error: a.rs:1:6:"),
+            "{}",
+            out.error()
+        );
+        let text = format!("{RUST_FN}\n{}", RUST_FN.replace("f(", "g("));
+        let out = guarded("a.rs", &text, "replace fn:g.sig with \"fn g(b: u8) {\"");
+        assert!(
+            out.error().starts_with("error: a.rs:5:6:"),
+            "{}",
+            out.error()
+        );
+    }
+
+    const ESCAPE_HINT: &str = "heredocs read no escapes";
+
+    #[test]
+    fn guard_says_a_heredoc_reads_no_escapes() {
+        let script = "insert end fn:a <<END\nlet c = \\x27x\\x27;\nEND";
+        let out = guarded("a.rs", TEXT, script);
+        let err = out.error();
+        assert!(err.contains(GUARD_ERROR), "{err}");
+        assert!(err.contains(ESCAPE_HINT), "{err}");
+        assert!(err.contains("`\\x27`"), "{err}");
+        assert!(err.contains("on stdin"), "{err}");
+    }
+
+    #[test]
+    fn guard_hints_at_escapes_only_in_the_edited_text() {
+        let text = "fn a() {\n    let s = \"\\x27\";\n    let y = 2;\n}\n";
+        let out = guarded("a.rs", text, "replace \"let y = 2;\" with \"let y = (2;\"");
+        assert!(out.error().contains(GUARD_ERROR), "{}", out.error());
+        assert!(!out.error().contains(ESCAPE_HINT), "{}", out.error());
+        let out = guarded(
+            "a.rs",
+            TEXT,
+            "replace \"let y = 2;\" with \"let y = (2; // \\\\x\"",
+        );
+        assert!(!out.error().contains(ESCAPE_HINT), "{}", out.error());
     }
 
     #[test]

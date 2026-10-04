@@ -47,6 +47,7 @@ pub fn run(changes: &[Change], config: &mut Config) -> Result<Vec<Outcome>, Conf
         .iter()
         .filter_map(|c| Some((std::path::absolute(&c.path).ok()?, c.new.as_str())))
         .collect();
+    config.overlay(&written);
     let found = changes
         .iter()
         .map(|c| match c.lang {
@@ -703,6 +704,43 @@ mod tests {
                 formatted("sh", "2021\n"),
                 formatted("sh", "2024\n"),
                 Outcome::Unchanged,
+            ]
+        );
+    }
+
+    #[test]
+    fn run_reads_config_files_the_script_writes() {
+        let root = tree(&[
+            (
+                ".ned.toml",
+                "[format]\nrust = [\"sh\", \"-c\", \"echo disk\"]\n",
+            ),
+            ("old/.ned.toml", "[format]\nrust = false\n"),
+        ]);
+        let config = |path: &str, text: &str| change(&root.path().join(path), None, text);
+        let rust = |path: &str| change(&root.path().join(path), Some(Language::Rust), "");
+        let changes = [
+            rust("a.rs"),
+            rust("new/a.rs"),
+            config(
+                "new/.ned.toml",
+                "[format]\nrust = [\"sh\", \"-c\", \"echo created\"]\n",
+            ),
+            config(
+                "old/.ned.toml",
+                "[format]\nrust = [\"sh\", \"-c\", \"echo edited\"]\n",
+            ),
+            rust("old/a.rs"),
+        ];
+        let outcomes = run(&changes, &mut Config::new(None).unwrap()).unwrap();
+        assert_eq!(
+            outcomes,
+            [
+                formatted("sh", "disk\n"),
+                formatted("sh", "created\n"),
+                Outcome::Unchanged,
+                Outcome::Unchanged,
+                formatted("sh", "edited\n"),
             ]
         );
     }
