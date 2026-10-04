@@ -196,8 +196,8 @@ commit.
 | TypeScript, TSX | the JavaScript items, plus `interface type enum variant mod`                     |
 | Markdown        | `section item table code`                                                        |
 
-Syntax patterns work in every language above but Markdown. Line, regex and
-literal selectors work in any UTF-8 file.
+Syntax patterns work in every language above but Markdown. Line, regex, literal
+and `conflict` selectors work in any UTF-8 file.
 
 ## Language servers
 
@@ -232,8 +232,6 @@ to develop ned itself, but the language may still change before 1.0.
 
 In order, with details in [`TODO.md`](TODO.md):
 
-- Git: commit exactly an invocation's or a session's edits; edit and resolve
-  files with merge-conflict markers
 - `ned-repl`: an interactive session for humans, which can also follow an
   agent's session
 - `ned-mcp`: an MCP server that exposes scripts, `outline` and `show` as tools
