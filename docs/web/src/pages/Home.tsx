@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router";
 import HeroExample from "../content/hero-example.mdx";
 import HomeContent from "../content/home.mdx";
 import { RELEASES, REPO } from "../links";
@@ -38,9 +39,9 @@ export default function Home() {
           </p>
           <InstallCommand />
           <div className="hero-links">
-            <a className="button primary" href="#refactoring-by-hand">
-              See examples
-            </a>
+            <Link className="button primary" to="/tutorial">
+              Tutorial
+            </Link>
             <a className="button" href={RELEASES}>
               Download
             </a>

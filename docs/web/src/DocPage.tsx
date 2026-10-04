@@ -37,6 +37,9 @@ export default function DocPage({
       })),
     );
 
+    const target = decodeURIComponent(window.location.hash.slice(1));
+    if (target) document.getElementById(target)?.scrollIntoView();
+
     const onScroll = () => {
       const passed = elements.filter(
         (h) => h.getBoundingClientRect().top < 120,

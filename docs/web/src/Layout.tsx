@@ -1,8 +1,11 @@
-import { useEffect } from "react";
+import { Suspense, useEffect } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router";
 import { LICENSE, RELEASES, REPO } from "./links";
 
-const pages = [{ to: "/tutorial", label: "Tutorial" }];
+const pages = [
+  { to: "/tutorial", label: "Tutorial" },
+  { to: "/reference", label: "Reference" },
+];
 
 export default function Layout() {
   const { pathname, hash } = useLocation();
@@ -37,7 +40,9 @@ export default function Layout() {
         </div>
       </header>
       <main>
-        <Outlet />
+        <Suspense fallback={null}>
+          <Outlet />
+        </Suspense>
       </main>
       <footer className="site-footer">
         <p>

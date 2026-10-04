@@ -1,0 +1,904 @@
+# Command language reference
+
+This page describes everything ned does: how to run it, how scripts are written,
+every kind of selector and command, how text is indented, and how to configure
+formatters and language servers. If you're new to ned, the [tutorial](/tutorial)
+is a better place to start.
+
+## Running ned
+
+```text
+ned [OPTIONS] [FILE... | -w [DIR]] [-e SCRIPT]...
+ned help [TOPIC]
+ned daemon start|status|stop [DIR]
+ned history [-s NAME] [-w DIR] [--all]
+ned undo [-s NAME] [-w DIR] [--force]
+```
+
+ned runs a **script** against a set of files. The script comes from `-e`, which
+may be repeated (the pieces are joined with newlines), or from standard input.
+On standard input, a quoted shell heredoc is the most reliable form, because the
+shell leaves its contents alone:
+
+```ned
+$ ned src/parser.rs <<'EOF'
+replace fn:parse>"unexpected end" with "unexpected end of input"
+EOF
+```
+
+If no script is given and standard input is a terminal, ned stops with an error
+instead of waiting for input.
+
+### Options
+
+| Option                    | Effect                                                                                                                          |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `-e SCRIPT`               | Run this script. Repeat it to add more lines.                                                                                   |
+| `-n`, `--dry-run`         | Make the edits in memory and print the result, but write nothing.                                                               |
+| `-q`, `--quiet`           | Print only the summary line for each changed file.                                                                              |
+| `-w`, `--workspace [DIR]` | Start with every file in the workspace instead of a list of files. See [the file set](#the-file-set).                           |
+| `--lang LANG`             | Treat every file as `rust`, `python`, `go`, `javascript`, `typescript`, `tsx`, `markdown`, or `text` (which turns parsing off). |
+| `--force`                 | Apply edits even if they introduce syntax errors or new language-server errors.                                                 |
+| `--no-fmt`                | Don't run formatters.                                                                                                           |
+| `--no-check`              | Don't check edits with language servers.                                                                                        |
+| `--context N`             | Show `N` lines of context around each diff hunk. The default is 1.                                                              |
+| `--color WHEN`            | Colour the output: `auto` (the default), `always` or `never`.                                                                   |
+| `-s`, `--session NAME`    | Record this run in a [session](#sessions). It overrides `NED_SESSION`.                                                          |
+| `--commit MSG`            | Commit the edits this run makes, and nothing else, to git. See [committing](#committing).                                       |
+| `-V`, `--version`         | Print the version.                                                                                                              |
+
+With `--color auto`, ned colours its output when it's writing to a terminal and
+`NO_COLOR` isn't set. Code in `show` output and diffs is syntax-highlighted.
+Colour never changes what the output says, so output read by a program is the
+same either way.
+
+### Subcommands
+
+- **`ned help [TOPIC]`** prints a one-screen summary of the command language.
+  With a topic, it explains that topic in detail. The topics are the commands
+  (`show`, `outline`, `check`, `allow`, `replace`, `insert`, `delete`, `sub`,
+  `move`, `rename`, `resolve`, `file`, `create`) and `selectors`, `filters`,
+  `patterns`, `conflicts`, `text`, `config` and `session`.
+- **`ned daemon start|status|stop [DIR]`** manages the
+  [language-server daemon](#language-servers) for the workspace containing
+  `DIR`, or the current directory.
+- **`ned history`** and **`ned undo`** work with [sessions](#sessions).
+
+A subcommand must be the first argument. To edit a file that happens to be
+called `help`, write it as `./help`.
+
+### Languages
+
+ned picks a file's language from its extension, or failing that from a `#!` line
+that runs Python or Node:
+
+| Language     | Extensions                    |
+| ------------ | ----------------------------- |
+| `rust`       | `.rs`                         |
+| `python`     | `.py`, `.pyi`                 |
+| `go`         | `.go`                         |
+| `javascript` | `.js`, `.mjs`, `.cjs`, `.jsx` |
+| `typescript` | `.ts`, `.mts`, `.cts`         |
+| `tsx`        | `.tsx`                        |
+| `markdown`   | `.md`, `.markdown`            |
+
+Any other file is plain text. Line numbers, literal text, regular expressions
+and conflicts work in every file, but syntax selectors, the syntax check,
+formatting and language servers skip text files. When a run reads text files
+with unfamiliar extensions, ned prints a note naming them, and `--lang` assigns
+a language if you want one.
+
+Files must be UTF-8. ned detects whether each file uses LF or CRLF line endings
+and converts inserted text to match.
+
+### The file set
+
+Commands act on the **file set**. It starts as the files named on the command
+line, and the `file` command replaces it for the commands that follow.
+
+- ned expands globs itself, so a glob works even when it's quoted:
+  `ned 'src/**/*.rs'`. `*`, `?` and `[...]` match within a name, `**` matches
+  any number of directories, and names starting with `.` only match a pattern
+  that starts with `.` too. A glob that matches nothing is an error.
+- `-w` starts with every file in the workspace instead. The workspace is the
+  nearest directory, from the current one upwards, that contains `.git`, `.hg`
+  or `.jj`, or else the current directory; `-w DIR` names it directly. Files
+  that `.gitignore`, `.ignore` or git's excludes leave out are skipped, and so
+  are hidden files and files that aren't UTF-8.
+- Files are only read when a command needs them, so a large file set costs
+  nothing until a selector searches it.
+
+A selector searches every file in the set, and a match in any of them counts.
+Use a [`file:` step](#files) to narrow a selector to one file.
+
+## Scripts
+
+A script is a list of commands, one per line or separated by `;`.
+
+```ned
+show fn:parse
+replace fn:parse>"end" with "end of input"; delete fn:debug_dump
+```
+
+- A `#` at the start of a word begins a comment that runs to the end of the
+  line. Inside a string, regular expression, pattern or heredoc, `#` is just a
+  character.
+- Whitespace separates the words of a command, but a selector contains none
+  (apart from inside filters and patterns): `impl:Parser>fn:new` is one
+  selector, and `impl:Parser > fn:new` is a syntax error.
+- The words with special meaning are the command names, `all`, `with`, `to`,
+  `before`, `after`, `start`, `end` and `file`, plus the options of `check`,
+  `allow` and `resolve`. Any other bare word is an error, so text always goes in
+  quotes or a heredoc.
+
+### Text
+
+Text appears in commands such as `replace` and `insert`, and as literal
+selectors. There are three ways to write it.
+
+**Strings** are written in double quotes on a single line. The escapes are `\n`,
+`\t`, `\"` and `\\`, and any other backslash is an error.
+
+**Heredocs** hold any number of lines. `<<TAG` ends the command's line, the text
+starts on the next line, and it ends at a line that contains only `TAG` (with
+any surrounding whitespace). `TAG` can be any identifier; `END` is customary. A
+heredoc body has no escapes at all, so a backslash is a backslash.
+
+```ned
+replace fn:parse.body with <<END
+let tok = self.next()?;
+self.parse_expr(tok)
+END
+```
+
+`<<TAG` text is [re-indented](#indentation) to fit where it goes. `<<'TAG'`,
+with quotes, is verbatim: it is inserted exactly as written. When one line
+starts several heredocs, their bodies follow in the same order.
+
+**Regular expressions** are written between slashes, `/.../`, in the syntax of
+Rust's [`regex`](https://docs.rs/regex/latest/regex/#syntax) crate. Write `\/`
+for a slash. `^` and `$` match at the start and end of every line. The flags `i`
+(ignore case) and `s` (`.` matches newlines) go after the closing slash:
+`/todo:/i`.
+
+### Transactions and stages
+
+A script is a transaction. ned works out every edit before writing anything, and
+if any command fails, no file is changed. When all of them succeed, every
+changed file is written atomically.
+
+Within a script, every selector sees the files as they were before the script
+started, so line numbers stay put however many edits come before them. Two edits
+whose spans overlap are an error, but insertions at the same place are allowed
+and apply in order. Neighbouring whole-line deletions are merged, so you can
+delete adjacent items in one script.
+
+To work with the result of an earlier edit, put `|` between the commands. Each
+`|` starts a new **stage**, which sees the files as the stages before it left
+them:
+
+```ned
+create src/lexer.rs <<END
+pub struct Lexer;
+END
+| insert after struct:Lexer "impl Lexer {}"
+```
+
+`|` binds more loosely than `;` and line breaks, which is the opposite of a
+shell: `a; b | c` runs `a` and `b` in the first stage and `c` in the second. A
+line can end with `|`, and the next stage starts on the line after it. The whole
+script is still a single transaction.
+
+After the first `|`, the files on disk no longer match the script's view of
+them, so commands that ask a language server (`check`, `rename`, and selectors
+using `.refs` or `.def`) must come before the first `|`.
+
+## Selectors
+
+A selector picks out one or more **spans** of text, in one or more files. Unless
+a command says `all`, its selector must match exactly one span.
+
+### Lines
+
+| Selector | Selects                   |
+| -------- | ------------------------- |
+| `12`     | line 12                   |
+| `12-20`  | lines 12 to 20            |
+| `12-$`   | line 12 to the end        |
+| `$`      | the last line of the file |
+
+Lines are numbered from 1, and a line selector includes the line endings. Line
+numbers always count from the top of the file, even inside a [nested](#nesting)
+selector, but there `$` means the last line of the enclosing span, so
+`fn:parse>$` is the function's closing line.
+
+### Literal text and regular expressions
+
+- `"text"` selects each exact occurrence of the text. It can span lines with
+  `\n`.
+- `/regex/` selects each match of the regular expression.
+- A `<<TAG` heredoc selects runs of whole lines that match its body, whatever
+  their indentation, so you can copy lines from anywhere without fixing their
+  indentation first. A `<<'TAG'` heredoc must match exactly.
+
+Matches never overlap and are found from left to right.
+
+### Syntax items
+
+`kind:name` selects items of one kind by name: `fn:parse`, `struct:Config`,
+`class:App`. The name must match exactly, except that `*` matches any run of
+characters, as in `fn:test_*`. A kind without a name matches every item of that
+kind, so `fn` means the same as `fn:*`. Names containing characters other than
+letters, digits, `_`, `:` and `*` must be quoted: `import:"os.path"`,
+`impl:"Display for Parser"`.
+
+| Kind        | Selects                                                    |
+| ----------- | ---------------------------------------------------------- |
+| `fn`        | functions and methods                                      |
+| `class`     | classes                                                    |
+| `struct`    | structs                                                    |
+| `enum`      | enums                                                      |
+| `variant`   | enum variants                                              |
+| `trait`     | traits                                                     |
+| `interface` | interfaces                                                 |
+| `impl`      | Rust impl blocks                                           |
+| `type`      | type aliases and type declarations                         |
+| `const`     | constants and statics                                      |
+| `var`       | variables                                                  |
+| `field`     | fields of structs and classes                              |
+| `mod`       | modules and namespaces                                     |
+| `import`    | imports, named by the path as written                      |
+| `section`   | Markdown sections, named by their heading                  |
+| `item`      | Markdown list items, named by their first line             |
+| `table`     | Markdown tables, named by their first header cell          |
+| `code`      | Markdown code blocks, named by their language tag, or `""` |
+
+Each language supports the kinds that make sense for it:
+
+- **Rust:** `fn` (including trait method declarations), `struct`, `field`,
+  `enum`, `variant`, `trait`, `impl`, `type` (including associated types),
+  `const` (including `static`), `var` (`let` bindings), `mod` and `import`
+  (`use` declarations). An inherent impl is named by its type, `impl:Parser`,
+  and a trait impl by `TRAIT for TYPE`, `impl:"Display for Parser"`, without
+  paths or generic arguments. `impl:Parser` also matches the trait impls of
+  `Parser`.
+- **Python:** `fn` (including `async` functions and methods), `class`, `field`
+  (assignments directly in a class body), `const` (module-level assignments to
+  an `UPPER_CASE` name), `var` (other module-level assignments) and `import`,
+  named by the module: `from a.b import c` is `import:"a.b"`. Decorators and
+  docstrings belong to their item.
+- **Go:** `fn`, `struct`, `interface`, `type`, `field`, `const`, `var` and
+  `import` (named by the path without quotes, as in `import:"net/http"`).
+  Methods are named `RECEIVER.NAME`, as in `fn:"Server.Run"`, and `fn:Run`
+  matches every function and method called `Run`. In a grouped declaration such
+  as `const ( ... )`, each entry is an item. The comments directly above an item
+  are its documentation.
+- **JavaScript and TypeScript:** `fn` (function declarations, methods, and
+  variables holding an arrow function or function expression), `class`, `field`,
+  `const`, `var` (`let` and `var` declarations) and `import` (named by the
+  module without quotes: `import:react`, `import:"./util"`). TypeScript adds
+  `interface`, `type`, `enum`, `variant` and `mod` (namespaces and
+  `declare module`). An exported item includes its `export`, and a `/** */`
+  comment directly above an item is its documentation.
+- **Markdown:** `section`, `item`, `table` and `code`.
+
+An item's span is the whole item as a reader would see it: its doc comments,
+attributes or decorators, and the item itself. For a field or variant, the comma
+after it is part of the span too. A syntax selector skips files whose language
+doesn't have its kind, so `fn:parse` still works in a file set that includes
+Markdown and text files.
+
+### Nesting
+
+`A>B` selects matches of `B` that lie inside a match of `A`, at any depth. Any
+kinds of selector can be combined:
+
+```ned
+show impl:Parser>fn:new
+replace fn:main>/unwrap\(\)/ with "expect(\"config\")"
+show 100-200>fn:new
+```
+
+A match lies inside an item if it lies within the item's lines, so
+`fn:new>"    fn new"` may include the indentation of the first line, and `^` in
+a nested regular expression matches at a line start.
+
+### Files
+
+`file:PATH` selects a whole file from the file set. Its purpose is to narrow the
+selectors after it to one file: `file:src/lexer.rs>fn:new`. The path ends at `>`
+or whitespace.
+
+### Parts
+
+A part narrows an item to one piece of it. It's written after the item's
+selector with a dot: `fn:parse.body`, `struct:Config>field:port.type`.
+
+| Part                        | Selects                                                                                                 |
+| --------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `.body`                     | The item's block, between its braces (or a Python indented block). For a Markdown section, its content. |
+| `.sig`                      | The item from its start (after doc comments and attributes) up to, but not including, the body.         |
+| `.params`                   | The parameter list, between the parentheses.                                                            |
+| `.name`                     | The item's name.                                                                                        |
+| `.doc`                      | The doc comment lines. In Python, the docstring.                                                        |
+| `.attrs`                    | The attributes or decorators.                                                                           |
+| `.ret`                      | A function's return type.                                                                               |
+| `.type`                     | The declared type of a field, constant or variable.                                                     |
+| `.value`                    | The value given to a constant, variable, field or variant, or the type that a type alias names.         |
+| `.whole`                    | The whole item, including doc comments, attributes and a trailing comma. `replace` replaces all of it.  |
+| `.lines`                    | Each whole line the span touches. This part works on any selector, not just items.                      |
+| `.refs`                     | Each reference to the symbol, found by the [language server](#language-servers).                        |
+| `.def`                      | The symbol's definition, found by the language server.                                                  |
+| `.ours`, `.theirs`, `.base` | The sides of a [merge conflict](#merge-conflicts).                                                      |
+
+Some details:
+
+- When a body or parameter list starts and ends on lines of its own, the part is
+  the whole lines between the delimiters. Otherwise it's the text between them,
+  without surrounding whitespace.
+- `.ret`, `.type` and `.value` leave out the punctuation in front of them (`->`,
+  `:` or `=`). A Go return type keeps its parentheses.
+- In Python, `.body` comes after the docstring, so `insert start fn:f` adds code
+  after it. `.sig` runs from `def` or `class` up to the colon.
+- A Markdown section's `.body` includes its subsections, so
+  `insert end section:Usage` adds text after the last of them.
+- On a span that covers several lines, `.lines` produces one span per line. Use
+  `all`, or nest a line number (`fn:parse>12`), to act on them.
+- `.refs` and `.def` work on any selector. On an item, they look up the symbol
+  at its name; otherwise, the symbol at the start of the span, as in
+  `fn:main>"helper(".def`.
+- An item that doesn't have a part, such as a Rust function that returns nothing
+  and so has no `.ret`, gives an error that lists the parts it does have. A part
+  can't follow another part.
+
+Which items have `.ret`, `.type`, `.value` and `.attrs`:
+
+| Language   | `.ret` | `.type`                 | `.value`                                         | `.attrs`               |
+| ---------- | ------ | ----------------------- | ------------------------------------------------ | ---------------------- |
+| Rust       | `fn`   | `field`, `const`, `var` | `const`, `var`, `type`, a `variant` with a value | every item             |
+| Python     | `fn`   | `field`, `const`, `var` | `field`, `const`, `var`                          | `fn`, `class`          |
+| Go         | `fn`   | `field`, `const`, `var` | `const`, `var`, `type`                           | none                   |
+| JavaScript | none   | none                    | `const`, `var`, `field`                          | `class`, `fn`, `field` |
+| TypeScript | `fn`   | `const`, `var`, `field` | `const`, `var`, `field`, `type`, `variant`       | `class`, `fn`, `field` |
+
+### Ranges
+
+`A..B` selects whole lines from the start of a match of `A` to the end of the
+first match of `B` after it: `fn:helper_a..fn:helper_c`,
+`/^## Usage/../^## License/`, `"BEGIN"..$`. Both ends are single selectors
+without parts. `..` binds more tightly than `>`, so to range within a scope,
+write the scope once: `impl:Parser>fn:new..fn:parse`.
+
+### Filters
+
+A condition in square brackets after a selector keeps only the matches for which
+it holds:
+
+```ned
+show all fn[.doc == ""]
+delete all impl:Parser>fn[.name ~= /^old_/ || .body.len == 0]
+show all fn:parse.lines[.len > 100]
+```
+
+A condition compares a **property** of the match with a value:
+
+- `.text` is the match's text, and `.len` its length: the number of characters
+  on a single line, or the number of lines on several.
+- A part, such as `.name` or `.doc`, is that part's text, and adding `.len` or
+  `.text` after it (`.body.len`) gives its length or text. An item without the
+  part counts as empty.
+
+Lengths are compared with numbers using `==`, `!=`, `<`, `>`, `<=` or `>=`. Text
+is compared with a string using `==` or `!=`, or with a regular expression using
+`~=`, which matches anywhere in the text unless anchored. `&&` binds more
+tightly than `||`, and parentheses group conditions. Several filters in a row
+must all hold, and a filter comes after any parts in its step.
+
+Matches that a filter rejects don't count at all: they can't make a selector
+ambiguous, and if a filter rejects every match, the selector matches nothing.
+
+### Ambiguity and all
+
+A command's selector must match exactly one span, unless the command says `all`,
+as in `delete all fn:test_*`. Matching nothing is an error either way. In a
+nested selector, only the final result is counted, so the earlier steps can
+match as much as they like.
+
+When a selector is ambiguous, the error lists a selector for each match that
+picks out only that match. Where possible, it nests the selector in the match's
+enclosing item (`impl:Lexer>fn:new`). Otherwise, it scopes it by file
+(`file:src/a.rs>fn:new`) or by lines (`40-80>fn:new`). You can paste any of them
+back. ned has no syntax for "the third match", except for merge conflicts.
+
+### Syntax patterns
+
+A pattern is code between backquotes. ned parses it with each file's grammar and
+compares it with the file's syntax tree, so it matches however the code is
+spaced, wrapped or commented:
+
+```ned
+show all `dbg!(@x...)`
+delete all fn:main>`println!(@_...);`
+show `impl Display for @t { @_... }`>fn:fmt
+```
+
+Placeholders stand for the parts of the code that vary:
+
+| Placeholder   | Matches                                              | Captures |
+| ------------- | ---------------------------------------------------- | -------- |
+| `@name`       | any single node: an expression, a statement, a name… | yes      |
+| `@name...`    | a run of zero or more neighbouring nodes             | yes      |
+| `@_`, `@_...` | the same, without capturing                          | no       |
+| `@@`          | a literal `@`                                        |          |
+
+**Matching rules.** Two pieces of code match when they have the same structure
+and the same names, numbers and strings. Comments are ignored on both sides, and
+so are separators that the pattern leaves out, such as commas, semicolons and
+line breaks. Everything else must match, so `` `fn f(self) {}` `` doesn't match
+`fn f(&self) {}`, and `` `fn @name() {}` `` doesn't match a `pub fn`. Use `@_`
+or `@_...` wherever the code may vary.
+
+- A run placeholder matches as little as it can while the rest of the pattern
+  still matches: in `` `foo(@first, @rest...)` ``, `@first` is the first
+  argument and `@rest` the others.
+- A name used twice must match the same code both times: `` `@x == @x` ``.
+- A Rust macro's arguments are tokens rather than expressions, so match them
+  with a run: `` `dbg!(@x...)` ``.
+- A placeholder inside a string or comment is plain text. Decorators start with
+  `@`, so match one with `@@`: `` `@@app.route(@path)` ``.
+- A pattern that contains backquotes is delimited with a longer run of them, as
+  in Markdown: ``` `` `${name}` `` ```.
+
+A pattern doesn't have to be a complete program. ned also tries to parse it in
+the places where such code normally appears, such as inside a function, a class
+or an impl, so `` `x: u32` `` matches both a struct field and a parameter. A
+pattern that parses in none of a file's languages is an error that shows where
+parsing failed. Patterns work in every language except Markdown.
+
+**Substitution.** When `replace` targets a pattern, `@name` in the new text is
+replaced by what that placeholder matched, and `@@` by `@`. A capture that spans
+several lines is re-indented to fit where its placeholder sits.
+
+```ned
+replace all `assert_eq!(@a..., true)` with "assert!(@a)"
+replace fn:load>`if let Some(@x) = @e { @body... }` with <<END
+let Some(@x) = @e else {
+    return;
+};
+@body
+END
+```
+
+### Merge conflicts
+
+Conflict markers left by git don't stop ned from parsing a file: the grammar
+sees both sides one after the other, so items on either side can be selected. An
+item that appears on both sides matches twice, and `conflict:1.ours>fn:a` picks
+one.
+
+`conflict:N` selects a file's `N`th conflict, from its `<<<<<<<` line to its
+`>>>>>>>` line, and `conflict` alone selects each of them. Their parts are the
+sides:
+
+- `.ours` is the lines between `<<<<<<<` and `=======` (or `|||||||`).
+- `.base` is the original text between `|||||||` and `=======`. git only writes
+  it if `merge.conflictStyle` is `diff3` or `zdiff3`.
+- `.theirs` is the lines between `=======` and `>>>>>>>`.
+
+[`resolve`](#resolve) keeps one or both sides, and `replace conflict:N with ...`
+replaces the whole conflict with new text. Conflicts work in every file,
+including plain text.
+
+### Tree-sitter queries
+
+`query{...}` runs a raw
+[tree-sitter query](https://tree-sitter.github.io/tree-sitter/using-parsers/queries/index.html)
+against each file's syntax tree. The match is the node captured as `@sel`, or
+otherwise the outermost capture. The query must fit on one line, and `\}` stands
+for a `}` inside it.
+
+```ned
+delete all query{(call_expression function: (identifier) @f (#eq? @f "dbg")) @sel}
+```
+
+## Commands
+
+### show
+
+```text
+show [SEL [+N]]
+```
+
+Prints the lines that contain each selected span, numbered, with `N` lines of
+context around them. Without a selector, it prints every file in the file set.
+Regions that touch or overlap are merged.
+
+`show all` works as a search: if nothing matches, it prints
+`no matches for SEL in N files` and the script continues. Every other command,
+including `show` without `all`, fails when its selector matches nothing.
+
+```text
+src/parser.rs:14-17
+14:    pub fn parse(&mut self) -> Result<Ast, Error> {
+15:        let tok = self.next().expect("unexpected end");
+16:        self.parse_expr(tok)
+17:    }
+```
+
+### outline
+
+```text
+outline [SEL]
+```
+
+Lists the items in each file as `START-END kind:name`, indented by nesting, so
+every line is a selector you can paste back. Imports are collapsed into one
+line, and items inside function bodies are left out. Fields, variants and
+Markdown list items, tables and code blocks are listed only when you outline
+their parent, as in `outline struct:Config`. With a selector, `outline` lists
+the items inside it. Conflicts are listed at the end.
+
+### replace
+
+```text
+replace [all] SEL with TEXT
+```
+
+Replaces each selected span with `TEXT`. Some details:
+
+- Replacing a syntax item keeps its doc comments and attributes, unless `TEXT`
+  starts with its own. To replace those too, select `ITEM.whole`.
+- If the item ends with a comma, as fields and variants do, and `TEXT` doesn't,
+  ned adds one.
+- An empty `TEXT` on whole lines deletes the lines, exactly like `delete`. Use
+  `"\n"` to leave one empty line.
+- `replace` never interprets `$`. With a pattern, it substitutes `@name`
+  captures; otherwise it inserts `TEXT` as it is.
+- When the replacement looks off by one line (`TEXT` repeats the line above or
+  below the span, say), ned prints a note. It's only a warning.
+
+### insert
+
+```text
+insert before|after|start|end [all] SEL TEXT
+```
+
+Inserts `TEXT` just before or after each span, or inside it at its start or end.
+On an item, `start` and `end` mean the start and end of its body, so
+`insert end impl:Parser` adds a method at the end of the impl.
+
+When text is inserted before or after an item that has a blank line next to it,
+ned separates the new text from the item with a blank line, unless the text
+already has one there. Text that consists only of doc comments or attributes,
+such as `#[inline]`, attaches to the item instead. Imports and Markdown list
+items get no blank lines.
+
+`insert end` puts text after everything the span includes, such as an array's
+closing `]`. To add an element to a list, insert it after the current last
+element.
+
+### delete
+
+```text
+delete [all] SEL
+```
+
+Removes each span. Deleting whole lines also tidies up blank lines: ned removes
+one blank line if the deletion leaves two in a row, a blank line just inside an
+opening or closing bracket, or a blank line at the start or end of the file.
+
+### sub
+
+```text
+sub [SEL] /REGEX/ with TEXT
+```
+
+Replaces every match of the regular expression inside each span of `SEL`, or in
+every file of the set if there's no selector. `$1`, `${name}` and `$0` in `TEXT`
+insert what the expression captured, and `$$` is a literal `$`. A reference
+takes the longest name it can, so write `${1}x` for group 1 followed by `x`.
+`sub` already replaces every match, so it doesn't take `all` before the regular
+expression; `all` before `SEL` applies to the scope. If nothing matches
+anywhere, `sub` fails.
+
+### move
+
+```text
+move [all] SEL before|after|start|end DEST
+```
+
+Deletes each span and inserts its text at `DEST`, which must match exactly one
+span and may be in a different file of the set. The moved text is re-indented to
+fit its new place. As with `insert`, `start` and `end` on an item mean its body.
+With `all`, the spans arrive in their original order. When a moved item had a
+blank line next to it, ned puts one between it and its new neighbour.
+
+### create
+
+```text
+create PATH TEXT
+```
+
+Creates a new file containing `TEXT`. The file joins the file set as if it had
+existed all along, so later commands in the script can edit it, and missing
+directories are created. Creating a file that already exists is an error.
+
+### file
+
+```text
+file PATH...
+```
+
+Replaces the file set for the commands that follow. Paths may be globs. `file`
+can't create files; use `create` for that.
+
+### check
+
+```text
+check [SEL] [error|warning|info|hint]
+```
+
+Prints the language server's diagnostics for each file in the set, or only those
+that overlap `SEL`, at the given severity or above. The default is `warning`,
+configurable with `[check] show`. `check` starts the daemon if needed, waits for
+the server to finish indexing, and also waits for checks that run on save, such
+as rust-analyzer's `cargo check`.
+
+```text
+src/parser.rs:15:9: error: mismatched types [rust-analyzer E0308]
+src/parser.rs:21:5: warning: unused variable: `tok` [rust-analyzer]
+```
+
+### allow
+
+```text
+allow errors|warnings
+```
+
+Lets the script's edits through even if the language server reports that they
+introduce new errors (or, with `allow warnings`, new warnings), for example when
+a change is knowingly unfinished. It applies to the whole script wherever it
+appears, and the diagnostics are still printed.
+
+### rename
+
+```text
+rename SEL to NAME
+```
+
+Asks the language server to rename the symbol at `SEL` everywhere it's used. For
+an item, that's the symbol at its name. The server's edits join the script's
+other edits, then are formatted and checked like any other. They may only touch
+files in the file set, or with `-w`, any file in the workspace.
+
+```ned
+rename fn:parse to parse_all
+rename impl:Parser>fn:new>"tokens" to toks
+```
+
+### resolve
+
+```text
+resolve [all] SEL ours|theirs|base|both
+```
+
+Replaces each selected conflict with one of its sides, exactly as written.
+`both` keeps ours followed by theirs. The selector must select whole conflicts,
+as `conflict:N` does.
+
+## Indentation
+
+### Whole lines and partial lines
+
+What happens to inserted text depends on whether its target covers whole lines.
+A span is **whole-line** when only whitespace comes before it on its first line
+and after it on its last. Line selectors, syntax items, most bodies, heredoc
+selectors and `.lines` are whole-line. Most literal and regex matches aren't.
+
+- On a **whole-line** target, an edit works on complete lines. The text gets a
+  line break at the end, if it doesn't already have one, and is re-indented.
+  `insert after` adds new lines after the target's last line.
+- On a **partial** target, the text goes in exactly where the span is. If it has
+  several lines, the first is inserted as it is and the rest are indented
+  relative to the target's line.
+
+There's one exception: `insert before` or `after` with heredoc text widens a
+partial target to its whole lines, so `insert after /re/ <<END` adds lines after
+the matching line. To replace the whole line around a match, select it with
+`.lines`.
+
+Blank lines at the start or end of `TEXT` are kept, which is how you add a
+separating blank line. A string's last `\n` ends its last line, so `"x\n"` adds
+one line and `"x\n\n"` adds a line and a blank line.
+
+### Re-indenting
+
+Text written as a string or a `<<TAG` heredoc is re-indented whenever it's
+inserted on lines of its own. ned removes the indentation that the text's lines
+have in common, converts between tabs and spaces if the text and the file
+differ, and then indents every line to the target's level:
+
+| Edit                                        | Indented to match                                                                 |
+| ------------------------------------------- | --------------------------------------------------------------------------------- |
+| `replace`, `insert before`, `move … before` | the first line of the target                                                      |
+| `insert after`, `move … after`              | the first line of the target, or its last line for a literal or regex             |
+| `insert start`/`end`, `move … start`/`end`  | the first line inside the target, or one level deeper than the item if it's empty |
+
+So you can write inserted code at column 0, and only its relative indentation
+matters. When `insert after` targets the last line of a statement that spans
+several lines, the text lines up with the start of the statement. In Markdown, a
+new list item next to an existing one lines up with its marker.
+
+A file's indentation unit (four spaces, two spaces, a tab…) is measured from its
+existing lines. In an empty file, it's four spaces, two in Markdown, or a tab in
+Go. Since a formatter runs afterwards, small differences don't matter in most
+languages, but Python relies on re-indentation alone.
+
+## Output
+
+Output goes to standard output. `show`, `outline` and `check` print in the order
+the commands run, and each changed file then gets a summary line and a diff:
+
+```diff
+src/parser.rs: 1 edit, +1 -1
+@@ -14,3 +14,3 @@
+     pub fn parse(&mut self) -> Result<Ast, Error> {
+-        let tok = self.next().expect("unexpected end");
++        let tok = self.next().expect("unexpected end of input");
+         self.parse_expr(tok)
+```
+
+The edit count is the number of spans edited. The diff shows the whole change
+from the original file. A dry run starts each summary with `(dry run)`, a new
+file is summarized as `PATH: created, +N`, and a formatter's changes follow
+under their own heading, such as `fmt rustfmt: +0 -1`.
+
+## Formatting
+
+After a script's edits pass the syntax check, ned runs a formatter on each
+changed file. The formatter gets the file on standard input, writes the result
+to standard output, and runs in the file's directory, so its own configuration
+files apply.
+
+| Language                         | Default formatter                                 |
+| -------------------------------- | ------------------------------------------------- |
+| Rust                             | `rustfmt --edition {edition}`                     |
+| Go                               | `gofmt`                                           |
+| Python                           | `ruff format`, or `black` if ruff isn't installed |
+| JavaScript, TypeScript, Markdown | `prettier`                                        |
+
+If the formatter isn't installed or fails, ned prints a note, writes the file
+unformatted, and still succeeds. If no formatter is installed but the
+[daemon](#language-servers) is running, the language server formats the file
+instead. Files that still contain merge conflicts aren't formatted.
+
+## Configuration
+
+ned reads settings from `~/.config/ned/config.toml` (or
+`$XDG_CONFIG_HOME/ned/config.toml`) and from every `.ned.toml` between the
+filesystem root and the file's directory. Later files override earlier ones, one
+language at a time.
+
+```toml
+[format]
+rust = ["rustfmt", "--edition", "{edition}", "--config", "max_width=80"]
+python = false
+
+[lsp]
+python = ["basedpyright-langserver", "--stdio"]
+timeout = 60
+
+[daemon]
+idle_timeout = 1800
+
+[check]
+show = "hint"
+block = "warning"
+```
+
+| Setting                 | Meaning                                                                                                           |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `[format] LANG`         | The formatter command for a language, as a list of arguments, or `false` for none.                                |
+| `[lsp] LANG`            | The language server command for a language, or `false` for none.                                                  |
+| `[lsp] timeout`         | How long to wait for any language-server request, in seconds. The default is 30.                                  |
+| `[daemon] idle_timeout` | How long the daemon waits without a request before exiting, in seconds. The default is 600.                       |
+| `[check] show`          | The lowest severity that `check` prints: `error`, `warning` (the default), `info` or `hint`.                      |
+| `[check] block`         | The lowest severity of a new diagnostic that rejects an edit. The default is `error`; `false` turns blocking off. |
+
+Languages are named as for `--lang`. In a command, `{path}` stands for the
+file's absolute path and `{edition}` for the Rust edition in the nearest
+`Cargo.toml`. A program name without a slash is looked up in `node_modules/.bin`
+directories above the file, then on `PATH`. A path with a slash is relative to
+the configuration file.
+
+## Language servers
+
+The language-server features (`check`, `rename`, `.refs`, `.def`, and checking
+edits) go through a daemon. There is one daemon per workspace, and it keeps the
+servers running between commands so they don't have to re-index the project each
+time. `check`, `rename`, `.refs` and `.def` start it when needed, and it exits
+after ten minutes without a request. `ned daemon start`, `status` and `stop`
+control it directly. Everything else in ned works without it. The daemon
+currently runs on Linux and macOS only.
+
+| Language               | Default server                       |
+| ---------------------- | ------------------------------------ |
+| Rust                   | `rust-analyzer`                      |
+| Go                     | `gopls`                              |
+| Python                 | `pyright-langserver --stdio`         |
+| JavaScript, TypeScript | `typescript-language-server --stdio` |
+
+**Checked edits.** While the daemon is running, ned asks the server about each
+changed file before writing it, comparing the diagnostics for the original and
+the edited text. A diagnostic is new if the original has no identical one. New
+diagnostics at `[check] show` level or above are printed after the diff, and new
+errors (or whatever `[check] block` says) reject the script. `allow errors` in
+the script or `--force` lets the edit through, and `--no-check` skips checking.
+Edits never start the daemon by themselves. Checks that a server only runs when
+a file is saved, such as `cargo check`, can't run before the edit is written, so
+run `check` afterwards to see them.
+
+## Sessions
+
+With `-s NAME`, or `NED_SESSION=NAME` in the environment, ned records every run
+in a session log for the workspace: the script, the files, the outcome, and the
+text of every file it changed. Session names use letters, digits, `.`, `_` and
+`-`.
+
+- **`ned history`** lists the session's last ten runs, or all of them with
+  `--all`, with each run's number, outcome, the number of files it changed, and
+  the first line of its script.
+- **`ned undo`** reverts the session's most recent edit that hasn't been undone,
+  and prints the diff. Repeat it to go further back. If a file has changed since
+  the edit, `undo` refuses, and `--force` merges the reversal into the current
+  text instead. A file the edit created is removed.
+- **`!!`** as a script repeats the session's last script. `:s/OLD/NEW/` after it
+  replaces the first `OLD` with `NEW`, and `:gs/OLD/NEW/` replaces every one, so
+  `ned -e '!!:s/prase/parse/'` reruns a command with a typo fixed. The repeat
+  runs on the same files, but without the original options. Repeating a dry run
+  without `-n` is an error, so that nothing is written by accident.
+
+Sessions are stored under `~/.local/state/ned/sessions/` (or
+`$XDG_STATE_HOME/ned/sessions/`). Several programs can share a session safely,
+since ned locks the log while it reads or writes it.
+
+## Committing
+
+`--commit MSG` turns the edits that a run writes into one git commit with the
+message `MSG`. ned builds the commit from `HEAD` with only those edits applied,
+so other changes in the working tree and the index stay uncommitted, staged or
+not. If a changed file already had uncommitted changes, the commit contains only
+ned's edit, and an edit that overlaps those changes is refused.
+
+In a session, the commit contains every edit the session made since its last
+commit, so you can make a series of edits and commit them together. The commit
+is made without running git hooks, and is signed if your git configuration says
+so. ned prints `commit SHA: SUBJECT` after the diffs.
+
+`--commit` can't be combined with `-n`, and it fails if a merge is in progress
+or if there's nothing to commit. As always, a failure leaves the files, the
+index and `HEAD` exactly as they were.
+
+## Errors and exit codes
+
+Errors are printed to standard error as `error: LOCATION: message`, where the
+location is a position in the script (`script:LINE:COL`) or in a file. Where it
+helps, the line is quoted with a caret under the problem. Every error ends with
+a way to fix it: selectors that would match, a similar name, a missing `|`, or
+an option to add.
+
+```text
+error: script:1:8: fn:prase matches nothing in src/parser.rs; did you mean fn:parse (14-17)?
+error: script:3:1: edit overlaps command 1 at src/parser.rs:14-17
+error: src/parser.rs:15:31: edit introduces a syntax error (use --force to apply anyway)
+```
+
+| Code | Meaning                                                                                                                                       |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Success, including dry runs and skipped formatters.                                                                                           |
+| 1    | The edit was rejected: no match, an ambiguous match, overlapping edits, a syntax error, new diagnostics, a refused undo or commit, and so on. |
+| 2    | A usage error, or an error in the script, a query, a pattern or the configuration, or no language server for the files.                       |
+| 3    | An I/O error: a file that can't be read or written, a glob that matches nothing, or a failing language server or git command.                 |
+
+Whenever ned exits with a non-zero code, no file has been changed. Output from
+reads that ran before the failure is still printed.

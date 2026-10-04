@@ -225,6 +225,10 @@ main {
   vertical-align: top;
 }
 
+.prose td:first-child {
+  white-space: nowrap;
+}
+
 .prose th {
   border-bottom-width: 2px;
 }
