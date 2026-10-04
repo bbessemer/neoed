@@ -251,9 +251,11 @@ cargo run -q -p ned-cli -- FILE -e SCRIPT
 
 See [`AGENTS.md`](AGENTS.md) for the project's conventions and layout.
 
-CI runs these on Linux and macOS. Every pull request to `main` must raise
-`[workspace.package] version` in `Cargo.toml` (see `TODO.md` for which part to
-bump); merging it tags that version and publishes its release binaries.
+CI runs these on Linux and macOS for pull requests to `main` and `release/*`
+branches. Every pull request to `main` that changes Rust code (or `queries/`)
+must update `CHANGELOG.md` and raise `[workspace.package] version` in
+`Cargo.toml` (see `TODO.md` for which part to bump); merging it tags that
+version and publishes its release binaries.
 
 ## License
 

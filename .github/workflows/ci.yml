@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
@@ -40,11 +40,23 @@ jobs:
       - run: npx --yes prettier@3.8.4 --check '**/*.md'
 
   version:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Version is greater than the target branch's
+        with:
+          fetch-depth: 2
+      - id: rust
+        name: Rust code changed
+        # queries/ is compiled into the binary, so it counts as Rust code.
+        run: |
+          if git diff --quiet HEAD^1 HEAD -- '*.rs' '*Cargo.toml' Cargo.lock queries; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.rust.outputs.changed == 'true'
+        name: Version is greater than the target branch's
         run: |
           read_version() {
             python3 -c 'import sys, tomllib; print(tomllib.load(sys.stdin.buffer)["workspace"]["package"]["version"])'
@@ -64,3 +76,10 @@ jobs:
             exit 1
           fi
           echo "version $base -> $head"
+      - if: steps.rust.outputs.changed == 'true'
+        name: CHANGELOG.md is updated
+        run: |
+          if git diff --quiet HEAD^1 HEAD -- CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::PRs into main that change Rust code must update CHANGELOG.md"
+            exit 1
+          fi
