@@ -1,66 +1,15 @@
-## What ned does
-
-ned (short for Neoed) is a line editor in the tradition of `ed` and `sed`: you
-give it some files and a script, and it edits them. What sets it apart is how a
-script says _where_ to edit. Instead of line numbers, or a regular expression
-you hope is unique, you name the code. `fn:parse` is the function called
-`parse`, `impl:Parser>fn:new` is the `new` method inside `impl Parser`, and
-`fn:parse.body` is the body of `parse`. ned parses each file with tree-sitter to
-find them.
-
-It was designed for AI coding agents, which pay for every character they read
-and write. The same design makes it pleasant for a person doing mechanical
-refactoring from a terminal:
-
-- **A script is a transaction.** Either all of its edits apply or none of them
-  do, and files are written atomically.
-- **Every edit prints a diff,** so you see exactly what changed. With `-n`, you
-  see it without anything being written.
-- **Broken syntax is caught.** An edit that would introduce a parse error is
-  rejected.
-- **Indentation takes care of itself.** Inserted code is re-indented to fit
-  where it lands, and then your formatter runs.
-- **Errors tell you what to do.** An ambiguous selector lists the selectors that
-  would pick each match, and a typo gets a "did you mean".
-
-ned understands Rust, Python, Go, JavaScript, TypeScript and Markdown. Every
-other text file still works with line numbers, regular expressions and literal
-text.
-
-## Install
-
-On Linux or macOS, the install script downloads the latest release, verifies its
-checksum and puts `ned` in `~/.local/bin`:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/bbessemer/neoed/main/install.sh | sh
-```
-
-You can also download a binary from the
-[releases page](https://github.com/bbessemer/neoed/releases) yourself, or build
-from source with Rust 1.90 or newer and a C compiler:
-
-```sh
-cargo install --locked --git https://github.com/bbessemer/neoed ned-cli
-```
-
-ned needs nothing else, but it makes use of what you have. If `rustfmt`,
-`gofmt`, `ruff`, `black` or `prettier` is installed, edited files are formatted
-with it. If a language server such as `rust-analyzer` or `gopls` is installed,
-ned can also list diagnostics, find references and rename symbols across a
-project.
+import Example from "../Example";
 
 ## Refactoring by hand
 
-The examples below work on a small Rust calculator with three files:
-`src/main.rs`, `src/lexer.rs` and `src/parser.rs`. All of the output is real.
-The [tutorial](/tutorial) covers the same ground step by step, and the
-[reference](/reference) describes every command and selector.
+These examples run on a small Rust crate, and the output is real. The
+[tutorial](/tutorial) walks through everything step by step.
 
-### Find your way around
+<Example>
 
-`outline` lists the items in a file. Each line is a selector that you can paste
-into a command.
+### Every outline line is a selector
+
+Paste any of them into a command.
 
 ```ned
 $ ned src/parser.rs -e outline
@@ -87,27 +36,13 @@ src/parser.rs
   67-71 fn:rejects_empty_input
 ```
 
-`show` prints only what you ask for, and `show all` searches. A glob in quotes
-is expanded by ned, and `-w` searches the whole project, skipping anything your
-`.gitignore` leaves out.
+</Example>
 
-```ned
-$ ned 'src/*.rs' -e 'show all /\bdepth\b/'
-```
+<Example>
 
-```text
-src/parser.rs:8
-8:    depth: usize,
-src/parser.rs:15
-15:            depth: 0,
-src/parser.rs:33
-33:        eprintln!("{:?}", self.depth);
-```
+### Ambiguity is an error, with the fix
 
-### Make one precise change
-
-When a name is ambiguous, ned won't guess. It lists a selector for each match
-instead:
+ned never guesses which match you meant.
 
 ```ned
 $ ned 'src/*.rs' -e 'show fn:new'
@@ -120,48 +55,43 @@ error: script:1:6: fn:new matches 3 items; add `all` or use one of:
   impl:Error>fn:new    src/parser.rs:46-48
 ```
 
-Nesting narrows a selector down. This changes an error message in one function,
-even if the same text appears elsewhere in the file:
+</Example>
+
+<Example>
+
+### Write code at column 0
+
+ned indents it to fit.
 
 ```ned
-$ ned src/parser.rs -e 'replace fn:parse>"unexpected end" with "empty input"'
+$ ned src/lexer.rs <<'EOF'
+insert end impl:Lexer <<END
+
+fn peek(&self) -> Option<char> {
+    self.chars.get(self.pos).copied()
+}
+END
+EOF
 ```
 
 ```diff
-src/parser.rs: 1 edit, +1 -1
-@@ -19,3 +19,3 @@
-     pub fn parse(&mut self) -> Result<Expr, Error> {
--        let tok = self.lex.next().ok_or(Error::new("unexpected end"))?;
-+        let tok = self.lex.next().ok_or(Error::new("empty input"))?;
-         self.parse_expr(tok)
+src/lexer.rs: 1 edit, +4 -0
+@@ -31,2 +31,6 @@
+     }
++
++    fn peek(&self) -> Option<char> {
++        self.chars.get(self.pos).copied()
++    }
+ }
 ```
 
-### Change every instance of a pattern
+</Example>
 
-Code between backquotes is a syntax pattern. ned parses it and matches it
-against each file's syntax tree, so spacing, line breaks and comments make no
-difference, and `@name` stands for any expression. This removes every `dbg!`
-statement in the crate:
+<Example>
 
-```ned
-$ ned 'src/*.rs' -e 'delete all `dbg!(@_...);`'
-```
+### Match code by writing it
 
-```diff
-src/lexer.rs: 1 edit, +0 -1
-@@ -23,3 +23,2 @@
-         self.pos += 1;
--        dbg!(c);
-         match c {
-src/parser.rs: 1 edit, +0 -1
-@@ -24,3 +24,2 @@
-     fn parse_expr(&mut self, tok: Token) -> Result<Expr, Error> {
--        dbg!(&tok);
-         match tok {
-```
-
-A `replace` can reuse what the placeholders captured. This turns
-`assert_eq!(x, true)` into `assert!(x)`, whatever `x` is:
+Placeholders capture what varies, whatever the spacing.
 
 ```ned
 $ ned src/parser.rs -e 'replace all `assert_eq!(@a..., true)` with "assert!(@a)"'
@@ -181,12 +111,13 @@ src/parser.rs: 2 edits, +2 -2
      }
 ```
 
-### Restructure across files
+</Example>
 
-Longer scripts go on standard input. This one moves the error type into a new
-module and updates the imports in the same transaction.
-`struct:Error..impl:"Display for Error"` selects everything from the struct to
-the end of its `Display` impl, and `-q` prints just a summary line per file:
+<Example>
+
+### Restructure in one transaction
+
+Every command applies, or none does. Then your formatter runs.
 
 ```ned
 $ ned 'src/*.rs' -q <<'EOF'
@@ -208,34 +139,13 @@ fmt rustfmt: +1 -1
 src/error.rs: created, +16
 ```
 
-The `fmt rustfmt` line shows that rustfmt ran afterwards and sorted the new
-import into place. If any of those commands had failed (say, because the struct
-had a different name), ned would have printed the error and left every file
-untouched.
-
-### Preview, undo and commit
-
-- `-n` prints the diff without writing anything.
-- With `-s NAME`, or `NED_SESSION=NAME` in the environment, ned keeps a log of
-  your edits. `ned history` lists them and `ned undo` reverts the last one.
-- `--commit "message"` commits exactly the edits that the command made. Other
-  changes in your working tree and index stay as they were, staged or not.
+</Example>
 
 ## Using ned with AI agents
 
-Coding agents usually edit files in one of three ways: they rewrite the whole
-file, they generate a `sed` command or a short Python script, or they call a
-search-and-replace tool that needs the old text repeated exactly. Rewriting a
-file is expensive, `sed` and Python are easy to get subtly wrong, and
-search-and-replace fails whenever the agent misremembers a line of the original.
-In every case, the agent then has to read the file again to check its work.
-
-ned addresses each of these. Selectors are short, so the agent doesn't repeat
-code it isn't changing. Edits are checked for syntax errors before anything is
-written. The diff that ned prints replaces the read-back, and when a command
-fails, the error message says how to fix it. Measured with a GPT-4o-class
-tokenizer, the commands for common edits come out at roughly half the size of
-the alternatives:
+Agents pay for every token. ned's commands are short, its diff replaces reading
+the file back, and its errors say how to fix them. Here's what common edits
+cost, in tokens:
 
 | Task                            | ned | Python | search and replace |
 | ------------------------------- | --: | -----: | -----------------: |
@@ -244,43 +154,13 @@ the alternatives:
 | Delete a function               |  13 |     70 |                 44 |
 | Replace a function body         |  38 |     93 |                 62 |
 
-The numbers come from the benchmark in the repository's `bench/` directory,
-which runs every variant and checks its result.
-
-### Setting it up
-
-**Claude Code.** The repository includes a skill that teaches Claude to read,
-search and edit files with ned. Copy it into your skills directory:
+For Claude Code, install the skill:
 
 ```sh
 git clone https://github.com/bbessemer/neoed
 cp -r neoed/docs/skills/ned ~/.claude/skills/
 ```
 
-**Other agents.** The
+For other agents, the
 [agent guide](https://github.com/bbessemer/neoed/blob/main/docs/agent-guide.md)
-has a short paragraph to add to the system prompt. It covers the basics and
-points the agent to `ned help`, which prints the whole command language in one
-screen.
-
-**Sessions.** Give each agent conversation its own session by setting
-`NED_SESSION`. The agent can then undo its own edits, and repeat a failed
-command with a correction (`ned -e '!!:s/prase/parse/'`) instead of typing it
-out again. You can follow along with `ned history`.
-
-**Language servers.** After `ned daemon start`, ned checks each edit with the
-project's language server and rejects edits that introduce new compile errors,
-listing them so the agent can fix its change. The daemon also lets an agent look
-up references and definitions and rename symbols across the project.
-
-## Project status
-
-ned is under active development and has not reached 1.0, so the command language
-may still change. It is already used day to day to develop ned itself. Each
-release is listed with its changes on the
-[releases page](https://github.com/bbessemer/neoed/releases) and in the
-[changelog](https://github.com/bbessemer/neoed/blob/main/CHANGELOG.md).
-
-ned is written in Rust and released under the
-[MIT license](https://github.com/bbessemer/neoed/blob/main/LICENSE). The source
-code is on [GitHub](https://github.com/bbessemer/neoed).
+has a short system-prompt snippet.

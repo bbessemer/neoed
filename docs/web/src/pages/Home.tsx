@@ -38,6 +38,9 @@ export default function Home() {
             AI coding agents, and it works just as well in your own terminal.
           </p>
           <InstallCommand />
+          <p className="install-more">
+            <Link to="/tutorial#installing">Other ways to install</Link>
+          </p>
           <div className="hero-links">
             <Link className="button primary" to="/tutorial">
               Tutorial

@@ -249,6 +249,45 @@ main {
   margin-top: 0;
 }
 
+.home {
+  max-width: 72rem;
+}
+
+.home > :not(.example) {
+  max-width: 46rem;
+}
+
+.example {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2.2fr);
+  gap: 2rem;
+  align-items: start;
+  padding: 1.5rem 0;
+}
+
+.example + .example {
+  border-top: 1px solid var(--border);
+}
+
+.example-text h3 {
+  margin-top: 0;
+}
+
+.example-text p {
+  color: var(--text-muted);
+}
+
+.example-code pre:last-child {
+  margin-bottom: 0;
+}
+
+@media (max-width: 860px) {
+  .example {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.5rem;
+  }
+}
+
 .home > h2:first-child {
   border-top: none;
 }
@@ -352,6 +391,12 @@ main {
   font-size: 1.15rem;
   color: var(--text-muted);
   margin: 0 0 1.75rem;
+}
+
+.install-more {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  margin: -0.75rem 0 1.25rem;
 }
 
 .install-command {
