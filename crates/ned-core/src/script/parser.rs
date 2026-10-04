@@ -14,6 +14,7 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
         lexer: Lexer::new(src),
         peeked: None,
         last_end: 0,
+        command_start: 0,
     };
     let mut commands: Vec<Command> = Vec::new();
     let mut stages: Vec<usize> = Vec::new();
@@ -51,6 +52,9 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
                     next.kind,
                     TokenKind::Newline | TokenKind::Semicolon | TokenKind::Pipe | TokenKind::Eof
                 ) {
+                    if let Some(err) = parser.trailing_all(&command, &next) {
+                        return Err(err);
+                    }
                     let mut err = expected("end of command", &next);
                     if let (E::Expected { hint, .. }, Some(split)) =
                         (&mut err.kind, parser.one_selector_each(&command))
@@ -101,6 +105,8 @@ struct Parser<'a> {
     peeked: Option<Token>,
     /// End of the last consumed token.
     last_end: usize,
+    /// Start of the command being parsed.
+    command_start: usize,
 }
 
 impl Parser<'_> {
@@ -126,6 +132,7 @@ impl Parser<'_> {
 
     fn command(&mut self) -> Result<Command, ParseError> {
         let verb = self.bump()?;
+        self.command_start = verb.span.start;
         let TokenKind::Word(word) = &verb.kind else {
             let mut err = expected("a command", &verb);
             if let E::Expected { hint, .. } = &mut err.kind {
@@ -323,10 +330,77 @@ impl Parser<'_> {
         if all {
             self.bump()?;
         }
-        Ok(Target {
+        let selector = self.selector()?;
+        if !all && self.peek_is_word("all")? {
+            let all = self.bump()?.span;
+            return Err(self.all_after_selector(&selector, all)?);
+        }
+        Ok(Target { all, selector })
+    }
+
+    /// The error for `all` after `selector` instead of before it: `sub`, which
+    /// takes no `all`, says to drop it.
+    fn all_after_selector(
+        &mut self,
+        selector: &Selector,
+        all: Range<usize>,
+    ) -> Result<ParseError, ParseError> {
+        let lead = &self.src[self.command_start..selector.span.start];
+        let written = &self.src[selector.span.clone()];
+        if lead.split_whitespace().next() == Some("sub") {
+            let kind = match &selector.steps[..] {
+                [
+                    Step {
+                        primary: Primary::Regex(_),
+                        parts,
+                        ..
+                    },
+                ] if parts.is_empty() && self.peek_is_word("with")? => E::SubAll(written.into()),
+                _ => E::MissingSubPattern,
+            };
+            return Ok(ParseError::new(kind, all));
+        }
+        let more = match self.peek()?.kind {
+            TokenKind::Newline | TokenKind::Semicolon | TokenKind::Pipe | TokenKind::Eof => "",
+            _ => " ...",
+        };
+        Ok(ParseError::new(
+            E::AllAfterSelector(format!("{lead}all {written}{more}")),
             all,
-            selector: self.selector()?,
-        })
+        ))
+    }
+
+    /// The error for `all` at the end of `command`, after its TEXT or another
+    /// argument, instead of before its selector.
+    fn trailing_all(&self, command: &Command, next: &Token) -> Option<ParseError> {
+        if !matches!(&next.kind, TokenKind::Word(word) if word == "all") {
+            return None;
+        }
+        let target = match &command.kind {
+            CommandKind::Show {
+                target: Some(target),
+                ..
+            }
+            | CommandKind::Outline(Some(target))
+            | CommandKind::Check {
+                target: Some(target),
+                ..
+            }
+            | CommandKind::Replace { target, .. }
+            | CommandKind::Insert { target, .. }
+            | CommandKind::Delete(target)
+            | CommandKind::Resolve { target, .. } => target,
+            _ => return None,
+        };
+        if target.all {
+            return None;
+        }
+        let lead = &self.src[command.span.start..target.selector.span.start];
+        let written = &self.src[target.selector.span.clone()];
+        Some(ParseError::new(
+            E::AllAfterSelector(format!("{lead}all {written} ...")),
+            next.span.clone(),
+        ))
     }
 
     /// `command`, a `show`, `outline` or `delete`, and the selector after it as
@@ -357,7 +431,12 @@ impl Parser<'_> {
             let token = self.bump()?;
             return Err(ParseError::new(E::AllNotAllowed, token.span));
         }
-        self.selector()
+        let dest = self.selector()?;
+        if self.peek_is_word("all")? {
+            let token = self.bump()?;
+            return Err(ParseError::new(E::AllNotAllowed, token.span));
+        }
+        Ok(dest)
     }
 
     fn selector(&mut self) -> Result<Selector, ParseError> {
@@ -469,8 +548,10 @@ impl Parser<'_> {
     fn sub(&mut self) -> Result<CommandKind, ParseError> {
         let all = self.peek()?.span.clone();
         let first = self.target()?;
+        let written;
         let (scope, pattern) = if self.peek_is_word("with")? {
             let span = first.selector.span.clone();
+            written = span.clone();
             let mut steps = first.selector.steps;
             match (first.all, steps.pop(), steps.is_empty()) {
                 (
@@ -500,12 +581,21 @@ impl Parser<'_> {
             let TokenKind::Regex { pattern, flags } = token.kind else {
                 return Err(ParseError::new(E::MissingSubPattern, token.span));
             };
+            written = first.selector.span.start..token.span.end;
+            if self.peek_is_word("all")? {
+                let all = self.bump()?.span;
+                return Err(ParseError::new(E::SubAll(self.src[written].into()), all));
+            }
             (Some(first), validate_regex(pattern, flags, token.span)?)
         };
         self.expect_with()?;
         let at = self.peek()?.span.clone();
         let text = self.text()?;
         self.validate_groups(&pattern, &text, at)?;
+        if self.peek_is_word("all")? {
+            let all = self.bump()?.span;
+            return Err(ParseError::new(E::SubAll(self.src[written].into()), all));
+        }
         Ok(CommandKind::Sub {
             scope,
             pattern,
@@ -1817,6 +1907,67 @@ mod tests {
             message(r#"replace 3 with "x" fn:a"#),
             "expected end of command, found `fn:a`"
         );
+    }
+
+    #[test]
+    fn all_after_the_selector_goes_before_it() {
+        for (src, fix) in [
+            ("show /x/ all", "show all /x/"),
+            ("show fn:a.body all +2", "show all fn:a.body ..."),
+            ("outline impl:P all", "outline all impl:P"),
+            ("delete \"x\" all", "delete all \"x\""),
+            ("check /x/ all error", "check all /x/ ..."),
+            (r#"replace /x/ all with "y""#, "replace all /x/ ..."),
+            (r#"insert after /x/ all "y""#, "insert after all /x/ ..."),
+            ("move fn:a all after fn:b", "move all fn:a ..."),
+            ("resolve conflict all ours", "resolve all conflict ..."),
+        ] {
+            assert_eq!(
+                message(src),
+                format!("`all` goes before the selector; write {fix}"),
+                "{src:?}"
+            );
+        }
+        assert_eq!(error("show /x/ all").span, 9..12);
+    }
+
+    #[test]
+    fn sub_with_all_after_its_regex_suggests_dropping_all() {
+        let e = error(r#"sub /x/i all with "y""#);
+        assert_eq!(
+            e.kind.to_string(),
+            "`sub` already replaces every match; drop `all`: sub /x/i with ..."
+        );
+        assert_eq!(e.span, 9..12);
+        assert_eq!(
+            error(r#"sub fn:a all /x/ with "y""#).kind,
+            E::MissingSubPattern
+        );
+    }
+
+    #[test]
+    fn all_at_the_end_of_a_command_goes_before_its_selector() {
+        for (src, fix) in [
+            (r#"replace /x/ with "y" all"#, "replace all /x/ ..."),
+            (r#"insert after fn:a "y" all"#, "insert after all fn:a ..."),
+            ("resolve conflict ours all", "resolve all conflict ..."),
+            ("check /x/ error all", "check all /x/ ..."),
+        ] {
+            assert_eq!(
+                message(src),
+                format!("`all` goes before the selector; write {fix}"),
+                "{src:?}"
+            );
+        }
+        assert_eq!(error(r#"replace 3 with "y" all"#).span, 19..22);
+        for src in [r#"sub 1 /e/ with "x" all"#, r#"sub 1 /e/ all with "x""#] {
+            assert_eq!(
+                message(src),
+                "`sub` already replaces every match; drop `all`: sub 1 /e/ with ...",
+                "{src:?}"
+            );
+        }
+        assert_eq!(error("move fn:b before fn:a all").kind, E::AllNotAllowed);
     }
 
     #[test]

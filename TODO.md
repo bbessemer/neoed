@@ -319,6 +319,9 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [x] A syntax pattern can't match the tail of a method chain after a receiver
       (`` `let n = files[i] @_...;` ``), nor a match arm whose value is a chain
       (`` `Primary::Conflict(_) => f @_...,` ``)
+- [x] `show /re/ all` (`all` after the selector, not before it) fails with
+      "expected end of command, found `all`" and no fix; it should say `all`
+      goes before the selector (`show all /re/`)
 
 ## Future improvements
 

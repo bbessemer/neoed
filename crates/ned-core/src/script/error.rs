@@ -118,6 +118,9 @@ pub enum ParseErrorKind {
     /// `sub all /re/ with`, holding the regex as written.
     #[error("`sub` already replaces every match; drop `all`: sub {0} with ...")]
     SubAll(String),
+    /// `all` after a target's selector; the fix puts it before.
+    #[error("`all` goes before the selector; write {0}")]
+    AllAfterSelector(String),
     /// A `$` reference in `sub` TEXT to a group the regex doesn't have; `fix`
     /// splits off the group it starts with, or lists the groups.
     #[error("`{reference}` names group `{name}`, which the regex doesn't have; {fix}")]
