@@ -23,6 +23,7 @@ function docPage(
   });
 }
 
+const Why = docPage(() => import("./content/why.mdx"), "Why ned?", 3);
 const Tutorial = docPage(() => import("./content/tutorial.mdx"), "Tutorial");
 const Reference = docPage(
   () => import("./content/reference.mdx"),
@@ -36,6 +37,7 @@ createRoot(document.getElementById("root")!).render(
       <Routes>
         <Route element={<Layout />}>
           <Route index element={<Home />} />
+          <Route path="why" element={<Why />} />
           <Route path="tutorial" element={<Tutorial />} />
           <Route path="reference" element={<Reference />} />
           <Route path="*" element={<NotFound />} />

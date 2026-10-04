@@ -3,6 +3,7 @@ import { Link, NavLink, Outlet, useLocation } from "react-router";
 import { LICENSE, RELEASES, REPO } from "./links";
 
 const pages = [
+  { to: "/why", label: "Why ned?" },
   { to: "/tutorial", label: "Tutorial" },
   { to: "/reference", label: "Reference" },
 ];

@@ -1,0 +1,223 @@
+# Why ned?
+
+ned (short for Neoed) is a line editor for source code. This page explains what
+that means, what ned does differently from the editors it descends from, and
+where it's worth using: by hand, for mechanical changes to code, and as the
+editing tool for an AI coding agent.
+
+## Line editors
+
+Most people edit text in a screen editor, such as Vim, Emacs or VS Code, which
+shows the file and lets you move a cursor around in it. A **line editor** works
+without a view of the file. You tell it which lines you mean and what to do with
+them, it does that, and it tells you the result. `ed`, the original Unix editor,
+worked this way because its users sat at teletypes that printed onto paper,
+where redrawing a screen wasn't possible.
+
+An `ed` command names some lines and an operation on them. To change `foo` to
+`bar` on lines 10 to 20, you'd write `10,20s/foo/bar/`. To print every line
+containing `TODO`, you'd write `g/TODO/p`. This is the origin of the name of the
+`grep` command: `g/re/p`, with `re` standing for "regular expression". `sed`,
+the stream editor, runs the same kind of commands as a script over a file, which
+is why it's still a common way to make an edit from a shell script or a
+terminal:
+
+```sh
+sed -i 's/timeout = 30/timeout = 60/' config.py
+```
+
+Line editors are good at edits you can describe precisely, and at applying the
+same edit to many files. Their weakness is the description itself. Line numbers
+change whenever the file does, and a regular expression matches text, not code:
+it doesn't know that one `timeout = 30` is inside the function you meant and
+another is in a test.
+
+## What ned adds
+
+ned keeps the line editor's model, where you give it some files and a script and
+it edits them, but changes how a script says _where_ to edit. Instead of line
+numbers, or a regular expression you hope is unique, you name the code.
+`fn:parse` is the function called `parse`, `impl:Parser>fn:new` is the `new`
+method inside `impl Parser`, and `fn:parse.body` is the body of `parse`. ned
+parses each file with [tree-sitter](https://tree-sitter.github.io/) to find
+them, so a selector keeps pointing at the right code however the file around it
+changes.
+
+```ned
+replace fn:parse>"unexpected end" with "unexpected end of input"
+delete fn:debug_dump
+```
+
+The first command changes a string only inside `parse`, even if the same string
+appears elsewhere in the file. The second deletes a whole function, from its doc
+comment to its closing brace. When code is easier to show than to name, a syntax
+pattern matches it by its structure, ignoring spacing and comments:
+`` `assert_eq!(@a..., true)` `` finds every such assertion, whatever `@a` is.
+
+ned understands Rust, Python, Go, JavaScript, TypeScript and Markdown. Every
+other text file still works with line numbers, regular expressions and literal
+text, as in `sed`.
+
+### Edits you can trust
+
+Naming code precisely is half of making an edit safely. The other half is what
+happens when something goes wrong, and here ned behaves differently from `sed`
+and from most hand-written scripts:
+
+- **A script is a transaction.** Either all of its edits apply or none of them
+  do, and files are written atomically. A typo in the fifth command doesn't
+  leave four commands' worth of changes behind.
+- **Every edit prints a diff,** so you see exactly what changed. With `-n`, you
+  see it without anything being written.
+- **Broken syntax is caught.** An edit that would introduce a parse error is
+  rejected. With a language server running, so is an edit that introduces a
+  compile error.
+- **Indentation takes care of itself.** You write inserted code at column 0, ned
+  re-indents it to fit where it lands, and then your formatter runs.
+- **Selectors never guess.** A selector that matches more than one thing is an
+  error unless you say `all`, and a selector that matches nothing is an error
+  too, never a silent no-op.
+- **Errors tell you what to do.** An ambiguous selector lists the selectors that
+  would pick each match, and a misspelled name gets a "did you mean".
+
+## Editing code yourself
+
+Most editing is still best done in your screen editor. ned is for the changes
+that you can describe more easily than you can make by hand:
+
+- **Mechanical refactoring.** Renaming a field everywhere it's used, replacing a
+  deprecated call with its successor, or moving a type into its own module.
+  These are tedious in an editor and error-prone with `sed`, and in ned they're
+  a line or two.
+- **Changes across many files.** A selector searches every file you give it, and
+  `-w` gives it the whole project. `ned -w -e 'show all fn:handle_*'` is a
+  search that understands code.
+- **Repeatable changes.** A ned script is plain text, so you can keep it, review
+  it and run it again, for example on every branch that needs the same fix, or
+  from a code generator.
+- **Reviewing before writing.** Every run prints a diff, and `-n` shows it
+  without writing. Combined with `--commit`, which commits exactly the edits a
+  run makes, a change can go from script to reviewed commit without opening an
+  editor.
+- **Working without an IDE.** On a remote machine, in a container or in CI, ned
+  gives you syntax-aware edits and, with a language server installed, renames
+  and references, with nothing to configure.
+
+ned is less useful for writing new code from scratch, where you're composing
+rather than transforming, and for edits that need you to look at the result as
+you go. Those belong in your editor.
+
+## Editing code with an AI agent
+
+A coding agent can't type into an editor. It edits files by producing text that
+some tool applies, and every character it reads and writes costs time and money.
+Agents usually rely on one of four approaches, and each one fails in its own
+way.
+
+### Rewriting the whole file
+
+The simplest approach is to output the complete new file. It always "works", but
+it costs tokens in proportion to the file, not the change: a one-line fix to a
+600-line module means writing 600 lines. Long outputs also invite shortcuts. An
+agent that writes `# ... rest of the class unchanged ...` instead of the code it
+meant to keep has just deleted that code, and nothing stops the file from being
+saved that way.
+
+### Search and replace
+
+Many agent tools take an exact string to find and a string to replace it with:
+
+```json
+{
+  "path": "server/config.go",
+  "old_str": "    if timeout == 0 {\n        timeout = 30\n    }",
+  "new_str": "    if timeout == 0 {\n        timeout = 60\n    }"
+}
+```
+
+This fails whenever the agent's copy of the text differs from the file's. Here,
+the agent wrote four spaces of indentation, but Go files are indented with tabs,
+so the string isn't found and the agent has to read the file and try again. If
+the text appears twice, the tool refuses, and the agent has to include more of
+the surrounding code, which it must also reproduce exactly. Every call repeats
+code that isn't changing, and escaping it as JSON adds more.
+
+### sed and regular expressions
+
+`sed` is short, but it's unscoped and silent:
+
+```sh
+sed -i 's/timeout = 30/timeout = 60/' config.py
+```
+
+This changes every line containing `timeout = 30`, including the default in an
+unrelated function and the assertion in a test. If the line actually reads
+`timeout=30`, it changes nothing and reports nothing, and the agent believes the
+edit was made. Deleting a function with a range such as
+`sed -i '/def legacy_auth/,/^    return/d'` depends on how the function happens
+to end, and on macOS, `sed -i` needs an extra `''` argument that the same
+command on Linux must not have.
+
+### Inline Python
+
+For anything harder, agents write throwaway scripts:
+
+```sh
+python3 -c "
+import re
+p = 'app/views.py'
+s = open(p).read()
+s = s.replace('def index(request):', 'def index(request):\n    log_request(request)')
+open(p, 'w').write(s)
+"
+```
+
+`str.replace` replaces every occurrence, or none without complaint. The inserted
+line's indentation is typed by hand, and if it's wrong, Python fails only when
+the module is next imported. Quoting the script for the shell is its own source
+of mistakes, and as with `sed`, the agent has to read the file back to find out
+what happened.
+
+### Line numbers
+
+An agent can also read a file with line numbers and edit "line 42". That works
+once. After an edit that adds or removes lines above line 42, the agent's
+numbers are stale, and the next edit lands on the wrong line, often without any
+error at all.
+
+### How ned helps
+
+ned was designed around these failures:
+
+- **Short selectors replace repeated code.** `replace fn:index.body` or
+  `insert start fn:index` names the place to edit without quoting what's there,
+  so the agent writes only the new text.
+- **Whitespace doesn't have to match.** Inserted code is written at column 0 and
+  re-indented to the file's style, tabs or spaces, so the agent never has to
+  count spaces, even in Python.
+- **Nothing happens silently.** A selector that matches nothing, or more than
+  one thing, is an error that names candidates, and the agent can paste one
+  back.
+- **The diff is the confirmation.** The agent sees exactly what changed and
+  doesn't need to read the file again.
+- **Mistakes don't land.** Edits that would break the syntax are rejected before
+  anything is written, and with `ned daemon start`, edits that introduce compile
+  errors are too.
+- **Line numbers stay valid within a script,** because every selector resolves
+  against the file as it was when the script started.
+
+Measured with the repository's benchmark, the ned command for a common edit is
+roughly half the size of the alternatives, before counting the read-back that
+`sed` and Python need. The [home page](/#using-ned-with-ai-agents) shows the
+numbers and how to set up Claude Code or another agent.
+
+**Sessions** help agents too. With `NED_SESSION` set for each conversation, an
+agent can undo its own last edit with `ned undo`, and repeat a failed command
+with a small correction, as in `ned -e '!!:s/prase/parse/'`, instead of sending
+the whole script again. You can follow what it did with `ned history`.
+
+## Where to go next
+
+The [tutorial](/tutorial) walks through ned step by step, from installing it to
+merge conflicts and language servers. The [reference](/reference) describes
+every command and selector.
