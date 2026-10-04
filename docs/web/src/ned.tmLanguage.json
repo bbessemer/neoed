@@ -64,14 +64,7 @@
       "endCaptures": {
         "1": { "name": "punctuation.definition.string.end.ned" }
       },
-      "contentName": "string.unquoted.heredoc.ned",
-      "patterns": [
-        {
-          "begin": "\\G",
-          "end": "$",
-          "patterns": [{ "include": "#script" }]
-        }
-      ]
+      "contentName": "string.unquoted.heredoc.ned"
     },
     "comment": {
       "match": "(?:^|(?<=\\s))#.*$",

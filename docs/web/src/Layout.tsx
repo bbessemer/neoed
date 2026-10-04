@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router";
 import { LICENSE, RELEASES, REPO } from "./links";
 
-const pages: { to: string; label: string }[] = [];
+const pages = [{ to: "/tutorial", label: "Tutorial" }];
 
 export default function Layout() {
   const { pathname, hash } = useLocation();
