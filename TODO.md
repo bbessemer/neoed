@@ -5,7 +5,7 @@ too large for one PR: they carry a checklist of coarse chunks to plan with the
 engineer before starting each one; a single-PR item has none, and moves to Done
 when it lands.
 
-Versions follow semver at 0.x (currently 0.6.3): a change to the command
+Versions follow semver at 0.x (currently 0.7.0): a change to the command
 language or any new user-visible feature bumps the minor version, and a release
 that only fixes bugs or adds hints bumps the patch version. Each item below says
 which it is. When to release 1.0 is TBD.
@@ -41,90 +41,31 @@ which it is. When to release 1.0 is TBD.
   `.whole`; bare kinds (`fn` = `fn:*`); `.lines` splitting into lines;
   whole-line ranges; span types; `[...]` filters with `&&`, `||` and
   parentheses.
+- **Syntax patterns** (0.5.0): select code by writing it, with `@` placeholders
+  matched against the syntax tree; fragments parse inside per-language builders
+  (`queries/<lang>/builders.scm`, read by `ned-scheme`); `replace` substitutes
+  captures.
 - **Sessions** (0.6.0): `-s NAME`/`NED_SESSION` record each invocation in a
   versioned, locked per-workspace log; `ned history`, `ned undo` (`--force`
   merges into later changes) and `!!:s/OLD/NEW/` repeats.
-- **Text language**: `--lang text` reads every file without parsing; files with
-  unknown extensions are read as text, with one note naming the extensions.
-- **Terminal output**: `--color auto|always|never` and `NO_COLOR`; on a
+- **Text language** (0.6.2): `--lang text` reads every file without parsing;
+  files with unknown extensions are read as text, with one note naming the
+  extensions.
+- **Terminal output** (0.7.0): `--color auto|always|never` and `NO_COLOR`; on a
   terminal, `show` and diff hunks are highlighted from the grammars' highlight
   queries, line numbers are right-aligned, and `outline`, `check` and messages
   are coloured. Piped output is unchanged.
+- **Commit from ned** (0.7.0): `--commit MSG` commits exactly the invocation's
+  edits (with `-s`, the session's since its last commit) through git's plumbing,
+  leaving other staged and unstaged changes alone.
+- **Merge conflicts** (0.7.0): conflict markers are hidden from every parse;
+  `conflict:N` with `.ours`, `.theirs` and `.base`; `resolve` keeps a side.
 
 ## Phase 2
 
-Order matters: sessions precede everything that reads a session (commit, REPL,
-MCP); terminal output precedes the REPL. User-supplied grammars and plugins
-close the phase and may slip.
-
-### Syntax patterns _(split)_
-
-An agent selects code by writing code: a backquoted pattern such as
-`` fn:parse>`if name == "foo" { @body... }` `` is parsed with the file's grammar
-and matched against the syntax tree, so whitespace, line breaks and comments
-never have to be reproduced (spec §3.10). `@name` matches one node and
-`@name...` a run of siblings; `replace` substitutes what they captured. Prior
-art: ast-grep's metavariables.
-
-- **Direct tree matching**, not compilation to queries: query anchors can't skip
-  comments between siblings, and unanchored children allow gaps.
-- **Fragments parse inside builders.** tree-sitter has no alternate start
-  symbol, so a fragment that only parses inside other code (a method, an arm, a
-  field) is tried inside each of its language's builders:
-  `queries/<lang>/builders.scm`, Scheme data read by `ned-scheme` and never
-  evaluated. `(build KIND PART...)` gives the text of KIND: strings are literal,
-  `_` is the hole for the fragment, and other symbols are KIND's fields, filled
-  with dummy names here and with real text by code generation later. What each
-  hole can contain comes from the grammar's `node-types.json`, not from
-  hand-written data. A test keeps only builders some fragment needs: the
-  grammars accept most code at the top level (Rust items, Go statements).
-- **Generation is quasi-quotation, not unparsing.** tree-sitter can't turn a
-  tree back into source, and an unparser driven by `grammar.json` would be
-  unreliable (external scanners, alternatives). Text comes from templates,
-  captured source and re-basing, plus the formatter; trees only validate it.
-  Plugins build on the same templates and builders.
-
-- [x] Spec: placeholder grammar, capture rules, substitution in `replace`
-- [x] `ned-scheme`: a datum reader (no evaluation) for a Scheme dialect that
-      reads tree-sitter query syntax, producing syntax objects with spans
-- [x] Fragment parsing with per-language builders
-      (`queries/<lang>/builders.scm`) and containment from `node-types.json`
-- [x] Pattern matching
-- [x] Capture substitution in `replace` TEXT
-
-Version: minor once matching works; a further minor if capture substitution
-ships separately. The spec, reader and builder chunks alone release nothing.
-
-### Commit from ned _(split)_
-
-An agent turns its edits into one git commit without touching anything else in
-the working tree: `--commit MSG` commits exactly the invocation's edits, and
-with `-s` the session's edits so far. `ned` patches the index directly rather
-than staging paths, so other staged or unstaged changes are never swept into the
-commit. Depends on Sessions for the session case.
-
-- [x] `--commit MSG` for one invocation's edits
-- [x] With `-s`, the session's edits since its last commit
-
-Version: minor; a new flag.
-
-### Merge conflicts _(split)_
-
-A file with `<<<<<<<`/`=======`/`>>>>>>>` markers still parses: markers are
-hidden from the grammar, so syntax selectors find items inside either side and
-the parse-error guard doesn't block edits to a conflicted file. Then an agent
-resolves conflicts structurally: a `conflict` kind (numbered in file order) with
-`.ours`, `.theirs` and `.base` parts, and `resolve conflict:2 ours` (or
-`replace conflict:2 with ...`) replaces the whole conflict with one side or new
-text. The marker tolerance is independent; the resolution verb depends on the
-parts work above.
-
-- [x] Marker tolerance: conflict markers hidden from the grammar and the guard
-- [x] The `conflict` kind and its `.ours`, `.theirs` and `.base` parts
-- [x] The `resolve` verb
-
-Version: patch for marker tolerance (existing scripts start working on
-conflicted files); minor for the `conflict` kind, its parts and `resolve`.
+The REPL and the MCP server read sessions, and the REPL builds on terminal
+output, both done. User-supplied grammars and plugins close the phase and may
+slip.
 
 ### REPL
 
@@ -181,38 +122,14 @@ Version: minor when a first plugin can load; the spike releases nothing.
 Hints and relaxed errors: each is a patch, and they batch into the next release
 of either kind.
 
-- [x] A `sub` replacement that names a group its regex doesn't have is an error,
-      not an empty expansion: `$1deletions` is the group `1deletions`, so
-      suggest `${1}deletions` (or `$$` for a literal `$`)
-- [x] An invalid escape in a string suggests doubling the backslash, for text
-      copied from source: "invalid escape `\r`; write `\\r` for a backslash and
-      r"
 - [ ] `show` with a line range past the end of the file shows up to the last
       line, with a note, instead of an error (`show 1-60` on a 57-line file);
       edits keep the error
-- [x] `sub all /re/ with "x"` says "`sub` needs a regex before `with`", since
-      `all /re/` parses as the scope; say instead that `sub` already replaces
-      every match, so `all` goes: `sub /re/ with "x"`
 - [ ] `-e` plus a script on stdin runs both: the `-e` scripts first, then stdin,
       joined with newlines as several `-e`s are (today stdin is ignored
       silently, so `ned -e 'file X' <<'EOF' ... EOF` drops the heredoc). A
       minor, since §1 changes. Decide how not to wait on an open pipe that never
       closes, which `-e` alone doesn't read today
-- [x] A dotted name whose tail isn't a part suggests quoting it:
-      `import:app.models.user` says "unknown part `.models`" and should suggest
-      `import:"app.models.user"`
-- [x] `insert end` or `insert start` with no selector says it needs one, and
-      that `insert after $` appends to the file, instead of "expected text (a
-      string or heredoc), found end of line"
-- [x] A `..` followed by `+N` (`show /re/+0..+70`) suggests `show /re/ +70`
-      rather than "expected end of command, found '..'"
-- [x] A Python `.sig` replacement ending in `:` that the guard rejects
-      (`-> None::`) says `.sig` stops before the `:`; spec §3.4,
-      `ned help selectors` and the skill say so too
-- [x] `ned help selectors` says `..` binds tighter than `>`, with the example
-      `class:Server>fn:start..fn:run` (not `...fn:start..class:Server>fn:run`)
-- [x] The skill and agent guide say to use a heredoc whenever TEXT holds a
-      quote, rather than `-e` with shell escapes such as `'"'"'`
 - [ ] An any-kind selector matches a name whatever its kind, when that is
       unique, so a long script needn't guess `const:` versus `var:` (syntax to
       decide: `item:NAME`, `*:NAME` or a bare name). A minor
@@ -234,94 +151,14 @@ of either kind.
 - [ ] `!!` repeats the last script that edited or failed, not a read-only call
       in between: after a failed edit, an `outline` to look around makes `!!`
       refer to the `outline`. A minor, since §1.2 changes
-- [x] `!!` after a `-n` dry run is an error unless it has `-n` too: it would
-      apply what was only previewed, and an agent that then sends the script
-      again applies the edit twice
-- [x] Several selectors after one `show` (`show fn:a fn:b`) suggest a `;` or a
-      new line between `show`s, instead of only "expected end of command"
-- [x] A selector that matches nothing, where an earlier command in the script
-      inserts matching text, says selectors resolve against the stage's input
-      and suggests a `|` before the command
-- [x] The off-by-one note fires when TEXT repeats the rest of the span's last
-      line wrapped across a line break: compare ignoring whitespace and line
-      breaks, not just whether TEXT ends with that rest
-- [x] The skill says a subagent inherits its parent's `NED_SESSION`, so its
-      `ned undo` can revert the parent's edits; give a subagent its own `-s`
 
 ## Bugs
 
 Each fix is a patch; a fix that changes documented behaviour is a minor.
 
-- [x] `create a.rs "fn a() {}\n"` followed by `insert after fn:a ...` in the
-      same script leaves a trailing blank line (rustfmt removes it)
-- [x] The did-you-mean-another-kind hint only fires for a selector's last step:
-      `show fn:tests>fn:exec` says "`outline` lists the items" where
-      `show fn:tests` suggests `mod:tests`
-- [x] `show`, `outline` or `check` without a selector can't come before a `|`:
-      `outline | show 1` is a parse error ("expected a selector, found '|'"),
-      because `optional_target` (`script/parser.rs`) doesn't treat `|` as the
-      end of the command
-- [x] Re-basing a `<<END` heredoc into `crates/ned-core/src/syntax.rs` indented
-      its nested lines with tabs, though the file's Rust code is indented with
-      spaces (rustfmt fixed it). The indent unit seems to come from tab-indented
-      lines elsewhere in the file (the Go test fixtures in raw strings), not
-      from the lines around the target
-- [x] `insert end mod:tests <<END` in a Rust file put the text at column 0, not
-      at the module body's indentation (`insert end fn:...` re-bases correctly)
-- [x] `insert after "LINE1\n...LASTLINE" <<END` re-based the text to the
-      literal's first line's indentation, not its last line's, though the text
-      goes after the last line
-- [x] rustfmt formats a `.rs` file with edition 2015 when the script also
-      `create`s its crate's `Cargo.toml`: `rust_edition` (`format.rs`) reads
-      manifests from disk, not the script's created files, so 2024-style code is
-      reformatted (`if c { a } else { b }` split over five lines)
-- [x] A nested selector whose earlier step matches nothing reports the whole
-      selector with the last step's hint: `impl:"Lexer<'a>">fn:next>"x"` says
-      "matches nothing; `show` prints the text to match against" instead of
-      naming the failing step and suggesting `impl:Lexer`
-- [x] The parse-error guard misses a Python class left with no body (`delete` of
-      its only methods): tree-sitter-python parses `class A:` at the end of a
-      file without an error node; only ruff reports it
-- [x] `impl:"Log<'_>"` matches nothing in a file with `impl Log<'_>`, and the
-      hint is only "`outline` lists the items": suggest `impl:Log`, the name
-      without its generic arguments
-- [x] A `.ned.toml` the script creates or edits is ignored: `Config::layers`
-      (`config.rs`) loads layers from disk, though `{edition}` now reads
-      manifests the script writes
-- [x] `replace "LINE\n" with ""` leaves an empty line where the whole line was
-      selected; empty TEXT for whole lines should remove them, as `delete` does
 - [ ] `.lines` on a multi-line literal that matches once
       (`insert after "- a b\n  c d".lines "x"`) says "matches 2 items" and lists
       identical candidates
-- [x] Rust `show fn:f.sig` prints the whole first line, `{` included, though
-      `.sig` ends before the `{`: `replace fn:f.sig with "fn f(b: u8) {"`
-      doubles the brace, and the guard's error points at 1:1, not at the edit
-- [x] An escape such as `\x27` in a heredoc inside a single-quoted `-e` script
-      goes in literally (heredocs don't read escapes): the skill should say to
-      pass a script with `'` on stdin, or `ned` could hint at it when the guard
-      rejects text holding `\x27`
-- [x] `--commit` runs about six git processes per file (`ls-tree`, `ls-files`,
-      `cat-file`, `check-ignore`, `hash-object`, `rev-parse --show-toplevel`),
-      and `update-index --cacheinfo` takes every entry on one command line, so a
-      large `-w` edit is slow and can exceed the argument-length limit: list
-      paths with one `ls-tree -z` and one `ls-files -s -z`, read blobs with
-      `cat-file --batch`, and feed `check-ignore --stdin`,
-      `hash-object --stdin-paths` and `update-index --index-info` on stdin
-- [x] With a lone `\r` line ending, diff hunk headers count it as a line break
-      (`similar` splits lines there), so their line numbers disagree with ned's
-      `\n`-only ones
-- [x] Replacing a conflict whose sides are all empty puts the text at column 0
-      inside an indented block: `side_indent` falls back to `""`, and the marker
-      lines always start their line, so the indent must come from the enclosing
-      block in the tree
-- [x] In a session, an untracked file that is edited and then undone still goes
-      whole into the next `--commit`
-- [x] A syntax pattern can't match the tail of a method chain after a receiver
-      (`` `let n = files[i] @_...;` ``), nor a match arm whose value is a chain
-      (`` `Primary::Conflict(_) => f @_...,` ``)
-- [x] `show /re/ all` (`all` after the selector, not before it) fails with
-      "expected end of command, found `all`" and no fix; it should say `all`
-      goes before the selector (`show all /re/`)
 
 ## Future improvements
 
@@ -333,15 +170,6 @@ change is a minor, because it lifts a documented error.
       aligned to a delimiter rather than indented by levels) and preserve it
 - [ ] Re-basing keeps block-quote prefixes (`> `): inserted lines take the
       target line's `>` markers, not just its whitespace
-- [x] Re-basing follows the text's own dedent: `replace LINE with` text that
-      closes the enclosing block and starts a top-level item (`}` then `fn g()`)
-      keeps the item at column 0, not the replaced line's indentation
-- [x] `insert after N` where line N continues a statement (`.collect();`)
-      indents to the statement's first line, not the continuation's deeper
-      indent
-- [x] `insert before` an item's first line (its doc comment or attributes) keeps
-      a blank line between the inserted item and the next, as
-      `insert before fn:x` does
 - [ ] `check`, `rename`, `.refs` and `.def` after a `|`: send the daemon each
       changed file's stage text instead of relying on the files on disk, and
       lift the syntax error
