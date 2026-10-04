@@ -273,6 +273,8 @@ CI tests and checks formatting on PRs to `main` and `release/*`. Every PR to
 `main` that changes Rust code or `queries/` must update CHANGELOG.md and raise
 `[workspace.package] version` (which part per TODO.md). Merging such a PR tags
 `vX.Y.Z` and publishes Linux (musl) and macOS binaries (`release.yml`, built
-with `NED_RELEASE` set for a metadata-free version). Install from source:
+with `NED_RELEASE` set for a metadata-free version). Install a release:
+`curl -fsSL https://raw.githubusercontent.com/bbessemer/neoed/main/install.sh | sh`;
+from source:
 `cargo install --locked --git https://github.com/bbessemer/neoed ned-cli`; from
 a checkout, `cargo install --path crates/ned-cli`.

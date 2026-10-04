@@ -64,15 +64,16 @@ src/parser.rs: 3 edits, +3 -3
 
 ## Install
 
-Download a release binary for Linux or macOS from
-[GitHub Releases](https://github.com/bbessemer/neoed/releases/latest), and put
-`ned` on your `PATH`:
+On Linux or macOS (x86_64 or arm64), install the latest release:
 
 ```sh
-target=aarch64-apple-darwin  # or x86_64-apple-darwin, x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
-curl -fsSL "https://github.com/bbessemer/neoed/releases/latest/download/ned-$target.tar.gz" | tar xz
-mv "ned-$target/ned" ~/.local/bin/
+curl -fsSL https://raw.githubusercontent.com/bbessemer/neoed/main/install.sh | sh
 ```
+
+The script downloads the binary for your platform from
+[GitHub Releases](https://github.com/bbessemer/neoed/releases/latest), checks
+its SHA-256, and puts `ned` in `~/.local/bin`. Set `NED_INSTALL_DIR` to install
+elsewhere, or `NED_VERSION` (e.g. `v0.7.0`) to pin a release.
 
 To build from source instead, you need Rust 1.90 or later and a C compiler,
 because the tree-sitter grammars are compiled in:

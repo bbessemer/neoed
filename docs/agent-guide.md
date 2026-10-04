@@ -7,13 +7,15 @@ the skill, [`skills/ned/SKILL.md`](skills/ned/SKILL.md).
 
 ## Setup
 
-Install the binary (Rust 1.90 or later):
+Install the binary on Linux or macOS:
 
 ```sh
-cargo install --locked --git https://github.com/bbessemer/neoed ned-cli
+curl -fsSL https://raw.githubusercontent.com/bbessemer/neoed/main/install.sh | sh
 ```
 
-From a clone, use `cargo install --path crates/ned-cli` instead.
+Or build it from source (Rust 1.90 or later):
+`cargo install --locked --git https://github.com/bbessemer/neoed ned-cli`, or
+`cargo install --path crates/ned-cli` from a clone.
 
 **Claude Code.** Copy the skill directory into a skills directory:
 
