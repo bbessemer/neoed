@@ -1,4 +1,5 @@
 {
+  "worktree": { "bgIsolation": "none" },
   "hooks": {
     "SessionStart": [
       {
