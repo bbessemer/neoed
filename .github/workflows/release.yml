@@ -3,6 +3,8 @@ name: Release
 on:
   push:
     branches: [main]
+    # queries/ is compiled into the binary, so it counts as Rust code.
+    paths: ["**.rs", "**/Cargo.toml", Cargo.lock, "queries/**"]
 
 concurrency:
   group: release

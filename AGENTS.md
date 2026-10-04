@@ -269,9 +269,10 @@ frontends stay thin.
 
 ## Deployment Notes
 
-Every PR to `main` must raise `[workspace.package] version` (CI checks; which
-part per TODO.md). Merging tags `vX.Y.Z` and publishes Linux (musl) and macOS
-binaries (`release.yml`, built with `NED_RELEASE` set for a metadata-free
-version). Install from source:
+CI tests and checks formatting on PRs to `main` and `release/*`. Every PR to
+`main` that changes Rust code or `queries/` must update CHANGELOG.md and raise
+`[workspace.package] version` (which part per TODO.md). Merging such a PR tags
+`vX.Y.Z` and publishes Linux (musl) and macOS binaries (`release.yml`, built
+with `NED_RELEASE` set for a metadata-free version). Install from source:
 `cargo install --locked --git https://github.com/bbessemer/neoed ned-cli`; from
 a checkout, `cargo install --path crates/ned-cli`.
