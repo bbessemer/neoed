@@ -4,6 +4,41 @@ Every tagged release of `ned`. Before 0.6.1, every PR to `main` bumped the
 version, so versions merged in quick succession (0.2.0, 0.3.0) were never tagged
 or released on their own; their changes are listed under the next tag.
 
+## 0.7.0 (2026-10-04)
+
+### Added
+
+- Terminal output: when stdout is a terminal, `show` and diff hunks are
+  syntax-highlighted from the grammars' highlight queries, `show` prints
+  right-aligned line numbers, and `outline`, `check`, summaries and messages are
+  coloured. `--color auto|always|never` and a non-empty `NO_COLOR` control it;
+  piped output is unchanged.
+- `--commit MSG` commits exactly the invocation's edits through git's plumbing:
+  other staged and unstaged changes, even in the same file, stay uncommitted. In
+  a session, the commit holds every edit since the session's last commit, undos
+  included, and `ned history` shows it.
+- Merge conflicts:
+  - Conflict markers are hidden from every parse, so syntax selectors find items
+    on both sides and the parse-error guard doesn't block edits to a conflicted
+    file.
+  - `conflict:N` selects a file's Nth conflict, in any file, with `.ours`,
+    `.theirs` and, in diff3 style, `.base`; `outline` lists them. Text replacing
+    a conflict or an empty side is re-based to its sides.
+  - `resolve [all] SEL ours|theirs|base|both` keeps a side of each conflict.
+  - `ned help conflicts` and `ned help resolve`.
+
+### Changed
+
+- `!!` after a `-n` dry run is an error unless it has `-n` too, since it would
+  apply what was only previewed.
+
+### Hints
+
+- `all` after a selector or at the end of a command (`show /re/ all`,
+  `replace /x/ with "y" all`) says it goes before the selector: `show all /re/`.
+  In `sub`, which takes no `all`, it says to drop it; after a `move`
+  destination, that the destination must be one span.
+
 ## 0.6.3 (2026-10-03)
 
 ### Changed

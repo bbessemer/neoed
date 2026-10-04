@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use tree_sitter::{Parser, Query, Tree};
 
+use crate::conflict;
 use crate::fragment::{Builder, NodeTypes};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -111,6 +112,36 @@ impl Language {
             .get_or_init(|| Query::new(&self.grammar(), source).expect("error queries are valid"))
     }
 
+    /// The compiled highlight query of the language's grammar crate, for
+    /// terminal output (§6.6).
+    pub fn highlights(self) -> &'static Query {
+        static QUERIES: [OnceLock<Query>; 7] = [const { OnceLock::new() }; 7];
+        // TypeScript's query adds to JavaScript's; its own patterns go last, so they
+        // win where both mark a node.
+        let sources: &[&str] = match self {
+            Language::Rust => &[tree_sitter_rust::HIGHLIGHTS_QUERY],
+            Language::Markdown => &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK],
+            Language::Python => &[tree_sitter_python::HIGHLIGHTS_QUERY],
+            Language::Go => &[tree_sitter_go::HIGHLIGHTS_QUERY],
+            Language::JavaScript => &[
+                tree_sitter_javascript::HIGHLIGHT_QUERY,
+                tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
+            ],
+            Language::TypeScript => &[
+                tree_sitter_javascript::HIGHLIGHT_QUERY,
+                tree_sitter_typescript::HIGHLIGHTS_QUERY,
+            ],
+            Language::Tsx => &[
+                tree_sitter_javascript::HIGHLIGHT_QUERY,
+                tree_sitter_typescript::HIGHLIGHTS_QUERY,
+                tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
+            ],
+        };
+        QUERIES[self as usize].get_or_init(|| {
+            Query::new(&self.grammar(), &sources.concat()).expect("highlight queries are valid")
+        })
+    }
+
     /// The builders of fragments that only parse inside other code,
     /// `queries/<lang>/builders.scm` (§3.10).
     pub fn builders(self) -> &'static [Builder] {
@@ -149,13 +180,19 @@ impl Language {
         })
     }
 
+    /// Parses `text`, with its conflicts' marker lines hidden (§3.3).
     pub fn parse(self, text: &str) -> Tree {
+        self.parse_masked(&conflict::mask(text, &conflict::conflicts(text)))
+    }
+
+    /// Parses `masked`, text whose conflicts' marker lines are already hidden.
+    pub fn parse_masked(self, masked: &str) -> Tree {
         let mut parser = Parser::new();
         parser
             .set_language(&self.grammar())
             .expect("linked-in grammars are compatible");
         parser
-            .parse(text, None)
+            .parse(masked, None)
             .expect("parsing without a timeout or cancellation succeeds")
     }
 }
@@ -357,6 +394,13 @@ mod tests {
     }
 
     #[test]
+    fn every_language_has_a_highlight_query() {
+        for lang in Language::ALL {
+            assert!(lang.highlights().pattern_count() > 0, "{lang}");
+        }
+    }
+
+    #[test]
     fn builders_and_node_types_load() {
         for lang in Language::ALL {
             assert!(
@@ -367,5 +411,46 @@ mod tests {
             let builders = lang.builders();
             assert_eq!(builders.is_empty(), lang == Language::Markdown, "{lang}");
         }
+    }
+
+    #[test]
+    fn conflict_markers_are_hidden_from_the_grammar() {
+        let conflicted = [
+            (
+                Language::Rust,
+                "fn a() {}\n<<<<<<< HEAD\nfn b() {}\n=======\nfn c() {}\n>>>>>>> topic\n",
+            ),
+            (
+                Language::Python,
+                "def a():\n<<<<<<< HEAD\n    return 1\n||||||| base\n    return 0\n=======\n    return 2\n>>>>>>> topic\n",
+            ),
+            (
+                Language::Go,
+                "package a\n\n<<<<<<< HEAD\nfunc b() {}\n=======\nfunc c() {}\n>>>>>>> topic\n",
+            ),
+            (
+                Language::TypeScript,
+                "<<<<<<< HEAD\nconst a = 1;\n=======\nconst b = 2;\n>>>>>>> topic\n",
+            ),
+            (
+                Language::Tsx,
+                "<<<<<<< HEAD\nconst a = <A />;\n=======\nconst b = <B />;\n>>>>>>> topic\n",
+            ),
+            (
+                Language::JavaScript,
+                "function f() {\n<<<<<<< HEAD\n  return 1;\n=======\n  return 2;\n>>>>>>> topic\n}\n",
+            ),
+        ];
+        for (lang, text) in conflicted {
+            assert!(!lang.parse(text).root_node().has_error(), "{lang}");
+        }
+    }
+
+    #[test]
+    fn conflict_markers_are_not_markdown() {
+        let text = "# Doc\n\n<<<<<<< HEAD\nfoo\n=======\nbar\n>>>>>>> topic\n";
+        let tree = Language::Markdown.parse(text).root_node().to_sexp();
+        assert!(!tree.contains("setext_heading"), "{tree}");
+        assert!(!tree.contains("block_quote"), "{tree}");
     }
 }

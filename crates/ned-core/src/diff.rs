@@ -1,9 +1,16 @@
 //! Diff summaries and hunks for edit output (command-language spec, §6.3).
 
+use std::cell::OnceCell;
 use std::fmt::{self, Write};
+use std::iter;
 use std::ops::Range;
 
 use similar::{ChangeTag, TextDiff};
+use tree_sitter::Tree;
+
+use crate::highlight::{self, Group};
+use crate::lang::Language;
+use crate::style::{Role, Style};
 
 /// Lines added and removed between two texts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -142,37 +149,96 @@ fn overlaps(a: &Range<usize>, b: &Range<usize>) -> bool {
     }
 }
 
+/// One text of a diff and its language. In colour, `hunks` parses it the first
+/// time a hunk needs it, and only once, though it is in two diffs.
+pub struct Side<'a> {
+    text: &'a str,
+    lang: Option<Language>,
+    tree: OnceCell<Tree>,
+}
+
+impl<'a> Side<'a> {
+    pub fn new(text: &'a str, lang: Option<Language>) -> Self {
+        Side {
+            text,
+            lang,
+            tree: OnceCell::new(),
+        }
+    }
+
+    /// The highlighted spans of the text's `bytes`, if it has a language.
+    fn spans(&self, bytes: Range<usize>) -> Option<Vec<(Range<usize>, Group)>> {
+        let lang = self.lang?;
+        let tree = self.tree.get_or_init(|| lang.parse(self.text));
+        Some(highlight::spans(lang, tree, self.text, bytes))
+    }
+}
+
 /// Unified-diff hunks with `@@ -a,b +c,d @@` headers and no file headers,
-/// rendered with `\n` line endings.
-pub fn hunks(old: &str, new: &str, context: usize) -> String {
-    let (old, new) = (lines(old), lines(new));
-    let diff = TextDiff::from_slices(&old, &new);
+/// rendered with `\n` line endings; in colour, each line's code is
+/// highlighted as its side's language, from the text it belongs to.
+pub fn hunks(old: &Side, new: &Side, context: usize, style: Style) -> String {
+    let split = [lines(old.text), lines(new.text)];
+    let diff = TextDiff::from_slices(&split[0], &split[1]);
+    let sides = [old, new];
+    let starts = (style == Style::Color).then(|| split.each_ref().map(|l| starts(l)));
     let mut out = String::new();
     for hunk in diff.unified_diff().context_radius(context).iter_hunks() {
         let ops = hunk.ops();
         let (first, last) = (&ops[0], &ops[ops.len() - 1]);
-        let old_range = first.old_range().start..last.old_range().end;
-        let new_range = first.new_range().start..last.new_range().end;
+        let lines = [
+            first.old_range().start..last.old_range().end,
+            first.new_range().start..last.new_range().end,
+        ];
         // similar's own header drops a count of 1; the spec always shows both.
-        let _ = writeln!(
-            out,
-            "@@ -{} +{} @@",
-            HunkRange(old_range),
-            HunkRange(new_range)
-        );
+        let [old_lines, new_lines] = lines.clone().map(HunkRange);
+        let header = format!("@@ -{old_lines} +{new_lines} @@");
+        let _ = writeln!(out, "{}", style.paint(Role::HunkHeader, &header));
+        let spans = match &starts {
+            Some(starts) => {
+                [0, 1].map(|i| sides[i].spans(starts[i][lines[i].start]..starts[i][lines[i].end]))
+            }
+            None => [None, None],
+        };
         for change in hunk.iter_changes() {
-            let sign = match change.tag() {
-                ChangeTag::Insert => '+',
-                ChangeTag::Delete => '-',
-                ChangeTag::Equal => ' ',
+            let (sign, role, side, index) = match change.tag() {
+                ChangeTag::Insert => ("+", Some(Role::Added), 1, change.new_index()),
+                ChangeTag::Delete => ("-", Some(Role::Removed), 0, change.old_index()),
+                ChangeTag::Equal => (" ", None, 0, change.old_index()),
             };
             let line = change.value();
             let line = line.strip_suffix('\n').unwrap_or(line);
             let line = line.strip_suffix('\r').unwrap_or(line);
-            let _ = writeln!(out, "{sign}{line}");
+            let painted = match (&spans[side], &starts) {
+                (Some(spans), Some(starts)) => {
+                    let start = starts[side][index.expect("a change has a line on its side")];
+                    let text = sides[side].text;
+                    let code =
+                        highlight::paint(style, text, start..start + line.len(), spans, role);
+                    let sign = role.map_or(sign.into(), |role| style.paint(role, sign));
+                    format!("{sign}{code}")
+                }
+                _ => {
+                    let line = format!("{sign}{line}");
+                    match role {
+                        Some(role) => style.paint(role, &line).into_owned(),
+                        None => line,
+                    }
+                }
+            };
+            let _ = writeln!(out, "{painted}");
         }
     }
     out
+}
+
+/// The offset of each of `lines`, and then of their end.
+fn starts(lines: &[&str]) -> Vec<usize> {
+    let ends = lines.iter().scan(0, |at, line| {
+        *at += line.len();
+        Some(*at)
+    });
+    iter::once(0).chain(ends).collect()
 }
 
 /// A 0-based line range, formatted as unified diff's 1-based `start,len`.
@@ -194,6 +260,7 @@ impl fmt::Display for HunkRange {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::style::shown;
 
     const PARSER: &str = "\
 impl Parser {
@@ -280,19 +347,40 @@ impl Parser {
             "+        let tok = self.next().expect(\"unexpected end of input\");\n",
             "         self.parse_expr(tok)\n",
         );
-        assert_eq!(hunks(PARSER, &new, 1), expected);
+        assert_eq!(
+            hunks(
+                &Side::new(PARSER, None),
+                &Side::new(&new, None),
+                1,
+                Style::Plain
+            ),
+            expected
+        );
     }
 
     #[test]
     fn identical_texts_have_no_hunks() {
-        assert_eq!(hunks(PARSER, PARSER, 1), "");
+        assert_eq!(
+            hunks(
+                &Side::new(PARSER, None),
+                &Side::new(PARSER, None),
+                1,
+                Style::Plain
+            ),
+            ""
+        );
     }
 
     #[test]
     fn zero_context() {
         let new = numbered(5).replace("line 3\n", "three\n");
         assert_eq!(
-            hunks(&numbered(5), &new, 0),
+            hunks(
+                &Side::new(&numbered(5), None),
+                &Side::new(&new, None),
+                0,
+                Style::Plain
+            ),
             "@@ -3,1 +3,1 @@\n-line 3\n+three\n"
         );
     }
@@ -300,10 +388,23 @@ impl Parser {
     #[test]
     fn pure_insertion_and_deletion_headers_keep_both_counts() {
         let inserted = numbered(3).replace("line 1\n", "line 1\nnew\n");
-        assert_eq!(hunks(&numbered(3), &inserted, 0), "@@ -1,0 +2,1 @@\n+new\n");
+        assert_eq!(
+            hunks(
+                &Side::new(&numbered(3), None),
+                &Side::new(&inserted, None),
+                0,
+                Style::Plain
+            ),
+            "@@ -1,0 +2,1 @@\n+new\n"
+        );
         let deleted = numbered(3).replace("line 2\n", "");
         assert_eq!(
-            hunks(&numbered(3), &deleted, 0),
+            hunks(
+                &Side::new(&numbered(3), None),
+                &Side::new(&deleted, None),
+                0,
+                Style::Plain
+            ),
             "@@ -2,1 +1,0 @@\n-line 2\n"
         );
     }
@@ -317,7 +418,15 @@ impl Parser {
             "@@ -1,3 +1,3 @@\n line 1\n-line 2\n+two\n line 3\n",
             "@@ -8,3 +8,3 @@\n line 8\n-line 9\n+nine\n line 10\n",
         );
-        assert_eq!(hunks(&numbered(10), &new, 1), expected);
+        assert_eq!(
+            hunks(
+                &Side::new(&numbered(10), None),
+                &Side::new(&new, None),
+                1,
+                Style::Plain
+            ),
+            expected
+        );
     }
 
     #[test]
@@ -327,21 +436,172 @@ impl Parser {
             .replace("line 4\n", "four\n");
         let expected =
             "@@ -1,5 +1,5 @@\n line 1\n-line 2\n+two\n line 3\n-line 4\n+four\n line 5\n";
-        assert_eq!(hunks(&numbered(6), &new, 1), expected);
+        assert_eq!(
+            hunks(
+                &Side::new(&numbered(6), None),
+                &Side::new(&new, None),
+                1,
+                Style::Plain
+            ),
+            expected
+        );
     }
 
     #[test]
     fn crlf_is_rendered_with_lf() {
         let old = "a\r\nb\r\nc\r\n";
         let new = "a\r\nB\r\nc\r\n";
-        assert_eq!(hunks(old, new, 1), "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n");
+        assert_eq!(
+            hunks(
+                &Side::new(old, None),
+                &Side::new(new, None),
+                1,
+                Style::Plain
+            ),
+            "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n"
+        );
+    }
+
+    #[test]
+    fn colored_hunks_paint_headers_and_changed_lines() {
+        let new = numbered(3).replace("line 2", "two");
+        let expected = [
+            r"\e[36m@@ -1,3 +1,3 @@\e[0m",
+            " line 1",
+            r"\e[31m-line 2\e[0m",
+            r"\e[32m+two\e[0m",
+            " line 3",
+            "",
+        ];
+        assert_eq!(
+            shown(&hunks(
+                &Side::new(&numbered(3), None),
+                &Side::new(&new, None),
+                1,
+                Style::Color
+            )),
+            expected.join("\n")
+        );
+    }
+
+    #[test]
+    fn colored_hunks_highlight_each_line_from_its_side() {
+        let old = "fn a() {\n    let x = 1;\n}\n";
+        let new = "fn a() {\n    let x = \"s\";\n}\n";
+        let expected = [
+            r"\e[36m@@ -1,3 +1,3 @@\e[0m",
+            r" \e[35mfn\e[0m \e[34ma\e[0m() {",
+            r"\e[31m-\e[0m\e[31m    \e[0m\e[35mlet\e[0m\e[31m x = \e[0m\e[36m1\e[0m\e[31m;\e[0m",
+            r#"\e[32m+\e[0m\e[32m    \e[0m\e[35mlet\e[0m\e[32m x = \e[0m\e[32m"s"\e[0m\e[32m;\e[0m"#,
+            " }",
+            "",
+        ];
+        let colored = hunks(
+            &Side::new(old, Some(Language::Rust)),
+            &Side::new(new, Some(Language::Rust)),
+            1,
+            Style::Color,
+        );
+        assert_eq!(shown(&colored), expected.join("\n"));
+        let plain = hunks(
+            &Side::new(old, Some(Language::Rust)),
+            &Side::new(new, Some(Language::Rust)),
+            1,
+            Style::Plain,
+        );
+        assert_eq!(
+            plain,
+            hunks(
+                &Side::new(old, None),
+                &Side::new(new, None),
+                1,
+                Style::Plain
+            )
+        );
+    }
+
+    /// The hunks from `old` to `new` in colour as Rust, with `context` lines,
+    /// after checking that without their escapes they are the plain hunks.
+    fn colored(old: &str, new: &str, context: usize) -> String {
+        let colored = hunks(
+            &Side::new(old, Some(Language::Rust)),
+            &Side::new(new, Some(Language::Rust)),
+            context,
+            Style::Color,
+        );
+        let escapes = regex::Regex::new("\x1b\\[[0-9;]*m").unwrap();
+        let plain = hunks(
+            &Side::new(old, None),
+            &Side::new(new, None),
+            context,
+            Style::Plain,
+        );
+        assert_eq!(escapes.replace_all(&colored, ""), plain);
+        shown(&colored)
+    }
+
+    #[test]
+    fn colored_hunks_split_lines_as_the_diff_does() {
+        let cases = [
+            ("fn a() {}\r\nfn b() {}\r\n", "fn a() {}\r\nfn ee() {}\r\n"),
+            (
+                "fn a() {}\rfn b() {}\rfn c() {}\nfn d() {}\n",
+                "fn a() {}\rfn b() {}\rfn c() {}\nfn ee() {}\n",
+            ),
+            ("fn a() {}\nfn b() {}", "fn a() {}\nfn ee() {}"),
+        ];
+        for (old, new) in cases {
+            let found = colored(old, new, 1);
+            assert!(found.contains(r"\e[34mee\e[0m"), "{old:?}: {found}");
+        }
+    }
+
+    #[test]
+    fn colored_hunks_keep_multibyte_text_whole() {
+        let old = "fn a() { \"é\"; }\nfn b() {}\n";
+        let new = "fn a() { \"é\"; }\nfn b() { \"ü\"; }\n";
+        let found = colored(old, new, 1);
+        assert!(found.contains(r#"\e[32m"é"\e[0m"#), "{found}");
+        assert!(found.contains(r#"\e[32m"ü"\e[0m"#), "{found}");
+    }
+
+    #[test]
+    fn colored_hunks_highlight_a_comment_begun_before_them() {
+        let old = "/*\nx\ny\n*/\nfn a() {}\n";
+        let new = "/*\nx\nz\n*/\nfn a() {}\n";
+        let found = colored(old, new, 1);
+        assert!(!found.contains("/*"), "{found}");
+        assert!(found.contains(r" \e[2mx\e[0m"), "{found}");
+        assert!(found.contains(r"\e[32m+\e[0m\e[2mz\e[0m"), "{found}");
+    }
+
+    #[test]
+    fn colored_hunks_highlight_the_first_and_last_lines() {
+        let old = "fn a() {}\nfn b() {}\nfn c() {}\n";
+        for new in [
+            "fn x() {}\nfn b() {}\nfn y() {}\n",
+            "fn x() {}\nfn a() {}\nfn b() {}\n",
+        ] {
+            let found = colored(old, new, 0);
+            assert!(found.contains(r"\e[34mx\e[0m"), "{found}");
+            let last = found.lines().last().unwrap();
+            assert!(last.contains(r"\e[34m"), "{found}");
+        }
     }
 
     #[test]
     fn a_lone_cr_does_not_end_a_line() {
         let old = "a\rb\nc\nd\ne\n";
         let new = "a\rb\nc\nD\ne\n";
-        assert_eq!(hunks(old, new, 1), "@@ -2,3 +2,3 @@\n c\n-d\n+D\n e\n");
+        assert_eq!(
+            hunks(
+                &Side::new(old, None),
+                &Side::new(new, None),
+                1,
+                Style::Plain
+            ),
+            "@@ -2,3 +2,3 @@\n c\n-d\n+D\n e\n"
+        );
         assert_eq!(
             DiffStat::between(old, new),
             DiffStat {
@@ -354,7 +614,15 @@ impl Parser {
     #[test]
     fn a_change_to_a_line_with_a_lone_cr_is_one_line() {
         let (old, new) = ("a\rb\nc\n", "a\rB\nc\n");
-        assert_eq!(hunks(old, new, 0), "@@ -1,1 +1,1 @@\n-a\rb\n+a\rB\n");
+        assert_eq!(
+            hunks(
+                &Side::new(old, None),
+                &Side::new(new, None),
+                0,
+                Style::Plain
+            ),
+            "@@ -1,1 +1,1 @@\n-a\rb\n+a\rB\n"
+        );
         assert_eq!(
             DiffStat::between(old, new),
             DiffStat {

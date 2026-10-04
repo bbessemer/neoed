@@ -158,11 +158,18 @@ formatters aren't installed, and `check` also waits for save-time checks
 (`cargo check`). §9 is done. Sessions (spec §1.2): `session` in `ned-core` keeps
 the per-workspace log, plans `undo` (`--force` merges with `diff::merge`) and
 expands `!!`; the CLI records every script run under `-s`/`NED_SESSION` and has
-`ned history` and `ned undo`. Syntax selectors cover Rust, Python, Go,
-JavaScript, TypeScript/TSX and Markdown. Syntax patterns (spec §3.10) select
-code by writing it: `ned-scheme` reads the Scheme dialect (tree-sitter query
-syntax plus Scheme data) that builders and, later, plugins are written in;
-`template` lexes `@` placeholders, `fragment` parses a pattern alone or inside
+`ned history` and `ned undo`. `--commit MSG` (`git` in `ned-core`) commits
+exactly an invocation's edits (in a session, every edit since its last commit)
+with git's plumbing, leaving other staged and unstaged changes alone. Terminal
+output (spec §6.6): `style` paints output under `--color`/`NO_COLOR`, and
+`highlight` colours `show` and diff hunks from the grammars' highlight queries;
+piped output is unchanged. Syntax selectors cover Rust, Python, Go, JavaScript,
+TypeScript/TSX and Markdown; `conflict` hides merge-conflict markers from every
+parse and finds the conflicts (`conflict:N`, `.ours`/`.theirs`/`.base`), which
+`resolve` resolves. Syntax patterns (spec §3.10) select code by writing it:
+`ned-scheme` reads the Scheme dialect (tree-sitter query syntax plus Scheme
+data) that builders and, later, plugins are written in; `template` lexes `@`
+placeholders, `fragment` parses a pattern alone or inside
 `queries/<lang>/builders.scm`, and `pattern` matches it against the tree;
 `replace` substitutes its captures. MIT-licensed; README has install and usage;
 CI (`.github/workflows/`) gates PRs.
@@ -203,7 +210,7 @@ crates/ned-daemon/ per-workspace daemon (Unix socket), its sync client, language
 crates/ned-scheme/ reader for the Scheme dialect of query files, builders and plugins
 queries/<lang>/    tree-sitter selector queries (.scm), one dir per language
 docs/              specs, agent guide, Claude Code skill
-bench/             token-cost benchmark (uv project; cases/ back spec §8's table)
+bench/             token-cost (cases/ back spec §8's table) and --commit git-process benchmarks (uv project)
 ```
 
 Planned crates: `ned-repl`, `ned-mcp`. All logic lives in `ned-core` so
@@ -247,17 +254,18 @@ frontends stay thin.
 
 ## Local Development
 
-| Target / Script                             | Description                       |
-| ------------------------------------------- | --------------------------------- |
-| `cargo build`                               | Build workspace                   |
-| `cargo test`                                | Run all tests                     |
-| `cargo clippy --all-targets -- -D warnings` | Lint                              |
-| `cargo fmt --check`                         | Format check                      |
-| `prettier --check '**/*.md'`                | Docs format check (`.prettierrc`) |
-| `cargo run -q -p ned-cli -- ARGS`           | Run `ned` from source             |
-| `cargo test -p ned-daemon -- --ignored`     | Smoke test real LSP servers       |
-| `cd bench && uv run bench.py --check`       | Token benchmark vs spec §8        |
-| `cd bench && uv run pytest`                 | Benchmark unit tests              |
+| Target / Script                             | Description                            |
+| ------------------------------------------- | -------------------------------------- |
+| `cargo build`                               | Build workspace                        |
+| `cargo test`                                | Run all tests                          |
+| `cargo clippy --all-targets -- -D warnings` | Lint                                   |
+| `cargo fmt --check`                         | Format check                           |
+| `prettier --check '**/*.md'`                | Docs format check (`.prettierrc`)      |
+| `cargo run -q -p ned-cli -- ARGS`           | Run `ned` from source                  |
+| `cargo test -p ned-daemon -- --ignored`     | Smoke test real LSP servers            |
+| `cd bench && uv run bench.py --check`       | Token benchmark vs spec §8             |
+| `cd bench && uv run git_procs.py --check`   | `--commit`'s git processes vs baseline |
+| `cd bench && uv run pytest`                 | Benchmark unit tests                   |
 
 ## Deployment Notes
 

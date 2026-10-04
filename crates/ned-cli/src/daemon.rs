@@ -9,6 +9,7 @@ use ned_core::exec::Change;
 #[cfg(unix)]
 use ned_core::lsp::LspFailure;
 use ned_core::lsp::{self, Checked, Severity};
+use ned_core::style::Style;
 
 /// This build of `ned`, which a daemon must match.
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -39,7 +40,7 @@ pub fn run(action: Action) -> ExitCode {
     match daemon(action) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("error: {err:#}");
+            errln!("error: {err:#}");
             ExitCode::from(3)
         }
     }
@@ -143,7 +144,7 @@ pub fn check(
         Ok(checked) => Some(checked),
         Err(LspFailure(message)) => {
             let paths: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
-            eprintln!("note: {message}; skipped checking {}", paths.join(", "));
+            errln!("note: {message}; skipped checking {}", paths.join(", "));
             None
         }
     }
@@ -154,7 +155,7 @@ pub fn check(
 #[cfg(unix)]
 pub fn restore(workspace: &mut ned_daemon::client::Workspace, changes: &[Change]) {
     if let Err(LspFailure(message)) = lsp::restore(workspace, changes) {
-        eprintln!("note: {message}");
+        errln!("note: {message}");
     }
 }
 
@@ -190,7 +191,12 @@ pub fn blocked(changes: &[Change], finals: &[&str], checked: &Checked) -> String
         counts.join(" and ")
     );
     for (i, d) in &checked.blocking {
-        text.push_str(&lsp::render(&changes[*i].path, &Buffer::new(finals[*i]), d));
+        text.push_str(&lsp::render(
+            &changes[*i].path,
+            &Buffer::new(finals[*i]),
+            d,
+            Style::Plain,
+        ));
     }
     text
 }

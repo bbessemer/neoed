@@ -7,7 +7,11 @@ use std::path::{Path, PathBuf};
 
 use ned_core::diff::{self, DiffStat};
 use ned_core::fs;
-use ned_core::session::{self, Entry, Session, SessionError, UndoError};
+use ned_core::lang::Language;
+use ned_core::session::{
+    self, Entry, FileChange, Session, SessionError, UncommittedError, UndoError,
+};
+use ned_core::style::Role;
 use ned_core::workspace;
 
 /// The session `-s` (`flag`) or `NED_SESSION` names, if any.
@@ -26,8 +30,21 @@ pub fn open(name: &str, root: &Path) -> Result<Session, Failure> {
 /// invocation's files are already written.
 pub fn record(session: &Session, entry: Entry) {
     if let Err(err) = session.lock().and_then(|mut log| log.append(entry)) {
-        eprintln!("note: not recorded in session {}: {err}", session.name());
+        errln!("note: not recorded in session {}: {err}", session.name());
     }
+}
+
+/// The changes `--commit` commits in `session` besides the invocation's own,
+/// each with its entry's id (spec §1.3).
+pub fn uncommitted(session: &Session) -> Result<Vec<(u64, FileChange)>, Failure> {
+    let entries = session.lock().and_then(|log| log.entries());
+    session::uncommitted(&entries.map_err(failure)?, read).map_err(|err| {
+        let code = match err {
+            UncommittedError::Io { .. } => 3,
+            UncommittedError::Changed { .. } => 1,
+        };
+        (format!("error: {err}"), code)
+    })
 }
 
 /// An error to print, and the exit code.
@@ -48,11 +65,6 @@ pub fn undo(flag: Option<String>, dir: Option<PathBuf>, force: bool) -> Result<(
     let session = existing(flag, &root)?;
     let mut log = session.lock().map_err(failure)?;
     let entries = log.entries().map_err(failure)?;
-    let read = |path: &Path| match std::fs::read_to_string(path) {
-        Ok(text) => Ok(Some(text)),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err),
-    };
     let undo = session::undo(&entries, read, force).map_err(|err| {
         let code = match err {
             UndoError::Io { .. } => 3,
@@ -84,15 +96,16 @@ pub fn undo(flag: Option<String>, dir: Option<PathBuf>, force: bool) -> Result<(
         let before = change.before.as_deref().unwrap_or_default();
         let after = change.after.as_deref().unwrap_or_default();
         let stat = DiffStat::between(before, after);
-        outln!(
-            "{}",
-            match (&change.before, &change.after) {
-                (None, _) => diff::created_summary(&path, stat, false),
-                (_, None) => diff::removed_summary(&path, stat),
-                _ => diff::summary(&path, diff::regions(before, after), stat, false),
-            }
-        );
-        out!("{}", diff::hunks(before, after, 1));
+        let style = crate::styles().0;
+        let summary = match (&change.before, &change.after) {
+            (None, _) => diff::created_summary(&path, stat, false),
+            (_, None) => diff::removed_summary(&path, stat),
+            _ => diff::summary(&path, diff::regions(before, after), stat, false),
+        };
+        outln!("{}", style.paint(Role::Header, &summary));
+        let lang = Language::detect(&path, after);
+        let (before, after) = (diff::Side::new(before, lang), diff::Side::new(after, lang));
+        out!("{}", diff::hunks(&before, &after, 1, style));
     }
 
     let entry = Entry {
@@ -107,9 +120,10 @@ pub fn undo(flag: Option<String>, dir: Option<PathBuf>, force: bool) -> Result<(
         exit: 0,
         error: None,
         changes: undo.changes,
+        commit: None,
     };
     if let Err(err) = log.append(entry) {
-        eprintln!("note: not recorded in session {}: {err}", session.name());
+        errln!("note: not recorded in session {}: {err}", session.name());
     }
     Ok(())
 }
@@ -124,6 +138,7 @@ pub fn repeat(
     files: &mut Vec<String>,
     workspace: &mut Option<Option<PathBuf>>,
     root: &mut PathBuf,
+    dry_run: bool,
 ) -> Result<String, Failure> {
     if !session::is_repeat(&src) {
         return Ok(src);
@@ -134,11 +149,11 @@ pub fn repeat(
     };
     let entries = session.lock().and_then(|log| log.entries());
     let entries = entries.map_err(failure)?;
-    let (entry, script) = match session::repeat(&src, &entries) {
+    let (entry, script) = match session::repeat(&src, &entries, dry_run) {
         None => return Ok(src),
         Some(result) => result.map_err(|err| (format!("error: {err}"), 2))?,
     };
-    eprintln!(
+    errln!(
         "note: repeating {}: {}",
         entry.id,
         session::script_summary(&script)
@@ -199,6 +214,15 @@ fn existing(flag: Option<String>, root: &Path) -> Result<Session, Failure> {
 
 fn failure(err: SessionError) -> Failure {
     (format!("error: {err}"), exit_code(&err))
+}
+
+/// The text of the file at `path`, `None` if it's missing.
+fn read(path: &Path) -> io::Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
 }
 
 /// The workspace's sessions, for an error's fix.

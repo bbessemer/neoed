@@ -343,11 +343,17 @@ impl<'a> Lexer<'a> {
                     _ if word == "file" => self
                         .take_while(|c| !matches!(c, ' ' | '\t' | '\r' | '\n' | '>' | ';' | '|'))
                         .to_string(),
+                    // Any name, so the parser can say what a conflict's number is.
+                    _ if word == "conflict" => self
+                        .take_while(|c| {
+                            !c.is_whitespace() && !matches!(c, '>' | ';' | '|' | '.' | '[')
+                        })
+                        .to_string(),
                     _ => self
                         .take_while(|c| is_ident_char(c) || c == ':' || c == '*')
                         .to_string(),
                 };
-                if name.is_empty() {
+                if name.is_empty() && word != "conflict" {
                     return Err(ParseError::new(
                         E::MissingName(word.into()),
                         start..self.pos,
@@ -523,7 +529,7 @@ impl<'a> Lexer<'a> {
     }
 }
 
-const PARTS: [(&str, Part); 13] = [
+const PARTS: [(&str, Part); 16] = [
     ("body", Part::Body),
     ("sig", Part::Sig),
     ("params", Part::Params),
@@ -537,6 +543,9 @@ const PARTS: [(&str, Part); 13] = [
     ("lines", Part::Lines),
     ("refs", Part::Refs),
     ("def", Part::Def),
+    ("ours", Part::Ours),
+    ("theirs", Part::Theirs),
+    ("base", Part::Base),
 ];
 
 fn part_named(name: &str) -> Option<Part> {

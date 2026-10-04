@@ -139,6 +139,7 @@ A script is a list of commands, one per line or separated by `;`:
 | `file PATH...`                              | set the files later commands act on (globs work)    |
 | `check [SEL] [LEVEL]`                       | language-server diagnostics, without a build        |
 | `rename SEL to NAME`                        | rename a symbol everywhere, via the language server |
+| `resolve SEL ours\|theirs\|base\|both`      | resolve a merge conflict by keeping its sides       |
 
 A selector can be:
 
@@ -152,6 +153,7 @@ A selector can be:
 - a range (`fn:a..fn:c`);
 - a filter (`fn[.doc == ""]`, `fn:parse.lines[.len > 80]`);
 - scoped to one file (`file:src/a.rs>fn:new`);
+- a merge conflict (`conflict:2`), with `.ours`, `.theirs` and `.base`;
 - a syntax pattern: code with placeholders, matched whatever its spacing and
   comments (`` `foo(@x, @rest...)` ``);
 - a raw tree-sitter query (`query{...}`).
@@ -170,9 +172,18 @@ between commands starts a stage that sees the edits before it.
 respecting `.gitignore`. `ned help` prints the whole language on one screen;
 [`docs/command-language.md`](docs/command-language.md) is the full spec.
 
+On a terminal, output is coloured: shown code and diffs are syntax-highlighted,
+with aligned line numbers. A non-empty `NO_COLOR` turns it off, and
+`--color always` or `--color never` overrides both.
+
 With `-s NAME`, or `NED_SESSION=NAME` in the environment, `ned` records each
 invocation in a session: `ned history` lists them, `ned undo` reverts the last
 edit, and `ned -e '!!:s/prase/parse/'` repeats the last script with a fix.
+
+`--commit MSG` turns the edits an invocation writes into one git commit, and
+nothing else: other changes in the working tree and index, staged or not, stay
+uncommitted. In a session, it commits every edit since the session's last
+commit.
 
 ## Languages
 
@@ -185,8 +196,8 @@ edit, and `ned -e '!!:s/prase/parse/'` repeats the last script with a fix.
 | TypeScript, TSX | the JavaScript items, plus `interface type enum variant mod`                     |
 | Markdown        | `section item table code`                                                        |
 
-Syntax patterns work in every language above but Markdown. Line, regex and
-literal selectors work in any UTF-8 file.
+Syntax patterns work in every language above but Markdown. Line, regex, literal
+and `conflict` selectors work in any UTF-8 file.
 
 ## Language servers
 
@@ -221,10 +232,6 @@ to develop ned itself, but the language may still change before 1.0.
 
 In order, with details in [`TODO.md`](TODO.md):
 
-- Git: commit exactly an invocation's or a session's edits; edit and resolve
-  files with merge-conflict markers
-- Human-friendly output on a terminal: syntax highlighting, aligned line
-  numbers, coloured diffs
 - `ned-repl`: an interactive session for humans, which can also follow an
   agent's session
 - `ned-mcp`: an MCP server that exposes scripts, `outline` and `show` as tools

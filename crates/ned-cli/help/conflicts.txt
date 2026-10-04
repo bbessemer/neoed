@@ -1,0 +1,25 @@
+conflicts
+
+Git's conflict markers are hidden from the grammar, so a file with merge
+conflicts parses: items on either side are found, and edits pass the
+parse-error guard. An item on both sides matches twice; scope it by its
+side: conflict:1.ours>fn:a. Conflict-shaped text in a Markdown code fence or
+a raw string is a conflict too, as it is for git.
+
+conflict:N is a file's Nth conflict, markers included, in any file (text
+files too); conflict alone is each one. Numbers count every conflict in the
+file, not only those in scope. Its parts are its sides' lines:
+  .ours     after <<<<<<<, up to ||||||| or =======
+  .base     after ||||||| (diff3 style only; to get one, git checkout
+            --conflict=diff3 -- FILE, or zdiff3, undoing edits since the merge)
+  .theirs   after =======, up to >>>>>>>
+`outline` ends with one line per conflict. resolve keeps a side (ned help
+resolve); text replacing a conflict, or an empty side, is re-indented to
+its sides.
+
+Examples:
+    show conflict:1.theirs
+    show conflict:2.ours>fn:parse
+    replace conflict:2 with <<END
+    limit.max(1)
+    END

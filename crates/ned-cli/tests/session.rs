@@ -375,6 +375,23 @@ fn undo_reverts_the_last_edit_and_records_it() {
 }
 
 #[test]
+fn color_follows_a_subcommand() {
+    let ws = Workspace::new(&[("a.txt", "a\n")]);
+    ws.ned(&["-s", "agent", "a.txt", "-e", r#"replace 1 with "b""#]);
+    let report = ws.report(&["undo", "-s", "agent", "--color", "always"]);
+    assert_snapshot!(report.replace('\x1b', r"\e"), @r#"
+    exit: 0
+    --- stdout
+    undo 1: replace 1 with "b"
+    \e[1ma.txt: 1 edit, +1 -1\e[0m
+    \e[36m@@ -1,1 +1,1 @@\e[0m
+    \e[31m-b\e[0m
+    \e[32m+a\e[0m
+    --- stderr
+    "#);
+}
+
+#[test]
 fn repeated_undo_walks_back_until_nothing_is_left() {
     let ws = Workspace::new(&[("a.rs", "fn a() {}\n")]);
     ws.ned_with(
@@ -575,6 +592,24 @@ fn repeat_errors_are_usage_errors_and_not_recorded() {
     show fn:a
     ");
     assert_eq!(ws.entries("agent").len(), 1);
+}
+
+#[test]
+fn a_repeat_of_a_dry_run_must_be_one() {
+    let ws = Workspace::new(&[("a.rs", "fn a() {}\n")]);
+    ws.ned(&["-s", "agent", "a.rs", "-n", "-e", "delete fn:a"]);
+    assert_snapshot!(ws.report(&["-s", "agent", "-e", "!!"]), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: `!!` would apply entry 1, a dry run; send the script again to apply it, or add -n to preview it again
+    ");
+    assert_eq!(ws.read("a.rs"), "fn a() {}\n");
+    assert_eq!(ws.entries("agent").len(), 1);
+
+    let output = ws.ned(&["-s", "agent", "-n", "-e", "!!"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(ws.read("a.rs"), "fn a() {}\n");
 }
 
 #[test]

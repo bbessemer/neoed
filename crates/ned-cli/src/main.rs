@@ -14,25 +14,37 @@ macro_rules! outln {
     }};
 }
 
+// `eprintln!` with the message's `error:` or `note:` painted for stderr.
+macro_rules! errln {
+    ($($arg:tt)*) => {{
+        eprintln!("{}", $crate::styles().1.message(&format!($($arg)*)));
+    }};
+}
+
 mod daemon;
 mod help;
 mod session;
 
+use std::ffi::OsString;
 use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::OnceLock;
 
+use clap::builder::NonEmptyStringValueParser;
 use clap::{Parser, Subcommand};
 use ned_core::buffer::Buffer;
 use ned_core::config::{self, Config};
 use ned_core::diff::{self, DiffStat};
 use ned_core::exec::{self, ExecErrorKind, Initial, Options};
 use ned_core::format::{self, Outcome};
+use ned_core::git::{FileEdit, GitError, Prepared, Repo};
 use ned_core::lang::{self, Language};
 use ned_core::lsp;
 #[cfg(unix)]
 use ned_core::lsp::Lsp;
 use ned_core::session::{Entry, FileChange};
+use ned_core::style::{Role, Style, When};
 use ned_core::{fs, script, workspace};
 
 /// A `--lang` value, `None` for text. Clap would read `Option<Option<_>>` as a
@@ -89,6 +101,12 @@ struct Cli {
     /// Record the invocation in session NAME; overrides NED_SESSION.
     #[arg(short, long, value_name = "NAME")]
     session: Option<String>,
+    /// Colour output for a terminal: auto, always or never.
+    #[arg(long, value_name = "WHEN", default_value = "auto", global = true)]
+    color: When,
+    /// Commit the edits written, and nothing else, to git with message MSG.
+    #[arg(long, value_name = "MSG", conflicts_with = "dry_run", value_parser = NonEmptyStringValueParser::new())]
+    commit: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -128,8 +146,58 @@ enum Command {
     },
 }
 
+/// The styles of stdout and stderr, from `--color` (spec §6.6).
+static STYLES: OnceLock<(Style, Style)> = OnceLock::new();
+
+fn styles() -> (Style, Style) {
+    STYLES.get().copied().unwrap_or_default()
+}
+
+/// The `--color` word among `args`, for an error found before clap has
+/// parsed them.
+fn color_arg(args: impl Iterator<Item = OsString>) -> When {
+    let mut when = When::default();
+    let mut args = args.map(|arg| arg.to_string_lossy().into_owned());
+    while let Some(arg) = args.next() {
+        let value = match arg.as_str() {
+            "--" => break,
+            "--color" => args.next(),
+            _ => arg.strip_prefix("--color=").map(str::to_owned),
+        };
+        if let Some(word) = value.and_then(|value| value.parse().ok()) {
+            when = word;
+        }
+    }
+    when
+}
+
 fn main() -> ExitCode {
-    let mut cli = Cli::parse();
+    let no_color = std::env::var_os("NO_COLOR");
+    let mut cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => {
+            let terminal = match err.use_stderr() {
+                true => io::stderr().is_terminal(),
+                false => io::stdout().is_terminal(),
+            };
+            let args = std::env::args_os().skip(1);
+            let text = err.render();
+            let text = match color_arg(args).style(terminal, no_color.as_deref()) {
+                Style::Color => text.ansi().to_string(),
+                Style::Plain => text.to_string(),
+            };
+            match err.use_stderr() {
+                true => eprint!("{text}"),
+                false => out!("{text}"),
+            }
+            return ExitCode::from(err.exit_code() as u8);
+        }
+    };
+    let style = |terminal| cli.color.style(terminal, no_color.as_deref());
+    let _ = STYLES.set((
+        style(io::stdout().is_terminal()),
+        style(io::stderr().is_terminal()),
+    ));
     match cli.command {
         Some(Command::Help { topic }) => {
             out!("{}", help::text(topic));
@@ -149,13 +217,13 @@ fn main() -> ExitCode {
         None => {}
     }
     if let Some(err) = usage_error(&cli) {
-        eprintln!("error: {err}");
+        errln!("error: {err}");
         return ExitCode::from(2);
     }
     let mut src = if cli.scripts.is_empty() {
         let mut src = String::new();
         if let Err(err) = io::stdin().read_to_string(&mut src) {
-            eprintln!("error: cannot read the script from stdin: {err}");
+            errln!("error: cannot read the script from stdin: {err}");
             return ExitCode::from(2);
         }
         src
@@ -167,7 +235,7 @@ fn main() -> ExitCode {
         Some(Some(dir)) => match dir.canonicalize() {
             Ok(dir) => dir,
             Err(err) => {
-                eprintln!("error: cannot read {}: {err}", dir.display());
+                errln!("error: cannot read {}: {err}", dir.display());
                 return ExitCode::from(3);
             }
         },
@@ -178,7 +246,7 @@ fn main() -> ExitCode {
         Some(name) => match session::open(&name, &root) {
             Ok(session) => Some(session),
             Err((error, code)) => {
-                eprintln!("{error}");
+                errln!("{error}");
                 return ExitCode::from(code);
             }
         },
@@ -190,12 +258,20 @@ fn main() -> ExitCode {
         &mut cli.files,
         &mut cli.workspace,
         &mut root,
+        cli.dry_run,
     ) {
         Ok(src) => src,
         Err(failure) => return finish(Err(failure)),
     };
 
-    let ran = run(&cli, &src, &cwd, root.clone());
+    let prior = match (&cli.commit, &session) {
+        (Some(_), Some(session)) => match session::uncommitted(session) {
+            Ok(prior) => prior,
+            Err(failure) => return finish(Err(failure)),
+        },
+        _ => Vec::new(),
+    };
+    let ran = run(&cli, &src, &cwd, root.clone(), &prior);
     if let Some(session) = &session {
         session::record(
             session,
@@ -211,6 +287,7 @@ fn main() -> ExitCode {
                 exit: ran.exit,
                 error: ran.error,
                 changes: ran.changes,
+                commit: ran.commit,
             },
         );
     }
@@ -222,23 +299,27 @@ struct Ran {
     exit: u8,
     error: Option<String>,
     changes: Vec<FileChange>,
+    /// The commit `--commit` made.
+    commit: Option<String>,
 }
 
 impl Ran {
     /// Prints `error` and fails with `exit`.
     fn failed(exit: u8, error: String) -> Ran {
         let error = error.trim_end().to_string();
-        eprintln!("{error}");
+        errln!("{error}");
         Ran {
             exit,
             error: Some(error),
             changes: Vec::new(),
+            commit: None,
         }
     }
 }
 
-/// Runs the script `src`: prints its output and writes its edits.
-fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
+/// Runs the script `src`: prints its output and writes its edits, and with
+/// `--commit` commits them after the session's `prior` changes.
+fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf, prior: &[(u64, FileChange)]) -> Ran {
     let parsed = match script::parse(src) {
         Ok(parsed) => parsed,
         Err(err) => return Ran::failed(2, err.render(src)),
@@ -246,7 +327,11 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
     let options = Options {
         lang: cli.lang,
         force: cli.force,
+        style: styles().0,
     };
+    let top = root.clone();
+    // HEAD as the script starts, so a commit made while it runs is noticed.
+    let before = cli.commit.as_ref().and_then(|_| Repo::discover(&top).ok());
     let initial = match cli.workspace {
         Some(_) => Initial::Workspace(root.clone()),
         None => Initial::Files(&cli.files),
@@ -260,7 +345,7 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
     let run = exec::run(&parsed, src, initial, &options, lsp);
     out!("{}", run.output);
     for note in &run.notes {
-        eprintln!("note: {note}");
+        errln!("note: {note}");
     }
     let changes = match run.result {
         Ok(changes) => changes,
@@ -307,6 +392,18 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
         return Ran::failed(1, daemon::blocked(&changes, &finals, checked));
     }
 
+    let committed = match &cli.commit {
+        Some(message) => match commit(&top, before, cwd, prior, &changes, &finals, message) {
+            Ok(committed) => Some(committed),
+            Err(err) => {
+                #[cfg(unix)]
+                daemon::restore(&mut workspace, &changes);
+                return Ran::failed(git_exit_code(&err), commit_error(&err, prior));
+            }
+        },
+        None => None,
+    };
+
     if !cli.dry_run {
         let writes: Vec<(PathBuf, String)> = changes
             .iter()
@@ -314,6 +411,11 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
             .map(|(change, text)| (PathBuf::from(&change.path), text.to_string()))
             .collect();
         if let Err(err) = fs::write_atomic(&writes, &[]) {
+            if let Some((repo, prepared)) = &committed
+                && let Err(git) = repo.retreat(prepared)
+            {
+                errln!("error: {git}");
+            }
             let error = format!("error: cannot write files: {err}; no file was changed");
             return Ran::failed(3, error);
         }
@@ -333,35 +435,51 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
             })
             .collect(),
     };
+    let style = styles().0;
     for (i, (change, outcome)) in changes.iter().zip(&outcomes).enumerate() {
         let stat = DiffStat::between(&change.old, &change.new);
-        outln!(
-            "{}",
-            if change.created {
-                diff::created_summary(&change.path, stat, cli.dry_run)
-            } else {
-                diff::summary(&change.path, change.edits, stat, cli.dry_run)
-            }
-        );
+        let summary = if change.created {
+            diff::created_summary(&change.path, stat, cli.dry_run)
+        } else {
+            diff::summary(&change.path, change.edits, stat, cli.dry_run)
+        };
+        outln!("{}", style.paint(Role::Header, &summary));
+        let new = diff::Side::new(&change.new, change.lang);
         if !cli.quiet {
-            out!("{}", diff::hunks(&change.old, &change.new, cli.context));
+            let old = diff::Side::new(&change.old, change.lang);
+            out!("{}", diff::hunks(&old, &new, cli.context, style));
         }
         match outcome {
             Outcome::Formatted { name, text } => {
-                outln!("fmt {name}: {}", DiffStat::between(&change.new, text));
+                let header = format!("fmt {name}: {}", DiffStat::between(&change.new, text));
+                outln!("{}", style.paint(Role::Header, &header));
                 if !cli.quiet {
-                    out!("{}", diff::hunks(&change.new, text, cli.context));
+                    let text = diff::Side::new(text, change.lang);
+                    out!("{}", diff::hunks(&new, &text, cli.context, style));
                 }
             }
-            Outcome::NotFound(note) | Outcome::Failed(note) => eprintln!("note: {note}"),
+            Outcome::NotFound(note) | Outcome::Failed(note) => errln!("note: {note}"),
             Outcome::Unchanged => {}
         }
         if let Some(checked) = &checked {
             let buffer = Buffer::new(finals[i]);
             for d in &checked.files[i] {
-                out!("{}", lsp::render(&change.path, &buffer, d));
+                out!("{}", lsp::render(&change.path, &buffer, d, style));
             }
         }
+    }
+    if let Some((repo, prepared)) = &committed {
+        let subject = cli
+            .commit
+            .as_deref()
+            .unwrap_or_default()
+            .lines()
+            .next()
+            .unwrap_or_default();
+        let name = repo
+            .short(&prepared.commit)
+            .unwrap_or_else(|_| prepared.commit.clone());
+        outln!("commit {name}: {subject}");
     }
     #[cfg(unix)]
     if checked.is_some() && cli.dry_run {
@@ -371,6 +489,80 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf) -> Ran {
         exit: 0,
         error: None,
         changes: recorded,
+        commit: committed.map(|(_, prepared)| prepared.commit),
+    }
+}
+
+/// Makes the commit of the run's edits and moves `HEAD` to it (§1.3), if
+/// `HEAD` hasn't moved since `before`, the repository found as the run
+/// started, was found.
+fn commit(
+    top: &Path,
+    before: Option<Repo>,
+    cwd: &Path,
+    prior: &[(u64, FileChange)],
+    changes: &[exec::Change],
+    finals: &[&str],
+    message: &str,
+) -> Result<(Repo, Prepared), GitError> {
+    let paths: Vec<PathBuf> = changes.iter().map(|c| cwd.join(&c.path)).collect();
+    let earlier = prior.iter().map(|(_, change)| FileEdit {
+        path: &change.path,
+        before: change.before.as_deref(),
+        after: change.after.as_deref(),
+    });
+    let edits: Vec<FileEdit> = earlier
+        .chain(
+            changes
+                .iter()
+                .zip(finals)
+                .zip(&paths)
+                .map(|((change, after), path)| FileEdit {
+                    path,
+                    before: (!change.created).then_some(change.old.as_str()),
+                    after: Some(after),
+                }),
+        )
+        .collect();
+    let found = Repo::discover(paths.first().map_or(top, PathBuf::as_path))?;
+    let repo = before.filter(|b| b.top == found.top).unwrap_or(found);
+    if changes.is_empty() {
+        return Err(GitError::NothingToCommit);
+    }
+    let mut prepared = repo.prepare(&edits, message)?;
+    repo.advance(&prepared)?;
+    if let Err(err) = repo.stage(&mut prepared) {
+        if let Err(git) = repo.retreat(&prepared) {
+            errln!("error: {git}");
+        }
+        return Err(err);
+    }
+    Ok((repo, prepared))
+}
+
+/// The message for `err`, naming the session entry whose edit it concerns,
+/// if `prior` (§1.3) holds that edit.
+fn commit_error(err: &GitError, prior: &[(u64, FileChange)]) -> String {
+    let (problem, edit) = match err {
+        GitError::Ignored { path, edit } => (format!("{path} is ignored by git"), edit),
+        GitError::Outside { path, top, edit } => {
+            (format!("{path} isn't in the repository at {top}"), edit)
+        }
+        _ => return format!("error: {err}"),
+    };
+    match prior.get(*edit) {
+        Some((id, _)) => format!(
+            "error: {problem}, and session entry {id} edited it, so the session's edits can't be committed; start a new session (-s NAME) to commit only the edits from then on"
+        ),
+        None => format!("error: {err}"),
+    }
+}
+
+fn git_exit_code(err: &GitError) -> u8 {
+    match err {
+        GitError::NoGit | GitError::NotARepo(_) => 2,
+        GitError::Failed { .. } | GitError::IndexLocked(_) => 3,
+        _ => 1,
     }
 }
 
@@ -379,7 +571,7 @@ fn finish(result: Result<(), session::Failure>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err((error, code)) => {
-            eprintln!("{error}");
+            errln!("{error}");
             ExitCode::from(code)
         }
     }
@@ -427,6 +619,8 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::UnknownKind { .. }
         | ExecErrorKind::MissingPart { .. }
         | ExecErrorKind::PartNeedsItem { .. }
+        | ExecErrorKind::PartNeedsConflict { .. }
+        | ExecErrorKind::NotAConflict { .. }
         | ExecErrorKind::MoveIntoSource { .. }
         | ExecErrorKind::FileExists { .. }
         | ExecErrorKind::RenameRefused { .. }

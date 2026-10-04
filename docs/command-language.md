@@ -42,7 +42,9 @@ be the first argument; write a file with one of those names as `./help`, say.
 | `--no-fmt`                | Don't run formatters (§6.4).                                                                                                              |
 | `--lang LANG`             | Use this language for every file: `rust`, `python`, `typescript`, `tsx`, `javascript`, `go`, `markdown`, or `text` to parse none of them. |
 | `--context N`             | Context lines around diff hunks (default 1).                                                                                              |
+| `--color WHEN`            | Colour output for a terminal: `auto` (default), `always` or `never` (§6.6).                                                               |
 | `-s`, `--session NAME`    | Record the invocation in session `NAME`, overriding `NED_SESSION` (§1.2).                                                                 |
+| `--commit MSG`            | Commit the edits the invocation writes, and nothing else, to git with message `MSG` (§1.3).                                               |
 | `-V`, `--version`         | Print the version: the package version and the build's git commit (the version alone for a release build, or one built without git).      |
 
 Otherwise, a file's language is detected from its extension, then from its
@@ -159,9 +161,9 @@ isn't recorded. Usage errors from the arguments themselves are not recorded.
 
 `ned history` prints the session's last 10 entries, or with `--all` every entry,
 oldest first, one line each: the entry's number, its outcome (`ok`, `dry run`,
-`exit N`, or `undo N` for an undo), the number of files it changed, `undone` if
-it has been, and the script's first line, followed by `(+N lines)` if it has
-more.
+`exit N`, or `undo N` for an undo), the number of files it changed, `commit SHA`
+(its first 7 characters) if it made a commit (§1.3), `undone` if it has been,
+and the script's first line, followed by `(+N lines)` if it has more.
 
 ```
 $ ned history
@@ -207,8 +209,11 @@ src/parser.rs: 1 edit, +1 -1
 The repeat runs on the last script's file set — its `FILE` arguments, relative
 to the directory they were given in, or its `-w` workspace — unless the new
 invocation gives `FILE` arguments or `-w`. Flags (`-n`, `--force`, ...) are not
-repeated. `!!` without a session, with no earlier script in it, or with an `OLD`
-the script doesn't contain is a usage error; the last says what the script is.
+repeated, so a repeat of a dry run without `-n` would apply what was only
+previewed: it is a usage error saying to send the script again to apply it, or
+to add `-n` to preview it again. `!!` without a session, with no earlier script
+in it, or with an `OLD` the script doesn't contain is a usage error; the last
+says what the script is.
 
 `history` and `undo` take the session from `-s` or `NED_SESSION` like a script
 does; with neither, or a session the workspace has no log for, they're a usage
@@ -244,6 +249,61 @@ it:
 | `exit`      | The exit code                                                                                  |
 | `error`     | The error message, or `null`                                                                   |
 | `changes`   | Per written file: `path` (absolute), `before` (`null` if created), `after` (`null` if removed) |
+| `commit`    | The commit that `--commit` made (§1.3), or `null`; read as `null` if missing                   |
+
+### 1.3 Committing
+
+`--commit MSG` turns the edits an invocation writes into one git commit with
+message `MSG`, on top of `HEAD`, and moves `HEAD` (or the branch it names) to
+it. Nothing else goes into the commit: `ned` builds it from `HEAD`'s tree with
+each edit applied, not from the index, so other changes, staged or not, are left
+as they were, in the files and in the index.
+
+- A file's edit is the change from its text before the script to the text
+  written, formatting included. If the file has changes that aren't committed,
+  the edit is applied to `HEAD`'s version for the commit (to the staged version,
+  for a file `HEAD` lacks), and to the staged version in the index, so those
+  changes stay uncommitted. An edit that overlaps them is an error naming the
+  line (exit 1).
+- A file the script creates is added. The repository is the one holding the
+  first file the script edits, wherever `ned` runs; every edited file must be in
+  it (not in a repository nested in its tree, or a submodule) and not ignored by
+  git.
+- With a session (§1.2), the commit holds every edit the session recorded since
+  its last commit (its last entry with a `commit`), undos included, as well as
+  the invocation's own: each file's edits are applied one after another, in
+  order. A file that an undo removed is removed from the commit too, and an
+  untracked file that its edits leave as they found it stays out of it,
+  untracked. The invocation's entry records the commit. A script that changes no
+  file is still "nothing to commit", whatever edits the session made before it.
+  Each file those earlier edits wrote must still hold what the session last
+  wrote to it, and be in the repository and not ignored. If one has changed
+  since (by `git checkout`, `git stash` or a hand edit, say), or isn't in the
+  repository or is ignored, the commit is refused (exit 1), naming the file and
+  the entry that wrote it; starting a new session commits only the edits from
+  then on.
+- The commit is made with git's plumbing (`commit-tree`): hooks don't run, it is
+  signed if `commit.gpgSign` says so, and its author and committer come from
+  git's configuration and environment, as for `git commit`.
+- After the summaries (§6.3), `ned` prints `commit SHA: SUBJECT`, with the
+  commit's abbreviated name and its message's first line.
+- `--commit` with `-n`, without git, or outside a git repository is a usage
+  error (exit 2). A merge in progress, a script that changes no file or nothing
+  that differs from `HEAD` ("nothing to commit"), a file outside the repository
+  or ignored, a file whose version in `HEAD` or the index isn't UTF-8, and an
+  overlap are rejected (exit 1). A failing git command is an I/O error (exit 3),
+  and so is an index another git process has locked (`index.lock` exists): `ned`
+  holds that lock from before it reads the index until it has staged the edits.
+  In every case, nothing is written, `HEAD` doesn't move and the index is
+  unchanged; if `HEAD` moved while the script ran, the commit is refused.
+
+```
+$ ned src/parser.rs --commit "Say what input ended" -e 'replace fn:parse>"end" with "end of input"'
+src/parser.rs: 1 edit, +1 -1
+@@ -14,3 +14,3 @@
+...
+commit 3f9c2a1: Say what input ended
+```
 
 ## 2. Scripts
 
@@ -293,7 +353,7 @@ script     = { line } ;
 line       = [ command { ( ";" | "|" ) command } [ "|" ] ] [ comment ] NEWLINE
              { heredoc-body } ;
 command    = show | outline | replace | insert | delete | sub | move | create
-           | file | check | allow | rename ;
+           | file | check | allow | rename | resolve ;
 
 show       = "show" [ target [ context ] ] ;
 outline    = "outline" [ target ] ;
@@ -305,6 +365,7 @@ move       = "move" target position selector ;
 file       = "file" path { path } ;
 create     = "create" path text ;
 rename     = "rename" selector "to" name ;
+resolve    = "resolve" target ( "ours" | "theirs" | "base" | "both" ) ;
 check      = "check" [ target ] [ level ] ;
 level      = "error" | "warning" | "info" | "hint" ;
 allow      = "allow" ( "errors" | "warnings" ) ;
@@ -316,7 +377,7 @@ step       = primary [ ".." primary ] { part } { filter } ;
 context    = "+" digit { digit } ;
 part       = ".body" | ".sig" | ".params" | ".name" | ".doc" | ".attrs"
            | ".ret" | ".type" | ".value" | ".whole" | ".lines" | ".refs"
-           | ".def" ;
+           | ".def" | ".ours" | ".theirs" | ".base" ;
 filter     = "[" or "]" ;   (* whitespace allowed inside *)
 or         = and { "||" and } ;
 and        = cond { "&&" cond } ;
@@ -325,7 +386,7 @@ property   = ".len" | ".text" | part [ ".len" | ".text" ] ;
 op         = "==" | "!=" | "~=" | "<" | ">" | "<=" | ">=" ;
 value      = string | regex | number ;
 number     = digit { digit } ;
-primary    = lines | regex | literal | syntax | query | pattern ;
+primary    = lines | regex | literal | syntax | conflict | query | pattern ;
 
 lines      = lineno [ "-" lineno ] ;
 lineno     = digit { digit } | "$" ;
@@ -333,6 +394,7 @@ literal    = string | heredoc ;
 syntax     = kind [ ":" name ] ;
 kind       = ident ;
 name       = name-char { name-char } | string ;   (* name-char: [A-Za-z0-9_:*] *)
+conflict   = "conflict" [ ":" number ] ;
 query      = "query{" { any } "}" ;   (* ends at the first unescaped "}"; one line *)
 pattern    = "`"+ { any } "`"+ ;   (* runs of equal length; may span lines; see 3.10 *)
 
@@ -527,6 +589,15 @@ The kinds each language supports, and the items they cover there:
   and `TEXT` doesn't end with `,`, one is appended.
 - Syntax steps skip text files. If every searched file is text, the selector is
   an error that suggests `--lang`.
+- A file with merge conflicts still parses. The marker lines of each conflict
+  that git writes are hidden from the grammar: `<<<<<<< ...`, `||||||| ...`
+  (diff3 style), `=======` and `>>>>>>> ...`, each starting its line, in that
+  order. The grammar sees the sides one after the other, so items on either side
+  are found, and an item on both sides matches twice, which is ambiguous (§3.5)
+  unless it is scoped by its side: `conflict:1.ours>fn:a`. Spans are still of
+  the file's text, so an item that spans a conflict includes its marker lines.
+  Marker lines that don't form a whole conflict (a lone `=======`, say) are not
+  hidden. `conflict` selects the conflicts themselves (§3.11).
 - `file:PATH` is a special step that selects the whole of one file in the
   current set. It exists to scope the steps after it:
   `file:src/lexer.rs>fn:new`. `PATH` may contain `/` and `.`, and ends at `>` or
@@ -543,21 +614,22 @@ The kinds each language supports, and the items they cover there:
   `fn:main>/unwrap\(\)/`, `100-200>fn:new`.
 - A **part** narrows each span of its step:
 
-| Part      | Span                                                                                                                             |
-| --------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `.body`   | the item's block, between its delimiters (`{}`, or a Python indented block); for a Markdown section, the lines after its heading |
-| `.sig`    | from the start of the item (after its doc and attributes) up to its body                                                         |
-| `.params` | the parameter list, between its parentheses                                                                                      |
-| `.name`   | the item's name identifier                                                                                                       |
-| `.doc`    | the item's leading doc comment lines; a Python docstring                                                                         |
-| `.attrs`  | the item's attributes or decorators, from the first to the last                                                                  |
-| `.ret`    | the function's return type                                                                                                       |
-| `.type`   | the declared type of a field, constant or variable                                                                               |
-| `.value`  | the value a constant, variable, field or variant is given; the type a `type` item names                                          |
-| `.whole`  | the item's default span (§3.3), doc comments, attributes and trailing `,` included, which `replace` replaces whole               |
-| `.lines`  | each whole line the span touches, as a span of its own (any selector)                                                            |
-| `.refs`   | each reference to the symbol at the span (below), without its declaration                                                        |
-| `.def`    | the symbol's definition: the item it names, or its identifier if it names no item                                                |
+| Part                        | Span                                                                                                                             |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `.body`                     | the item's block, between its delimiters (`{}`, or a Python indented block); for a Markdown section, the lines after its heading |
+| `.sig`                      | from the start of the item (after its doc and attributes) up to its body                                                         |
+| `.params`                   | the parameter list, between its parentheses                                                                                      |
+| `.name`                     | the item's name identifier                                                                                                       |
+| `.doc`                      | the item's leading doc comment lines; a Python docstring                                                                         |
+| `.attrs`                    | the item's attributes or decorators, from the first to the last                                                                  |
+| `.ret`                      | the function's return type                                                                                                       |
+| `.type`                     | the declared type of a field, constant or variable                                                                               |
+| `.value`                    | the value a constant, variable, field or variant is given; the type a `type` item names                                          |
+| `.whole`                    | the item's default span (§3.3), doc comments, attributes and trailing `,` included, which `replace` replaces whole               |
+| `.lines`                    | each whole line the span touches, as a span of its own (any selector)                                                            |
+| `.refs`                     | each reference to the symbol at the span (below), without its declaration                                                        |
+| `.def`                      | the symbol's definition: the item it names, or its identifier if it names no item                                                |
+| `.ours`, `.theirs`, `.base` | a conflict's sides (§3.11)                                                                                                       |
 
 - For `.body` and `.params`: if the opening delimiter ends its line and the
   closing delimiter starts its line, the part is the whole lines between them.
@@ -602,8 +674,9 @@ The kinds each language supports, and the items they cover there:
   same step, and later steps search inside their spans. They spawn the daemon if
   need be.
 - A part the item doesn't have (e.g. `.body` on a Rust `const`) is an error.
-  Parts other than `.lines` need a syntax item (§3.8): `/x/.body` is an error,
-  and so is a part after another part, as in `.body.name`.
+  Parts other than `.lines` need a syntax item, and `.ours`, `.theirs` and
+  `.base` a conflict (§3.8): `/x/.body` is an error, and so is a part after
+  another part, as in `.body.name`.
 - `.lines` on a span within one line widens it to that line. On a multi-line
   span it selects each line separately, so `fn:parse.lines` is many spans: use
   `all`, or nest a line number (`fn:parse>12`).
@@ -617,14 +690,15 @@ The kinds each language supports, and the items they cover there:
 - `all SEL` applies the verb to every match. Zero matches is still an error.
 - An ambiguous `.refs` or `.def` result lists where its matches are instead of
   candidate selectors, since no scope picks one out; add `all`.
-- There is no nth-match syntax. To disambiguate, nest (`impl:Lexer>fn:new`),
-  scope by lines (`40-80>fn:new`), or scope by file (`file:src/a.rs>fn:new`).
-  Error messages list the candidates in exactly these forms (§7): nested in the
-  match's nearest enclosing item (within the previous step's span) if that's
-  unique among the matches, otherwise scoped by file if that's unique, otherwise
-  by lines. A `file:` scope goes first; an item or line scope goes just before
-  the selector's last step (`impl:Lexer>fn:new>40-44>/x/`), and a line scope
-  covers the whole matched item, even when a part follows it.
+- There is no nth-match syntax, except for conflicts (§3.11). To disambiguate,
+  nest (`impl:Lexer>fn:new`), scope by lines (`40-80>fn:new`), or scope by file
+  (`file:src/a.rs>fn:new`). Error messages list the candidates in exactly these
+  forms (§7): nested in the match's nearest enclosing item (within the previous
+  step's span) if that's unique among the matches, otherwise scoped by file if
+  that's unique, otherwise by lines. A `file:` scope goes first; an item or line
+  scope goes just before the selector's last step
+  (`impl:Lexer>fn:new>40-44>/x/`), and a line scope covers the whole matched
+  item, even when a part follows it.
 - Every listed candidate picks exactly one match. Matches that share a line with
   another match can't be picked by scope, so they aren't listed; the error
   counts them and suggests selecting longer text, or `all`.
@@ -674,6 +748,8 @@ Every value in a script has a type, which decides the parts it has (§3.4):
 - An **item** is a span that a syntax step selects, with its kind (§3.3). It
   also has `.whole` and the parts its kind has in its language (§3.4). A part's
   span is a plain span, not an item.
+- A **conflict** is a span that a `conflict` step selects (§3.11). It has
+  `.ours`, `.theirs`, `.lines` and, in diff3 style, `.base`.
 - **Strings**, **numbers** and **regexes** are values written in a script: a
   filter (§3.9) compares a span's property with one. They have no parts.
 
@@ -691,8 +767,9 @@ filter follows the step's parts and tests the spans they select.
   - A part (§3.4), such as `.name` or `.doc`: the part's text. Add `.len` or
     `.text` after it for its length or text: `fn[.body.len > 50]`. An item
     without the part, such as a function without doc comments, has `""` there,
-    with length 0. A part needs an item: `/x/[.name == "a"]` is an error, as
-    `/x/.name` is. `.lines`, `.refs` and `.def` can't be properties.
+    with length 0. A part needs an item (or a conflict, for its sides):
+    `/x/[.name == "a"]` is an error, as `/x/.name` is. `.lines`, `.refs` and
+    `.def` can't be properties.
 - `.len` is a number, compared with `==`, `!=`, `<`, `>`, `<=` or `>=` and a
   number. Text is compared with `==` or `!=` and a string, or with `~=` and a
   regex, which matches anywhere in it unless anchored (`~= /^test_/`). Any other
@@ -809,6 +886,46 @@ let Some(@x) = @e else {
 END
 ```
 
+### 3.11 Conflicts
+
+`conflict` selects the merge conflicts that git leaves in a file, in any file
+whatever its language, text files included. `conflict:N` is the file's `N`th
+conflict, counting from 1 in file order, and bare `conflict` is each of them, so
+it is ambiguous (§3.5) in a file with more than one unless `all` is given;
+candidates are listed as `conflict:N`. A conflict's span is the whole lines from
+its `<<<<<<<` line through its `>>>>>>>` line. Only whole conflicts count, as
+for hiding markers from the grammar (§3.3), wherever they are: conflict-shaped
+text inside a Markdown code fence or a multi-line raw string is a conflict, as
+it is for git, so editing `all conflict` rewrites it too. Its parts are its
+sides:
+
+- `.ours`: the lines after `<<<<<<<`, up to `|||||||` or `=======`.
+- `.base`: the lines after `|||||||`, up to `=======`. Only a conflict that git
+  wrote in diff3 style, with `merge.conflictStyle` set to `diff3` or `zdiff3`,
+  has one; on another, `.base` is an error that says so, and that
+  `git checkout --conflict=diff3 -- FILE` (or `zdiff3`) rewrites the file's
+  conflicts with bases, undoing its edits since the merge.
+- `.theirs`: the lines after `=======`, up to `>>>>>>>`.
+
+Each side is whole lines, without the marker lines; an empty side is an empty
+span at the start of the marker line after it. It has no `.lines`; `show` prints
+`PATH:N: conflict:2.theirs is empty` for it, and `delete` makes no edit, with a
+note that it is already empty. `replace`, `insert` and `move` put their text on
+lines of their own there. Conflicts nest like other spans:
+`conflict:2.theirs>fn:parse`, `fn:main>conflict`. Numbers count every conflict
+in the file, not only those in scope: `fn:main>conflict:2` is the file's second
+conflict, which must lie in `fn:main`. `resolve conflict:2 theirs` (§4.2) keeps
+one side, and `replace conflict:2 with TEXT` replaces the whole conflict,
+markers included, with new text.
+
+```ned
+show conflict:1.theirs
+resolve conflict:1 theirs
+replace conflict:2 with <<END
+let limit = config.limit.max(1);
+END
+```
+
 ## 4. Verbs
 
 ### 4.1 Reads
@@ -852,6 +969,7 @@ END
 | `move SEL before\|after\|start\|end DEST` | Deletes each span of `SEL` and inserts its text at `DEST`, which must resolve to one span. The destination may be in another file in the set. Moved text is re-based.                                |
 | `create PATH TEXT`                        | Creates `PATH` holding `TEXT` (line-oriented, re-based to column 0) as if it had existed when the script started: it joins the file set and later commands can edit it. `PATH` must not exist.       |
 | `rename SEL to NAME`                      | Renames the symbol at `SEL`, which must resolve to one span, wherever the language server finds it (below).                                                                                          |
+| `resolve SEL ours\|theirs\|base\|both`    | Replaces each selected conflict (§3.11) with the lines of one side as they are: `both` is ours, then theirs. Each span must be a whole conflict. An empty result deletes it as `delete` does.        |
 
 Notes:
 
@@ -936,8 +1054,9 @@ starts before that (an `ERROR` node can span the whole file). If the edits
 replace a `.sig` with text ending in the character that follows it (Python's
 `:`, or the `{` of a body), the error adds that `.sig` stops before it. If the
 edited text holds an escape such as `\x27`, the error adds that heredocs read no
-escapes, and to pass a script that holds a `'` on stdin (§1). `--force` skips
-this check.
+escapes, and to pass a script that holds a `'` on stdin (§1). Conflict markers
+are hidden from the grammar (§3.3), so a file with merge conflicts can be
+edited. `--force` skips this check.
 
 ### 4.4 Directives
 
@@ -986,11 +1105,12 @@ Every line-oriented `TEXT` is re-based, except a `<<'TAG'` heredoc.
    Each level becomes one level of the file's indent unit.
 3. **Prefix** every non-blank line with the target indentation:
 
-| Edit                                        | Target indentation                                                                                                                                              |
-| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `replace`, `insert before`, `move` (before) | indentation of the target span's first line                                                                                                                     |
-| `insert after`, `move` (after)              | indentation of the target span's first line, or of its last non-blank line when the selector's last step is a literal or regex with no parts                    |
-| `insert start\|end`, `move` (start/end)     | indentation of the first non-blank line inside the span. If the span is empty or blank, the indentation of the enclosing item's first line plus one indent unit |
+| Edit                                        | Target indentation                                                                                                                                                                                                                 |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `replace`, `insert before`, `move` (before) | indentation of the target span's first line                                                                                                                                                                                        |
+| `insert after`, `move` (after)              | indentation of the target span's first line, or of its last non-blank line when the selector's last step is a literal or regex with no parts                                                                                       |
+| `insert start\|end`, `move` (start/end)     | indentation of the first non-blank line inside the span. If the span is empty or blank, the indentation of the enclosing item's first line plus one indent unit                                                                    |
+| `replace` of a conflict or its empty side   | indentation of the first non-blank line of the conflict's sides (§3.11); if all are blank, of the lines of the block enclosing the conflict, or one indent unit deeper than the line before it when that line opens an empty block |
 
 For `insert after` (and `move ... after`) in a file with a syntax tree, when
 that line ends a construct begun on an earlier line, such as the last line of a
@@ -1068,6 +1188,8 @@ straight back. The line range covers the item's default span.
   the left margin, under one header per file.
 - Like syntax steps, `outline` skips text files, and is an error if every file
   in the set is text.
+- A file with conflicts (§3.11) ends its outline with one line per conflict,
+  `START-END conflict:N`, at the left margin.
 
 ```
 src/parser.rs
@@ -1114,6 +1236,9 @@ formatted.
   `note: rustfmt not found; skipped formatting src/parser.rs`, or
   `note: rustfmt failed: <first stderr line>; skipped formatting src/parser.rs`.
   The file is written unformatted and the exit code stays 0.
+- A file that still has merge conflicts (§3.3) isn't formatted, by its formatter
+  or a language server, since formatting may rewrite its marker lines:
+  `note: skipped formatting src/a.rs: it has merge conflicts`.
 - `--dry-run` still runs formatters, on in-memory copies.
 
 When no formatter for the language is installed and a daemon is running (§6.5),
@@ -1190,6 +1315,31 @@ Positions don't count, since edits move them.
 - Checks a server runs on save (rust-analyzer's `cargo check`) don't run, since
   the edit isn't written yet; run `check` after the edit for those.
 
+### 6.6 Terminal output
+
+With `--color auto`, `ned` colours stdout when it is a terminal and stderr when
+that is one, unless `NO_COLOR` is set to a non-empty value. `--color always`
+colours both, and `--color never` neither, whatever `NO_COLOR` says. A
+subcommand takes `--color` after its name: `ned undo --color always`. Uncoloured
+output is exactly as §6.1–6.5 and §7 give it, so output read by a program never
+changes.
+
+Colour changes only how output looks, not what it says:
+
+- `show` prints each line's number right-aligned to the widest in its region,
+  dimmed and followed by a space instead of `:`, then the line's code,
+  highlighted with its language's highlight query.
+- `outline` dims each item's lines and colours its kind.
+- The headers naming a file, a `show` region's or `outline`'s, are bold.
+- An edit's summary line and `fmt` header are bold; in its hunks, `@@` headers
+  are cyan, removed lines red and added lines green, and each line's code is
+  highlighted from the text it belongs to.
+- `check` colours each diagnostic's severity: errors red, warnings yellow, info
+  and hints blue.
+- On stderr, only the `error:` and `note:` that start a message are coloured,
+  except in an error in the command line's options, which also colours the
+  arguments it quotes and its usage.
+
 ## 7. Errors and exit codes
 
 Errors go to stderr, in the form `error: LOC: message`.
@@ -1203,50 +1353,53 @@ Errors go to stderr, in the form `error: LOC: message`.
   nothing, and the fix is for that step: `impl:Lexr>fn:next` gives
   `impl:Lexr matches nothing in src/lexer.rs; did you mean impl:Lexer>fn:next (12-30)?`.
 
-| Error                                                                           | Fix it suggests                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Script syntax                                                                   | Quoting, for a bare word where text or a selector belongs or a dotted `import` name; nesting for another dotted name (`KIND:App>fn:handle`, or a Go method's `fn:"App.handle"`); `\\` for a backslash in a string; a selector for `insert end`, or `insert after $`; `show SEL +M` for `+N..+M`; `;` or a new line between commands for a second selector, e.g. `show fn:a; show fn:b`; otherwise the command's usage, e.g. `usage: replace [all] SEL with TEXT`        |
-| `check`, `rename`, `.refs` or `.def` after a `\|`                               | Running it before the first `\|`, or in a separate `ned` call                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `sub all /re/ with TEXT`, with no scope                                         | Dropping `all`, since `sub` replaces every match                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Selector matches nothing                                                        | The same name under another kind; a close syntax name, or the name without its generic arguments and paths (`impl:Log` for `impl:"Log<'_>"`); for `P>"a"..P>"b"`, `P>"a".."b"`; a string literal that matches as escaped source text (`"\\n"` for `"\n"`); a literal match that differs only in case or spacing; a regex that matches with `i`; the spans a nested step searched; a `\|` before the command, when the stage's earlier edits make it match; or `outline` |
-| Command's name given as a `FILE`                                                | The `-e` form of the arguments                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Ambiguous selector                                                              | Candidate selectors (§3.5), or longer text for matches that share a line                                                                                                                                                                                                                                                                                                                                                                                                |
-| Missing part, part on a non-syntax step                                         | The parts the item has, or an example                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Invalid query                                                                   | The closest node type or field name in the grammar                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Unterminated pattern                                                            | Ending it with as many backquotes as opened it                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Pattern that no searched file's language parses                                 | The first syntax error in it; adding the code around it, or `query{}`                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Pattern with no code                                                            | Writing the code to match between the backquotes                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Placeholder that isn't a whole node                                             | `@@` for a literal `@`                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Capture name in two pattern steps                                               | Renaming one of them                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `@name` in `replace` TEXT that nothing captured                                 | The names captured, or `@@name` for a literal                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `@_` in `replace` TEXT                                                          | `@@_` for a literal `@`                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `$name` in `sub` TEXT that the regex doesn't have                               | `${1}rest` for a name starting with a group, else the groups it has; `$$` for a literal `$`                                                                                                                                                                                                                                                                                                                                                                             |
-| `${}` in `sub` TEXT                                                             | `$$` for a literal `$`                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Pattern searching only text and Markdown files                                  | A regex or literal, or `--lang`                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Syntax step or `outline` in a text file                                         | `--lang`                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Syntax step, pattern or `outline` with `--lang text`                            | Dropping `--lang text`, or a regex or literal                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| Kind the language doesn't have                                                  | The kinds it has                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Line past the end                                                               | `$` for the last line                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| No language server for the files                                                | The `[lsp]` setting for their language                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Language server failure                                                         | Installing the server or fixing its `[lsp]` setting, or rerunning once it has indexed                                                                                                                                                                                                                                                                                                                                                                                   |
-| Server can't rename there                                                       | Selecting the name itself                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Rename, `.refs` or `.def` reaching a file outside the set                       | `-w`; outside the workspace, a regex (`sub`, for a rename)                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Ambiguous `.refs` or `.def` result                                              | `all`, with the matches' locations                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| File not in the set                                                             | The `file` command that adds it                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Overlapping edits                                                               | Merging them, or a `\|` between them                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Missing file or empty glob                                                      | The working directory paths are relative to                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| No files to edit                                                                | `FILE` arguments or `file PATH`                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `create` of a file that exists                                                  | `file PATH` to edit it                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Session name with other characters                                              | Letters, digits, `.`, `_` and `-`                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `!!`, `history` or `undo` without a session                                     | `-s NAME` or `NED_SESSION`, with the workspace's sessions                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `!!` with no earlier script                                                     | Writing the script out                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `!!:s/OLD/NEW/` whose `OLD` the script doesn't contain                          | The script                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Malformed `!!` modifier                                                         | `usage: !![:s/OLD/NEW/][:gs/OLD/NEW/]...`                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Nothing to undo                                                                 | `ned history`                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| Undo of a file changed since                                                    | `--force`, to merge the undo into it                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Undo of a file removed since, or a `--force` merge that overlaps a later change | Editing the file by hand; `ned history`                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Unsafe session directory                                                        | Removing it, or setting `XDG_STATE_HOME` to a private directory                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Session log of an unknown format version                                        | Another session name                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Error                                                                           | Fix it suggests                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Script syntax                                                                   | Quoting, for a bare word where text or a selector belongs or a dotted `import` name; nesting for another dotted name (`KIND:App>fn:handle`, or a Go method's `fn:"App.handle"`); `\\` for a backslash in a string; a selector for `insert end`, or `insert after $`; `show SEL +M` for `+N..+M`; `all` before the selector, not after it, e.g. `show all /re/`; `;` or a new line between commands for a second selector, e.g. `show fn:a; show fn:b`; otherwise the command's usage, e.g. `usage: replace [all] SEL with TEXT` |
+| `check`, `rename`, `.refs` or `.def` after a `\|`                               | Running it before the first `\|`, or in a separate `ned` call                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `all` in `sub` (`sub all /re/ with TEXT`, or after its regex or TEXT)           | Dropping `all`, since `sub` replaces every match                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Selector matches nothing                                                        | The same name under another kind; a close syntax name, or the name without its generic arguments and paths (`impl:Log` for `impl:"Log<'_>"`); for `P>"a"..P>"b"`, `P>"a".."b"`; a string literal that matches as escaped source text (`"\\n"` for `"\n"`); a literal match that differs only in case or spacing; a regex that matches with `i`; the spans a nested step searched; a `\|` before the command, when the stage's earlier edits make it match; or `outline`                                                         |
+| A `conflict` step that matches nothing                                          | The conflicts each searched file has (`a.rs has 2 conflicts (conflict:1, conflict:2)`), or that it has none                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Command's name given as a `FILE`                                                | The `-e` form of the arguments                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Ambiguous selector                                                              | Candidate selectors (§3.5), or longer text for matches that share a line                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Missing part, part on a non-syntax step                                         | The parts the item has, or an example                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `resolve` of a span that isn't a whole conflict                                 | Selecting one with `conflict:N`, or `replace`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Invalid query                                                                   | The closest node type or field name in the grammar                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Unterminated pattern                                                            | Ending it with as many backquotes as opened it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Pattern that no searched file's language parses                                 | The first syntax error in it; adding the code around it, or `query{}`                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Pattern with no code                                                            | Writing the code to match between the backquotes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Placeholder that isn't a whole node                                             | `@@` for a literal `@`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Capture name in two pattern steps                                               | Renaming one of them                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `@name` in `replace` TEXT that nothing captured                                 | The names captured, or `@@name` for a literal                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `@_` in `replace` TEXT                                                          | `@@_` for a literal `@`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `$name` in `sub` TEXT that the regex doesn't have                               | `${1}rest` for a name starting with a group, else the groups it has; `$$` for a literal `$`                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `${}` in `sub` TEXT                                                             | `$$` for a literal `$`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Pattern searching only text and Markdown files                                  | A regex or literal, or `--lang`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Syntax step or `outline` in a text file                                         | `--lang`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Syntax step, pattern or `outline` with `--lang text`                            | Dropping `--lang text`, or a regex or literal                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Kind the language doesn't have                                                  | The kinds it has                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Line past the end                                                               | `$` for the last line                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| No language server for the files                                                | The `[lsp]` setting for their language                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Language server failure                                                         | Installing the server or fixing its `[lsp]` setting, or rerunning once it has indexed                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Server can't rename there                                                       | Selecting the name itself                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Rename, `.refs` or `.def` reaching a file outside the set                       | `-w`; outside the workspace, a regex (`sub`, for a rename)                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Ambiguous `.refs` or `.def` result                                              | `all`, with the matches' locations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| File not in the set                                                             | The `file` command that adds it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Overlapping edits                                                               | Merging them, or a `\|` between them                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Missing file or empty glob                                                      | The working directory paths are relative to                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| No files to edit                                                                | `FILE` arguments or `file PATH`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `create` of a file that exists                                                  | `file PATH` to edit it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Session name with other characters                                              | Letters, digits, `.`, `_` and `-`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `!!`, `history` or `undo` without a session                                     | `-s NAME` or `NED_SESSION`, with the workspace's sessions                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `!!` with no earlier script                                                     | Writing the script out                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `!!` without `-n` after a dry run                                               | Sending the script again to apply it, or `-n` to preview it again                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `!!:s/OLD/NEW/` whose `OLD` the script doesn't contain                          | The script                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Malformed `!!` modifier                                                         | `usage: !![:s/OLD/NEW/][:gs/OLD/NEW/]...`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Nothing to undo                                                                 | `ned history`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Undo of a file changed since                                                    | `--force`, to merge the undo into it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Undo of a file removed since, or a `--force` merge that overlaps a later change | Editing the file by hand; `ned history`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Unsafe session directory                                                        | Removing it, or setting `XDG_STATE_HOME` to a private directory                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Session log of an unknown format version                                        | Another session name                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 ```
 error: script:1:8: fn:new matches 2 items; add `all` or use one of:
@@ -1266,12 +1419,12 @@ error: script:2:28: unterminated heredoc <<END (started here); end it with a lin
                              ^
 ```
 
-| Code | Meaning                                                                                                                                                                                                                                                                                                                                                                                           |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | Success, including dry runs and skipped formatters                                                                                                                                                                                                                                                                                                                                                |
-| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unknown kind, text file, line past the end, file not in the set, `create` of an existing file, parse-error guard, introduced diagnostics, move into its own source, rename refused, reaching outside the file set, ambiguous `.refs`/`.def` result, nothing to undo, undo of a file changed or removed since, undo merge overlap |
-| 2    | Usage error (bad flags or arguments, a command's name given as a `FILE`, no script on a terminal, no files to edit, a bad session name, no session, a bad `!!`), script syntax error, invalid query, pattern or config, or no language server                                                                                                                                                     |
-| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, write failure, language server failure, or an unsafe or unknown-version session store                                                                                                                                                                                                                                              |
+| Code | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0    | Success, including dry runs and skipped formatters                                                                                                                                                                                                                                                                                                                                                                             |
+| 1    | Edit rejected: no match, ambiguous match, overlap, missing part, unknown kind, text file, line past the end, file not in the set, `create` of an existing file, parse-error guard, introduced diagnostics, move into its own source, rename refused, reaching outside the file set, ambiguous `.refs`/`.def` result, nothing to undo, undo of a file changed or removed since, undo merge overlap, a refused `--commit` (§1.3) |
+| 2    | Usage error (bad flags or arguments, a command's name given as a `FILE`, no script on a terminal, no files to edit, a bad session name, no session, a bad `!!`, `--commit` with `-n` or outside a git repository), script syntax error, invalid query, pattern or config, or no language server                                                                                                                                |
+| 3    | I/O error: unreadable or non-UTF-8 file, glob matched nothing, write failure, language server failure, an unsafe or unknown-version session store, or a failing git command                                                                                                                                                                                                                                                    |
 
 On any non-zero exit, no file is modified. Reads that ran before the failure
 still print their output.

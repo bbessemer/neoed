@@ -92,6 +92,10 @@ pub enum ParseErrorKind {
     UnknownCommand(String),
     #[error("`{0}:` is a part, not a kind; select the symbol and add .{0}, e.g. fn:NAME.{0}")]
     PartAsKind(String),
+    #[error(
+        "`conflict:{0}` isn't a conflict's number; conflicts count from 1 in file order, as in conflict:1, and `conflict` is each of them"
+    )]
+    ConflictNumber(String),
     /// `hint` is empty, or `; ` and a fix.
     #[error("expected {expected}, found {found}{hint}")]
     Expected {
@@ -114,6 +118,9 @@ pub enum ParseErrorKind {
     /// `sub all /re/ with`, holding the regex as written.
     #[error("`sub` already replaces every match; drop `all`: sub {0} with ...")]
     SubAll(String),
+    /// `all` after a target's selector; the fix puts it before.
+    #[error("`all` goes before the selector; write {0}")]
+    AllAfterSelector(String),
     /// A `$` reference in `sub` TEXT to a group the regex doesn't have; `fix`
     /// splits off the group it starts with, or lists the groups.
     #[error("`{reference}` names group `{name}`, which the regex doesn't have; {fix}")]
@@ -144,7 +151,7 @@ pub enum ParseErrorKind {
 
 /// Every command, as error messages list them.
 pub const COMMANDS: &str =
-    "show outline check replace insert delete sub move rename file create allow";
+    "show outline check replace insert delete sub move rename resolve file create allow";
 
 fn quote_hint(c: char) -> &'static str {
     match c {

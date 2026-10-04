@@ -1,6 +1,6 @@
 //! Sessions: per-workspace logs of `ned` invocations (spec §1.2).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 
 use std::fs::{self, File, OpenOptions};
@@ -33,6 +33,9 @@ pub struct Entry {
     pub exit: u8,
     pub error: Option<String>,
     pub changes: Vec<FileChange>,
+    /// The commit that `--commit` made (spec §1.3).
+    #[serde(default)]
+    pub commit: Option<String>,
 }
 
 /// A file an entry wrote.
@@ -124,6 +127,10 @@ pub fn sessions(state_dir: &Path, root: &Path) -> Result<Vec<String>, SessionErr
 pub enum RepeatError {
     #[error("`!!` repeats the session's last script, but it has none; write the script out")]
     NoScript,
+    #[error(
+        "`!!` would apply entry {0}, a dry run; send the script again to apply it, or add -n to preview it again"
+    )]
+    DryRun(u64),
     #[error("`{old}` isn't in the last script, which is:\n{script}")]
     NotFound { old: String, script: String },
     #[error("malformed `!!` modifier `{0}`; usage: !![:s/OLD/NEW/][:gs/OLD/NEW/]...")]
@@ -137,14 +144,19 @@ pub fn is_repeat(src: &str) -> bool {
 
 /// If `src` is a `!!` script, the last script entry of `entries` and its
 /// script with the modifiers applied (spec §1.2); `None` for another script.
+/// Repeating a dry run is an error unless `dry_run`, as flags aren't repeated.
 pub fn repeat<'a>(
     src: &str,
     entries: &'a [Entry],
+    dry_run: bool,
 ) -> Option<Result<(&'a Entry, String), RepeatError>> {
     let mut rest = src.trim().strip_prefix("!!")?;
     let Some(entry) = entries.iter().rev().find(|entry| entry.script.is_some()) else {
         return Some(Err(RepeatError::NoScript));
     };
+    if entry.dry_run && !dry_run {
+        return Some(Err(RepeatError::DryRun(entry.id)));
+    }
     let mut script = entry.script.clone().unwrap_or_default();
     while !rest.is_empty() {
         let modifier = rest;
@@ -237,6 +249,9 @@ pub fn history(entries: &[Entry], all: bool) -> String {
             1 => parts.push("1 file".to_string()),
             n => parts.push(format!("{n} files")),
         }
+        if let Some(commit) = &entry.commit {
+            parts.push(format!("commit {}", &commit[..commit.len().min(7)]));
+        }
         if undone.contains(&entry.id) {
             parts.push("undone".to_string());
         }
@@ -247,6 +262,51 @@ pub fn history(entries: &[Entry], all: bool) -> String {
         out.push('\n');
     }
     out
+}
+
+/// The changes of the entries after the last one that made a commit, in
+/// order, each with its entry's id: what a session's `--commit` commits
+/// (spec §1.3). `read` gives a file's current text, `None` if it's missing;
+/// a file that no longer holds what the session last wrote to it is an
+/// error.
+pub fn uncommitted(
+    entries: &[Entry],
+    mut read: impl FnMut(&Path) -> io::Result<Option<String>>,
+) -> Result<Vec<(u64, FileChange)>, UncommittedError> {
+    let start = entries
+        .iter()
+        .rposition(|entry| entry.commit.is_some())
+        .map_or(0, |i| i + 1);
+    let changes: Vec<(u64, FileChange)> = entries[start..]
+        .iter()
+        .flat_map(|entry| entry.changes.iter().map(|c| (entry.id, c.clone())))
+        .collect();
+    let last: BTreeMap<&Path, (u64, &Option<String>)> = changes
+        .iter()
+        .map(|(id, change)| (change.path.as_path(), (*id, &change.after)))
+        .collect();
+    for (path, (id, after)) in last {
+        let current = read(path).map_err(|source| UncommittedError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        if current != *after {
+            let path = path.to_path_buf();
+            return Err(UncommittedError::Changed { path, id });
+        }
+    }
+    Ok(changes)
+}
+
+#[derive(Debug, Error)]
+pub enum UncommittedError {
+    #[error("{}: {source}; check its permissions, then rerun", path.display())]
+    Io { path: PathBuf, source: io::Error },
+    #[error(
+        "{} changed since session entry {id} wrote it, so the session's edits can't be committed; put back what entry {id} wrote, or start a new session (-s NAME) to commit only the edits from then on",
+        path.display()
+    )]
+    Changed { path: PathBuf, id: u64 },
 }
 
 /// What `ned undo` writes: the files of entry `id`, restored. Each change's
@@ -647,6 +707,7 @@ mod tests {
                 before: Some("old\n".into()),
                 after: Some("new\n".into()),
             }],
+            commit: None,
         }
     }
 
@@ -988,6 +1049,78 @@ mod tests {
         assert_eq!(history(&[], true), "");
     }
 
+    #[test]
+    fn history_names_the_commit_an_entry_made() {
+        let mut entry = recorded(1, Some("edit"), 0, 1);
+        entry.commit = Some("0123456789abcdef0123456789abcdef01234567".into());
+        assert_eq!(
+            history(&[entry], false),
+            "1 ok, 1 file, commit 0123456: edit\n"
+        );
+    }
+
+    #[test]
+    fn a_log_without_commits_reads_as_null() {
+        let mut line = serde_json::to_value(entry("show 1")).unwrap();
+        line.as_object_mut().unwrap().remove("commit");
+        let read: Entry = serde_json::from_value(line).unwrap();
+        assert_eq!(read.commit, None);
+    }
+
+    #[test]
+    fn uncommitted_changes_follow_the_last_commit() {
+        let mut committed = edit(2, &[("/b", Some("1"), Some("2"))]);
+        committed.commit = Some("abc".into());
+        let entries = [
+            edit(1, &[("/a", Some("1"), Some("2"))]),
+            committed,
+            edit(3, &[("/c", None, Some("1")), ("/a", Some("2"), Some("3"))]),
+            recorded(4, Some("show 1"), 1, 0),
+            undo_of(5, 3, &[("/c", Some("1"), None)]),
+        ];
+        let on_disk = |path: &Path| Ok((path == Path::new("/a")).then(|| "3".to_string()));
+        let paths: Vec<_> = uncommitted(&entries, on_disk)
+            .unwrap()
+            .into_iter()
+            .map(|(id, c)| (id, c.path, c.before, c.after))
+            .collect();
+        let s = |s: &str| Some(s.to_string());
+        assert_eq!(
+            paths,
+            [
+                (3, PathBuf::from("/c"), None, s("1")),
+                (3, PathBuf::from("/a"), s("2"), s("3")),
+                (5, PathBuf::from("/c"), s("1"), None),
+            ]
+        );
+        assert_eq!(uncommitted(&entries[..2], on_disk).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn a_file_changed_since_the_session_wrote_it_is_an_error() {
+        let entries = [
+            edit(1, &[("/a", Some("1"), Some("2"))]),
+            edit(
+                2,
+                &[("/b", Some("1"), Some("2")), ("/a", Some("2"), Some("3"))],
+            ),
+        ];
+        let on_disk = |path: &Path| Ok((path != Path::new("/a")).then(|| "2".to_string()));
+        match uncommitted(&entries, on_disk) {
+            Err(UncommittedError::Changed { path, id }) => {
+                assert_eq!((path, id), (PathBuf::from("/a"), 2));
+            }
+            other => panic!("{other:?}"),
+        }
+        let reverted = |_: &Path| Ok(Some("1".to_string()));
+        match uncommitted(&entries, reverted) {
+            Err(UncommittedError::Changed { path, id }) => {
+                assert_eq!((path, id), (PathBuf::from("/a"), 2));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
     fn edit(id: u64, files: &[(&str, Option<&str>, Option<&str>)]) -> Entry {
         let mut entry = recorded(id, Some("edit"), 0, 0);
         entry.changes = files
@@ -1156,7 +1289,7 @@ mod tests {
             .enumerate()
             .map(|(i, script)| recorded(i as u64 + 1, Some(script), 0, 0))
             .collect();
-        repeat(src, &entries).map(|result| result.map(|(_, script)| script))
+        repeat(src, &entries, false).map(|result| result.map(|(_, script)| script))
     }
 
     fn expanded(src: &str, script: &str) -> String {
@@ -1170,7 +1303,7 @@ mod tests {
             recorded(2, Some("delete fn:prase"), 1, 0),
             undo_of(3, 1, &[]),
         ];
-        let (entry, script) = repeat("!!", &entries).unwrap().unwrap();
+        let (entry, script) = repeat("!!", &entries, false).unwrap().unwrap();
         assert_eq!((entry.id, script.as_str()), (2, "delete fn:prase"));
         assert_eq!(expanded("  !!\n", "show 2"), "show 2");
     }
@@ -1203,9 +1336,22 @@ mod tests {
         assert_eq!(expand("!!", &[]), Some(Err(RepeatError::NoScript)));
         let entries = [undo_of(1, 1, &[])];
         assert!(matches!(
-            repeat("!!", &entries),
+            repeat("!!", &entries, false),
             Some(Err(RepeatError::NoScript))
         ));
+    }
+
+    #[test]
+    fn a_dry_run_is_repeated_only_as_one() {
+        let mut dry = recorded(2, Some("delete fn:a"), 0, 0);
+        dry.dry_run = true;
+        let entries = [recorded(1, Some("show 1"), 0, 0), dry];
+        assert_eq!(
+            repeat("!!:s/a/b/", &entries, false),
+            Some(Err(RepeatError::DryRun(2)))
+        );
+        let (entry, script) = repeat("!!:s/a/b/", &entries, true).unwrap().unwrap();
+        assert_eq!((entry.id, script.as_str()), (2, "delete fn:b"));
     }
 
     #[test]
