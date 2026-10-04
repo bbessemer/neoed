@@ -209,7 +209,7 @@ crates/ned-cli/    `ned` binary: args, I/O, output rendering, help texts, daemon
 crates/ned-daemon/ per-workspace daemon (Unix socket), its sync client, language servers
 crates/ned-scheme/ reader for the Scheme dialect of query files, builders and plugins
 queries/<lang>/    tree-sitter selector queries (.scm), one dir per language
-docs/              specs, agent guide, Claude Code skill
+docs/              specs, agent guide, Claude Code skill; web/ is the project website
 bench/             token-cost (cases/ back spec §8's table) and --commit git-process benchmarks (uv project)
 ```
 
@@ -266,6 +266,7 @@ frontends stay thin.
 | `cd bench && uv run bench.py --check`       | Token benchmark vs spec §8             |
 | `cd bench && uv run git_procs.py --check`   | `--commit`'s git processes vs baseline |
 | `cd bench && uv run pytest`                 | Benchmark unit tests                   |
+| `pnpm --dir docs/web dev`                   | Serve the website (`docs/web/`)        |
 
 ## Deployment Notes
 

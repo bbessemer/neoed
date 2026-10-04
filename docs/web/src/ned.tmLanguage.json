@@ -1,0 +1,135 @@
+{
+  "name": "ned",
+  "scopeName": "source.ned",
+  "patterns": [
+    { "include": "#shell-line" },
+    { "match": "^EOF$", "name": "punctuation.definition.string.end.ned" },
+    { "include": "#script" }
+  ],
+  "repository": {
+    "shell-line": {
+      "begin": "^(\\$ )?(ned)(?=\\s|$)",
+      "beginCaptures": {
+        "1": { "name": "comment.prompt.ned" },
+        "2": { "name": "entity.name.function.ned" }
+      },
+      "end": "$",
+      "patterns": [
+        {
+          "match": "<<'?EOF'?",
+          "name": "punctuation.definition.string.begin.ned"
+        },
+        {
+          "begin": "'",
+          "end": "'",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.ned" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.ned" }
+          },
+          "patterns": [{ "include": "#script" }]
+        },
+        {
+          "match": "(?<=\\s)(-[a-zA-Z]|--[a-z-]+)\\b",
+          "name": "variable.parameter.ned"
+        },
+        {
+          "match": "\\b(help|daemon|history|undo)\\b",
+          "name": "keyword.other.ned"
+        }
+      ]
+    },
+    "script": {
+      "patterns": [
+        { "include": "#heredoc" },
+        { "include": "#comment" },
+        { "include": "#string" },
+        { "include": "#pattern" },
+        { "include": "#query" },
+        { "include": "#regex" },
+        { "include": "#verb" },
+        { "include": "#selector" },
+        { "include": "#keyword" },
+        { "include": "#number" },
+        { "include": "#operator" }
+      ]
+    },
+    "heredoc": {
+      "begin": "(<<)('?)([A-Za-z_][A-Za-z0-9_]*)\\2",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.ned" }
+      },
+      "end": "^\\s*(\\3)\\s*$",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.string.end.ned" }
+      },
+      "contentName": "string.unquoted.heredoc.ned"
+    },
+    "comment": {
+      "match": "(?:^|(?<=\\s))#.*$",
+      "name": "comment.line.number-sign.ned"
+    },
+    "string": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.ned",
+      "patterns": [
+        { "match": "\\\\[nt\"\\\\]", "name": "constant.character.escape.ned" }
+      ]
+    },
+    "pattern": {
+      "begin": "(`+)",
+      "end": "\\1",
+      "name": "string.interpolated.pattern.ned",
+      "patterns": [
+        { "match": "@@", "name": "constant.character.escape.ned" },
+        {
+          "match": "@[A-Za-z_][A-Za-z0-9_]*(\\.\\.\\.)?",
+          "name": "variable.other.placeholder.ned"
+        }
+      ]
+    },
+    "query": {
+      "begin": "query\\{",
+      "end": "(?<!\\\\)\\}",
+      "name": "string.regexp.query.ned"
+    },
+    "regex": {
+      "match": "(?<=^|[\\s>(.]|~=)/(?:\\\\.|[^/\\\\\\n])+/[is]*",
+      "name": "string.regexp.ned"
+    },
+    "verb": {
+      "match": "(?<![\\w./:-])(show|outline|replace|insert|delete|sub|move|create|file|check|allow|rename|resolve)\\b(?!:)",
+      "name": "keyword.control.ned"
+    },
+    "selector": {
+      "patterns": [
+        {
+          "match": "\\b(fn|class|struct|enum|variant|trait|interface|impl|type|const|var|field|mod|import|section|item|table|code|conflict|file)\\b(?:(:)([A-Za-z0-9_:*./-]+))?",
+          "captures": {
+            "1": { "name": "entity.name.type.kind.ned" },
+            "2": { "name": "punctuation.separator.ned" },
+            "3": { "name": "entity.name.function.ned" }
+          }
+        },
+        {
+          "match": "\\.(body|sig|params|name|doc|attrs|ret|type|value|whole|lines|refs|def|ours|theirs|base|len|text)\\b",
+          "name": "support.function.part.ned"
+        }
+      ]
+    },
+    "keyword": {
+      "match": "\\b(all|with|to|before|after|start|end|ours|theirs|base|both|errors|warnings|error|warning|info|hint)\\b",
+      "name": "keyword.other.ned"
+    },
+    "number": {
+      "match": "\\+\\d+|\\b\\d+(?:-(?:\\d+\\b|\\$))?|\\$",
+      "name": "constant.numeric.ned"
+    },
+    "operator": {
+      "match": "\\.\\.|==|!=|~=|<=|>=|&&|\\|\\||[>|;<\\[\\]]",
+      "name": "keyword.operator.ned"
+    }
+  }
+}
