@@ -605,9 +605,11 @@ element.
 delete [all] SEL
 ```
 
-Removes each span. Deleting whole lines also tidies up blank lines: ned removes
-one blank line if the deletion leaves two in a row, a blank line just inside an
-opening or closing bracket, or a blank line at the start or end of the file.
+Removes each span. Deleting whole lines also tidies up the blank lines next to
+them, so the file keeps its spacing: between two other lines, ned leaves only as
+many as the larger of the gaps above and below the deleted lines; just inside an
+opening or closing bracket, only those that were already next to it; and at the
+start or end of the file, none.
 
 ### sub
 
@@ -633,7 +635,9 @@ Deletes each span and inserts its text at `DEST`, which must match exactly one
 span and may be in a different file of the set. The moved text is re-indented to
 fit its new place. As with `insert`, `start` and `end` on an item mean its body.
 With `all`, the spans arrive in their original order. When a moved item had a
-blank line next to it, ned puts one between it and its new neighbour.
+blank line next to it, ned separates it from its new neighbour with as many
+blank lines as the destination already has next to it, or else as the item had
+where it came from.
 
 ### create
 

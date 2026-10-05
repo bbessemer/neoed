@@ -202,6 +202,8 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       and the only sign is a `note: rustfmt failed: expected ;`. A formatter's
       parse error on an edit the guard passed should at least be an error-level
       message naming the edit
+- [x] Moving the first top-level Python function (`move fn:f after fn:g`, `f`
+      first in the file) leaves a blank line at the top of the file
 - [x] A Rust `use` split over several lines is named after its first line only
       (`use c::{\n    d,\n};` is `import:"c::{"`); name it by the whole path
       with its whitespace collapsed (`import:"c::{d}"`; form to decide)

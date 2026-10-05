@@ -1018,26 +1018,30 @@ impl Executor<'_> {
         for from in self.resolve(target, false)? {
             let source = &self.files[from.file].file;
             let removal = removal(source, from.range.clone());
-            let (mut moved, separated) = moved_text(source, &from.range);
+            let (mut moved, separation) = moved_text(source, &from.range);
             let target = &self.files[to.file].file;
             let at = heredoc_lines(target, &dest, position, &moved, to.range.clone());
             // Doc comments and attributes attach to the item they move before.
             let attaches =
                 matches!(position, Position::Before) && only_leading(target, &moved.value);
-            let blank_line = match position {
-                Position::Before | Position::After => {
-                    separated && !attaches && text::is_whole_line(&target.text, &at)
+            let blank_lines = match position {
+                Position::Before | Position::After
+                    if separation > 0 && !attaches && text::is_whole_line(&target.text, &at) =>
+                {
+                    destination_gap(target, &at, position).unwrap_or(separation)
                 }
-                Position::Start | Position::End => {
-                    matches!(moved.kind, TextKind::Heredoc)
-                        && body_edge_separated(target, &to.range, position)
+                Position::Start | Position::End
+                    if matches!(moved.kind, TextKind::Heredoc)
+                        && body_edge_separated(target, &to.range, position) =>
+                {
+                    1
                 }
+                _ => 0,
             };
-            if blank_line {
-                match position {
-                    Position::Before | Position::Start => moved.value.push('\n'),
-                    Position::After | Position::End => moved.value.insert(0, '\n'),
-                }
+            let blank_lines = "\n".repeat(blank_lines);
+            match position {
+                Position::Before | Position::Start => moved.value.push_str(&blank_lines),
+                Position::After | Position::End => moved.value.insert_str(0, &blank_lines),
             }
             let moved = with_trailing_comma(target, &at, &moved);
             let (range, new) = insert(target, at, position, &moved, &dest.selector);
@@ -2224,10 +2228,22 @@ fn item_lines_at(f: &SourceFile, start: usize) -> Option<Range<usize>> {
         .max_by_key(|full| full.end)
 }
 
+/// The blank lines between the whole-line destination `at` and its neighbour
+/// on the side `position` names, else on its other side, if it has one (§4.2).
+fn destination_gap(f: &SourceFile, at: &Range<usize>, position: Position) -> Option<usize> {
+    let (above, below) = text::neighbour_gaps(&f.text, text::full_lines(&f.text, at.clone()));
+    let (near, far) = match position {
+        Position::Before => (above, below),
+        _ => (below, above),
+    };
+    near.or(far)
+}
+
 /// The text `move` carries from `range`: its full lines, to be re-based, if
-/// it's whole-line, else the span verbatim. The flag says whether a blank line
-/// was directly above or below those full lines.
-fn moved_text(f: &SourceFile, range: &Range<usize>) -> (Text, bool) {
+/// it's whole-line, else the span verbatim. The count is the blank lines that
+/// separated those full lines from their neighbours (the larger gap), at least
+/// one if a blank line was directly above or below them, else zero.
+fn moved_text(f: &SourceFile, range: &Range<usize>) -> (Text, usize) {
     let t = &f.text;
     if !text::is_whole_line(t, range) {
         let value = t[range.clone()].replace("\r\n", "\n");
@@ -2236,7 +2252,7 @@ fn moved_text(f: &SourceFile, range: &Range<usize>) -> (Text, bool) {
                 value,
                 kind: TextKind::Str,
             },
-            false,
+            0,
         );
     }
     let full = text::full_lines(t, range.clone());
@@ -2249,7 +2265,13 @@ fn moved_text(f: &SourceFile, range: &Range<usize>) -> (Text, bool) {
         value,
         kind: TextKind::Heredoc,
     };
-    (text, text::blank_separated(t, full))
+    let separation = if text::blank_separated(t, full.clone()) {
+        let (above, below) = text::neighbour_gaps(t, full);
+        above.max(below).unwrap_or(0).max(1)
+    } else {
+        0
+    };
+    (text, separation)
 }
 
 /// `range`, widened to its whole lines if it's partial and heredoc `new` is
@@ -3549,6 +3571,48 @@ mod tests {
         );
     }
 
+    const PY_FNS: &str = "def f():\n    pass\n\n\ndef g():\n    pass\n\n\ndef h():\n    pass\n";
+
+    /// The top-level functions of a Python file, in `order`, two blank lines
+    /// apart.
+    fn py_fns(order: &str) -> String {
+        order
+            .chars()
+            .map(|c| format!("def {c}():\n    pass\n"))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    #[test]
+    fn python_delete_keeps_two_blank_lines() {
+        let delete = |f| edited_in("a.py", PY_FNS, &format!("delete fn:{f}"));
+        assert_eq!(delete("f"), py_fns("gh"));
+        assert_eq!(delete("g"), py_fns("fh"));
+        assert_eq!(delete("h"), py_fns("fg"));
+    }
+
+    #[test]
+    fn python_move_keeps_two_blank_lines() {
+        let moved = |script: &str| edited_in("a.py", PY_FNS, script);
+        assert_eq!(
+            edited_in("a.py", &py_fns("fg"), "move fn:f after fn:g"),
+            py_fns("gf")
+        );
+        assert_eq!(moved("move fn:f after fn:h"), py_fns("ghf"));
+        assert_eq!(moved("move fn:f after fn:g"), py_fns("gfh"));
+        assert_eq!(moved("move fn:h before fn:f"), py_fns("hfg"));
+        assert_eq!(moved("move fn:h before fn:g"), py_fns("fhg"));
+    }
+
+    #[test]
+    fn python_move_into_a_class_takes_its_spacing() {
+        let text = "class A:\n    def a(self):\n        pass\n\n    def b(self):\n        pass\n\n\ndef f():\n    pass\n";
+        assert_eq!(
+            edited_in("a.py", text, "move fn:f after fn:b"),
+            "class A:\n    def a(self):\n        pass\n\n    def b(self):\n        pass\n\n    def f():\n        pass\n"
+        );
+    }
+
     #[test]
     fn python_outline() {
         let files = [("a.py", APP_PY)];
@@ -4481,6 +4545,29 @@ fn main() {}
             edited(MOVE, "move fn:helper_y before fn:helper_x"),
             MOVE.replace("fn helper_y() {}\n\n", "")
                 .replace("fn helper_x", "fn helper_y() {}\n\nfn helper_x")
+        );
+    }
+
+    #[test]
+    fn move_keeps_two_blank_lines_in_rust() {
+        let text = "fn a() {}\n\n\nfn b() {}\n\n\nfn c() {}\n";
+        assert_eq!(
+            edited(text, "move fn:a after fn:c"),
+            "fn b() {}\n\n\nfn c() {}\n\n\nfn a() {}\n"
+        );
+        assert_eq!(edited(text, "delete fn:b"), "fn a() {}\n\n\nfn c() {}\n");
+    }
+
+    #[test]
+    fn move_into_a_packed_body_adds_no_blank_line() {
+        let text = "fn c() {}\n\n\nmod m {\n    fn a() {}\n    fn b() {}\n}\n";
+        assert_eq!(
+            edited(text, "move fn:c after fn:b"),
+            "mod m {\n    fn a() {}\n    fn b() {}\n    fn c() {}\n}\n"
+        );
+        assert_eq!(
+            edited(text, "move fn:c before fn:a"),
+            "mod m {\n    fn c() {}\n    fn a() {}\n    fn b() {}\n}\n"
         );
     }
 

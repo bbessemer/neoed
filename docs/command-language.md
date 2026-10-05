@@ -1297,11 +1297,17 @@ Notes:
   variant) and the moved text doesn't, one is appended, as for `replace`. A
   destination inside a moved span is an error.
 - If a moved whole-line span had a blank line directly above or below it, and it
-  moves `before` or `after` a whole-line destination, one blank line separates
-  it from the destination. A whole-line span moved to the `start` (`end`) of a
-  body whose first (last) item has a blank line between it and the next
-  (previous) item is separated from that item by one blank line, whether or not
-  the span had one.
+  moves `before` or `after` a whole-line destination, blank lines separate it
+  from the destination: as many as the destination already has between it and
+  its neighbour on that side, else on its other side, else as many as the span
+  had between it and its neighbours (the larger count). A neighbour is the
+  nearest non-blank line, if it is indented at least as deeply as the item and
+  isn't an opening (above) or closing (below) delimiter line. So a function
+  moved after the last method of a Python class gets the one blank line the
+  methods have, not the two before the next top-level function. A whole-line
+  span moved to the `start` (`end`) of a body whose first (last) item has a
+  blank line between it and the next (previous) item is separated from that item
+  by one blank line, whether or not the span had one.
 - `insert before|after` on a syntax item other than an import or a Markdown list
   item, when the item has a blank line directly above or below it, separates the
   new text from it with one blank line, unless the text already starts (for
@@ -1328,11 +1334,14 @@ Notes:
     starts with what precedes the span on its first line, ignoring whitespace
     and line breaks (`TEXT` may re-wrap them). On a single-line span, the note
     suggests selecting its line with `.lines`.
-- **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
-  lines in a row, a blank line right after an opening delimiter (or a line
-  ending in `:`, as in Python) or right before a closing one, or a blank line at
-  the start or end of the file, one blank line is removed. Merged deletions
-  (§2.3) are tidied as one span.
+- **Blank-line tidy.** Deleting a whole-line span (§5.1) also removes blank
+  lines beside it. Between two remaining lines, as many blank lines remain as
+  the larger of the two gaps around the span, so a file's own spacing survives
+  and the gaps don't add up. Right after an opening delimiter (or a line ending
+  in `:`, as in Python), only the blank lines that were above the span remain;
+  right before a closing one, only those below it, and the fewer if both. At the
+  start or end of the file, the whole run of blank lines beside the span goes.
+  Merged deletions (§2.3) are tidied as one span.
 - Text that `replace`, `insert` or `move` puts into an empty `.body` is always
   line-oriented, re-based to the enclosing item's indentation plus one indent
   unit (§5.2). An empty single-line body such as `fn f() {}` is opened onto
