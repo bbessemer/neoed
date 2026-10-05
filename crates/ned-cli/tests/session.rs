@@ -527,6 +527,23 @@ fn a_repeat_corrects_a_failed_script_on_its_files() {
 }
 
 #[test]
+fn a_repeat_passes_over_reads_since_the_failed_script() {
+    let ws = Workspace::new(&[("a.rs", "fn parse() {}\n")]);
+    let script = r#"replace fn:prase with "fn parse2() {}""#;
+    ws.ned_with(Some("agent"), &["a.rs", "-e", script]);
+    let output = ws.ned_with(Some("agent"), &["a.rs", "-e", "outline"]);
+    assert!(output.status.success());
+    let output = ws.ned_with(Some("agent"), &["-e", "!!:s/prase/parse/"]);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(
+        stderr,
+        "note: repeating 1: replace fn:parse with \"fn parse2() {}\"\n"
+    );
+    assert_eq!(ws.read("a.rs"), "fn parse2() {}\n");
+}
+
+#[test]
 fn files_given_to_a_repeat_replace_the_recorded_ones() {
     let ws = Workspace::new(&[("a.rs", "fn a() {}\n"), ("b.rs", "fn a() {}\n")]);
     ws.ned_with(

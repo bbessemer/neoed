@@ -27,8 +27,9 @@ a later change overlaps the entry's.
 its last commit); nothing else goes in, hooks don't run, and an edit
 overlapping uncommitted changes is refused.
 
-A script that is `!!` repeats the last script, on its files or -w workspace
-unless others are given, but not its flags: after a dry run it needs -n.
+`!!` repeats the last script that edited or failed, on its files or -w
+workspace unless others are given, but not its flags: after a dry run it
+needs -n.
 `:s/OLD/NEW/` corrects the first OLD in it and `:gs/OLD/NEW/` every one:
 
   ned -e '!!:s/fn:prase/fn:parse/'

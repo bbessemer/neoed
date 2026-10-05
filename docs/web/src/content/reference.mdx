@@ -919,11 +919,12 @@ text of every file it changed. Session names use letters, digits, `.`, `_` and
   and prints the diff. Repeat it to go further back. If a file has changed since
   the edit, `undo` refuses, and `--force` merges the reversal into the current
   text instead. A file the edit created is removed.
-- **`!!`** as a script repeats the session's last script. `:s/OLD/NEW/` after it
-  replaces the first `OLD` with `NEW`, and `:gs/OLD/NEW/` replaces every one, so
-  `ned -e '!!:s/prase/parse/'` reruns a command with a typo fixed. The repeat
-  runs on the same files, but without the original options. Repeating a dry run
-  without `-n` is an error, so that nothing is written by accident.
+- **`!!`** as a script repeats the session's last script that edited or failed,
+  skipping any successful `show`, `outline` or `check` since. `:s/OLD/NEW/`
+  after it replaces the first `OLD` with `NEW`, and `:gs/OLD/NEW/` replaces
+  every one, so `ned -e '!!:s/prase/parse/'` reruns a command with a typo fixed.
+  The repeat runs on the same files, but without the original options. Repeating
+  a dry run without `-n` is an error, so that nothing is written by accident.
 - **`ned session list`** names the workspace's sessions; with `--all`, every
   workspace that has sessions, by path, with its sessions beneath it.
 - **`ned session delete NAME...`** deletes the named sessions of the workspace,

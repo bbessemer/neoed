@@ -152,7 +152,7 @@ of either kind.
 - [ ] A part or filter picks the Nth line of a multi-line match, since `.lines`
       splits a match into every line and there is no `.lines.first` (syntax to
       decide). A minor
-- [ ] `!!` repeats the last script that edited or failed, not a read-only call
+- [x] `!!` repeats the last script that edited or failed, not a read-only call
       in between: after a failed edit, an `outline` to look around makes `!!`
       refer to the `outline`. A minor, since §1.2 changes
 - [x] A range whose start also matches inside it (skipped, §3.7) prints a note

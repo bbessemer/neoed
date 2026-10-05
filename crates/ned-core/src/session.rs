@@ -208,8 +208,9 @@ pub fn is_repeat(src: &str) -> bool {
     src.trim_start().starts_with("!!")
 }
 
-/// If `src` is a `!!` script, the last script entry of `entries` and its
-/// script with the modifiers applied (spec §1.2); `None` for another script.
+/// If `src` is a `!!` script, the last script entry of `entries` that edits or
+/// failed (else the last script entry) and its script with the modifiers
+/// applied (spec §1.2); `None` for another script.
 /// Repeating a dry run is an error unless `dry_run`, as flags aren't repeated.
 pub fn repeat<'a>(
     src: &str,
@@ -217,7 +218,11 @@ pub fn repeat<'a>(
     dry_run: bool,
 ) -> Option<Result<(&'a Entry, String), RepeatError>> {
     let mut rest = src.trim().strip_prefix("!!")?;
-    let Some(entry) = entries.iter().rev().find(|entry| entry.script.is_some()) else {
+    let scripts = || entries.iter().rev().filter(|entry| entry.script.is_some());
+    let Some(entry) = scripts()
+        .find(|entry| edits_or_failed(entry))
+        .or_else(|| scripts().next())
+    else {
         return Some(Err(RepeatError::NoScript));
     };
     if entry.dry_run && !dry_run {
@@ -256,6 +261,26 @@ pub fn repeat<'a>(
         rest = after;
     }
     Some(Ok((entry, script)))
+}
+
+/// Whether `entry`'s script failed or has a command that isn't a read, so `!!`
+/// doesn't pass over it; a script that no longer parses counts as an edit.
+fn edits_or_failed(entry: &Entry) -> bool {
+    use crate::script::ast::CommandKind;
+    let reads = |script: crate::script::Script| {
+        script.commands.iter().all(|command| {
+            matches!(
+                command.kind,
+                CommandKind::Show { .. }
+                    | CommandKind::Outline(_)
+                    | CommandKind::Check { .. }
+                    | CommandKind::File(_)
+                    | CommandKind::Allow(_)
+            )
+        })
+    };
+    let script = entry.script.as_deref().unwrap_or_default();
+    entry.exit != 0 || entry.error.is_some() || !crate::script::parse(script).is_ok_and(reads)
 }
 
 /// Reads a `!!` modifier's field up to `delimiter`, which `\` makes literal:
@@ -1753,6 +1778,36 @@ mod tests {
         let (entry, script) = repeat("!!", &entries, false).unwrap().unwrap();
         assert_eq!((entry.id, script.as_str()), (2, "delete fn:prase"));
         assert_eq!(expanded("  !!\n", "show 2"), "show 2");
+    }
+
+    #[test]
+    fn repeat_passes_over_reads_that_succeeded() {
+        let last = |entries: &[Entry]| repeat("!!", entries, false).unwrap().unwrap().0.id;
+        let failed_edit = || recorded(1, Some("delete fn:prase"), 1, 0);
+        let reads = |id| {
+            recorded(
+                id,
+                Some("file b.rs; outline; show 1..2; check; allow errors"),
+                0,
+                0,
+            )
+        };
+        assert_eq!(last(&[failed_edit(), reads(2), reads(3)]), 1);
+        assert_eq!(
+            last(&[recorded(1, Some("delete fn:parse"), 0, 1), reads(2)]),
+            1
+        );
+        assert_eq!(last(&[reads(1), reads(2)]), 2);
+
+        let mut errored = reads(2);
+        errored.error = Some("bad".into());
+        assert_eq!(last(&[failed_edit(), errored, reads(3)]), 2);
+        let failed_read = recorded(2, Some("show fn:prase"), 1, 0);
+        assert_eq!(last(&[failed_edit(), failed_read]), 2);
+        let unparsed = recorded(2, Some("show \"open"), 0, 0);
+        assert_eq!(last(&[failed_edit(), unparsed]), 2);
+        let mixed = recorded(2, Some("show 1; sub /a/ with \"b\""), 0, 0);
+        assert_eq!(last(&[reads(1), mixed, reads(3)]), 2);
     }
 
     #[test]

@@ -212,8 +212,11 @@ overlaps one of the entry's is an error naming its line, and nothing is written.
 A file removed since can't be undone, even with `--force`. A created file that
 the merge leaves empty is removed.
 
-A script that is `!!` repeats the session's last script (a recorded `!!` is
-recorded as the script it expanded to). Modifiers after it correct the repeat,
+A script that is `!!` repeats the session's last script that edits or failed: a
+script of only `show`, `outline` and `check` commands (with `file` and `allow`)
+that succeeded is passed over, so looking around after a failed edit leaves `!!`
+on the edit. With no such script, `!!` repeats the last script. A recorded `!!`
+is recorded as the script it expanded to. Modifiers after it correct the repeat,
 applied in order:
 
 - `:s/OLD/NEW/` replaces the first occurrence of `OLD` with `NEW`, both literal
