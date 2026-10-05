@@ -157,6 +157,9 @@ of either kind.
 - [x] A literal under a `kind>` step that spans two items of the kind
       (`import>"use a;\nuse b;"`) suggests a line range, `A..B` or dropping the
       step, instead of only "matches nothing"
+- [x] A regex glued to a step without `>` (`impl:X>fn:y/z/`) suggests splitting
+      it into two commands (`show impl:X>fn:y; show /z/`); it should suggest the
+      nested step, `impl:X>fn:y>/z/`
 - [x] A sed-style line range (`sub 1,2 /a/ with "b"`, `show 10,20`) suggests
       `1-2`, not quoting literal text
 

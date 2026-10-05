@@ -1419,11 +1419,13 @@ The fix each error suggests:
   `show SEL +M` for `+N..+M`, and `show SEL +N` for `-N` (or the line range
   `show N-M`, after a line number); `all` before the selector, not after it,
   e.g. `show all /re/`; `;` or a new line between commands for a second
-  selector, e.g. `show fn:a; show fn:b`; the rest of the command on a heredoc
-  selector's line, before its body, e.g. `replace <<END with TEXT`;
-  `sub /re/ with TEXT` for sed's `sub /re/text/`; the line range `N-M` for sed's
-  `N,M`; otherwise the command's usage, e.g.
-  `usage: replace [all] SEL with TEXT`
+  selector, e.g. `show fn:a; show fn:b`; `>` before a regex, literal or pattern
+  glued to a selector in any command, e.g. `show fn:a>/re/` for `show fn:a/re/`
+  (but not before `insert`'s text or `sub`'s regex, which may follow the
+  selector directly); the rest of the command on a heredoc selector's line,
+  before its body, e.g. `replace <<END with TEXT`; `sub /re/ with TEXT` for
+  sed's `sub /re/text/`; the line range `N-M` for sed's `N,M`; otherwise the
+  command's usage, e.g. `usage: replace [all] SEL with TEXT`
 - `check`, `rename`, `.refs` or `.def` after a `|`: Running it before the first
   `|`, or in a separate `ned` call
 - `all` in `sub` (`sub all /re/ with TEXT`, or after its regex or TEXT):
