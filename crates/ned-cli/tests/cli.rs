@@ -74,6 +74,7 @@ fn ned_with(dir: &Path, config: &str, env: &[(&str, &str)], args: &[&str], stdin
         .env_remove("NED_SESSION")
         .env_remove("COLORTERM")
         .env_remove("TERM")
+        .env_remove("NED_THEME")
         .envs(env.iter().copied())
         .args(args)
         .write_stdin(stdin)
@@ -245,6 +246,14 @@ fn ned_theme_sets_a_theme_without_a_config_file() {
 }
 
 #[test]
+fn without_a_theme_set_a_deep_terminal_gets_default_dark() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let args = ["--color", "always", "parser.rs", "-e", "show fn:new"];
+    let out = ned_with(dir.path(), NO_FORMATTERS, TRUECOLOR, &args, "").replace('\x1b', r"\e");
+    assert!(out.contains(r"\e[38;2;198;120;221mpub\e[0m"), "{out}");
+}
+
+#[test]
 fn a_theme_tints_changed_lines() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
     let script = r#"replace "unexpected end" with "unexpected end of input""#;
@@ -411,6 +420,9 @@ fn color_always_overrides_no_color_set_or_empty() {
         let output = cargo_bin_cmd!("ned")
             .current_dir(dir.path())
             .env("NO_COLOR", no_color)
+            .env_remove("COLORTERM")
+            .env_remove("TERM")
+            .env_remove("NED_THEME")
             .args(["--color", "always", "parser.rs", "-e", "show 1"])
             .output()
             .unwrap();

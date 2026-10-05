@@ -1612,16 +1612,16 @@ A theme gives a colour to each highlight capture and output role. It applies
 only on a terminal that reports more than 16 colours: truecolor when `COLORTERM`
 is `truecolor` or `24bit`, else 256 colours when `TERM` contains `256color`,
 where each colour becomes the nearest of the xterm-256 palette's cube and grey
-ramp (by OKLab distance). On other terminals, and with no theme set, output uses
-the 16 colours above. A theme never sets the background. It is read only when
-stdout is coloured, so an error in it stops no run whose output a program reads;
-when stdout isn't coloured, stderr uses the 16 colours.
+ramp (by OKLab distance). On other terminals, output uses the 16 colours above.
+A theme never sets the background. It is read only when stdout is coloured, so
+an error in it stops no run whose output a program reads; when stdout isn't
+coloured, stderr uses the 16 colours.
 
 Only the user config sets a theme; `[theme]` or `theme` in a `.ned.toml` is an
 error. `theme = "NAME"` uses a theme as it is; a `[theme]` table writes one, or
 changes one named by `from`. A non-empty `NED_THEME` environment variable names
 a theme as `theme = "NAME"` does, instead of the user config's, with a path
-relative to the working directory:
+relative to the working directory. With neither, the theme is `default-dark`:
 
 ```toml
 [theme]
@@ -1657,7 +1657,7 @@ line-number = "dim"
   later; a capture that isn't coloured never wins.
 - `[theme.ui]` keys are `header`, `line-number`, `kind`, `dim`, `hunk-header`,
   `error`, `warning`, `info` and `note`. One the theme leaves out looks as it
-  does with no theme.
+  does on a 16-colour terminal.
 - An unknown key or bad value is an error at its location, as in §6.4.
 
 In a hunk, a removed or added line's sign and the text between its highlighted

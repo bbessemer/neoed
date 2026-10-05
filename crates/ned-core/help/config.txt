@@ -21,9 +21,9 @@ default. [lsp] timeout = SECS (default 30) bounds each wait for a server.
 default level (warning); [check] block = LEVEL (default error) or false sets
 which introduced diagnostics reject an edit. An [lsp] server can be false.
 
-Themes colour output on 256-colour and truecolor terminals. Only the user
-config sets one: theme = "default-dark" (or default-light, a name under
-~/.config/ned/themes/, or a .toml path), or a table that changes one;
+Themes colour output on 256-colour and truecolor terminals. The user config
+sets one (default "default-dark"): theme = "default-light" (or a name
+under ~/.config/ned/themes/, or a .toml path), or a table that changes one;
 NED_THEME=NAME overrides it:
 
   [theme]

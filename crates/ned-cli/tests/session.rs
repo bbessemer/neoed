@@ -52,6 +52,9 @@ impl Workspace {
             .env("XDG_CONFIG_HOME", self.config.path())
             .env("XDG_RUNTIME_DIR", self.runtime.path())
             .env_remove("NED_SESSION")
+            // The terminal running the tests mustn't pick the colours.
+            .env_remove("COLORTERM")
+            .env_remove("TERM")
             .write_stdin("");
         if let Some(session) = session {
             cmd.env("NED_SESSION", session);

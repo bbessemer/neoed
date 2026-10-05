@@ -177,18 +177,18 @@ fn color_arg(args: impl Iterator<Item = OsString>) -> When {
     when
 }
 
-/// `styles`, of stdout and stderr, with the theme `read` gives, if any, when
-/// stdout colours on a terminal of `depth`. Only then is the theme read, so a
-/// bad one stops no run whose output a program reads (spec §6.6).
+/// `styles`, of stdout and stderr, with the theme `read` gives when stdout
+/// colours on a terminal of `depth`. Only then is the theme read, so a bad one
+/// stops no run whose output a program reads (spec §6.6).
 fn themed<E>(
     styles: (Style, Style),
     depth: Option<Depth>,
-    read: impl FnOnce() -> Result<Option<&'static Theme>, E>,
+    read: impl FnOnce() -> Result<&'static Theme, E>,
 ) -> Result<(Style, Style), E> {
     if depth.is_none() || styles.0 != Style::Color {
         return Ok(styles);
     }
-    let theme = read()?;
+    let theme = Some(read()?);
     Ok((styles.0.themed(theme, depth), styles.1.themed(theme, depth)))
 }
 
@@ -227,7 +227,7 @@ fn main() -> ExitCode {
             config::user_config().as_deref(),
             env.as_deref().and_then(OsStr::to_str),
         )?;
-        Ok::<_, config::ConfigError>(theme.map(|theme| &*Box::leak(Box::new(theme))))
+        Ok::<_, config::ConfigError>(&*Box::leak(Box::new(theme)))
     };
     match themed(styles, depth, read) {
         Ok(styles) => {
@@ -385,17 +385,16 @@ mod tests {
     use super::*;
 
     fn default() -> &'static Theme {
-        let theme = config::user_theme(None, Some("default-dark"))
-            .unwrap()
-            .unwrap();
-        Box::leak(Box::new(theme))
+        Box::leak(Box::new(
+            config::user_theme(None, Some("default-dark")).unwrap(),
+        ))
     }
 
     #[test]
     fn a_coloured_stdout_reads_the_theme_for_both_streams() {
         let theme = default();
         let styles = themed((Style::Color, Style::Color), Some(Depth::Xterm256), || {
-            Ok::<_, ()>(Some(theme))
+            Ok::<_, ()>(theme)
         });
         let painted = Style::Theme(theme, Depth::Xterm256);
         assert_eq!(styles, Ok((painted, painted)));
@@ -403,7 +402,7 @@ mod tests {
 
     #[test]
     fn only_a_coloured_stdout_reads_the_theme() {
-        let unread = || -> Result<Option<&'static Theme>, &str> { Err("read") };
+        let unread = || -> Result<&'static Theme, &str> { Err("read") };
         let depth = Some(Depth::Truecolor);
         for styles in [(Style::Plain, Style::Color), (Style::Plain, Style::Plain)] {
             assert_eq!(themed(styles, depth, unread), Ok(styles));

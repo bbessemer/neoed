@@ -155,6 +155,13 @@ pub(crate) fn resolve(
     })
 }
 
+/// The theme when none is set: `default-dark`.
+pub(crate) fn default() -> Theme {
+    let setting = Spanned::new(0..0, Setting::Name("default-dark".into()));
+    resolve(setting, Path::new("default-dark"), "", Path::new(""))
+        .expect("the built-in themes are valid")
+}
+
 /// A theme as far as one file and those its `from` names give it.
 #[derive(Default)]
 struct Partial {

@@ -192,33 +192,40 @@ pub fn user_config() -> Option<PathBuf> {
 }
 
 /// The theme `NED_THEME`, as `env`, names when not empty, else the one the
-/// user config at `path` sets, if any (spec §6.6).
-pub fn user_theme(path: Option<&Path>, env: Option<&str>) -> Result<Option<Theme>, ConfigError> {
+/// user config at `path` sets, else `default-dark` (spec §6.6).
+pub fn user_theme(path: Option<&Path>, env: Option<&str>) -> Result<Theme, ConfigError> {
     let themes = path
         .and_then(Path::parent)
         .map(|dir| dir.join("themes"))
         .unwrap_or_default();
-    if let Some(name) = env.filter(|name| !name.is_empty()) {
-        let at = env::current_dir().unwrap_or_default().join("NED_THEME");
-        let setting = Spanned::new(0..0, Setting::Name(name.into()));
-        return theme::resolve(setting, &at, "", &themes).map(Some);
-    }
-    let Some(path) = path else { return Ok(None) };
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(io_error(path, &err)),
+    let (path, text, setting) = match env.filter(|name| !name.is_empty()) {
+        Some(name) => {
+            let at = env::current_dir().unwrap_or_default().join("NED_THEME");
+            let setting = Spanned::new(0..0, Setting::Name(name.into()));
+            (at, String::new(), setting)
+        }
+        None => {
+            let Some(path) = path else {
+                return Ok(theme::default());
+            };
+            let text = match fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(theme::default()),
+                Err(err) => return Err(io_error(path, &err)),
+            };
+            #[derive(Deserialize)]
+            struct UserTheme {
+                theme: Option<Spanned<Setting>>,
+            }
+            let raw: UserTheme = toml::from_str(&text)
+                .map_err(|err| error_at(path, &text, err.span(), err.message().trim().into()))?;
+            match raw.theme {
+                Some(setting) => (path.to_path_buf(), text, setting),
+                None => return Ok(theme::default()),
+            }
+        }
     };
-    #[derive(Deserialize)]
-    struct UserTheme {
-        theme: Option<Spanned<Setting>>,
-    }
-    let raw: UserTheme = toml::from_str(&text)
-        .map_err(|err| error_at(path, &text, err.span(), err.message().trim().into()))?;
-    let Some(setting) = raw.theme else {
-        return Ok(None);
-    };
-    theme::resolve(setting, path, &text, &themes).map(Some)
+    theme::resolve(setting, &path, &text, &themes)
 }
 
 /// The config file at `path`, the user config if `user`, or `None` if there
@@ -554,7 +561,7 @@ pub(crate) mod tests {
         )]);
         let path = root.path().join("config.toml");
         assert!(Config::new(Some(&path)).is_ok());
-        assert!(!user_theme(Some(&path), None).unwrap().unwrap().dark);
+        assert!(!user_theme(Some(&path), None).unwrap().dark);
     }
 
     #[test]
@@ -568,17 +575,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn no_user_theme_without_a_setting_or_a_file() {
+    fn the_theme_is_default_dark_without_a_setting_or_a_file() {
         let root = tree(&[("config.toml", "[daemon]\nidle_timeout = 5\n")]);
-        assert_eq!(
-            user_theme(Some(&root.path().join("config.toml")), None),
-            Ok(None)
-        );
-        assert_eq!(
-            user_theme(Some(&root.path().join("gone.toml")), None),
-            Ok(None)
-        );
-        assert_eq!(user_theme(None, None), Ok(None));
+        let default = user_theme(None, Some("default-dark")).unwrap();
+        let config = root.path().join("config.toml");
+        assert_eq!(user_theme(Some(&config), None), Ok(default.clone()));
+        let gone = root.path().join("gone.toml");
+        assert_eq!(user_theme(Some(&gone), None), Ok(default.clone()));
+        assert_eq!(user_theme(None, None), Ok(default.clone()));
+        assert_eq!(user_theme(None, Some("")), Ok(default));
     }
 
     #[test]
@@ -600,15 +605,13 @@ pub(crate) mod tests {
                 "from = \"default-dark\"\nadded = \"#000001\"\n",
             ),
         ]);
-        let theme = user_theme(Some(&root.path().join("config.toml")), None)
-            .unwrap()
-            .unwrap();
+        let theme = user_theme(Some(&root.path().join("config.toml")), None).unwrap();
         assert_eq!(theme.added, "#000001".parse().unwrap());
     }
 
     #[test]
     fn ned_theme_needs_no_user_config() {
-        let theme = user_theme(None, Some("default-light")).unwrap().unwrap();
+        let theme = user_theme(None, Some("default-light")).unwrap();
         assert!(!theme.dark);
     }
 
@@ -616,13 +619,10 @@ pub(crate) mod tests {
     fn ned_theme_wins_over_the_user_config() {
         let root = tree(&[("config.toml", "theme = \"default-dark\"\n")]);
         let path = root.path().join("config.toml");
-        let theme = user_theme(Some(&path), Some("default-light"))
-            .unwrap()
-            .unwrap();
+        let theme = user_theme(Some(&path), Some("default-light")).unwrap();
         assert!(!theme.dark);
-        let theme = user_theme(Some(&path), Some("")).unwrap().unwrap();
+        let theme = user_theme(Some(&path), Some("")).unwrap();
         assert!(theme.dark);
-        assert_eq!(user_theme(None, Some("")), Ok(None));
     }
 
     #[test]
@@ -638,10 +638,10 @@ pub(crate) mod tests {
             ),
         ]);
         let path = root.path().join("config.toml");
-        let theme = user_theme(Some(&path), Some("mine")).unwrap().unwrap();
+        let theme = user_theme(Some(&path), Some("mine")).unwrap();
         assert_eq!(theme.added, "#000001".parse().unwrap());
         let other = root.path().join("elsewhere/t.toml");
-        let theme = user_theme(Some(&path), other.to_str()).unwrap().unwrap();
+        let theme = user_theme(Some(&path), other.to_str()).unwrap();
         assert_eq!(theme.added, "#000002".parse().unwrap());
     }
 
