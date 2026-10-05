@@ -172,6 +172,10 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       (`replace <<END` / body / `END` / `with <<END`), says "expected `with`,
       found end of line" without showing where `with` goes for a heredoc
       selector
+- [ ] A daemon socket path longer than the platform allows (a long
+      `XDG_RUNTIME_DIR`) fails as "the daemon didn't start; see its log", and
+      the log says only "path must be shorter than SUN_LEN"; the error should
+      say so, with a fix (a shorter `XDG_RUNTIME_DIR`)
 
 ## Future improvements
 

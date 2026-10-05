@@ -1,9 +1,10 @@
 # Tutorial
 
 This tutorial walks through ned from the first `outline` to merge conflicts and
-language servers. It uses a small Python project, and every command builds on
-the one before, so you can follow along in a terminal and see the same output.
-It takes about half an hour.
+language servers, using `ned repl`: an editor where each line you type is a ned
+script, and its edits stay in memory until you write them. It uses a small
+Python project, and every step builds on the one before, so you can follow along
+in a terminal and see the same output. It takes about half an hour.
 
 Python is only needed if you want to run the project's tests. Formatting and
 language servers come up later, and those steps tell you what they need.
@@ -37,10 +38,11 @@ can also list diagnostics, find references and rename symbols across a project.
 
 ## Setting up
 
-Make an empty directory and run the following command in it. It creates a Python
-package with a shopping cart and a couple of tests. It's also your first ned
-script: `create` makes a new file, and each `<<END` … `END` block is the text
-that goes in it. You'll meet both properly later on.
+Make an empty directory, run `git init` in it, and run the following command. It
+creates a Python package with a shopping cart and a couple of tests. This is
+ned's other way of running: a whole script in one command, which is how coding
+agents use it. `create` makes a new file, and each `<<END` … `END` block is the
+text that goes in it.
 
 ```ned
 $ ned <<'EOF'
@@ -107,27 +109,45 @@ END
 EOF
 ```
 
-```text
-shop/__init__.py: created, +0
-shop/pricing.py: created, +12
-shop/cart.py: created, +30
-tests/test_cart.py: created, +11
+The command has two layers of heredocs. The outer one, `<<'EOF'`, belongs to
+your shell and passes the script to ned on standard input; the quotes stop the
+shell from expanding `$` and backslashes in it. The inner `<<END` blocks belong
+to ned. Commit the files with `git add . && git commit -m "A shopping cart"`, so
+that you can commit from ned later on.
+
+## Starting the REPL
+
+Start the REPL on every file in the project:
+
+```ned
+$ ned repl -w
 ```
 
-The command has two layers of heredocs. The outer one, `<<'EOF'`, belongs to
-your shell and passes the script to ned on standard input. The quotes around
-`EOF` stop the shell from expanding `$` and backslashes in it, so always quote
-it. The inner `<<END` blocks belong to ned.
+```text
+note: recording in session repl-1
+ned›
+```
+
+`-w` sets the **file set**, the files that commands act on, to every file in the
+workspace: the enclosing git repository, skipping what `.gitignore` excludes.
+You could name files instead, as in `ned repl shop/cart.py`, and running plain
+`ned` in a terminal starts the REPL too. The note says the REPL records what you
+do in a session called `repl-1`; that comes in handy later.
+
+At the `ned›` prompt, you type scripts. Lines that start with `:` are the REPL's
+own commands: `:help` prints a summary of the language, and `:quit` leaves. Up
+and down arrows recall earlier lines, as in a shell.
 
 ## Reading code
 
-Before changing anything, look around. `outline` lists the items in a file:
+Before changing anything, look around. `outline` lists the items in each file:
 
 ```ned
-$ ned shop/cart.py -e outline
+ned› outline
 ```
 
 ```text
+shop/__init__.py
 shop/cart.py
 1 import (1)
 4-8 class:Item
@@ -137,18 +157,23 @@ shop/cart.py
   17-19 fn:add
   21-22 fn:remove
   24-30 fn:total
+shop/pricing.py
+3 const:TAX_RATE
+6-8 fn:apply_discount
+11-12 fn:with_tax
+tests/test_cart.py
+1 import (1)
+4-5 fn:test_empty_cart_costs_nothing
+8-11 fn:test_total_includes_tax
 ```
 
 Each line gives a line range and a **selector**, such as `class:Cart` or
 `fn:total`. A selector names a piece of code, and you can paste any of these
-into a command. `-e` passes a short script on the command line, which is
-convenient for one-liners. Longer scripts go on standard input, as in the setup
-step.
-
-`show` prints the lines of whatever a selector selects, with line numbers:
+into a command. `show` prints the lines of whatever a selector selects, with
+line numbers:
 
 ```ned
-$ ned shop/cart.py -e 'show fn:total'
+ned› show fn:total
 ```
 
 ```text
@@ -166,12 +191,12 @@ Add `+N` to see `N` lines of context around it, as in `show fn:remove +1`.
 
 ### Searching
 
-`show all` prints every match instead of one, which makes it a search. A
-selector in double quotes is literal text, and one between slashes is a regular
-expression:
+`show all` prints every match instead of one, which makes it a search across the
+file set. A selector in double quotes is literal text, and one between slashes
+is a regular expression:
 
 ```ned
-$ ned -w -e 'show all "self.items"'
+ned› show all "self.items"
 ```
 
 ```text
@@ -185,12 +210,6 @@ shop/cart.py:26
 26:        for item in self.items:
 ```
 
-`-w` searches every file in the workspace: the enclosing git repository, or the
-current directory if there isn't one. Files that your `.gitignore` excludes are
-skipped. To search particular files, name them instead, or give a glob in
-quotes, such as `'shop/*.py'`. ned expands the glob itself, and `**` matches any
-number of directories.
-
 ### When a selector doesn't fit
 
 A selector that's meant to pick out one thing has to match exactly one thing.
@@ -198,7 +217,7 @@ There are two `__init__` methods in `cart.py`, so ned refuses to guess which one
 you meant:
 
 ```ned
-$ ned shop/cart.py -e 'show fn:__init__'
+ned› show fn:__init__
 ```
 
 ```text
@@ -216,15 +235,14 @@ need, or a flag to add.
 ## Your first edit
 
 `apply_discount` produces a negative price if the discount is over 100%. Here is
-a fix, run with `-n` so that ned shows what it would do without writing
-anything:
+a fix:
 
 ```ned
-$ ned shop/pricing.py -n -e 'replace fn:apply_discount>"percent / 100" with "min(percent, 100) / 100"'
+ned› replace fn:apply_discount>"percent / 100" with "min(percent, 100) / 100"
 ```
 
 ```diff
-(dry run) shop/pricing.py: 1 edit, +1 -1
+shop/pricing.py: 1 edit, +1 -1
 @@ -7,3 +7,3 @@
      """Return price reduced by percent."""
 -    return price * (1 - percent / 100)
@@ -234,11 +252,22 @@ $ ned shop/pricing.py -n -e 'replace fn:apply_discount>"percent / 100" with "min
 
 The selector `fn:apply_discount>"percent / 100"` finds the text `percent / 100`
 inside `apply_discount` and nowhere else. ned prints a summary line for each
-file it changes, followed by the change as a diff. Run the same command without
-`-n` to apply it.
+file it changes, followed by the change as a diff, so you don't need to open the
+file to check what happened.
 
-The diff is how ned confirms an edit. You don't need to open the file afterwards
-to check what happened, because the diff shows you exactly that.
+The file itself hasn't changed yet. In the REPL, an edit goes to an in-memory
+**buffer** of the file, and later commands read the buffer, so you can keep
+editing, look at the result, or take the edit back first. `:diff` shows every
+edit that isn't written yet, against the files on disk, and `:write` writes
+them:
+
+```ned
+ned› :write
+```
+
+```text
+shop/pricing.py: written, +1 -1
+```
 
 ## Parts of an item
 
@@ -246,7 +275,7 @@ A **part** narrows an item down to one piece of it, such as its name, its
 parameters or its body. Parts are written after the item with a dot:
 
 ```ned
-$ ned shop/cart.py -e 'show fn:total.params'
+ned› show fn:total.params
 ```
 
 ```text
@@ -264,14 +293,14 @@ doc comment, or in Python the docstring), `.attrs` (attributes or decorators),
 ## Adding code
 
 `insert` adds text `before` or `after` a selection, or at the `start` or `end`
-of one. `with_tax` has no docstring yet:
+of one. `with_tax` has no docstring yet. A `<<END` block runs over several
+lines: the REPL keeps reading, with a `…` prompt, until the line that holds only
+`END`.
 
 ```ned
-$ ned shop/pricing.py <<'EOF'
-insert start fn:with_tax <<END
+ned› insert start fn:with_tax <<END
 """Return price with sales tax, rounded to cents."""
 END
-EOF
 ```
 
 ```diff
@@ -288,13 +317,11 @@ text to fit where it goes, so you never have to count spaces. This works for
 blocks of several lines, too. Here, a new method goes at the end of `Cart`:
 
 ```ned
-$ ned shop/cart.py <<'EOF'
-insert end class:Cart <<END
+ned› insert end class:Cart <<END
 
 def count(self):
     return sum(item.quantity for item in self.items)
 END
-EOF
 ```
 
 ```diff
@@ -314,13 +341,26 @@ A short, single-line text can be a string instead: `"..."`, with `\n`, `\t`,
 `\"` and `\\` as escapes. If you need text inserted exactly as written, with no
 re-indentation, quote the tag: `<<'END'`.
 
-## Lines and deleting
+## Lines, deleting and undoing
 
-Line numbers are selectors, too. `show` gave the line numbers of `add`, and the
-`print` on line 18 is debugging output that can go:
+Line numbers are selectors, too, but with every file in the set, line 18 could
+be in any of them. `:files` replaces the file set, so narrow it to `cart.py`,
+where `show` finds a debugging `print` in `add`:
 
 ```ned
-$ ned shop/cart.py -e 'delete 18'
+ned› :files shop/cart.py
+ned› show fn:add
+```
+
+```text
+shop/cart.py:17-19
+17:    def add(self, item):
+18:        print("adding", item.name)
+19:        self.items.append(item)
+```
+
+```ned
+ned› delete 18
 ```
 
 ```diff
@@ -331,31 +371,60 @@ shop/cart.py: 1 edit, +0 -1
          self.items.append(item)
 ```
 
+`:undo` takes back the last script's edits, and prints what it reverted. Repeat
+it to go further back, even past a `:write`:
+
+```ned
+ned› :undo
+```
+
+```diff
+shop/cart.py: 1 edit, +1 -0
+@@ -17,2 +17,3 @@
+     def add(self, item):
++        print("adding", item.name)
+         self.items.append(item)
+```
+
+There's no redo, but `!!` repeats the last script, so the deletion is one line
+away:
+
+```ned
+ned› !!
+```
+
+```diff
+note: repeating 11: delete 18
+shop/cart.py: 1 edit, +0 -1
+@@ -17,3 +17,2 @@
+     def add(self, item):
+-        print("adding", item.name)
+         self.items.append(item)
+```
+
 `12-20` is a range of lines and `$` is the last line. Line numbers go stale as
-soon as an edit is written, so take them from a fresh `show` rather than from an
-earlier diff. Where you can, use a selector that names the code instead, since
-it stays correct as the file changes.
+soon as an edit changes the lines above them, so take them from a fresh `show`
+rather than from an earlier diff. Where you can, use a selector that names the
+code instead, since it stays correct as the file changes.
 
 ## Scripts with several commands
 
-A script can hold any number of commands, one per line or separated by `;`. The
-whole script is a single transaction: if any command fails, ned writes nothing
-at all. This script renames `remove` and then tries to delete a method that
-doesn't exist:
+A script can hold any number of commands, separated by `;` (or by newlines, when
+a script comes from a file or a heredoc rather than the prompt). The whole
+script is a single transaction: if any command fails, nothing changes at all.
+This script renames `remove` and then tries to delete a method that doesn't
+exist:
 
 ```ned
-$ ned shop/cart.py <<'EOF'
-replace fn:remove.name with "discard"
-delete fn:clear
-EOF
+ned› replace fn:remove.name with "discard"; delete fn:clear
 ```
 
 ```text
-error: script:2:8: fn:clear matches nothing in shop/cart.py; `outline` lists the items
+error: script:1:47: fn:clear matches nothing in shop/cart.py; `outline` lists the items
 ```
 
-`cart.py` is unchanged, including the rename on the first line. You can fix the
-script and run it again without first having to undo half of it.
+`remove` keeps its name. You can fix the script and run it again without first
+having to undo half of it.
 
 ### Stages
 
@@ -364,28 +433,25 @@ so the line numbers from one `show` stay valid for the whole script. It also
 means two commands can't edit the same text:
 
 ```ned
-$ ned shop/cart.py -n <<'EOF'
-replace fn:remove.name with "discard"
-delete fn:remove
-EOF
+ned› replace fn:remove.name with "discard"; delete fn:remove
 ```
 
 ```text
-error: script:2:1: edit overlaps command 1 at shop/cart.py:20; merge the two edits, or put a `|` between them
+error: script:1:40: edit overlaps command 1 at shop/cart.py:20; merge the two edits, or put a `|` between them
 ```
 
 A `|` between commands starts a new **stage**, whose selectors see the edits
 made before it. This lets a later command work with what an earlier one changed:
 
 ```ned
-$ ned shop/cart.py -n -e 'replace fn:remove.name with "discard" | show fn:discard'
+ned› replace fn:remove.name with "discard" | show fn:discard
 ```
 
 ```text
 shop/cart.py:20-21
 20:    def discard(self, name):
 21:        self.items = [i for i in self.items if i.name != name]
-(dry run) shop/cart.py: 1 edit, +1 -1
+shop/cart.py: 1 edit, +1 -1
 @@ -19,3 +19,3 @@
 
 -    def remove(self, name):
@@ -401,7 +467,7 @@ A script with stages is still one transaction.
 in whole lines:
 
 ```ned
-$ ned shop/cart.py -e 'show fn:add..fn:remove'
+ned› show fn:add..fn:discard
 ```
 
 ```text
@@ -409,7 +475,7 @@ shop/cart.py:17-21
 17:    def add(self, item):
 18:        self.items.append(item)
 19:
-20:    def remove(self, name):
+20:    def discard(self, name):
 21:        self.items = [i for i in self.items if i.name != name]
 ```
 
@@ -419,10 +485,12 @@ matches every item of that kind, so `class:Cart>fn` is every method of `Cart`.
 
 **Filters.** A condition in square brackets keeps only the matches for which it
 holds. `.len` is the length of a single line in characters, or of a longer span
-in lines, so this finds the long lines in every function:
+in lines. Back on the whole workspace (`:files -w`), this finds the long lines
+in every function:
 
 ```ned
-$ ned 'shop/*.py' -e 'show all fn.lines[.len > 60]'
+ned› :files -w
+ned› show all fn.lines[.len > 60]
 ```
 
 ```text
@@ -437,11 +505,11 @@ conditions with `&&` and `||`.
 ## Regular expression substitution
 
 `sub` replaces every match of a regular expression, and `$1`, `$2` and so on in
-the replacement stand for the groups it captured. This adds a prefix to the test
-names:
+the replacement stand for the groups it captured. A selector before the regular
+expression limits where it looks; here, `file:` limits it to the tests:
 
 ```ned
-$ ned tests/test_cart.py -e 'sub /def test_(\w+)/ with "def test_cart_$1"'
+ned› sub file:tests/test_cart.py /def test_(\w+)/ with "def test_cart_$1"
 ```
 
 ```diff
@@ -458,10 +526,6 @@ tests/test_cart.py: 2 edits, +2 -2
      cart = Cart()
 ```
 
-A selector before the regular expression limits where `sub` looks:
-`sub class:Cart /\bitems\b/ with "entries"` would rename the attribute inside
-`Cart` and leave the rest of the file alone.
-
 ## Moving code
 
 `move` takes a selection out of one place and inserts it in another, before or
@@ -469,7 +533,7 @@ after a selection or at the start or end of one. It re-indents the code to fit
 its new place, just as `insert` does:
 
 ```ned
-$ ned shop/pricing.py -e 'move fn:with_tax before fn:apply_discount'
+ned› move fn:with_tax before fn:apply_discount
 ```
 
 ```diff
@@ -501,9 +565,9 @@ The section under `fmt ruff` is the work of a formatter. ned leaves one blank
 line between the moved function and its neighbour, and Python's style is two, so
 `ruff` fixed it. After every edit, ned runs the formatter it finds for the
 language: `rustfmt`, `gofmt`, `ruff` or `black`, or `prettier`. If you don't
-have one installed, ned prints a note and leaves the file as it is. `--no-fmt`
-turns formatting off, and a `.ned.toml` file can configure a different formatter
-for each language.
+have one installed, ned prints a note and leaves the file as it is.
+`ned repl --no-fmt` turns formatting off, and a `.ned.toml` file can configure a
+different formatter for each language.
 
 ## Syntax patterns
 
@@ -513,7 +577,7 @@ parts that vary. ned parses the pattern and compares it with each file's syntax
 tree, so it matches regardless of spacing, line breaks or comments:
 
 ```ned
-$ ned -w -e 'show all `round(@x, 2)`'
+ned› show all `round(@x, 2)`
 ```
 
 ```text
@@ -527,16 +591,15 @@ without capturing anything.
 
 When `replace` targets a pattern, `@name` in the new text stands for whatever
 the placeholder matched. That makes it possible to rewrite the loop in `total`
-as a call to `sum`, keeping the expression from its body:
+as a call to `sum`, keeping the expression from its body. A pattern can run over
+several lines; like a heredoc, it continues until its closing backquote:
 
 ```ned
-$ ned shop/cart.py <<'EOF'
-replace fn:total>`
+ned› replace fn:total>`
     subtotal = 0
     for item in self.items:
         subtotal += @x
 ` with "subtotal = sum(@x for item in self.items)"
-EOF
 ```
 
 ```diff
@@ -558,17 +621,14 @@ has to be there.
 
 `create` makes a new file, which later commands in the same script can edit. It
 pairs well with `move` to split a module. This moves `Item` into its own module
-and updates the test that imports it:
+and updates the test that imports it; the heredoc keeps the REPL reading, so the
+three commands are one script:
 
 ```ned
-$ ned shop/cart.py tests/test_cart.py <<'EOF'
-create shop/item.py ""
-move class:Item start file:shop/item.py
-replace import:"shop.cart" with <<END
+ned› create shop/item.py ""; move class:Item start file:shop/item.py; replace import:"shop.cart" with <<END
 from shop.cart import Cart
 from shop.item import Item
 END
-EOF
 ```
 
 ```diff
@@ -602,14 +662,43 @@ shop/item.py: created, +5
 +        self.quantity = quantity
 ```
 
-A few new things appear here. The command names two files, and a selector
-searches all of them, which is why `class:Item` and `import:"shop.cart"` each
-find the one match. `file:shop/item.py` selects a whole file, here as the
-destination of the move. Import names that contain dots must be quoted. To
-switch to a different set of files partway through a script, use the `file`
-command: `file src/*.rs` makes later commands act on those files.
+A selector searches every file in the set, which is why `class:Item` and
+`import:"shop.cart"` each find the one match. `file:shop/item.py` selects a
+whole file, here as the destination of the move. Import names that contain dots
+must be quoted. Within a script, the `file` command switches to other files for
+the commands after it: `file src/*.rs` makes them act on those files.
 
-If you run the tests now, they still pass.
+Nothing has been written since the first fix. `:files` lists the file set and
+every buffer with unwritten edits, and `:write` writes them all at once:
+
+```ned
+ned› :files
+```
+
+```text
+workspace: /home/you/shop
+shop/cart.py: unwritten, +5 -12
+shop/item.py: unwritten, +5 -0
+shop/pricing.py: unwritten, +5 -4
+tests/test_cart.py: unwritten, +4 -3
+```
+
+```ned
+ned› :write
+```
+
+```text
+shop/cart.py: written, +5 -12
+shop/item.py: created, +5
+shop/pricing.py: written, +5 -4
+tests/test_cart.py: written, +4 -3
+```
+
+If you run the tests now, they still pass. If another program changes a file
+while it has unwritten edits, `:write` merges your edits into its new text, and
+stops if the two change the same lines; `:write!` overwrites it instead.
+`:reload` drops a buffer's unwritten edits, and `:quit` refuses to leave while
+there are any, unless you use `:quit!`.
 
 ## Safety nets
 
@@ -619,7 +708,7 @@ ned parses every file it changes, and rejects an edit that would introduce a
 syntax error:
 
 ```ned
-$ ned shop/pricing.py -e 'replace fn:with_tax>"2)" with "2"'
+ned› replace fn:with_tax>"2)" with "2"
 ```
 
 ```text
@@ -628,59 +717,83 @@ error: shop/pricing.py:8:43: edit introduces a syntax error (use --force to appl
                                             ^
 ```
 
-As with any other error, nothing was written.
+As with any other error, nothing changed.
 
-### Sessions and undo
+### History and corrections
 
-With `-s NAME`, or the environment variable `NED_SESSION=NAME`, ned records each
-command in a session log. You can then undo an edit, list what you've done, and
-repeat the last command with a correction:
+The REPL records every script, and every write, in its session. A script with a
+typo is easiest to fix by repeating it: `!!` is the last script, and
+`:s/OLD/NEW/` corrects it on the way:
 
 ```ned
-$ ned -s tut shop/cart.py -e 'replace fn:count.name with "item_count"'
-$ ned -s tut shop/cart.py -e 'show fn:item_cuont'
+ned› replace fn:count.name with "item_count"
+ned› show fn:item_cuont
 ```
 
 ```text
-error: script:1:6: fn:item_cuont matches nothing in shop/cart.py; did you mean fn:item_count (22-23)?
+error: script:1:6: fn:item_cuont matches nothing in shop/__init__.py, shop/cart.py, shop/item.py, shop/pricing.py, tests/test_cart.py; did you mean fn:item_count (shop/cart.py:22-23)?
 ```
 
-`!!` repeats the session's last script, and `:s/OLD/NEW/` corrects it on the
-way:
-
 ```ned
-$ ned -s tut -e '!!:s/cuont/count/'
+ned› !!:s/cuont/count/
 ```
 
 ```text
-note: repeating 2: show fn:item_count
+note: repeating 26: show fn:item_count
 shop/cart.py:22-23
 22:    def item_count(self):
 23:        return sum(item.quantity for item in self.items)
 ```
 
+`:history` lists the session's last ten entries:
+
 ```ned
-$ ned history -s tut
+ned› :history
 ```
 
 ```text
-1 ok, 1 file: replace fn:count.name with "item_count"
-2 exit 1: show fn:item_cuont
-3 ok: show fn:item_count
+18 ok: sub file:tests/test_cart.py /def test_(\w+)/ with "def test_cart_$1"
+19 ok: move fn:with_tax before fn:apply_discount
+20 ok: show all `round(@x, 2)`
+21 ok: replace fn:total>` (+4 lines)
+22 ok: create shop/item.py ""; move class:Item start file:shop/item.py; replace import:"shop.cart" with <<END (+3 lines)
+23 write, 4 files
+24 exit 1: replace fn:with_tax>"2)" with "2"
+25 ok: replace fn:count.name with "item_count"
+26 exit 1: show fn:item_cuont
+27 ok: show fn:item_count
 ```
 
-`ned undo -s tut` reverts the most recent edit in the session, here the rename,
-and prints the diff of the reversal. Run it again to go further back. If you've
-changed a file since, `undo` refuses, and `--force` merges the reversal with
-your later changes instead.
+Outside the REPL, `ned history -s repl-1` prints the same list, and
+`ned undo -s repl-1` reverts the session's last write, even after you've quit.
 
-### Committing an edit
+### Committing
 
-In a git repository, `--commit "message"` turns the edits that a command makes
-into a commit. Only those edits go into it. Anything else you have changed,
-staged or not, stays as it was. In a session, the commit includes every edit
-since the session's last commit, so you can make a series of changes and then
-commit them together.
+`:commit MESSAGE` writes the buffers and commits to git, in one step: the commit
+holds every edit the session has written since its last commit, and nothing
+else, so whatever else you have changed, staged or not, stays as it was.
+
+```ned
+ned› :commit Tidy up the cart
+```
+
+```text
+shop/cart.py: written, +1 -1
+commit ca2f0b6: Tidy up the cart
+```
+
+The rename of `count` was the only unwritten edit, but the commit has all of the
+session's changes:
+
+```text
+$ git show --stat
+...
+ shop/cart.py       | 17 +++++------------
+ shop/item.py       |  5 +++++
+ shop/pricing.py    | 11 ++++++-----
+ tests/test_cart.py |  7 ++++---
+ 4 files changed, 20 insertions(+), 20 deletions(-)
+```
 
 ## Language servers
 
@@ -689,13 +802,14 @@ than one file at a time. You need the server for your language installed:
 `pyright` for Python, `rust-analyzer` for Rust, `gopls` for Go, or
 `typescript-language-server` for JavaScript and TypeScript. ned runs them in a
 background daemon, one per workspace, that starts when it's first needed and
-exits after ten minutes without use. This works on Linux and macOS.
+exits after ten minutes without use. The REPL and any agent working in the same
+project share it. This works on Linux and macOS.
 
 **References and definitions.** The `.refs` part selects every use of a symbol,
-and `.def` selects its definition. Both work across the workspace with `-w`:
+and `.def` selects its definition:
 
 ```ned
-$ ned -w -e 'show all fn:with_tax.refs'
+ned› show all fn:with_tax.refs
 ```
 
 ```text
@@ -706,14 +820,15 @@ shop/cart.py:20
 ```
 
 **Renaming.** `rename` changes a symbol's name everywhere the language server
-finds it, including imports in other files:
+finds it, including imports in other files. As with any edit in the REPL, the
+renamed files are buffers until you write them:
 
 ```ned
-$ ned -w -n -e 'rename fn:apply_discount to discounted'
+ned› rename fn:apply_discount to discounted
 ```
 
 ```diff
-(dry run) shop/cart.py: 2 edits, +2 -2
+shop/cart.py: 2 edits, +2 -2
 @@ -1,2 +1,2 @@
 -from shop.pricing import apply_discount, with_tax
 +from shop.pricing import discounted, with_tax
@@ -723,7 +838,7 @@ $ ned -w -n -e 'rename fn:apply_discount to discounted'
 -            subtotal = apply_discount(subtotal, discount)
 +            subtotal = discounted(subtotal, discount)
          return with_tax(subtotal)
-(dry run) shop/pricing.py: 1 edit, +1 -1
+shop/pricing.py: 1 edit, +1 -1
 @@ -10,3 +10,3 @@
 
 -def apply_discount(price, percent):
@@ -732,11 +847,11 @@ $ ned -w -n -e 'rename fn:apply_discount to discounted'
 ```
 
 **Checked edits.** While the daemon is running, ned asks the language server
-about every edit before writing it, and rejects edits that introduce new errors.
-The `.refs` query above started the daemon, so this edit is caught:
+about every edit, and rejects edits that introduce new errors. The language
+server sees your buffers, so it knows about the rename:
 
 ```ned
-$ ned shop/cart.py -e 'replace fn:total>"with_tax(subtotal)" with "with_tax(subtotal, 2)"'
+ned› replace fn:total>"with_tax(subtotal)" with "with_tax(subtotal, 2)"
 ```
 
 ```text
@@ -744,8 +859,107 @@ error: edit introduces 1 error; fix it, or add `allow errors` to the script to a
 shop/cart.py:20:35: error: Expected 1 positional argument [Pyright reportCallIssue]
 ```
 
-`check` lists a file's current diagnostics without changing it, and
-`ned daemon start`, `status` and `stop` manage the daemon yourself.
+Some checks only run when a file is saved, such as rust-analyzer's
+`cargo check`. They run when you `:write`, and print what the write introduced
+after the `written` lines. `check` lists a file's current diagnostics without
+changing it, and `ned daemon start`, `status` and `stop` manage the daemon
+yourself. Write the rename before going on:
+
+```ned
+ned› :write
+```
+
+```text
+shop/cart.py: written, +2 -2
+shop/pricing.py: written, +1 -1
+```
+
+## Working alongside an agent
+
+A coding agent that uses ned records its work in a session too, when it runs
+with `NED_SESSION=NAME` (or `-s NAME`). `:attach NAME` follows that session: it
+prints the session's history, then each edit the agent makes, with its diff, as
+it happens. Your own scripts and writes are recorded in the agent's session
+while you're attached, so the agent sees your corrections in its history, and
+its `ned undo` and `!!` take them into account.
+
+Suppose an agent is working in this project with `NED_SESSION=agent`, and has
+looked at `discard` so far:
+
+```ned
+ned› :attach agent
+```
+
+```text
+1 ok: show fn:discard
+```
+
+You decide `discard` should be called `remove` after all, and rename it. While
+that edit is unwritten, the agent adds a docstring to `add`, in the same file.
+The REPL prints the agent's edit as soon as it's recorded, and merges it into
+your buffer of `cart.py`, so your unwritten rename now sits on top of the
+agent's version:
+
+```ned
+ned› replace fn:discard.name with "remove"
+```
+
+```diff
+shop/cart.py: 1 edit, +1 -1
+@@ -12,3 +12,3 @@
+
+-    def discard(self, name):
++    def remove(self, name):
+         self.items = [i for i in self.items if i.name != name]
+agent 3 ok, 1 file: insert start fn:add "\"\"\"Add item to the cart.\"\"\""
+shop/cart.py: 1 edit, +1 -0
+@@ -10,2 +10,3 @@
+     def add(self, item):
++        """Add item to the cart."""
+         self.items.append(item)
+note: merged the change into your unwritten edits to shop/cart.py
+```
+
+Your next script sees both edits:
+
+```ned
+ned› show fn:add..fn:remove
+```
+
+```text
+shop/cart.py:10-15
+10:    def add(self, item):
+11:        """Add item to the cart."""
+12:        self.items.append(item)
+13:
+14:    def remove(self, name):
+15:        self.items = [i for i in self.items if i.name != name]
+```
+
+If the agent's edit had changed the same lines as yours, the REPL would have
+left your buffer as it was and said which line overlaps; `:write` would then
+refuse until you chose, with `:write!` (yours) or `:reload` (the agent's). Here
+the edits don't overlap, and `:write` writes your rename:
+
+```ned
+ned› :write
+```
+
+```text
+shop/cart.py: written, +1 -1
+```
+
+`:detach` stops following, and the REPL records into its own session again. The
+agent's history now shows your work alongside its own:
+
+```text
+$ ned history -s agent
+1 ok: show fn:discard
+2 ok: replace fn:discard.name with "remove"
+3 ok, 1 file: insert start fn:add "\"\"\"Add item to the cart.\"\"\""
+4 ok: show fn:add..fn:remove
+5 write, 1 file
+```
 
 ## Merge conflicts
 
@@ -766,7 +980,7 @@ def with_tax(price):
     return round(price * (1 + TAX_RATE), 2)
 
 
-def apply_discount(price, percent):
+def discounted(price, percent):
     """Return price reduced by percent."""
 <<<<<<< HEAD
     return price * (1 - min(percent, 100) / 100)
@@ -779,7 +993,8 @@ The conflict markers don't stop ned from parsing the file, and `outline` lists
 the conflicts after the items:
 
 ```ned
-$ ned shop/pricing.py -e outline
+ned› :files shop/pricing.py
+ned› outline
 ```
 
 ```text
@@ -787,7 +1002,7 @@ shop/pricing.py
 4 const:TAX_RATE
 6 const:TAX_RATE
 10-12 fn:with_tax
-15-20 fn:apply_discount
+15-20 fn:discounted
 3-7 conflict:1
 17-21 conflict:2
 ```
@@ -797,7 +1012,7 @@ sides (`.base` exists only when git writes conflicts in its `diff3` style).
 `resolve` keeps one side, or `both`:
 
 ```ned
-$ ned shop/pricing.py -e 'resolve conflict:1 theirs; resolve conflict:2 ours'
+ned› resolve conflict:1 theirs; resolve conflict:2 ours
 ```
 
 ```diff
@@ -820,7 +1035,7 @@ shop/pricing.py: 2 edits, +0 -8
 ```
 
 To write a resolution of your own, `replace conflict:2 with <<END` replaces the
-whole conflict, markers included.
+whole conflict, markers included. Then `:write` as usual.
 
 ## Other files
 
@@ -830,25 +1045,36 @@ blocks. If the project had a README with a "Usage" section, this would add a
 paragraph to the end of it:
 
 ```ned
-$ ned README.md <<'EOF'
-insert end section:Usage <<END
+ned› :files README.md
+ned› insert end section:Usage <<END
 
 `Cart.total(discount)` applies a percentage discount before tax.
 END
-EOF
+```
+
+```diff
+README.md: 1 edit, +2 -0
+@@ -5,1 +5,3 @@
+ Make a `Cart` and `add` items to it.
++
++`Cart.total(discount)` applies a percentage discount before tax.
 ```
 
 Every other file is read as plain text, where lines, literal text, regular
 expressions and conflicts all work. Syntax selectors need a language, and
-`--lang` assigns one when a file's extension doesn't say, as in `--lang python`
-for a script without a `.py` extension.
+`--lang` assigns one when a file's extension doesn't say, as in
+`ned repl --lang python bin/shop` for a script without a `.py` extension.
 
 ## Where to go next
 
-You've now seen nearly all of ned. The [reference](/reference) covers every
-command, selector and option in detail. On the command line, `ned help` prints a
-summary of the whole language, and `ned help TOPIC` explains one command or
-topic, such as `ned help insert` or `ned help selectors`.
+You've now seen nearly all of ned. `:write` and `:quit` (or Ctrl-D) leave the
+REPL. The [reference](/reference) covers every command, selector and option in
+detail, and its [REPL section](/reference#the-repl) lists the REPL's commands.
+In the REPL, `:help` prints a summary of the whole language, and `:help TOPIC`
+explains one command or topic, such as `:help insert` or `:help repl`.
 
-If you work with an AI coding agent, the [home page](/#using-ned-with-ai-agents)
-explains how to set it up to use ned.
+Everything you typed at the prompt also works as a one-shot command, which is
+how scripts and coding agents use ned: `ned shop/cart.py -e 'show fn:total'`, or
+a longer script on standard input, as in the setup step. If you work with an AI
+coding agent, the [home page](/#using-ned-with-ai-agents) explains how to set it
+up to use ned.

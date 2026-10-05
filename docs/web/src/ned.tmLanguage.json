@@ -3,6 +3,13 @@
   "scopeName": "source.ned",
   "patterns": [
     { "include": "#shell-line" },
+    {
+      "match": "^(ned› )(:[a-z]+!?)?",
+      "captures": {
+        "1": { "name": "comment.prompt.ned" },
+        "2": { "name": "keyword.other.ned" }
+      }
+    },
     { "match": "^EOF$", "name": "punctuation.definition.string.end.ned" },
     { "include": "#script" }
   ],
@@ -35,7 +42,7 @@
           "name": "variable.parameter.ned"
         },
         {
-          "match": "\\b(help|daemon|history|undo)\\b",
+          "match": "\\b(repl|help|daemon|history|undo)\\b",
           "name": "keyword.other.ned"
         }
       ]
