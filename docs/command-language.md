@@ -59,7 +59,7 @@ case-sensitive:
 | `tsx`        | `.tsx`                        |
 | `javascript` | `.js`, `.mjs`, `.cjs`, `.jsx` |
 | `go`         | `.go`                         |
-| `markdown`   | `.md`, `.markdown`            |
+| `markdown`   | `.md`, `.mdx`, `.markdown`    |
 | `text`       | `.txt`                        |
 
 A file with any other extension, and no shebang `ned` knows, is read as `text`:

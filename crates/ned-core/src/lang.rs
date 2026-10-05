@@ -207,7 +207,7 @@ fn by_extension(extension: &str) -> Option<Option<Language>> {
         "tsx" => Language::Tsx,
         "js" | "mjs" | "cjs" | "jsx" => Language::JavaScript,
         "go" => Language::Go,
-        "md" | "markdown" => Language::Markdown,
+        "md" | "mdx" | "markdown" => Language::Markdown,
         "txt" => return Some(None),
         _ => return None,
     };
@@ -305,6 +305,7 @@ mod tests {
             ("./dir.d/a.go", Language::Go),
             ("README.md", Language::Markdown),
             ("notes.markdown", Language::Markdown),
+            ("page.mdx", Language::Markdown),
         ];
         for (path, lang) in cases {
             assert_eq!(Language::detect(path, ""), Some(lang), "{path}");
