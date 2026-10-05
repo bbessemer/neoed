@@ -378,7 +378,7 @@ enum Matcher<'a> {
         lines: Vec<String>,
         raw: bool,
     },
-    File(&'a str),
+    File(FileScope<'a>),
     /// `conflict:N`, or every conflict.
     Conflict(Option<usize>),
     Syntax {
@@ -413,15 +413,10 @@ impl<'a> Matcher<'a> {
                 },
             },
             Primary::File(path) => {
-                if !files.iter().any(|f| same_path(&f.path, path)) {
-                    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
-                    return Err(E::NotInFileSet {
-                        path: path.clone(),
-                        files: file_list(&paths),
-                        add: add_to_set(&paths, path),
-                    });
-                }
-                Matcher::File(path)
+                let scope = FileScope::new(path);
+                let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+                scope.check(&paths)?;
+                Matcher::File(scope)
             }
             Primary::Conflict(n) => Matcher::Conflict(*n),
             Primary::Syntax { kind, name } => {
@@ -544,8 +539,8 @@ impl<'a> Matcher<'a> {
                 }
                 out
             }
-            Matcher::File(path) => {
-                if same_path(&f.path, path) {
+            Matcher::File(scope) => {
+                if scope.matches(&f.path) {
                     vec![parent]
                 } else {
                     Vec::new()
@@ -1212,6 +1207,76 @@ pub(crate) fn same_path(a: &str, b: &str) -> bool {
     a.strip_prefix("./").unwrap_or(a) == b.strip_prefix("./").unwrap_or(b)
 }
 
+/// The files a `file:` step names: one path, or a glob's matches (§3.3).
+pub(crate) struct FileScope<'a> {
+    path: &'a str,
+    glob: Option<glob::Pattern>,
+}
+
+impl<'a> FileScope<'a> {
+    /// `path` is a glob under the `file` command's rule: it has a glob
+    /// character and parses as one.
+    pub(crate) fn new(path: &'a str) -> Self {
+        let glob = path
+            .contains(['*', '?', '['])
+            .then(|| glob::Pattern::new(path.strip_prefix("./").unwrap_or(path)).ok())
+            .flatten();
+        FileScope { path, glob }
+    }
+
+    pub(crate) fn is_glob(&self) -> bool {
+        self.glob.is_some()
+    }
+
+    pub(crate) fn matches(&self, path: &str) -> bool {
+        match &self.glob {
+            None => same_path(self.path, path),
+            Some(glob) => {
+                glob.matches_with(path.strip_prefix("./").unwrap_or(path), glob_options())
+            }
+        }
+    }
+
+    /// An error unless some of `paths`, the file set, match.
+    pub(crate) fn check(&self, paths: &[&str]) -> Result<(), E> {
+        if paths.iter().any(|p| self.matches(p)) {
+            return Ok(());
+        }
+        let (files, add) = (file_list(paths), add_to_set(paths, self.path));
+        Err(match self.glob {
+            None => E::NotInFileSet {
+                path: self.path.into(),
+                files,
+                add,
+            },
+            Some(_) => E::NoFileMatch {
+                glob: self.path.into(),
+                files,
+                add: if on_disk(self.path) {
+                    add
+                } else {
+                    "no file on disk matches it either; correct the glob".into()
+                },
+            },
+        })
+    }
+}
+
+fn on_disk(glob: &str) -> bool {
+    glob::glob_with(glob, glob_options())
+        .is_ok_and(|mut paths| paths.any(|p| p.is_ok_and(|p| p.is_file())))
+}
+
+/// How globs match paths, in the file set and on disk: `*` stops at `/`, and
+/// a leading `.` must be literal.
+pub(crate) fn glob_options() -> glob::MatchOptions {
+    glob::MatchOptions {
+        require_literal_separator: true,
+        require_literal_leading_dot: true,
+        ..glob::MatchOptions::new()
+    }
+}
+
 pub(crate) fn part_name(part: Part) -> &'static str {
     match part {
         Part::Body => "body",
@@ -1251,7 +1316,19 @@ fn candidates(
         .last()
         .filter(|s| selector.span.start <= s.span.start && s.span.end <= selector.span.end);
     let split = last.map_or(selector.span.start, |s| s.span.start);
-    let prefix = &src[selector.span.start..split];
+    // A glob `file:` step is replaced by each match's own file.
+    let glob = match selector.steps.first() {
+        Some(Step {
+            primary: Primary::File(path),
+            ..
+        }) => FileScope::new(path).is_glob(),
+        _ => false,
+    };
+    let after_glob = selector.steps.get(1).filter(|_| glob).map(|s| s.span.start);
+    let prefix = |f: &SourceFile| match after_glob {
+        Some(start) => format!("file:{}>{}", f.path, &src[start..split]),
+        None => src[selector.span.start..split].to_string(),
+    };
     let in_file = matches!(
         selector.steps.first(),
         Some(Step {
@@ -1280,6 +1357,10 @@ fn candidates(
             let text = match (chosen, last) {
                 (Some((name, item, true)), Some(step)) => {
                     format!("{}{}", syntax::selector(item.kind, name), parts(step))
+                }
+                // A glob step alone is named by the match's file.
+                (None, Some(_)) if glob && selector.steps.len() == 1 => {
+                    format!("file:{}", files[c.m.file].path)
                 }
                 // Each of several conflicts is named by its number.
                 (None, Some(step)) if step.primary == Primary::Conflict(None) => {
@@ -1343,15 +1424,21 @@ fn candidates(
                 .filter(|&&j| found[j].m.file == c.m.file)
                 .count()
                 == 1;
+            let prefix = prefix(f);
+            // The file scope, unless the prefix already has one.
+            let file = match glob {
+                true => String::new(),
+                false => format!("file:{}>", f.path),
+            };
             let candidate = match unique_item {
                 _ if peers.len() == 1 => Some(format!("{prefix}{last}")),
                 Some(item) => Some(format!("{prefix}{item}>{last}")),
                 None if let Some(side) = unique_side => Some(format!("{prefix}{side}>{last}")),
-                None if files.len() == 1 || in_file => {
+                None if files.len() == 1 || in_file && !glob => {
                     lines_fit.then(|| format!("{prefix}{lines}>{last}"))
                 }
-                None if one_in_file => Some(format!("file:{}>{prefix}{last}", f.path)),
-                None => lines_fit.then(|| format!("file:{}>{prefix}{lines}>{last}", f.path)),
+                None if one_in_file => Some(format!("{file}{prefix}{last}")),
+                None => lines_fit.then(|| format!("{file}{prefix}{lines}>{last}")),
             };
             let at = line_numbers(&f.buffer, &c.m.range);
             let candidate = match c.line {
@@ -1910,6 +1997,80 @@ mod tests {
             error("delete file:c.rs>/x/", &[("a.rs", "x\n"), ("b.rs", "x\n")]),
             "error: script:1:8: file:c.rs is not in the file set: a.rs, b.rs; \
              add it with `file a.rs b.rs c.rs`"
+        );
+    }
+
+    #[test]
+    fn file_glob_narrows_to_matching_files() {
+        let set = files(&[("src/a.rs", "x\n"), ("c.rs", "x\n"), ("src/b.rs", "y\nx\n")]);
+        let m = resolve_in("delete all file:src/*.rs>/x/", &set).unwrap();
+        let found: Vec<(usize, Range<usize>)> = m.into_iter().map(|m| (m.file, m.range)).collect();
+        assert_eq!(found, [(0, 0..1), (2, 2..3)]);
+    }
+
+    #[test]
+    fn file_globs_match_like_file_set_globs() {
+        let glob = |glob: &str, path: &str| FileScope::new(glob).matches(path);
+        assert!(glob("src/*.rs", "src/a.rs"));
+        assert!(!glob("src/*.rs", "src/sub/a.rs"));
+        assert!(!glob("*.rs", "src/a.rs"));
+        assert!(glob("src/**/*.rs", "src/sub/deep/a.rs"));
+        assert!(glob("src/**/*.rs", "src/a.rs"));
+        assert!(glob("src/?.rs", "src/a.rs"));
+        assert!(glob("src/[ab].rs", "src/b.rs"));
+        assert!(!glob("src/[ab].rs", "src/c.rs"));
+        assert!(!glob("src/*", "src/.hidden"));
+        assert!(glob("src/.*", "src/.hidden"));
+        assert!(glob("./src/*.rs", "src/a.rs"));
+        assert!(glob("src/*.rs", "./src/a.rs"));
+        // Not a valid glob: a plain path.
+        assert!(glob("a[.rs", "a[.rs"));
+        assert!(!glob("a[.rs", "a.rs"));
+    }
+
+    #[test]
+    fn file_glob_matching_no_file_is_an_error() {
+        let set = [("a.rs", "x\n"), ("b.rs", "x\n")];
+        // Unit tests run in the crate's directory, where `src/*.rs` has files.
+        assert_eq!(
+            error("delete file:src/*.rs>/x/", &set),
+            "error: script:1:8: file:src/*.rs matches no file in the file set: a.rs, b.rs; \
+             add it with `file a.rs b.rs src/*.rs`"
+        );
+        assert_eq!(
+            error("delete file:src/*.rx>/x/", &set),
+            "error: script:1:8: file:src/*.rx matches no file in the file set: a.rs, b.rs; \
+             no file on disk matches it either; correct the glob"
+        );
+    }
+
+    #[test]
+    fn file_glob_candidates_name_their_file() {
+        let set = [
+            ("src/a.rs", "fn new() {}\n"),
+            ("src/b.rs", "fn new() {}\n"),
+            ("c.rs", "fn new() {}\n"),
+        ];
+        assert_eq!(
+            error("delete file:src/*.rs>fn:new", &set),
+            "error: script:1:8: file:src/*.rs>fn:new matches 2 items; add `all` or use one of:\n  \
+             file:src/a.rs>fn:new   src/a.rs:1\n  \
+             file:src/b.rs>fn:new   src/b.rs:1"
+        );
+        assert_eq!(
+            error(
+                "delete file:src/*.rs>/x/",
+                &[("src/a.rs", "x\ny\nx\n"), ("src/b.rs", "y\n")]
+            ),
+            "error: script:1:8: file:src/*.rs>/x/ matches 2 items; add `all` or use one of:\n  \
+             file:src/a.rs>1>/x/   src/a.rs:1\n  \
+             file:src/a.rs>3>/x/   src/a.rs:3"
+        );
+        assert_eq!(
+            error("delete file:src/*.rs", &set),
+            "error: script:1:8: file:src/*.rs matches 2 items; add `all` or use one of:\n  \
+             file:src/a.rs   src/a.rs:1\n  \
+             file:src/b.rs   src/b.rs:1"
         );
     }
 

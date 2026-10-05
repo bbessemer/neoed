@@ -21,7 +21,7 @@ use crate::script::ast::{
     TextKind,
 };
 use crate::script::error::{excerpt, location};
-use crate::select::{self, Match, SourceFile, line_numbers, same_path};
+use crate::select::{self, FileScope, Match, SourceFile, line_numbers, same_path};
 use crate::span::{self, Of, Span};
 use crate::style::{Role, Style};
 use crate::syntax::{self, Item};
@@ -610,22 +610,16 @@ impl Executor<'_> {
         }
         let only = match target.selector.steps.first().map(|s| &s.primary) {
             Some(Primary::File(path)) => {
-                if !self.set.iter().any(|m| same_path(&m.path, path)) {
-                    let paths: Vec<&str> = self.set.iter().map(|m| m.path.as_str()).collect();
-                    return Err(ExecError::new(
-                        ExecErrorKind::NotInFileSet {
-                            path: path.clone(),
-                            files: select::file_list(&paths),
-                            add: select::add_to_set(&paths, path),
-                        },
-                        Some(target.selector.span.clone()),
-                    ));
-                }
-                Some(path.clone())
+                let scope = FileScope::new(path);
+                let paths: Vec<&str> = self.set.iter().map(|m| m.path.as_str()).collect();
+                scope
+                    .check(&paths)
+                    .map_err(|kind| ExecError::new(kind, Some(target.selector.span.clone())))?;
+                Some(scope)
             }
             _ => None,
         };
-        let indices = self.read(|p| only.as_ref().is_none_or(|only| same_path(p, only)))?;
+        let indices = self.read(|p| only.as_ref().is_none_or(|only| only.matches(p)))?;
         let set: Vec<&SourceFile> = indices.iter().map(|&i| &self.files[i].file).collect();
         let matches = select::resolve(target, &set, self.src)?;
         Ok(matches
@@ -1495,10 +1489,7 @@ fn last_line_hint(line: &str) -> &'static str {
 
 /// The files `path` names: itself, or a glob's sorted matches.
 fn expand(path: &str, span: Option<&Range<usize>>) -> Result<Vec<String>, ExecError> {
-    let options = glob::MatchOptions {
-        require_literal_leading_dot: true,
-        ..glob::MatchOptions::new()
-    };
+    let options = select::glob_options();
     let paths = match glob::glob_with(path, options) {
         Ok(paths) if path.contains(['*', '?', '[']) => paths,
         // Not a glob, or not a valid one, such as `a[.rs`: a plain path.
@@ -2371,6 +2362,13 @@ pub enum ExecErrorKind {
     #[error("file:{path} is not in the file set: {files}; {add}")]
     NotInFileSet {
         path: String,
+        files: String,
+        add: String,
+    },
+    /// `add` is the fix: the `file` command that adds the glob's files, if any exist.
+    #[error("file:{glob} matches no file in the file set: {files}; {add}")]
+    NoFileMatch {
+        glob: String,
         files: String,
         add: String,
     },

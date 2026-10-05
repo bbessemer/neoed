@@ -473,7 +473,7 @@ working directory, so a quoted glob works too:
 
 A selector resolves against every file in the current set, and the ambiguity
 rules (§3.5) count matches across all of them. Use a `file:` step to narrow a
-selector to one file (§3.3).
+selector to one file, or to the files a glob matches (§3.3).
 
 ## 3. Selectors
 
@@ -602,6 +602,15 @@ The kinds each language supports, and the items they cover there:
   current set. It exists to scope the steps after it:
   `file:src/lexer.rs>fn:new`. `PATH` may contain `/` and `.`, and ends at `>` or
   whitespace.
+- `file:GLOB` selects every file in the current set that the glob matches, with
+  the syntax of `file`'s globs (§2): `file:src/*.rs>fn:new`,
+  `file:tests/**/*.rs>/todo/`. A leading `./` is ignored. It never adds files to
+  the set: `-w` reads only the files it matches. A glob that matches no file in
+  the set is an error (exit 1):
+  ``error: file:src/*.rs matches no file in the file set: a.rs, b.rs; add it with `file a.rs b.rs src/*.rs` ``.
+  If no file on disk matches it either, the fix is
+  `no file on disk matches it either; correct the glob`. Candidates for an
+  ambiguous match (§3.5) name their file in its place.
 
 ### 3.4 Nesting and parts
 

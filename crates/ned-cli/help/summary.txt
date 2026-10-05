@@ -32,7 +32,7 @@ Selectors (a selector must match exactly one span unless prefixed with `all`):
   all fn  impl:P>fn             a kind alone is kind:*
   fn[.doc == ""]  fn[.len > 50]   filter: spans where it holds
   all fn:parse.refs  "f(".def    uses and definition (language server)
-  file:src/a.rs>fn:new          scope to one file
+  file:src/a.rs>fn:new          scope to file or glob
   query{(call_expression) @sel} raw tree-sitter query
   `foo(@a, @rest...)`           syntax pattern: code with placeholders
   /^## 6/../^## 7/  fn:a..fn:c  range: whole lines, a match to the next

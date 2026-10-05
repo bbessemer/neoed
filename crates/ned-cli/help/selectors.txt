@@ -19,7 +19,7 @@ Parts: .body .params (inside delimiters) .name .sig .doc .attrs .ret .type
   Via the language server, any step: .refs (each use), .def (the defining
   item): all fn:parse.refs, "helper(".def. With -w they reach every file.
 Nest with > (no spaces): impl:Parser>fn:new>"x". Scope: 40-80>fn:new,
-file:src/a.rs>fn:new. Raw: query{(node) @sel}.
+file:src/*.rs>fn:new. Raw: query{(node) @sel}.
 Range: A..B, whole lines from a match of A to the next B: /^## 6/../^## 7/,
 fn:a..fn:c. `..` binds tighter than `>`: class:Server>fn:start..fn:run.
 Filter: fn[.name ~= /^test_/] (ned help filters). Ambiguity is an error listing

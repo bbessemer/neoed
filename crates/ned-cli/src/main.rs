@@ -611,6 +611,7 @@ fn exit_code(kind: &ExecErrorKind) -> u8 {
         | ExecErrorKind::Ambiguous { .. }
         | ExecErrorKind::LineOutOfRange { .. }
         | ExecErrorKind::NotInFileSet { .. }
+        | ExecErrorKind::NoFileMatch { .. }
         | ExecErrorKind::Overlap { .. }
         | ExecErrorKind::SyntaxError { .. }
         | ExecErrorKind::NoLanguage { .. }
