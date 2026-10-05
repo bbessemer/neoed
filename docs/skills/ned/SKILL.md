@@ -49,7 +49,9 @@ With ned's MCP server connected (`ned mcp`), call its `ned` tool instead of the
 shell: `script` is the script, `files` the files (or `workspace: true` for
 `-w`), and `dry_run`, `commit` and the other flags are arguments; `comment` says
 what the call is for, for a human following the session. Its `outline`, `show`,
-`history`, `undo` and `help` tools do what those commands do.
+`history`, `undo` and `help` tools do what those commands do, and `cd` moves the
+server to another directory (a git worktree, say) for the rest of the session,
+so `files` can be relative to it.
 
 Search with `show all` instead of grep. It prints each match's line with its
 number, under the file's name, across a glob or the whole workspace (`-w`, which

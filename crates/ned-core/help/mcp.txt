@@ -15,6 +15,7 @@ Tools:
   history  all?                         ned history [--all]
   undo     force?                       ned undo [--force]
   help     topic?                       ned help [TOPIC]
+  cd       dir                          cd DIR: files, workspace, session
 
 files are relative to the server's working directory; workspace is -w.
 It records every call in a session: -s NAME, NED_SESSION, or a new mcp-N,

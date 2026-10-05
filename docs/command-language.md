@@ -520,18 +520,32 @@ result, with exit 2, not a protocol error.
 | `history` | optionally `all`                                                                                                      | `ned history [--all]`                 |
 | `undo`    | optionally `force`                                                                                                    | `ned undo [--force]`                  |
 | `help`    | optionally `topic`                                                                                                    | `ned help [TOPIC]`                    |
+| `cd`      | `dir`                                                                                                                 | `cd DIR`, then `ned` there            |
 
 `files` is an array of paths and globs, `workspace` a boolean for `-w`,
-`script`, `selector`, `commit` (`--commit`'s message), `comment` and `topic` are
-strings, and the rest are booleans for the flags of the same names. `selector`
-is written as after `show`, so `all /re/ +2` works; one that holds more than a
-selector, such as `fn:a; delete fn:b`, is a usage error. A `ned` script may be
-`!!` (§1.2), which repeats on the last script's file set unless the call gives
-`files` or `workspace`. `comment` says what the call is for, for a human
+`script`, `selector`, `commit` (`--commit`'s message), `comment`, `topic` and
+`dir` are strings, and the rest are booleans for the flags of the same names.
+`selector` is written as after `show`, so `all /re/ +2` works; one that holds
+more than a selector, such as `fn:a; delete fn:b`, is a usage error. A `ned`
+script may be `!!` (§1.2), which repeats on the last script's file set unless
+the call gives `files` or `workspace`. `comment` says what the call is for, for
 following the session: it is recorded in the call's entry, and a REPL attached
 to the session prints it with the call's edits (§1.4); an empty one is none. The
 `ned` tool's description is the `ned help` summary, so an agent has the language
-without asking; `outline`, `show`, `history` and `help` are marked read-only.
+without asking; `outline`, `show`, `history`, `help` and `cd` are marked
+read-only.
+
+`cd` moves the server, for the rest of its life, as if it had been started in
+`dir` (relative to its working directory): `dir` becomes its working directory,
+which later calls' `files` are relative to, and its workspace becomes the one
+detected from `dir` (§1.1), for `workspace`, the daemon and the session. In the
+same workspace, the server keeps its session, so `!!` and `undo` reach its
+earlier calls. In another, a session named with `-s` or `NED_SESSION` keeps its
+name, in the new workspace; otherwise the server records into the first `mcp-N`
+that the new workspace has no log for, so it never records into another server's
+session. It prints `workspace ROOT, recording in session NAME` and records
+nothing. A `dir` that doesn't exist or isn't a directory is an error (exit 3),
+and the server stays where it was.
 
 ## 2. Scripts
 

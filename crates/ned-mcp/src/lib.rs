@@ -2,18 +2,19 @@
 //! on stdio, one message per line.
 
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ned_core::help;
-use ned_core::invoke::{self, Invocation, Output};
+use ned_core::invoke::{self, Failure, Invocation, Output};
 use ned_core::lang::Language;
 use ned_core::lsp::Lsp;
 use ned_core::script::{
     self,
     ast::{Command, CommandKind},
 };
-use ned_core::session::Session;
+use ned_core::session::{self, Session};
 use ned_core::style::Style;
+use ned_core::workspace;
 use serde_json::{Value, json};
 
 /// The protocol versions the server speaks, latest first.
@@ -29,6 +30,9 @@ pub struct Server<C> {
     pub cwd: PathBuf,
     pub root: PathBuf,
     pub session: Session,
+    /// Whether the session was named (`-s`, `NED_SESSION`), so it keeps its
+    /// name in a new workspace.
+    pub named: bool,
     /// `--lang`, for every call.
     pub lang: Option<Option<Language>>,
     /// `--context`, for every call.
@@ -37,6 +41,17 @@ pub struct Server<C> {
     pub version: String,
     /// The language servers for a workspace's root.
     pub connect: C,
+}
+
+/// Session `name`, or the first `mcp-N` the workspace at `root` has no log
+/// for, which it creates.
+pub fn open_session(name: Option<&str>, root: &Path) -> Result<Session, Failure> {
+    match name {
+        Some(name) => invoke::open(name, root),
+        None => session::state_dir()
+            .and_then(|state| session::next_free(&state, root, "mcp"))
+            .map_err(invoke::failure),
+    }
 }
 
 impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
@@ -157,6 +172,10 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             }
             "history" => self.history(args.flag("all")?, &mut transcript),
             "undo" => self.undo(args.flag("force")?, &mut transcript),
+            "cd" => {
+                let dir = args.required("dir")?;
+                self.cd(&dir, &mut transcript)
+            }
             "help" => match help::text(args.string("topic")?.as_deref()) {
                 Ok(text) => {
                     transcript.out(text);
@@ -168,8 +187,14 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
                 }
             },
             _ => {
-                let error =
-                    format!("unknown tool `{name}`; tools are ned outline show history undo help");
+                let tools = tools();
+                let names: Vec<&str> = tools
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|tool| tool["name"].as_str())
+                    .collect();
+                let error = format!("unknown tool `{name}`; tools are {}", names.join(" "));
                 return Err((INVALID_PARAMS, error));
             }
         };
@@ -241,6 +266,70 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             Ok(()) => 0,
             Err(failure) => invoke::fail(failure, out),
         }
+    }
+
+    /// Moves the server to `dir`, returning the exit code.
+    fn cd(&mut self, dir: &str, out: &mut Transcript) -> u8 {
+        let dir = self.cwd.join(dir);
+        let cwd = match dir.canonicalize() {
+            Ok(cwd) if cwd.is_dir() => cwd,
+            Ok(file) => {
+                let parent = file.parent().unwrap_or(&file);
+                let error = format!(
+                    "error: {} isn't a directory; give its directory, {}",
+                    dir.display(),
+                    parent.display()
+                );
+                return invoke::fail((error, 3), out);
+            }
+            Err(err) => {
+                return invoke::fail(
+                    (
+                        format!(
+                            "error: cannot read {}: {err}; give a directory relative to {}",
+                            dir.display(),
+                            self.cwd.display()
+                        ),
+                        3,
+                    ),
+                    out,
+                );
+            }
+        };
+        let root = workspace::root(&cwd).unwrap_or(cwd.clone());
+        let session = if self.root.canonicalize().is_ok_and(|old| old == root) {
+            None
+        } else {
+            let name = self.named.then(|| self.session.name().to_string());
+            match open_session(name.as_deref(), &root) {
+                Ok(session) => Some(session),
+                Err(failure) => return invoke::fail(failure, out),
+            }
+        };
+        // Scripts read their files, and git finds its repository, from the
+        // process's working directory.
+        if let Err(err) = std::env::set_current_dir(&cwd) {
+            return invoke::fail(
+                (
+                    format!(
+                        "error: cannot enter {}: {err}; give a directory you may enter",
+                        cwd.display()
+                    ),
+                    3,
+                ),
+                out,
+            );
+        }
+        if let Some(session) = session {
+            self.session = session;
+        }
+        out.out(&format!(
+            "workspace {}, recording in session {}\n",
+            root.display(),
+            self.session.name()
+        ));
+        (self.cwd, self.root) = (cwd, root);
+        0
     }
 }
 
@@ -459,6 +548,15 @@ fn tools() -> Value {
             }),
             &[],
         ),
+        tool(
+            "cd",
+            "Move the server to dir, as if started there, for the rest of the session: later calls' files are relative to it, and its workspace is dir's, and so is its session if that's another workspace",
+            true,
+            json!({
+                "dir": { "type": "string", "description": "The directory, relative to the server's working directory" },
+            }),
+            &["dir"],
+        ),
     ])
 }
 
@@ -508,6 +606,7 @@ mod tests {
         let mut server = Server {
             cwd: root.clone(),
             session: Session::new(&state.path().join("ned"), &root, "mcp-1").unwrap(),
+            named: false,
             root,
             lang: None,
             context: 1,
@@ -718,6 +817,18 @@ mod tests {
     }
 
     #[test]
+    fn an_unknown_tool_lists_every_tool() {
+        let params = json!({"name": "frobnicate", "arguments": {}});
+        let responses = serve(request(json!(1), "tools/call", params));
+        assert_eq!(error_code(&responses[0]), -32602);
+        let message = responses[0]["error"]["message"].as_str().unwrap();
+        assert!(
+            message.ends_with("; tools are ned outline show history undo help cd"),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn an_unknown_method_is_method_not_found() {
         let responses = serve(request(json!(3), "resources/list", json!({})));
         assert_eq!(error_code(&responses[0]), -32601);
@@ -732,7 +843,10 @@ mod tests {
     #[test]
     fn tools_list_has_every_tool() {
         let names: Vec<Value> = tools().iter().map(|tool| tool["name"].clone()).collect();
-        assert_eq!(names, ["ned", "outline", "show", "history", "undo", "help"]);
+        assert_eq!(
+            names,
+            ["ned", "outline", "show", "history", "undo", "help", "cd"]
+        );
     }
 
     #[test]
@@ -749,6 +863,7 @@ mod tests {
             ("history", true),
             ("undo", false),
             ("help", true),
+            ("cd", true),
         ] {
             let hint = &tool(name)["annotations"]["readOnlyHint"];
             assert_eq!(hint.as_bool().unwrap_or(false), read_only, "{name}");
@@ -792,6 +907,8 @@ mod tests {
         assert_eq!(properties("history"), ["all"]);
         assert_eq!(properties("undo"), ["force"]);
         assert_eq!(properties("help"), ["topic"]);
+        assert_eq!(properties("cd"), ["dir"]);
+        assert_eq!(required("cd"), json!(["dir"]));
         let files = &tool("ned")["inputSchema"]["properties"]["files"];
         assert_eq!(files["type"], "array");
         assert_eq!(files["items"]["type"], "string");

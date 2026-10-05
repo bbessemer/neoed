@@ -109,8 +109,9 @@ cp -r neoed/docs/skills/ned ~/.claude/skills/
 Claude then uses ned when it reads, searches or edits files.
 
 **MCP:** `ned mcp` serves the same scripts as tools (`ned`, `outline`, `show`,
-`history`, `undo`, `help`) over the Model Context Protocol, for agents without a
-shell. It records every call in a session, so `undo` and `!!` work there too:
+`history`, `undo`, `help`, and `cd` to move it) over the Model Context Protocol,
+for agents without a shell. It records every call in a session, so `undo` and
+`!!` work there too:
 
 ```sh
 claude mcp add ned -- ned mcp

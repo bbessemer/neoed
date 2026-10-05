@@ -6,7 +6,7 @@ use std::process::ExitCode;
 
 use clap::Args;
 use ned_core::invoke;
-use ned_core::{session, workspace};
+use ned_core::workspace;
 use ned_mcp::Server;
 
 use crate::{LangFlag, daemon};
@@ -40,13 +40,8 @@ pub fn run(args: McpArgs) -> ExitCode {
         },
         None => workspace::root(&cwd).unwrap_or(cwd.clone()),
     };
-    let session = match invoke::session_name(args.session) {
-        Some(name) => invoke::open(&name, &root),
-        None => session::state_dir()
-            .and_then(|dir| session::next_free(&dir, &root, "mcp"))
-            .map_err(invoke::failure),
-    };
-    let session = match session {
+    let name = invoke::session_name(args.session);
+    let session = match ned_mcp::open_session(name.as_deref(), &root) {
         Ok(session) => session,
         Err((error, code)) => {
             errln!("{error}");
@@ -58,6 +53,7 @@ pub fn run(args: McpArgs) -> ExitCode {
         cwd,
         root,
         session,
+        named: name.is_some(),
         lang: args.lang,
         context: args.context,
         version: env!("NED_VERSION").to_string(),

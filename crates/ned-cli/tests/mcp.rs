@@ -141,6 +141,19 @@ impl Workspace {
             .map(|line| serde_json::from_str(line).unwrap())
             .collect()
     }
+
+    fn root(&self) -> PathBuf {
+        self.dir.path().canonicalize().unwrap()
+    }
+
+    /// Makes `dir` a workspace of its own, nested in this one, holding `files`.
+    fn nest(&self, dir: &str, files: &[(&str, &str)]) {
+        let dir = self.dir.path().join(dir);
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        for (name, text) in files {
+            fs::write(dir.join(name), text).unwrap();
+        }
+    }
 }
 
 fn request(id: u64, method: &str, params: Value) -> Value {
@@ -552,6 +565,134 @@ fn a_comment_is_recorded_in_the_calls_entry() {
 fn a_comment_must_be_a_string() {
     let ws = Workspace::new(&[("a.rs", AB)]);
     let call = json!({ "name": "ned", "arguments": { "script": "show 1", "comment": 1 } });
+    let (responses, _) = ws.mcp(&[], &[request(1, "tools/call", call)]);
+    assert_eq!(responses[0]["error"]["code"], -32602);
+}
+
+#[test]
+fn cd_moves_the_files_workspace_and_session() {
+    let ws = Workspace::new(&[("a.rs", AB)]);
+    ws.nest("other", &[("b.rs", AB)]);
+    let script = r#"replace fn:a.name with "c""#;
+    let results = ws.calls(
+        &[],
+        &[
+            ("ned", json!({ "script": script, "files": ["a.rs"] })),
+            ("cd", json!({ "dir": "other" })),
+            ("ned", json!({ "script": script, "files": ["b.rs"] })),
+            ("history", json!({})),
+            ("cd", json!({ "dir": ".." })),
+            ("history", json!({})),
+        ],
+    );
+    let other = ws.root().join("other");
+    let moved = format!(
+        "workspace {}, recording in session mcp-1\n",
+        other.display()
+    );
+    assert_eq!(text(&results[1]), moved);
+    assert_eq!(ws.read("other/b.rs"), "fn c() {}\nfn b() {}\n");
+    let history = ws.printed(&["history", "-s", "mcp-1", "-w", "other"]);
+    assert!(history.starts_with("1 ok, 1 file: replace") && history.lines().count() == 1);
+    assert_eq!(text(&results[3]), history);
+    let back = format!(
+        "workspace {}, recording in session mcp-2\n",
+        ws.root().display()
+    );
+    assert_eq!(text(&results[4]), back);
+    assert_eq!(text(&results[5]), "");
+}
+
+#[test]
+fn cd_within_the_workspace_keeps_the_session() {
+    let ws = Workspace::new(&[("a.rs", AB)]);
+    fs::create_dir(ws.dir.path().join("sub")).unwrap();
+    fs::write(ws.dir.path().join("sub/b.rs"), AB).unwrap();
+    let script = r#"replace fn:a.name with "c""#;
+    let results = ws.calls(
+        &[],
+        &[
+            ("ned", json!({ "script": script, "files": ["a.rs"] })),
+            ("cd", json!({ "dir": "sub" })),
+            ("ned", json!({ "script": script, "files": ["b.rs"] })),
+            ("history", json!({})),
+        ],
+    );
+    let kept = format!(
+        "workspace {}, recording in session mcp-1\n",
+        ws.root().display()
+    );
+    assert_eq!(text(&results[1]), kept);
+    assert_eq!(
+        text(&results[3]).lines().count(),
+        2,
+        "{}",
+        text(&results[3])
+    );
+}
+
+#[test]
+fn cd_records_into_a_named_session_under_its_name() {
+    let ws = Workspace::new(&[]);
+    ws.nest("other", &[]);
+    let results = ws.calls(&["-s", "agent"], &[("cd", json!({ "dir": "other" }))]);
+    let other = ws.root().join("other");
+    let moved = format!(
+        "workspace {}, recording in session agent\n",
+        other.display()
+    );
+    assert_eq!(text(&results[0]), moved);
+}
+
+#[test]
+fn cd_takes_the_next_mcp_n_the_new_workspace_has_no_log_for() {
+    let ws = Workspace::new(&[]);
+    ws.nest("other", &[("b.rs", AB)]);
+    ws.ned(&["-s", "mcp-1", "-w", "other", "-e", "show 1"], "");
+    let results = ws.calls(&[], &[("cd", json!({ "dir": "other" }))]);
+    assert!(
+        text(&results[0]).ends_with(", recording in session mcp-2\n"),
+        "{}",
+        text(&results[0])
+    );
+}
+
+#[test]
+fn cd_to_somewhere_it_cant_go_fails_and_stays() {
+    let ws = Workspace::new(&[("a.rs", AB)]);
+    let results = ws.calls(
+        &[],
+        &[
+            ("cd", json!({ "dir": "nope" })),
+            ("cd", json!({ "dir": "a.rs" })),
+            ("outline", json!({ "files": ["a.rs"] })),
+        ],
+    );
+    for result in &results[..2] {
+        assert!(failed(result));
+        assert!(text(result).starts_with("error: "), "{result}");
+        assert!(text(result).ends_with("\nexit 3\n"), "{result}");
+    }
+    let root = ws.root();
+    let first = text(&results[0]).lines().next().unwrap();
+    assert!(first.contains("nope"), "{first}");
+    let fix = format!("; give a directory relative to {}", root.display());
+    assert!(first.ends_with(&fix), "{first}");
+    let second = text(&results[1]).lines().next().unwrap();
+    let fix = format!("; give its directory, {}", root.display());
+    assert!(second.ends_with(&fix), "{second}");
+    assert!(
+        text(&results[1]).contains("a.rs isn't a directory"),
+        "{}",
+        text(&results[1])
+    );
+    assert_eq!(text(&results[2]), ws.printed(&["a.rs", "-e", "outline"]));
+}
+
+#[test]
+fn cd_needs_a_dir() {
+    let ws = Workspace::new(&[]);
+    let call = json!({ "name": "cd", "arguments": {} });
     let (responses, _) = ws.mcp(&[], &[request(1, "tools/call", call)]);
     assert_eq!(responses[0]["error"]["code"], -32602);
 }
