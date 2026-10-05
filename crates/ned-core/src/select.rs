@@ -635,7 +635,7 @@ impl<'a> Matcher<'a> {
                 // `$` is the parent's last line, which is the file's at the top level.
                 let last = f
                     .buffer
-                    .byte_to_line(parent.end.saturating_sub(1).max(parent.start))
+                    .last_line(&parent)
                     .expect("parent within the buffer");
                 let (Some(first), Some(last)) = (
                     line_index(*start, count, last),
@@ -1748,13 +1748,11 @@ fn enclosing_side(f: &SourceFile, range: &Range<usize>, parent: &Range<usize>) -
 
 /// The 1-based line or line range `range` touches, as a line selector.
 pub(crate) fn line_numbers(buffer: &Buffer, range: &Range<usize>) -> String {
-    let line = |offset| buffer.byte_to_line(offset).expect("match within the file") + 1;
-    let first = line(range.start);
-    let last = if range.is_empty() {
-        first
-    } else {
-        line(range.end - 1)
-    };
+    let first = buffer
+        .byte_to_line(range.start)
+        .expect("match within the file")
+        + 1;
+    let last = buffer.last_line(range).expect("match within the file") + 1;
     if first == last {
         first.to_string()
     } else {

@@ -1080,11 +1080,7 @@ impl Executor<'_> {
                     let max = buffer.line_count().saturating_sub(1);
                     let line = |offset| buffer.byte_to_line(offset).unwrap_or(max).min(max);
                     let first = line(m.range.start);
-                    let last = if m.range.is_empty() {
-                        first
-                    } else {
-                        line(m.range.end - 1)
-                    };
+                    let last = buffer.last_line(&m.range).unwrap_or(max).min(max);
                     let count = buffer.line_count();
                     if cut.is_some_and(|end| end > count) {
                         let unit = if count == 1 { "line" } else { "lines" };
@@ -2925,6 +2921,19 @@ mod tests {
             exec(TEXT, "show \"2;\\n}\"").output,
             "a.rs:3-4\n3:    let y = 2;\n4:}\n"
         );
+    }
+
+    #[test]
+    fn show_ends_a_match_ending_in_a_multibyte_character_on_its_line() {
+        let text = "a\nxï\"y\nb\nc\n";
+        let expected = "a.rs:2\n2:xï\"y\n";
+        assert_eq!(exec(text, "show all \"ï\"").output, expected);
+        assert_eq!(exec(text, "show /xï/").output, expected);
+        let out = exec("xï\nxï\n", "replace \"ï\" with \"y\"");
+        let err = out.error();
+        assert!(err.contains("1>\"ï\""), "{err}");
+        let out = exec(text, "show \"ï\">$");
+        assert!(out.error().contains("it searched 2"), "{}", out.error());
     }
 
     #[test]
