@@ -154,9 +154,10 @@ edits checked while a daemon runs (introduced errors block unless
 `allow errors`), `rename`, and the `.refs`/`.def` parts (within the file set or
 `-w` workspace); the version names the build commit, and a daemon serves only
 its own build. With a daemon running, language servers format files whose
-formatters aren't installed, and `check` also waits for save-time checks
-(`cargo check`). §9 is done. Sessions (spec §1.2): `session` in `ned-core` keeps
-the per-workspace log, plans `undo` (`--force` merges with `diff::merge`) and
+formatters aren't installed, `check` also waits for save-time checks
+(`cargo check`), and written edits report what those checks find they
+introduced. §9 is done. Sessions (spec §1.2): `session` in `ned-core` keeps the
+per-workspace log, plans `undo` (`--force` merges with `diff::merge`) and
 expands `!!`; the CLI records every script run under `-s`/`NED_SESSION` and has
 `ned history`, `ned undo` and `ned session list|delete`. `--commit MSG` (`git`
 in `ned-core`) commits exactly an invocation's edits (in a session, every edit

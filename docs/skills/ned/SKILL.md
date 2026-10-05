@@ -93,8 +93,8 @@ In a session, the commit holds every edit since the session's last commit.
 3. Edit in one script, then read the diff that ned prints.
 4. `check` (or `check SEL`, `check SEL hint`) to see the language server's
    errors and warnings, instead of running the build. Edits are checked as they
-   apply while a daemon runs, but only `check` includes `cargo check`'s errors
-   (unresolved names, borrow errors), so run it after a Rust edit.
+   apply while a daemon runs, and once written, the checks run on save
+   (`cargo check`: unresolved names, borrow errors) report what they introduced.
 
 ```ned
 outline

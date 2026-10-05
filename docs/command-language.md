@@ -406,14 +406,9 @@ text, as `ned undo --force` merges (§1.2); an edit that overlaps the change is
 an error naming the line, and nothing is written. A created file that now
 exists, or a file removed since, is an error too. `:write!` writes the buffers
 as they are. A write runs no formatter or parse-error guard, and its edits were
-checked when they were made (§6.5), but checks a server runs on save (§6.5;
-rust-analyzer's `cargo check`) run now: if a daemon is running and `--no-check`
-isn't given, the servers diagnose each written file's text before the write as
-saved, then its written text as saved, and the diagnostics the write introduced
-(as §6.5 defines them, at `[check] show` or above) are printed after the
-`written` lines, in `check`'s format. They never undo the write. A file the
-write created has no diagnostics before it. A server that fails or doesn't
-answer in time skips this with a note.
+checked when they were made, but the checks servers run on save do run, as for
+any written edit (§6.5), and print what the write introduced after the `written`
+lines.
 
 `:commit MSG` takes the rest of the line as the message. It writes as `:write`
 does, then commits as `--commit MSG` does in a session (§1.3): every edit the
@@ -1478,8 +1473,15 @@ Positions don't count, since edits move them.
   with a note, and the edit applies:
   `note: rust-analyzer didn't answer diagnostics within 30s; it may still be indexing, so rerun in a few seconds; skipped checking src/parser.rs`.
 - If the edit isn't written, the servers are sent the original text again.
-- Checks a server runs on save (rust-analyzer's `cargo check`) don't run, since
-  the edit isn't written yet; run `check` after the edit for those.
+- Checks a server runs on save (rust-analyzer's `cargo check`) can't check an
+  edit before it's written. Once it is, they run: the servers diagnose each
+  written file's text before the write as saved, then its written text as saved,
+  and the diagnostics the write introduced, at `[check] show` or above, are
+  printed after the edit's output (before a `commit` line, §1.3), in `check`'s
+  format, except any the edit's check already printed. They don't block, as the
+  files are written; fix them with another edit. A file the write created has no
+  diagnostics before it. A dry run writes nothing, so it runs none. A server
+  that fails or doesn't answer in time skips this with a note.
 
 ### 6.6 Terminal output
 

@@ -837,8 +837,9 @@ diagnostics at `[check] show` level or above are printed after the diff, and new
 errors (or whatever `[check] block` says) reject the script. `allow errors` in
 the script or `--force` lets the edit through, and `--no-check` skips checking.
 Edits never start the daemon by themselves. Checks that a server only runs when
-a file is saved, such as `cargo check`, can't run before the edit is written, so
-run `check` afterwards to see them.
+a file is saved, such as `cargo check`, can't run before the edit is written;
+once it is, they run, and what they find the edit introduced is printed too,
+without rejecting it.
 
 ## Sessions
 

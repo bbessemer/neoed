@@ -410,6 +410,13 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf, prior: &[(u64, FileChang
         None => None,
     };
 
+    let before_save = match (cli.dry_run || cli.no_check, lsp.as_deref_mut()) {
+        (false, Some(lsp)) => apply::before_save(lsp, &changes, &mut messages),
+        _ => None,
+    };
+    for message in messages.drain(..) {
+        errln!("{message}");
+    }
     if !cli.dry_run {
         let writes: Vec<(PathBuf, String)> = changes
             .iter()
@@ -448,6 +455,14 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf, prior: &[(u64, FileChang
         style: styles().0,
     };
     out!("{}", apply::render(&changes, &finished, how));
+    if let (Some(before), Some(lsp)) = (before_save, lsp.as_deref_mut()) {
+        let style = styles().0;
+        let found = apply::after_save(lsp, before, &changes, &finished, style, &mut messages);
+        out!("{found}");
+        for message in messages.drain(..) {
+            errln!("{message}");
+        }
+    }
     if let Some(committed) = &committed {
         outln!(
             "{}",

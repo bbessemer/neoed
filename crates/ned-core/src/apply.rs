@@ -10,7 +10,7 @@ use crate::diff::{self, DiffStat};
 use crate::exec::Change;
 use crate::format::{self, Outcome};
 use crate::git::{FileEdit, GitError, Prepared, Repo};
-use crate::lsp::{self, Checked, Lsp, LspFailure, Severity};
+use crate::lsp::{self, Checked, Diagnostic, Lsp, LspFailure, Severity};
 use crate::session::FileChange;
 use crate::style::{Role, Style};
 
@@ -119,6 +119,68 @@ pub fn restore(lsp: &mut dyn Lsp, changes: &[Change], messages: &mut Vec<String>
     }
 }
 
+/// Starts checking a write with the checks servers run on save (spec §6.5),
+/// before the files are written; `None`, with a note in `messages`, if that
+/// failed.
+pub fn before_save(
+    lsp: &mut dyn Lsp,
+    changes: &[Change],
+    messages: &mut Vec<String>,
+) -> Option<lsp::BeforeSave> {
+    match lsp::before_save(lsp, changes) {
+        Ok(before) => Some(before),
+        Err(LspFailure(message)) => {
+            messages.push(skipped_on_save(&message, changes));
+            None
+        }
+    }
+}
+
+/// Finishes checking the write, once the files are written: the diagnostics it
+/// introduced that `finished`'s check didn't print, rendered.
+pub fn after_save(
+    lsp: &mut dyn Lsp,
+    before: lsp::BeforeSave,
+    changes: &[Change],
+    finished: &Finished,
+    style: Style,
+    messages: &mut Vec<String>,
+) -> String {
+    let finals = finished.finals(changes);
+    let saved = match lsp::check_saved(lsp, before, changes, &finals, finished.checked.as_ref()) {
+        Ok(saved) => saved,
+        Err(LspFailure(message)) => {
+            messages.push(skipped_on_save(&message, changes));
+            return String::new();
+        }
+    };
+    messages.extend(saved.notes.iter().map(|note| format!("note: {note}")));
+    let mut out = String::new();
+    for ((change, text), found) in changes.iter().zip(&finals).zip(&saved.files) {
+        out.push_str(&diagnostics(&change.path, text, found, style));
+    }
+    out
+}
+
+/// The note for checks on save that failed.
+fn skipped_on_save(message: &str, changes: &[Change]) -> String {
+    let paths: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
+    format!(
+        "note: {message}; skipped the checks run on save of {}",
+        paths.join(", ")
+    )
+}
+
+/// `found`, diagnostics of the file at `path` holding `text`, in `check`'s
+/// format.
+fn diagnostics(path: &str, text: &str, found: &[Diagnostic], style: Style) -> String {
+    let buffer = Buffer::new(text);
+    found
+        .iter()
+        .map(|d| lsp::render(path, &buffer, d, style))
+        .collect()
+}
+
 /// The error for an edit rejected by the diagnostics it introduces.
 fn blocked(changes: &[Change], finals: &[&str], checked: &Checked) -> String {
     let count = |severity| {
@@ -201,10 +263,12 @@ pub fn render(changes: &[Change], finished: &Finished, how: Render) -> String {
             }
         }
         if let Some(checked) = &finished.checked {
-            let buffer = Buffer::new(finals[i]);
-            for d in &checked.files[i] {
-                out.push_str(&lsp::render(&change.path, &buffer, d, style));
-            }
+            out.push_str(&diagnostics(
+                &change.path,
+                finals[i],
+                &checked.files[i],
+                style,
+            ));
         }
     }
     out
