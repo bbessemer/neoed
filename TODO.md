@@ -137,7 +137,7 @@ of either kind.
       text verbatim. A minor
 - [x] A sed-style `sub SEL /a/b/` says "`sub` takes `/re/ with TEXT`", instead
       of "unknown regex flag" or a hint about `SEL..SEL` ranges
-- [ ] `sub` with a literal before `with` (`sub 3 "- [ ]" with "- [x]"`) suggests
+- [x] `sub` with a literal before `with` (`sub 3 "- [ ]" with "- [x]"`) suggests
       `replace 3>"- [ ]" with "- [x]"`, since `sub` takes only a regex
 - [x] Context written `-N` (`show all "x" -3`) says context is `+N`, not a hint
       about `SEL..SEL` ranges

@@ -603,10 +603,32 @@ impl Parser<'_> {
                     }),
                     true,
                 ) if parts.is_empty() => (None, pattern),
+                (
+                    _,
+                    Some(Step {
+                        primary: Primary::Literal(_),
+                        parts,
+                        ..
+                    }),
+                    _,
+                ) if parts.is_empty() => {
+                    let selector = self.src[span.clone()].to_string();
+                    return Err(self.literal_sub(selector, span)?);
+                }
                 _ => return Err(ParseError::new(E::MissingSubPattern, span)),
             }
         } else {
             let token = self.bump()?;
+            if let TokenKind::Str(_) = token.kind
+                && self.peek_is_word("with")?
+            {
+                let selector = format!(
+                    "{}>{}",
+                    &self.src[first.selector.span.clone()],
+                    &self.src[token.span.clone()]
+                );
+                return Err(self.literal_sub(selector, token.span)?);
+            }
             let TokenKind::Regex { pattern, flags } = token.kind else {
                 return Err(ParseError::new(E::MissingSubPattern, token.span));
             };
@@ -630,6 +652,27 @@ impl Parser<'_> {
             pattern,
             text,
         })
+    }
+
+    /// The error for `selector`, a literal, before the `with` of a `sub`: the fix
+    /// is the `replace` that, like `sub`, replaces every match.
+    fn literal_sub(
+        &mut self,
+        selector: String,
+        span: Range<usize>,
+    ) -> Result<ParseError, ParseError> {
+        self.expect_with()?;
+        let token = self.bump()?;
+        // `$` is literal in `replace`: `$$` becomes `$`, and a group reference
+        // has no `replace` equivalent.
+        let text = match token.kind {
+            TokenKind::Str(text) if !text.replace("$$", "").contains('$') => {
+                self.src[token.span].replace("$$", "$")
+            }
+            _ => "...".into(),
+        };
+        let fix = format!("replace all {selector} with {text}");
+        Ok(ParseError::new(E::LiteralSub(fix), span))
     }
 
     /// `error`, or, if it falls in sed's `text/flags` after the command's last
@@ -1888,11 +1931,7 @@ mod tests {
 
     #[test]
     fn sub_needs_a_pattern() {
-        for src in [
-            r#"sub fn:x with "y""#,
-            r#"sub /x/.lines with "y""#,
-            r#"sub fn:x "y" with "z""#,
-        ] {
+        for src in [r#"sub fn:x with "y""#, r#"sub /x/.lines with "y""#] {
             assert_eq!(error(src).kind, E::MissingSubPattern, "{src:?}");
         }
     }
@@ -1906,6 +1945,41 @@ mod tests {
             r"`sub` already replaces every match; drop `all`: sub /x\/y/i with ..."
         );
         assert_eq!(e.span, 4..7);
+    }
+
+    #[test]
+    fn literal_sub_suggests_replace_all() {
+        for (src, fix) in [
+            (
+                r#"sub 1 "- [ ]" with "- [x]""#,
+                r#"replace all 1>"- [ ]" with "- [x]""#,
+            ),
+            (r#"sub "a" with "b""#, r#"replace all "a" with "b""#),
+            (
+                r#"sub fn:x>"a" with "b""#,
+                r#"replace all fn:x>"a" with "b""#,
+            ),
+            (
+                r#"sub all fn:x.body "a" with "b""#,
+                r#"replace all fn:x.body>"a" with "b""#,
+            ),
+            (r#"sub 1 "a" with "$$b""#, r#"replace all 1>"a" with "$b""#),
+            (r#"sub 1 "a" with "${0}b""#, r#"replace all 1>"a" with ..."#),
+            (r#"sub all "a" with "b""#, r#"replace all "a" with "b""#),
+            (
+                "sub 1 \"a\" with <<EOF\nb\nEOF",
+                r#"replace all 1>"a" with ..."#,
+            ),
+        ] {
+            assert_eq!(error(src).kind, E::LiteralSub(fix.into()), "{src:?}");
+        }
+        let e = error(r#"show 1 ; sub 3-5 "a" with "b""#);
+        assert_eq!(
+            e.kind.to_string(),
+            r#"`sub` takes a regex, not a literal; write replace all 3-5>"a" with "b""#
+        );
+        assert_eq!(e.span, 17..20);
+        assert_eq!(error(r#"sub 1 "a" "b""#).kind, E::MissingSubPattern);
     }
 
     #[test]
