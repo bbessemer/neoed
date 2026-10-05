@@ -47,6 +47,8 @@ pub struct Invocation {
     pub commit: Option<String>,
     /// The style of what goes to stdout.
     pub style: Style,
+    /// What the invocation is for, recorded with it.
+    pub comment: Option<String>,
 }
 
 /// The outcome of running a script, as a session records it.
@@ -125,6 +127,7 @@ pub fn invoke<L: Lsp>(
             error: ran.error,
             changes: ran.changes,
             commit: ran.commit,
+            comment: invocation.comment,
         };
         record(session, entry, out);
     }
@@ -469,6 +472,7 @@ pub fn undo(
         error: None,
         changes: undo.changes,
         commit: None,
+        comment: None,
     };
     if let Err(err) = log.append(entry) {
         let name = session.name();

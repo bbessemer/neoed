@@ -198,6 +198,9 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             context: self.context,
             commit: args.string("commit")?,
             style: Style::Plain,
+            comment: args
+                .string("comment")?
+                .filter(|comment| !comment.is_empty()),
         };
         let usage = if !invocation.files.is_empty() && invocation.workspace {
             Some("error: give `files` or `workspace`, not both")
@@ -393,6 +396,10 @@ fn tools() -> Value {
                 "script": {
                     "type": "string",
                     "description": "The script: commands separated by newlines or `;`",
+                },
+                "comment": {
+                    "type": "string",
+                    "description": "What the call is for, in a sentence: recorded in the session, and shown to a human following it",
                 },
                 "files": files,
                 "workspace": workspace,
@@ -766,6 +773,7 @@ mod tests {
         assert_eq!(
             properties("ned"),
             [
+                "comment",
                 "commit",
                 "dry_run",
                 "files",

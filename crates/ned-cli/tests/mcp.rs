@@ -125,6 +125,22 @@ impl Workspace {
         ws.git(&["commit", "-q", "-m", "init"]);
         ws
     }
+
+    /// The entries of the workspace's session `name`, as its log has them.
+    fn entries(&self, name: &str) -> Vec<Value> {
+        let sessions = self.state.path().join("ned/sessions");
+        let dir = fs::read_dir(sessions)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let log = fs::read_to_string(dir.join(format!("{name}.log"))).unwrap();
+        let lines = log.lines().skip(1);
+        lines
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
 }
 
 fn request(id: u64, method: &str, params: Value) -> Value {
@@ -501,4 +517,41 @@ fn undo_after_a_later_change_is_refused_unless_forced() {
     assert!(text(&results[0]).ends_with("\nexit 1\n"));
     assert!(!failed(&results[1]), "{}", text(&results[1]));
     assert_eq!(ws.read("a.rs"), "fn a() {}\nfn d() {}\n");
+}
+
+#[test]
+fn a_comment_is_recorded_in_the_calls_entry() {
+    let ws = Workspace::new(&[("a.rs", AB)]);
+    let script = r#"replace fn:a.name with "c""#;
+    ws.calls(
+        &[],
+        &[
+            (
+                "ned",
+                json!({ "script": script, "files": ["a.rs"], "comment": "Rename a\nfor clarity" }),
+            ),
+            (
+                "ned",
+                json!({ "script": "show 1", "files": ["a.rs"], "comment": "" }),
+            ),
+            ("outline", json!({ "files": ["a.rs"] })),
+        ],
+    );
+    let comments: Vec<Value> = ws
+        .entries("mcp-1")
+        .iter()
+        .map(|e| e["comment"].clone())
+        .collect();
+    assert_eq!(
+        comments,
+        [json!("Rename a\nfor clarity"), Value::Null, Value::Null]
+    );
+}
+
+#[test]
+fn a_comment_must_be_a_string() {
+    let ws = Workspace::new(&[("a.rs", AB)]);
+    let call = json!({ "name": "ned", "arguments": { "script": "show 1", "comment": 1 } });
+    let (responses, _) = ws.mcp(&[], &[request(1, "tools/call", call)]);
+    assert_eq!(responses[0]["error"]["code"], -32602);
 }

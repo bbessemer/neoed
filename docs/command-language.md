@@ -268,21 +268,22 @@ session name. Each later line is one entry, numbered from 1 in order. A last
 line cut short by an interrupted append is ignored, and the next append replaces
 it:
 
-| Field       | Value                                                                                          |
-| ----------- | ---------------------------------------------------------------------------------------------- |
-| `id`        | The entry's number                                                                             |
-| `time`      | Seconds since the Unix epoch                                                                   |
-| `cwd`       | The absolute working directory                                                                 |
-| `files`     | The `FILE` arguments as given                                                                  |
-| `workspace` | The `-w` workspace's absolute root, or `null`                                                  |
-| `script`    | The script (after `!!` expansion), or `null` for an undo or a write                            |
-| `undoes`    | The `id` an undo reverted, or `null`                                                           |
-| `write`     | Whether it is a REPL write (§1.4); read as `false` if missing                                  |
-| `dry_run`   | Whether `-n` was given                                                                         |
-| `exit`      | The exit code                                                                                  |
-| `error`     | The error message, or `null`                                                                   |
-| `changes`   | Per written file: `path` (absolute), `before` (`null` if created), `after` (`null` if removed) |
-| `commit`    | The commit that `--commit` made (§1.3), or `null`; read as `null` if missing                   |
+| Field       | Value                                                                                               |
+| ----------- | --------------------------------------------------------------------------------------------------- |
+| `id`        | The entry's number                                                                                  |
+| `time`      | Seconds since the Unix epoch                                                                        |
+| `cwd`       | The absolute working directory                                                                      |
+| `files`     | The `FILE` arguments as given                                                                       |
+| `workspace` | The `-w` workspace's absolute root, or `null`                                                       |
+| `script`    | The script (after `!!` expansion), or `null` for an undo or a write                                 |
+| `undoes`    | The `id` an undo reverted, or `null`                                                                |
+| `write`     | Whether it is a REPL write (§1.4); read as `false` if missing                                       |
+| `dry_run`   | Whether `-n` was given                                                                              |
+| `exit`      | The exit code                                                                                       |
+| `error`     | The error message, or `null`                                                                        |
+| `changes`   | Per written file: `path` (absolute), `before` (`null` if created), `after` (`null` if removed)      |
+| `commit`    | The commit that `--commit` made (§1.3), or `null`; read as `null` if missing                        |
+| `comment`   | What the call was for, from the MCP server's `comment` (§1.5), or `null`; read as `null` if missing |
 
 ### 1.3 Committing
 
@@ -456,16 +457,17 @@ holding its `commit`), so `ned undo` reverts a write and `--commit` includes it.
 `:attach NAME` (or `--attach NAME` at start) follows session `NAME`, an agent's
 say: it prints the session's last 10 history lines, then each entry another
 program appends, as its history line prefixed by the session's name followed by
-the hunks of each file it changed. The REPL records into `NAME` from then on, so
-a correction lands in the agent's history, and the agent's `ned undo` and `!!`
-see it. When an entry changes a file whose buffer has unwritten edits, the
-change is merged into the buffer as it arrives, as `:write` would merge it, and
-the file's new text becomes the buffer's base; a note says so. If the change
-overlaps the unwritten edits, the buffer is left as it was and the note names
-the line, so `:write` refuses until the overlap is resolved (`:write!`
-overwrites the change, `:reload` drops the edits). `:detach` stops following and
-records into the REPL's own session again. A session the workspace has no log
-for is an error listing its sessions.
+its comment (§1.5), if any, each line prefixed with `# `, and the hunks of each
+file it changed. The REPL records into `NAME` from then on, so a correction
+lands in the agent's history, and the agent's `ned undo` and `!!` see it. When
+an entry changes a file whose buffer has unwritten edits, the change is merged
+into the buffer as it arrives, as `:write` would merge it, and the file's new
+text becomes the buffer's base; a note says so. If the change overlaps the
+unwritten edits, the buffer is left as it was and the note names the line, so
+`:write` refuses until the overlap is resolved (`:write!` overwrites the change,
+`:reload` drops the edits). `:detach` stops following and records into the
+REPL's own session again. A session the workspace has no log for is an error
+listing its sessions.
 
 ### 1.5 MCP server
 
@@ -510,24 +512,26 @@ result has `isError` set and its text ends with the line `exit N`. A usage error
 (both `files` and `workspace`, or `commit` with `dry_run`, say) is such a
 result, with exit 2, not a protocol error.
 
-| Tool      | Arguments                                                                                                  | Runs                                  |
-| --------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| `ned`     | `script`, and optionally `files`, `workspace`, `dry_run`, `quiet`, `force`, `no_fmt`, `no_check`, `commit` | `ned [FILES \| -w] [FLAGS] -e SCRIPT` |
-| `outline` | `files` or `workspace`                                                                                     | `outline`                             |
-| `show`    | `selector`, and `files` or `workspace`                                                                     | `show SELECTOR`                       |
-| `history` | optionally `all`                                                                                           | `ned history [--all]`                 |
-| `undo`    | optionally `force`                                                                                         | `ned undo [--force]`                  |
-| `help`    | optionally `topic`                                                                                         | `ned help [TOPIC]`                    |
+| Tool      | Arguments                                                                                                             | Runs                                  |
+| --------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| `ned`     | `script`, and optionally `comment`, `files`, `workspace`, `dry_run`, `quiet`, `force`, `no_fmt`, `no_check`, `commit` | `ned [FILES \| -w] [FLAGS] -e SCRIPT` |
+| `outline` | `files` or `workspace`                                                                                                | `outline`                             |
+| `show`    | `selector`, and `files` or `workspace`                                                                                | `show SELECTOR`                       |
+| `history` | optionally `all`                                                                                                      | `ned history [--all]`                 |
+| `undo`    | optionally `force`                                                                                                    | `ned undo [--force]`                  |
+| `help`    | optionally `topic`                                                                                                    | `ned help [TOPIC]`                    |
 
 `files` is an array of paths and globs, `workspace` a boolean for `-w`,
-`script`, `selector`, `commit` (`--commit`'s message) and `topic` are strings,
-and the rest are booleans for the flags of the same names. `selector` is written
-as after `show`, so `all /re/ +2` works; one that holds more than a selector,
-such as `fn:a; delete fn:b`, is a usage error. A `ned` script may be `!!`
-(§1.2), which repeats on the last script's file set unless the call gives
-`files` or `workspace`. The `ned` tool's description is the `ned help` summary,
-so an agent has the language without asking; `outline`, `show`, `history` and
-`help` are marked read-only.
+`script`, `selector`, `commit` (`--commit`'s message), `comment` and `topic` are
+strings, and the rest are booleans for the flags of the same names. `selector`
+is written as after `show`, so `all /re/ +2` works; one that holds more than a
+selector, such as `fn:a; delete fn:b`, is a usage error. A `ned` script may be
+`!!` (§1.2), which repeats on the last script's file set unless the call gives
+`files` or `workspace`. `comment` says what the call is for, for a human
+following the session: it is recorded in the call's entry, and a REPL attached
+to the session prints it with the call's edits (§1.4); an empty one is none. The
+`ned` tool's description is the `ned help` summary, so an agent has the language
+without asking; `outline`, `show`, `history` and `help` are marked read-only.
 
 ## 2. Scripts
 

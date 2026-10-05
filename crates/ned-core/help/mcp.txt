@@ -8,8 +8,8 @@ can run scripts without a shell. Each tool's result is what ned prints;
 a failure sets isError and ends with `exit N`.
 
 Tools:
-  ned      script, files?, workspace?, dry_run?, quiet?, force?, no_fmt?,
-           no_check?, commit?           ned [FILES | -w] [FLAGS] -e SCRIPT
+  ned      script, comment?, files?, workspace?, dry_run?, quiet?, force?,
+           no_fmt?, no_check?, commit?  ned [FILES | -w] [FLAGS] -e SCRIPT
   outline  files | workspace            outline
   show     selector, files | workspace  show SELECTOR
   history  all?                         ned history [--all]
@@ -19,4 +19,5 @@ Tools:
 files are relative to the server's working directory; workspace is -w.
 It records every call in a session: -s NAME, NED_SESSION, or a new mcp-N,
 so `!!`, undo and history work as in the shell, and ned history shows the
-calls.
+calls. A `ned` call's comment says what it is for: it is recorded, and an
+attached REPL prints it with the call's edits.

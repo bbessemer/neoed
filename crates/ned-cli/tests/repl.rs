@@ -493,6 +493,44 @@ fn an_attached_repl_prints_each_entry_the_session_records() {
 }
 
 #[test]
+fn an_attached_repl_prints_an_entrys_comment() {
+    let ws = Workspace::new(&[("a.rs", AB)]);
+    ws.ned(&["-s", "agent", "a.rs", "-e", "show 1"], "");
+    let mut repl = Running::new(&ws, &["a.rs", "--context", "0"]);
+    repl.input(":attach agent");
+    repl.until("1 ok: show 1");
+    let arguments = serde_json::json!({
+        "script": "replace fn:a.name with \"c\"",
+        "files": ["a.rs"],
+        "comment": "Rename a\nfor clarity",
+    });
+    let call = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": { "name": "ned", "arguments": arguments },
+    });
+    let agent = ws.ned(&["mcp", "-s", "agent"], &format!("{call}\n"));
+    assert!(agent.status.success(), "{}", report(&agent));
+    repl.input("show 1");
+    let (rest, _) = repl.finish();
+    assert_eq!(
+        rest,
+        [
+            "agent 2 ok, 1 file: replace fn:a.name with \"c\"",
+            "# Rename a",
+            "# for clarity",
+            "a.rs: 1 edit, +1 -1",
+            "@@ -1,1 +1,1 @@",
+            "-fn a() {}",
+            "+fn c() {}",
+            "a.rs:1",
+            "1:fn c() {}",
+        ]
+    );
+}
+
+#[test]
 fn a_followed_change_that_overlaps_unwritten_edits_is_left_out() {
     let ws = Workspace::new(&[("a.rs", AB)]);
     ws.ned(&["-s", "agent", "a.rs", "-e", "show 1"], "");

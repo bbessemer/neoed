@@ -281,6 +281,7 @@ fn main() -> ExitCode {
         context: cli.context,
         commit: cli.commit,
         style: styles().0,
+        comment: None,
     };
     let exit = invoke::invoke(
         invocation,

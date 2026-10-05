@@ -196,6 +196,9 @@ impl Follow {
         for entry in entries.iter().filter(|e| !self.own.contains(&e.id)) {
             let line = session::history(std::slice::from_ref(entry), true);
             printed.push_str(&style.paint(Role::Header, &format!("{} {line}", self.name)));
+            for line in entry.comment.iter().flat_map(|comment| comment.lines()) {
+                printed.push_str(&format!("# {line}\n"));
+            }
             printed.push_str(&apply::file_changes(
                 &entry.changes,
                 &self.cwd,
@@ -371,6 +374,7 @@ impl Repl {
             error: ran.error,
             changes: Vec::new(),
             commit: None,
+            comment: None,
         };
         self.record(entry);
     }
@@ -508,6 +512,7 @@ impl Repl {
             error: None,
             changes: written,
             commit: committed.map(|c| c.prepared.commit),
+            comment: None,
         };
         self.record(entry);
         Ok(())

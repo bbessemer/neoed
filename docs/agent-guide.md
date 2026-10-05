@@ -59,9 +59,11 @@ can run `ned mcp` as an MCP server instead. Its `ned` tool takes a script, with
 `files` (or `workspace` for `-w`) and the flags as arguments, and its
 description is `ned help`, so the agent needs no prompt snippet. `outline`,
 `show`, `history`, `undo` and `help` are tools too, and each result is what
-`ned` would print. In Claude Code: `claude mcp add ned -- ned mcp`. The server
-records into `NED_SESSION`'s session if it's set, or a new `mcp-N` otherwise
-(`ned help mcp`).
+`ned` would print. A `ned` call's `comment` says what it is for: it's recorded
+in the session, and a REPL attached to it (`ned repl --attach NAME`) prints it
+with the call's edits. In Claude Code: `claude mcp add ned -- ned mcp`. The
+server records into `NED_SESSION`'s session if it's set, or a new `mcp-N`
+otherwise (`ned help mcp`).
 
 **Sessions.** With `NED_SESSION` set in the agent's environment, `ned` records
 its invocations, so the agent can undo an edit and repeat a failed command with

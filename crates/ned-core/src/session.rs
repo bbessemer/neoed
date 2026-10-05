@@ -39,6 +39,9 @@ pub struct Entry {
     /// The commit that `--commit` made (spec §1.3).
     #[serde(default)]
     pub commit: Option<String>,
+    /// What the call was for, from the MCP server's `comment` (spec §1.5).
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// A file an entry wrote.
@@ -898,6 +901,7 @@ mod tests {
                 after: Some("new\n".into()),
             }],
             commit: None,
+            comment: None,
         }
     }
 
