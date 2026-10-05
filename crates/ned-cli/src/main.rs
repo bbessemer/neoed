@@ -65,7 +65,7 @@ struct Cli {
     #[arg(short, long, value_name = "DIR", num_args = 0..=1, conflicts_with = "files")]
     workspace: Option<Option<PathBuf>>,
     /// A script to run; repeat to join several with newlines. Without -e, the
-    /// script is read from stdin.
+    /// script is read from stdin; with -e, only in the place of a `-e -`.
     #[arg(short = 'e', value_name = "SCRIPT")]
     scripts: Vec<String>,
     /// Resolve and apply edits in memory and print the output, but write
@@ -286,16 +286,18 @@ fn main() -> ExitCode {
         errln!("error: {err}");
         return ExitCode::from(2);
     }
-    let src = if cli.scripts.is_empty() {
-        let mut src = String::new();
-        if let Err(err) = io::stdin().read_to_string(&mut src) {
+    let mut scripts = cli.scripts.clone();
+    if scripts.is_empty() {
+        scripts.push("-".to_string());
+    }
+    if let Some(script) = scripts.iter_mut().find(|script| *script == "-") {
+        script.clear();
+        if let Err(err) = io::stdin().read_to_string(script) {
             errln!("error: cannot read the script from stdin: {err}");
             return ExitCode::from(2);
         }
-        src
-    } else {
-        cli.scripts.join("\n")
-    };
+    }
+    let src = scripts.join("\n");
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let root = match &cli.workspace {
         Some(Some(dir)) => match dir.canonicalize() {
@@ -506,6 +508,9 @@ fn usage_error(cli: &Cli) -> Option<String> {
             files.join(" "),
             words.join(" ")
         ));
+    }
+    if cli.scripts.iter().filter(|script| *script == "-").count() > 1 {
+        return Some("stdin holds one script; give `-e -` once".to_string());
     }
     None
 }

@@ -1,7 +1,7 @@
 ned: a line editor for coding agents. A script is one transaction: every edit
 applies, or none does.
 
-  ned [FLAGS] [FILE... | -w [DIR]] -e SCRIPT   (or the script on stdin)
+  ned [FLAGS] [FILE... | -w [DIR]] -e SCRIPT   (or on stdin; -e - too)
   ned help [TOPIC]
   ned daemon start|status|stop [DIR]           (language servers)
   ned history|undo|session ...                 (see `session`)

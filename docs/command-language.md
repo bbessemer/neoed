@@ -31,6 +31,10 @@ a usage error suggesting it first, with the flags it takes (`ned undo -s x`).
 - Without `-e`, the script is read from stdin. If stdin is a terminal, `ned`
   starts the REPL (§1.4) on the file set instead, with the same flags; a flag
   the REPL doesn't take is a usage error.
+- With `-e`, stdin is read only where `-e -` names it: its script runs in that
+  place among the `-e` scripts, so `ned -e 'file a.rs' -e - <<'EOF'` runs both.
+  Otherwise stdin is left alone, so `ned` in a `while read` loop doesn't take
+  the loop's input. Giving `-e -` twice is a usage error.
 - A `FILE` that doesn't exist but is a command's name (`ned outline a.rs`) is a
   usage error suggesting the `-e` form (`ned a.rs -e 'outline'`).
 - `FILE...` sets the initial **file set** (§2.4). A script may also name files

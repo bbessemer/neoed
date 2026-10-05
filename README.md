@@ -128,7 +128,7 @@ for the rest.
 ## Usage
 
 ```
-ned [FLAGS] [FILE... | -w [DIR]] -e SCRIPT   (or the script on stdin)
+ned [FLAGS] [FILE... | -w [DIR]] -e SCRIPT   (or on stdin; -e - too)
 ned help [TOPIC]
 ned daemon start|status|stop [DIR]
 ned history|undo [-s NAME] [-w DIR]

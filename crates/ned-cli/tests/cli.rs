@@ -547,6 +547,108 @@ fn file_command_sets_files_without_arguments() {
     ");
 }
 
+/// Runs `ned ARGS` in `dir` with `stdin` and returns its stdout, checking it
+/// succeeded.
+fn ned_with_stdin(dir: &Path, args: &[&str], stdin: Stdio) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_ned"))
+        .current_dir(dir)
+        .env_remove("NED_SESSION")
+        .args(args)
+        .stdin(stdin)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", report(&out));
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn e_dash_runs_the_script_on_stdin_in_its_place() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let args = ["-e", "file parser.rs", "-e", "-", "-e", "show $"];
+    assert_snapshot!(ned(dir.path(), &args, "show 1\nshow 2\n"), @r"
+    exit: 0
+    --- stdout
+    parser.rs:1
+    1:use std::fmt;
+    parser.rs:2
+    2:
+    parser.rs:22
+    22:}
+    --- stderr
+    ");
+}
+
+#[test]
+fn e_leaves_stdin_unread_without_e_dash() {
+    let dir = dir_with(&[("parser.rs", PARSER), ("list", "b.rs\n")]);
+    let stdin = fs::File::open(dir.path().join("list")).unwrap();
+    let rest = stdin.try_clone().unwrap();
+    let out = ned_with_stdin(dir.path(), &["parser.rs", "-e", "show 1"], stdin.into());
+    assert_snapshot!(out, @r"
+    parser.rs:1
+    1:use std::fmt;
+    ");
+    assert_eq!(std::io::read_to_string(rest).unwrap(), "b.rs\n");
+}
+
+#[test]
+fn e_dash_reads_stdin_once() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let args = ["parser.rs", "-e", "-", "-e", "-"];
+    assert_snapshot!(ned(dir.path(), &args, "show 1"), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: stdin holds one script; give `-e -` once
+    ");
+}
+
+#[test]
+fn repeating_a_script_leaves_piped_stdin_alone() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let state = tempfile::tempdir().unwrap();
+    let env = [("XDG_STATE_HOME", state.path().to_str().unwrap())];
+    let run = |args: &[&str]| ned_with(dir.path(), NO_FORMATTERS, &env, args, "show 1\n");
+    run(&["-s", "two", "parser.rs", "-e", "show 2"]);
+    assert_snapshot!(run(&["-s", "two", "-e", "!!"]), @r"
+    exit: 0
+    --- stdout
+    parser.rs:2
+    2:
+    --- stderr
+    note: repeating 1: show 2
+    ");
+}
+
+#[test]
+fn e_does_not_wait_on_an_open_pipe() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ned"))
+        .current_dir(dir.path())
+        .env_remove("NED_SESSION")
+        .args(["parser.rs", "-e", "show 1"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = std::time::Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if start.elapsed() > std::time::Duration::from_secs(10) {
+            child.kill().unwrap();
+            panic!("ned waited on an open stdin");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let stdin = child.stdin.take();
+    let out = child.wait_with_output().unwrap();
+    drop(stdin);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "parser.rs:1\n1:use std::fmt;\n"
+    );
+}
+
 #[test]
 fn dry_run_prints_but_does_not_write() {
     let dir = dir_with(&[("parser.rs", PARSER)]);

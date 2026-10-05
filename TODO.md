@@ -129,11 +129,11 @@ of either kind.
 - [x] `show` with a line range past the end of the file shows up to the last
       line, with a note, instead of an error (`show 1-60` on a 57-line file);
       edits keep the error
-- [ ] `-e` plus a script on stdin runs both: the `-e` scripts first, then stdin,
-      joined with newlines as several `-e`s are (today stdin is ignored
-      silently, so `ned -e 'file X' <<'EOF' ... EOF` drops the heredoc). A
-      minor, since §1 changes. Decide how not to wait on an open pipe that never
-      closes, which `-e` alone doesn't read today
+- [x] `-e` plus a script on stdin runs both, where `-e -` names stdin, joined
+      with newlines as several `-e`s are (today stdin is ignored silently, so
+      `ned -e 'file X' <<'EOF' ... EOF` drops the heredoc). A minor, since §1
+      changes. Decide how not to wait on an open pipe that never closes, which
+      `-e` alone doesn't read today
 - [ ] An any-kind selector matches a name whatever its kind, when that is
       unique, so a long script needn't guess `const:` versus `var:` (syntax to
       decide: `item:NAME`, `*:NAME` or a bare name). A minor

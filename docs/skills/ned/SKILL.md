@@ -355,7 +355,7 @@ it too.
   newline, whether or not the string does.
 - **Always give a script.** Without `-e` or a heredoc, `ned` reads the script
   from stdin: on a terminal that's an error, but an open pipe that never closes
-  makes it wait.
+  makes it wait. With `-e`, `-e -` adds the heredoc's script in its place.
 - **Ranges inside a scope.** `..` binds tighter than `>`, so scope a range once:
   `fn:f>/start/../end/`, not `fn:f>/start/..fn:f>/end/`. A `+N` after a selector
   is `show`'s context, not a line offset.
