@@ -84,7 +84,7 @@ session automatically.
       from `ned-cli` into `ned-core`
 - [x] `ned-mcp` protocol (initialize, ping, tools/list) and `ned mcp`
 - [x] `ned`, `outline`, `show` and `help` tools
-- [ ] `history` and `undo` tools
+- [x] `history` and `undo` tools
 - [ ] README, agent guide and skill
 
 Version: minor; a new subcommand.

@@ -155,6 +155,8 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
                     self.run(script, &args, &mut transcript)?
                 }
             }
+            "history" => self.history(args.flag("all")?, &mut transcript),
+            "undo" => self.undo(args.flag("force")?, &mut transcript),
             "help" => match help::text(args.string("topic")?.as_deref()) {
                 Ok(text) => {
                     transcript.out(text);
@@ -218,6 +220,24 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             &mut self.connect,
             out,
         ))
+    }
+
+    /// `ned history [--all]` of the session, returning the exit code.
+    fn history(&self, all: bool, out: &mut Transcript) -> u8 {
+        match invoke::history(&self.session, all, out) {
+            Ok(()) => 0,
+            Err(failure) => invoke::fail(failure, out),
+        }
+    }
+
+    /// `ned undo [--force]` in the session, returning the exit code.
+    fn undo(&self, force: bool, out: &mut Transcript) -> u8 {
+        // Canonical, as the paths an undo reverts are, to show them relative to it.
+        let cwd = self.cwd.canonicalize().unwrap_or(self.cwd.clone());
+        match invoke::undo(&self.session, cwd, force, Style::Plain, out) {
+            Ok(()) => 0,
+            Err(failure) => invoke::fail(failure, out),
+        }
     }
 }
 
@@ -658,8 +678,8 @@ mod tests {
             "argument `topic` must be a string; quote it, as in `\"topic\": \"...\"`"
         );
         assert_eq!(
-            call("ned", json!({"script": "outline", "dry_run": "yes"})),
-            "argument `dry_run` must be a boolean; give `true` or `false`"
+            call("history", json!({"all": "yes"})),
+            "argument `all` must be a boolean; give `true` or `false`"
         );
         assert_eq!(
             call("outline", json!({"files": "a.rs"})),

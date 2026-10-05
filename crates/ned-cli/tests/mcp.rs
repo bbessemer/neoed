@@ -436,3 +436,69 @@ fn unknown_tools_and_bad_arguments_are_invalid_params() {
         assert_eq!(response["error"]["code"], -32602, "{response}");
     }
 }
+
+#[test]
+fn history_lists_the_sessions_calls() {
+    let ws = Workspace::new(&[("a.rs", AB)]);
+    let script = r#"replace fn:a.name with "c""#;
+    let results = ws.calls(
+        &[],
+        &[
+            ("ned", json!({ "script": script, "files": ["a.rs"] })),
+            ("outline", json!({ "files": ["a.rs"] })),
+            ("history", json!({})),
+            ("history", json!({ "all": true })),
+        ],
+    );
+    assert_eq!(text(&results[2]), ws.printed(&["history", "-s", "mcp-1"]));
+    let all = ws.printed(&["history", "-s", "mcp-1", "--all"]);
+    assert_eq!(text(&results[3]), all);
+    assert!(all.starts_with("1 ok, 1 file: replace"), "{all}");
+}
+
+#[test]
+fn undo_reverts_the_last_edit_as_ned_undo_does() {
+    let (ws, twin) = (
+        Workspace::new(&[("a.rs", AB)]),
+        Workspace::new(&[("a.rs", AB)]),
+    );
+    let script = r#"replace fn:a.name with "c""#;
+    let results = ws.calls(
+        &[],
+        &[
+            ("ned", json!({ "script": script, "files": ["a.rs"] })),
+            ("undo", json!({})),
+            ("undo", json!({})),
+        ],
+    );
+    twin.ned(&["-s", "mcp-1", "a.rs", "-e", script], "");
+    assert_eq!(text(&results[1]), twin.printed(&["undo", "-s", "mcp-1"]));
+    assert_eq!(ws.read("a.rs"), AB);
+    assert!(failed(&results[2]));
+    assert_eq!(
+        text(&results[2]),
+        twin.printed(&["undo", "-s", "mcp-1"]) + "exit 1\n"
+    );
+    let history = ws.printed(&["history", "-s", "mcp-1"]);
+    assert!(history.ends_with("2 undo 1, 1 file\n"), "{history}");
+}
+
+#[test]
+fn undo_after_a_later_change_is_refused_unless_forced() {
+    let ws = Workspace::new(&[("a.rs", AB)]);
+    let script = r#"replace fn:a.name with "c""#;
+    ws.calls(
+        &["-s", "agent"],
+        &[("ned", json!({ "script": script, "files": ["a.rs"] }))],
+    );
+    fs::write(ws.dir.path().join("a.rs"), "fn c() {}\nfn d() {}\n").unwrap();
+    let results = ws.calls(
+        &["-s", "agent"],
+        &[("undo", json!({})), ("undo", json!({ "force": true }))],
+    );
+    assert!(failed(&results[0]), "{}", text(&results[0]));
+    assert!(text(&results[0]).contains("a.rs"), "{}", text(&results[0]));
+    assert!(text(&results[0]).ends_with("\nexit 1\n"));
+    assert!(!failed(&results[1]), "{}", text(&results[1]));
+    assert_eq!(ws.read("a.rs"), "fn a() {}\nfn d() {}\n");
+}
