@@ -20,3 +20,20 @@ default. [lsp] timeout = SECS (default 30) bounds each wait for a server.
 [daemon] idle_timeout = SECS (default 600). [check] show = LEVEL sets check's
 default level (warning); [check] block = LEVEL (default error) or false sets
 which introduced diagnostics reject an edit. An [lsp] server can be false.
+
+Themes colour output on 256-colour and truecolor terminals. Only the user
+config sets one: theme = "default-dark" (or default-light, a name under
+~/.config/ned/themes/, or a .toml path), or a table that changes one:
+
+  [theme]
+  from = "default-dark"
+  dark = true
+  added = "#98c379"
+  removed = "#e06c75"
+  [theme.syntax]
+  "function.method" = "#61afef bold"
+  [theme.ui]
+  hunk-header = "#56b6c2"
+
+Syntax keys are capture names (function.method falls back to function); ui
+keys: header, line-number, kind, dim, hunk-header, error, warning, info, note.

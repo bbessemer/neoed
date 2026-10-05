@@ -1589,7 +1589,8 @@ subcommand takes `--color` after its name: `ned undo --color always`. Uncoloured
 output is exactly as §6.1–6.5 and §7 give it, so output read by a program never
 changes.
 
-Colour changes only how output looks, not what it says:
+Colour changes only how output looks, not what it says. The colours below are
+the terminal's own 16, used when no theme (below) applies:
 
 - `show` prints each line's number right-aligned to the widest in its region,
   dimmed and followed by a space instead of `:`, then the line's code,
@@ -1604,6 +1605,61 @@ Colour changes only how output looks, not what it says:
 - On stderr, only the `error:` and `note:` that start a message are coloured,
   except in an error in the command line's options, which also colours the
   arguments it quotes and its usage.
+
+#### Themes
+
+A theme gives a colour to each highlight capture and output role. It applies
+only on a terminal that reports more than 16 colours: truecolor when `COLORTERM`
+is `truecolor` or `24bit`, else 256 colours when `TERM` contains `256color`,
+where each colour becomes the nearest of the xterm-256 palette's cube and grey
+ramp (by OKLab distance). On other terminals, and with no theme set, output uses
+the 16 colours above. A theme never sets the background.
+
+Only the user config sets a theme; `[theme]` or `theme` in a `.ned.toml` is an
+error. `theme = "NAME"` uses a theme as it is; a `[theme]` table writes one, or
+changes one named by `from`:
+
+```toml
+[theme]
+from = "default-dark"
+dark = true
+added = "#98c379"
+removed = "#e06c75"
+
+[theme.syntax]
+keyword = "#c678dd bold"
+"function.method" = "#61afef"
+
+[theme.ui]
+hunk-header = "#56b6c2"
+line-number = "dim"
+```
+
+- A name is a built-in theme (`default-dark`, `default-light`), else
+  `themes/NAME.toml` in the user config's directory. A value with a `/` or
+  ending in `.toml` is a path, relative to the file that names it.
+- A theme file holds a `[theme]` table's keys at its top level, and may itself
+  have `from`; a cycle is an error. Keys set beside `from` replace the ones it
+  gives, one key at a time.
+- `dark` says whether the theme is meant for a dark background; `added` and
+  `removed` colour added and removed lines. A theme must give all three, itself
+  or through `from`.
+- A colour is `#rrggbb`, followed by any of `bold`, `dim`, `italic` and
+  `underline`; a value may also be those words alone.
+- `[theme.syntax]` keys are highlight query capture names. A capture without its
+  own key takes its longest dotted prefix's (`function.method` falls back to
+  `function`); one with neither is not coloured.
+- `[theme.ui]` keys are `header`, `line-number`, `kind`, `dim`, `hunk-header`,
+  `error`, `warning`, `info` and `note`. One the theme leaves out looks as it
+  does with no theme.
+- An unknown key or bad value is an error at its location, as in §6.4.
+
+In a hunk, a removed or added line's sign and the text between its highlighted
+tokens take `removed` or `added`, and each token's colour is tinted by it. The
+tint multiplies each sRGB channel, from 0 to 1, by the line's colour's. A dark
+theme then sets the result's OKLab lightness back to the token colour's, so
+tinted code stays as legible on a dark background; a light theme keeps the
+darker result. Unchanged lines are highlighted as in `show`.
 
 ## 7. Errors and exit codes
 
