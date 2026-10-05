@@ -143,7 +143,7 @@ of either kind.
       about `SEL..SEL` ranges
 - [x] A file path as a selector step (`a.rs>fn:x`) suggests `file:a.rs>fn:x`
       rather than quoting `a` as a literal
-- [ ] A name with `{` (`import:a::b::{A, B}`) suggests the quoted name `outline`
+- [x] A name with `{` (`import:a::b::{A, B}`) suggests the quoted name `outline`
       prints (`import:"a::b::{A, B}"`), not "unexpected character `{`"
 - [ ] A part or filter picks the Nth line of a multi-line match, since `.lines`
       splits a match into every line and there is no `.lines.first` (syntax to

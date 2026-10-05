@@ -368,6 +368,7 @@ impl<'a> Lexer<'a> {
                     && let Some(err) = self
                         .dotted_name(word, &name)
                         .or_else(|| self.dashed_name(word, &name))
+                        .or_else(|| self.braced_name(word, &name))
                 {
                     return Err(err);
                 }
@@ -447,6 +448,31 @@ impl<'a> Lexer<'a> {
         Some(ParseError::new(
             E::DashedName(selector),
             self.pos..self.pos + 1,
+        ))
+    }
+
+    /// For an unquoted `kind:name` followed by `{`, such as Rust's
+    /// `import:a::{A, B}`, an error suggesting the quoted name up to the
+    /// matching `}` on the same command.
+    fn braced_name(&self, kind: &str, name: &str) -> Option<ParseError> {
+        let rest = self.src[self.pos..].strip_prefix('{')?;
+        let mut depth = 1;
+        let end = rest.find(|c| {
+            match c {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => {}
+            }
+            depth == 0 || matches!(c, '\n' | '\r' | ';' | '|')
+        })?;
+        if !rest[end..].starts_with('}') {
+            return None;
+        }
+        let braced = &self.src[self.pos..self.pos + end + 2];
+        let selector = syntax::selector(kind, &format!("{name}{braced}"));
+        Some(ParseError::new(
+            E::BracedName { selector },
+            self.pos..self.pos + braced.len(),
         ))
     }
 
@@ -934,6 +960,35 @@ mod tests {
         assert_eq!(kind("fn:a-/b/"), E::UnexpectedChar('-'));
         assert_eq!(kind(r#"import:"a"-b"#), E::UnexpectedChar('-'));
         assert_eq!(kind("fn:a -b"), E::UnexpectedChar('-'));
+    }
+
+    #[test]
+    fn braced_names_suggest_quoting() {
+        let braced = |src, selector: &str| {
+            let e = error(src);
+            assert_eq!(
+                e.kind,
+                E::BracedName {
+                    selector: selector.into()
+                },
+                "{src}"
+            );
+            e.span
+        };
+        let span = braced("show import:a::b::{A, B}", r#"import:"a::b::{A, B}""#);
+        assert_eq!(span, 18..24);
+        braced("import:c::{d::{E, F}, G}", r#"import:"c::{d::{E, F}, G}""#);
+        braced("show import:a::{b} | show fn:x", r#"import:"a::{b}""#);
+        // Without a matching `}` on the line, the `{` isn't part of a name.
+        assert_eq!(error("show import:a::{b").kind, E::UnexpectedChar('{'));
+        assert_eq!(
+            error("show import:a::{b\nshow c}").kind,
+            E::UnexpectedChar('{')
+        );
+        assert_eq!(
+            error("show import:a::{b | show c}").kind,
+            E::UnexpectedChar('{')
+        );
     }
 
     #[test]

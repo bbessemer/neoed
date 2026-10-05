@@ -73,6 +73,9 @@ pub enum ParseErrorKind {
         part: String,
         method: Option<String>,
     },
+    /// `selector` is the whole name up to the matching `}`, quoted.
+    #[error("unexpected character `{{`; quote a name that has braces: {selector}")]
+    BracedName { selector: String },
     #[error("line numbers start at 1; use 1 for the first line")]
     ZeroLine,
     #[error("expected a line number or `$` after `-`, e.g. 12-20 or 12-$")]
