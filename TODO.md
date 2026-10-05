@@ -141,7 +141,7 @@ of either kind.
       `replace 3>"- [ ]" with "- [x]"`, since `sub` takes only a regex
 - [x] Context written `-N` (`show all "x" -3`) says context is `+N`, not a hint
       about `SEL..SEL` ranges
-- [ ] A file path as a selector step (`a.rs>fn:x`) suggests `file:a.rs>fn:x`
+- [x] A file path as a selector step (`a.rs>fn:x`) suggests `file:a.rs>fn:x`
       rather than quoting `a` as a literal
 - [ ] A name with `{` (`import:a::b::{A, B}`) suggests the quoted name `outline`
       prints (`import:"a::b::{A, B}"`), not "unexpected character `{`"

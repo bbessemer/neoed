@@ -572,14 +572,14 @@ const PARTS: [(&str, Part); 16] = [
     ("base", Part::Base),
 ];
 
-fn part_named(name: &str) -> Option<Part> {
+pub(super) fn part_named(name: &str) -> Option<Part> {
     PARTS
         .iter()
         .find(|(n, _)| *n == name)
         .map(|&(_, part)| part)
 }
 
-fn is_ident_char(c: char) -> bool {
+pub(super) fn is_ident_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 

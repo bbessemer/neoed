@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use super::ast::*;
 use super::error::{COMMANDS, ParseError, ParseErrorKind as E};
-use super::lexer::{Lexer, Token, TokenKind};
+use super::lexer::{Lexer, Token, TokenKind, is_ident_char, part_named};
 use crate::lsp::Severity;
 use crate::syntax;
 
@@ -528,7 +528,7 @@ impl Parser<'_> {
 
     /// The primary `first` starts, which may be a range, `first..TO`.
     fn range(&mut self, first: Token) -> Result<Primary, ParseError> {
-        let from = primary(first)?;
+        let from = primary(self.src, first)?;
         let next = self.peek()?;
         if next.kind != TokenKind::DotDot {
             return Ok(from);
@@ -543,7 +543,7 @@ impl Parser<'_> {
         }
         Ok(Primary::Range {
             from: Box::new(from),
-            to: Box::new(primary(token)?),
+            to: Box::new(primary(self.src, token)?),
         })
     }
 
@@ -796,7 +796,7 @@ impl Parser<'_> {
     }
 }
 
-fn primary(token: Token) -> Result<Primary, ParseError> {
+fn primary(src: &str, token: Token) -> Result<Primary, ParseError> {
     Ok(match token.kind {
         TokenKind::Lines { start, end } => Primary::Lines { start, end },
         TokenKind::Regex { pattern, flags } => {
@@ -822,8 +822,58 @@ fn primary(token: Token) -> Result<Primary, ParseError> {
         TokenKind::Code(code) => Primary::Code(code),
         kind => match text_from(kind) {
             Ok(text) => Primary::Literal(text),
-            Err(kind) => return Err(expected("a selector", &Token { kind, ..token })),
+            Err(kind) => {
+                let token = Token { kind, ..token };
+                return Err(
+                    bare_path(src, &token).unwrap_or_else(|| expected("a selector", &token))
+                );
+            }
         },
+    })
+}
+
+/// For a bare word that starts a file path, such as `src/a.rs>fn:x`, an error
+/// suggesting the `file:` step that scopes to it.
+fn bare_path(src: &str, token: &Token) -> Option<ParseError> {
+    let TokenKind::Word(word) = &token.kind else {
+        return None;
+    };
+    let rest = &src[token.span.end..];
+    let selector_end = rest.find(|c: char| c.is_whitespace() || matches!(c, ';' | '|'));
+    let selector = &rest[..selector_end.unwrap_or(rest.len())];
+    let tail = &selector[..selector.find('>').unwrap_or(selector.len())];
+    let is_path = match tail.chars().next() {
+        Some('/') => tail.len() > 1,
+        // `x.body` is more likely a part after unquoted text than a file.
+        Some('.') => {
+            let ext = tail[1..].split(|c| !is_ident_char(c)).next().unwrap_or("");
+            !ext.is_empty() && part_named(ext).is_none()
+        }
+        _ => false,
+    };
+    is_path.then(|| {
+        let rest = &selector[tail.len()..];
+        // A quoted step or filter may hold the whitespace `selector` ended at.
+        let rest = if rest.contains(['"', '`', '/', '[', '<']) {
+            ">…"
+        } else {
+            rest
+        };
+        let file = format!("select the file with a `file:` step: file:{word}{tail}{rest}");
+        // Without a `/` or a step after it, `self.x` may be unquoted text.
+        let hint = if tail.contains('/') || !rest.is_empty() {
+            format!("; {file}")
+        } else {
+            format!("; quote literal text: \"{word}{tail}\", or {file}")
+        };
+        ParseError::new(
+            E::Expected {
+                expected: "a selector",
+                found: format!("`{word}{tail}`"),
+                hint,
+            },
+            token.span.start..token.span.end + tail.len(),
+        )
     })
 }
 
@@ -2094,6 +2144,42 @@ mod tests {
         assert_eq!(
             message("replace 3 with foo"),
             r#"expected text (a string or heredoc), found `foo`; quote literal text: "foo""#
+        );
+    }
+
+    #[test]
+    fn bare_paths_suggest_a_file_step() {
+        for (src, path, hint) in [
+            ("show a.rs>fn:a", "a.rs", "file:a.rs>fn:a"),
+            (
+                "show src/a.rs>fn:a; show 1",
+                "src/a.rs",
+                "file:src/a.rs>fn:a",
+            ),
+            (
+                "delete lib/mod.test.ts",
+                "lib/mod.test.ts",
+                "file:lib/mod.test.ts",
+            ),
+            (r#"show src/a.rs>"x y""#, "src/a.rs", "file:src/a.rs>…"),
+            ("show a.rs>fn[.len > 3]", "a.rs", "file:a.rs>…"),
+        ] {
+            assert_eq!(
+                message(src),
+                format!(
+                    "expected a selector, found `{path}`; select the file with a `file:` step: {hint}"
+                ),
+                "{src:?}"
+            );
+        }
+        assert_eq!(
+            message("show self.x"),
+            "expected a selector, found `self.x`; quote literal text: \"self.x\", \
+             or select the file with a `file:` step: file:self.x"
+        );
+        assert_eq!(
+            message("show x.body"),
+            r#"expected a selector, found `x`; quote literal text: "x""#
         );
     }
 
