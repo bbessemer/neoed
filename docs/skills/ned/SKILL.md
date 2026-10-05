@@ -299,7 +299,8 @@ it too.
 - **Formatting.** A configured formatter (rustfmt, gofmt, ruff or black,
   prettier) runs after the edit, and its changes are shown under `fmt NAME`; if
   none is installed and a daemon runs, the language server formats instead
-  (`fmt rust-analyzer`). `--no-fmt` skips it.
+  (`fmt rust-analyzer`). An edit that makes the formatter fail is rejected
+  (`--force` applies it anyway). `--no-fmt` skips it.
 - **Replacing an item keeps its doc comments and attributes** (`///`, `#[test]`,
   decorators) unless TEXT starts with its own; select `ITEM.whole` to replace
   them too. A field or variant keeps its trailing `,`: TEXT without one gets it

@@ -494,7 +494,7 @@ fn tools() -> Value {
                 "workspace": workspace,
                 "dry_run": flag("Apply the edits in memory and print them, but write nothing (-n)"),
                 "quiet": flag("Print only the per-file summary lines (-q)"),
-                "force": flag("Skip the parse-error guard and blocking on introduced errors (--force)"),
+                "force": flag("Skip the parse-error guard, and blocking on introduced errors or formatter failures (--force)"),
                 "no_fmt": flag("Don't run formatters (--no-fmt)"),
                 "no_check": flag("Don't check edits with language servers (--no-check)"),
                 "commit": {

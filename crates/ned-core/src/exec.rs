@@ -1706,6 +1706,8 @@ fn stage_input(l: &Loaded) -> Cow<'_, SourceFile> {
     }
 }
 
+const GUARD_MESSAGE: &str = "edit introduces a syntax error (use --force to apply anyway)";
+
 /// Rejects `new`, the edited text of `l`, if it has more syntax errors than
 /// its stage input (§4.3).
 fn guard(l: &Loaded, new: &str) -> Result<(), ExecError> {
@@ -1724,15 +1726,16 @@ fn guard(l: &Loaded, new: &str) -> Result<(), ExecError> {
     let suffix = common_len(f.text.bytes().rev(), new.bytes().rev())
         .min(f.text.len().min(new.len()) - prefix);
     let changed = prefix..new.len() - suffix;
-    let node = errors
+    let (node, message) = errors
         .iter()
-        .find(|n| n.start_byte() <= changed.end && changed.start <= n.end_byte())
+        .find(|(n, _)| n.start_byte() <= changed.end && changed.start <= n.end_byte())
         .unwrap_or(&errors[0]);
     // An `ERROR` node can start well before the edits, even span the file.
     let start = node.start_byte().max(changed.start.min(node.end_byte()));
     let (line, column) = location(new, start);
     Err(ExecError::new(
         ExecErrorKind::SyntaxError {
+            message: message.unwrap_or(GUARD_MESSAGE),
             location: format!("{}:{line}:{column}", f.path),
             hint: match l.sig_end {
                 Some(c) => {
@@ -1765,24 +1768,43 @@ fn escape_hint(text: &str) -> String {
 }
 
 /// The `ERROR` and `MISSING` nodes of `tree`, a parse of `text`, and the
-/// matches of `lang`'s error query, in source order.
-fn error_nodes<'t>(lang: Language, tree: &'t Tree, text: &str) -> Vec<Node<'t>> {
+/// `@error` captures of `lang`'s error query, in source order, each with the
+/// `message` its query pattern sets, if any.
+fn error_nodes<'t>(
+    lang: Language,
+    tree: &'t Tree,
+    text: &str,
+) -> Vec<(Node<'t>, Option<&'static str>)> {
     let mut out = Vec::new();
     let mut stack = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
         if node.is_error() || node.is_missing() {
-            out.push(node);
+            out.push((node, None));
         }
         if node.has_error() {
             stack.extend(node.children(&mut node.walk()));
         }
     }
+    let query = lang.errors();
+    let names = query.capture_names();
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(lang.errors(), tree.root_node(), text.as_bytes());
+    let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
     while let Some(m) = matches.next() {
-        out.extend(m.captures().iter().map(|c| c.node));
+        let message = query
+            .property_settings(m.pattern_index)
+            .iter()
+            .find(|s| &*s.key == "message")
+            .and_then(|s| s.value.as_deref());
+        out.extend(
+            m.captures()
+                .iter()
+                .filter(|c| names[c.index as usize] == "error")
+                .map(|c| (c.node, message)),
+        );
     }
-    out.sort_by_key(|n| (n.start_byte(), n.end_byte()));
+    out.sort_by_key(|(n, _)| (n.start_byte(), n.end_byte()));
+    // A query can match one node with each of several siblings.
+    out.dedup_by_key(|(n, _)| n.id());
     out
 }
 
@@ -2546,12 +2568,13 @@ pub enum ExecErrorKind {
     /// `note` is empty, or where relative paths start.
     #[error("glob `{glob}` matched nothing{note}")]
     NoGlobMatch { glob: String, note: String },
-    /// `location` is `PATH:LINE:COL`; `hint` is empty or a `; ` and a fix;
-    /// `excerpt` is empty, or a newline and the offending line with a caret.
-    #[error(
-        "{location}: edit introduces a syntax error (use --force to apply anyway){hint}{excerpt}"
-    )]
+    /// `message` is the generic one, or what the language's error query says
+    /// is wrong, with its fix; `location` is `PATH:LINE:COL`; `hint` is empty
+    /// or a `; ` and a fix; `excerpt` is empty, or a newline and the offending
+    /// line with a caret.
+    #[error("{location}: {message}{hint}{excerpt}")]
     SyntaxError {
+        message: &'static str,
         location: String,
         hint: String,
         excerpt: String,
@@ -4645,6 +4668,78 @@ fn main() {}
             "class A:\n    x = 1\n",
             "replace \"x = 1\" with \"pass\"",
         );
+        assert!(out.result.is_ok(), "{}", out.error());
+    }
+
+    const MACRO_BODY: &str = "fn f() {\n    todo!()\n}\n";
+
+    const MACRO_ERROR: &str =
+        "macro statement needs a `;` before the next statement; add one after its closing bracket";
+
+    #[test]
+    fn guard_rejects_a_rust_macro_statement_without_a_semicolon() {
+        let script = "insert end fn:f <<END\nfn g() {}\nEND";
+        let out = guarded("a.rs", MACRO_BODY, script);
+        assert!(out.error().contains(MACRO_ERROR), "{}", out.error());
+        let out = guarded(
+            "a.rs",
+            "fn f() {\n    x\n}\n",
+            "replace \"x\" with \"vec![1]\\nlet y = 2;\"",
+        );
+        assert!(out.error().contains(MACRO_ERROR), "{}", out.error());
+        let out = exec_with(&[("a.rs", MACRO_BODY)], 1, script);
+        assert_eq!(out.new_text(), "fn f() {\n    todo!()\n    fn g() {}\n}\n");
+    }
+
+    #[test]
+    fn guard_says_a_rust_macro_statement_needs_a_semicolon() {
+        let out = guarded("a.rs", MACRO_BODY, "insert end fn:f <<END\nfn g() {}\nEND");
+        let err = out.error();
+        assert!(
+            err.starts_with(&format!("error: a.rs:2:12: {MACRO_ERROR}")),
+            "{err}"
+        );
+        assert!(!err.contains("--force"), "{err}");
+        assert!(err.contains("\n2:    todo!()\n"), "{err}");
+    }
+
+    #[test]
+    fn guard_allows_rust_macros_that_need_no_semicolon() {
+        for (text, script) in [
+            (
+                "fn f() {\n    todo!();\n}\n",
+                "insert end fn:f \"let x = 1;\"",
+            ),
+            (
+                "fn f() {\n    foo! { a }\n}\n",
+                "insert end fn:f \"let x = 1;\"",
+            ),
+            (
+                "fn f() {\n    let x = 1;\n}\n",
+                "insert end fn:f \"vec![x]\"",
+            ),
+            (
+                "fn f() {\n    let x = 1;\n}\n",
+                "insert end fn:f \"println!(\\\"{x}\\\"); // done\"",
+            ),
+            (
+                "fn f() {\n    let x = 1;\n}\n",
+                "insert end fn:f \"bar!(x) // done\"",
+            ),
+            (
+                "fn f() {\n    let x = 1;\n}\n",
+                "insert end fn:f \"macro_rules! m { () => {} }\\nm!()\"",
+            ),
+        ] {
+            let out = guarded("a.rs", text, script);
+            assert!(out.result.is_ok(), "{script}: {}", out.error());
+        }
+    }
+
+    #[test]
+    fn guard_allows_rust_macro_statements_that_were_already_there() {
+        let text = "fn f() {\n    todo!()\n    let x = 1;\n}\n";
+        let out = guarded("a.rs", text, "insert end fn:f \"let y = 2;\"");
         assert!(out.result.is_ok(), "{}", out.error());
     }
 

@@ -36,8 +36,8 @@ pub struct ReplArgs {
     /// working directory, instead of FILES.
     #[arg(short, long, value_name = "DIR", num_args = 0..=1, conflicts_with = "files")]
     workspace: Option<Option<PathBuf>>,
-    /// Skip the parse-error guard: apply edits even if they introduce syntax
-    /// errors.
+    /// Skip the guards: apply edits even if they introduce syntax errors,
+    /// language-server errors or a formatter failure.
     #[arg(long)]
     force: bool,
     /// Don't run formatters.

@@ -48,8 +48,9 @@ Flags:
 - `-n`, `--dry-run`: Resolve and apply edits in memory, print the output, write
   nothing.
 - `-q`, `--quiet`: Print only the per-file summary lines on success (§6.3).
-- `--force`: Skip the parse-error guard (§4.3) and blocking on introduced
-  diagnostics (§6.5).
+- `--force`: Skip the parse-error guard (§4.3), blocking on introduced
+  diagnostics (§6.5), and rejecting a formatter failure an edit introduces
+  (§6.4).
 - `--no-check`: Don't check edits with language servers (§6.5).
 - `-w`, `--workspace [DIR]`: Start with every file in the workspace, `DIR` or
   the one detected (§1.1), instead of `FILE` arguments (§2.4).
@@ -1357,16 +1358,20 @@ rename impl:Parser>fn:new>"tokens" to toks
 For each modified file that has a language, `ned` counts the tree-sitter `ERROR`
 and `MISSING` nodes, and the matches of the language's
 `queries/<lang>/errors.scm` (code the grammar accepts but the language does not,
-such as an empty Python block), before and after each stage's edits (§2.3). If
-the count rises, the script is rejected (exit 1) and the error shows the first
-new error node the edits touch, from where the text first changes if the node
-starts before that (an `ERROR` node can span the whole file). If the edits
-replace a `.sig` with text ending in the character that follows it (Python's
-`:`, or the `{` of a body), the error adds that `.sig` stops before it. If the
-edited text holds an escape such as `\x27`, the error adds that heredocs read no
-escapes, and to pass a script that holds a `'` on stdin (§1). Conflict markers
-are hidden from the grammar (§3.3), so a file with merge conflicts can be
-edited. `--force` skips this check.
+such as an empty Python block, or a Rust macro call like `todo!()` with no `;`
+before another statement), before and after each stage's edits (§2.3). If the
+count rises, the script is rejected (exit 1) and the error shows the first new
+error node the edits touch, from where the text first changes if the node starts
+before that (an `ERROR` node can span the whole file). An error query's match
+may set a message saying what is wrong and how to fix it, which the error gives
+in place of the generic advice to use `--force`: for the Rust macro call,
+`macro statement needs a ; before the next statement; add one after its closing bracket`.
+If the edits replace a `.sig` with text ending in the character that follows it
+(Python's `:`, or the `{` of a body), the error adds that `.sig` stops before
+it. If the edited text holds an escape such as `\x27`, the error adds that
+heredocs read no escapes, and to pass a script that holds a `'` on stdin (§1).
+Conflict markers are hidden from the grammar (§3.3), so a file with merge
+conflicts can be edited. `--force` skips this check.
 
 ### 4.4 Directives
 
@@ -1560,6 +1565,11 @@ formatted.
   `note: rustfmt not found; skipped formatting src/parser.rs`, or
   `note: rustfmt failed: <first stderr line>; skipped formatting src/parser.rs`.
   The file is written unformatted and the exit code stays 0.
+- If the formatter fails on a modified file but succeeds on its text before the
+  script, the edit introduced the failure (code the parse-error guard can't
+  see), and the script is rejected (exit 1):
+  `error: src/parser.rs: edit makes rustfmt fail: <first stderr line>; fix it, or use --force to apply anyway`.
+  With `--force`, or for a file `create` makes, it is a note as above.
 - A file that still has merge conflicts (§3.3) isn't formatted, by its formatter
   or a language server, since formatting may rewrite its marker lines:
   `note: skipped formatting src/a.rs: it has merge conflicts`.
@@ -1867,10 +1877,10 @@ Exit codes:
 - `0`: Success, including dry runs and skipped formatters
 - `1`: Edit rejected: no match, ambiguous match, overlap, missing part, unknown
   kind, text file, line past the end, file not in the set, `create` of an
-  existing file, parse-error guard, introduced diagnostics, move into its own
-  source, rename refused, reaching outside the file set, ambiguous
-  `.refs`/`.def` result, nothing to undo, undo of a file changed or removed
-  since, undo merge overlap, a refused `--commit` (§1.3)
+  existing file, parse-error guard, introduced diagnostics, an introduced
+  formatter failure, move into its own source, rename refused, reaching outside
+  the file set, ambiguous `.refs`/`.def` result, nothing to undo, undo of a file
+  changed or removed since, undo merge overlap, a refused `--commit` (§1.3)
 - `2`: Usage error (bad flags or arguments, a command's name given as a `FILE`,
   a subcommand after a flag, no script on a terminal, no files to edit, a bad
   session name, no session, a bad `!!`, `--commit` with `-n` or outside a git

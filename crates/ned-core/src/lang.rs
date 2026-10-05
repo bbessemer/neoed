@@ -114,6 +114,7 @@ impl Language {
     pub fn errors(self) -> &'static Query {
         static QUERIES: [OnceLock<Query>; 7] = [const { OnceLock::new() }; 7];
         let source = match self {
+            Language::Rust => include_str!("../../../queries/rust/errors.scm"),
             Language::Python => include_str!("../../../queries/python/errors.scm"),
             _ => "",
         };

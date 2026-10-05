@@ -41,7 +41,7 @@ If no script is given and standard input is a terminal, ned starts
 | `-q`, `--quiet`           | Print only the summary line for each changed file.                                                                              |
 | `-w`, `--workspace [DIR]` | Start with every file in the workspace instead of a list of files. See [the file set](#the-file-set).                           |
 | `--lang LANG`             | Treat every file as `rust`, `python`, `go`, `javascript`, `typescript`, `tsx`, `markdown`, or `text` (which turns parsing off). |
-| `--force`                 | Apply edits even if they introduce syntax errors or new language-server errors.                                                 |
+| `--force`                 | Apply edits even if they introduce syntax errors, new language-server errors, or a formatter failure.                           |
 | `--no-fmt`                | Don't run formatters.                                                                                                           |
 | `--no-check`              | Don't check edits with language servers.                                                                                        |
 | `--context N`             | Show `N` lines of context around each diff hunk. The default is 1.                                                              |
@@ -790,7 +790,9 @@ files apply.
 | JavaScript, TypeScript, Markdown | `prettier`                                        |
 
 If the formatter isn't installed or fails, ned prints a note, writes the file
-unformatted, and still succeeds. If no formatter is installed but the
+unformatted, and still succeeds, unless the formatter succeeds on the file as it
+was before the edit: then the edit made it fail, and ned rejects it (`--force`
+writes it anyway). If no formatter is installed but the
 [daemon](#language-servers) is running, the language server formats the file
 instead. Files that still contain merge conflicts aren't formatted.
 
@@ -1045,12 +1047,12 @@ error: script:3:1: edit overlaps command 1 at src/parser.rs:14-17
 error: src/parser.rs:15:31: edit introduces a syntax error (use --force to apply anyway)
 ```
 
-| Code | Meaning                                                                                                                                       |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | Success, including dry runs and skipped formatters.                                                                                           |
-| 1    | The edit was rejected: no match, an ambiguous match, overlapping edits, a syntax error, new diagnostics, a refused undo or commit, and so on. |
-| 2    | A usage error, or an error in the script, a query, a pattern or the configuration, or no language server for the files.                       |
-| 3    | An I/O error: a file that can't be read or written, a glob that matches nothing, or a failing language server or git command.                 |
+| Code | Meaning                                                                                                                                                            |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0    | Success, including dry runs and skipped formatters.                                                                                                                |
+| 1    | The edit was rejected: no match, an ambiguous match, overlapping edits, a syntax error, new diagnostics, a formatter failure, a refused undo or commit, and so on. |
+| 2    | A usage error, or an error in the script, a query, a pattern or the configuration, or no language server for the files.                                            |
+| 3    | An I/O error: a file that can't be read or written, a glob that matches nothing, or a failing language server or git command.                                      |
 
 Whenever ned exits with a non-zero code, no file has been changed. Output from
 reads that ran before the failure is still printed.

@@ -654,7 +654,7 @@ fn dry_run_prints_but_does_not_write() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
     let out = ned(
         dir.path(),
-        &["-n", "parser.rs", "-e", "replace 15 with \"todo!()\""],
+        &["-n", "parser.rs", "-e", "replace 15 with \"todo!();\""],
         "",
     );
     assert_snapshot!(out, @r#"
@@ -664,7 +664,7 @@ fn dry_run_prints_but_does_not_write() {
     @@ -14,3 +14,3 @@
          pub fn parse(&mut self) -> Result<Ast, Error> {
     -        let tok = self.next().expect("unexpected end");
-    +        todo!()
+    +        todo!();
              self.parse_expr(tok)
     --- stderr
     "#);
@@ -694,7 +694,7 @@ fn context_sets_hunk_context() {
             "0",
             "parser.rs",
             "-e",
-            "replace 15 with \"todo!()\"",
+            "replace 15 with \"todo!();\"",
         ],
         "",
     );
@@ -704,7 +704,7 @@ fn context_sets_hunk_context() {
     parser.rs: 1 edit, +1 -1
     @@ -15,1 +15,1 @@
     -        let tok = self.next().expect("unexpected end");
-    +        todo!()
+    +        todo!();
     --- stderr
     "#);
 }
@@ -1561,6 +1561,81 @@ fn missing_formatter_is_a_note() {
     note: ned-no-such-formatter not found; skipped formatting a.rs
     ");
     assert_eq!(read(&dir, "a.rs"), "fn f() {\n    b();;\n}\n");
+}
+
+/// A directory with `a.rs` holding `text`, and a fake Rust formatter that
+/// fails on text holding `bad` and passes the rest unchanged.
+fn dir_with_failing_formatter(text: &str) -> TempDir {
+    let dir = dir_with(&[
+        ("a.rs", text),
+        (".ned.toml", "[format]\nrust = [\"./fmt.sh\"]\n"),
+        (
+            "fmt.sh",
+            "#!/bin/sh\ninput=$(cat)\ncase $input in *bad*) echo 'expected `;`' >&2; exit 1;; esac\nprintf '%s\\n' \"$input\"\n",
+        ),
+    ]);
+    let script = dir.path().join("fmt.sh");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    dir
+}
+
+#[test]
+fn a_formatter_failure_the_edit_introduced_writes_nothing() {
+    let dir = dir_with_failing_formatter(FN_A);
+    let out = ned(
+        dir.path(),
+        &["a.rs", "-e", r#"replace "a();" with "bad();""#],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: a.rs: edit makes fmt.sh fail: expected `;`; fix it, or use --force to apply anyway
+    ");
+    assert_eq!(read(&dir, "a.rs"), FN_A);
+}
+
+#[test]
+fn force_writes_an_introduced_formatter_failure_with_a_note() {
+    let dir = dir_with_failing_formatter(FN_A);
+    let out = ned(
+        dir.path(),
+        &[
+            "--force",
+            "-q",
+            "a.rs",
+            "-e",
+            r#"replace "a();" with "bad();""#,
+        ],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs: 1 edit, +1 -1
+    --- stderr
+    note: fmt.sh failed: expected `;`; skipped formatting a.rs
+    ");
+    assert_eq!(read(&dir, "a.rs"), "fn f() {\n    bad();\n}\n");
+}
+
+#[test]
+fn a_formatter_failure_that_was_already_there_is_a_note() {
+    let dir = dir_with_failing_formatter("fn f() {\n    bad();\n}\n");
+    let out = ned(
+        dir.path(),
+        &["-q", "a.rs", "-e", r#"replace "bad();" with "bad(1);""#],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs: 1 edit, +1 -1
+    --- stderr
+    note: fmt.sh failed: expected `;`; skipped formatting a.rs
+    ");
+    assert_eq!(read(&dir, "a.rs"), "fn f() {\n    bad(1);\n}\n");
 }
 
 #[test]

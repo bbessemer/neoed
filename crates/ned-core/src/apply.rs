@@ -8,7 +8,7 @@ use crate::buffer::Buffer;
 use crate::config::{self, Config, ConfigError};
 use crate::diff::{self, DiffStat};
 use crate::exec::Change;
-use crate::format::{self, Outcome};
+use crate::format::{self, Failure, Outcome};
 use crate::git::{FileEdit, GitError, Prepared, Repo};
 use crate::lang::Language;
 use crate::lsp::{self, Checked, Diagnostic, Lsp, LspFailure, Severity};
@@ -22,7 +22,7 @@ pub struct Settings {
     pub format: bool,
     /// Check the edits with language servers (not `--no-check`).
     pub check: bool,
-    /// `--force`: introduced diagnostics don't block.
+    /// `--force`: introduced diagnostics and formatter failures don't block.
     pub force: bool,
 }
 
@@ -57,9 +57,9 @@ impl Finished {
 
 /// Formats `changes`, falling back to language servers when `lsp` (a running
 /// daemon's) is given, and checks them with it. `messages` gets the lines for
-/// stderr, each starting `note:` or `error:`. Edits blocked by the diagnostics
-/// they introduce are rejected, after the servers are sent the original texts
-/// back.
+/// stderr, each starting `note:` or `error:`. Edits that make a formatter fail,
+/// or blocked by the diagnostics they introduce, are rejected, after the
+/// servers are sent the original texts back.
 pub fn finish(
     changes: &[Change],
     allow: Option<Severity>,
@@ -79,10 +79,30 @@ pub fn finish(
     if let Some(lsp) = lsp.as_deref_mut() {
         format::fallback(changes, &mut outcomes, lsp);
     }
-    for outcome in &outcomes {
-        if let Outcome::NotFound(note) | Outcome::Failed(note) = outcome {
-            messages.push(format!("note: {note}"));
+    let mut introduced = Vec::new();
+    for (change, outcome) in changes.iter().zip(&outcomes) {
+        match outcome {
+            Outcome::NotFound(note) | Outcome::Skipped(note) => {
+                messages.push(format!("note: {note}"));
+            }
+            Outcome::Failed(failure) if !settings.force && introduces(change, failure) => {
+                introduced.push(format!(
+                    "error: {}: edit makes {} fail: {}; fix it, or use --force to apply anyway",
+                    change.path, failure.name, failure.why
+                ));
+            }
+            Outcome::Failed(failure) => messages.push(format!("note: {}", failure.note())),
+            Outcome::Unchanged | Outcome::Formatted { .. } => {}
         }
+    }
+    if !introduced.is_empty() {
+        if let Some(lsp) = lsp {
+            restore(lsp, changes, messages);
+        }
+        return Err(Rejected {
+            exit: 1,
+            message: introduced.join("\n"),
+        });
     }
     let mut finished = Finished {
         outcomes,
@@ -110,6 +130,16 @@ pub fn finish(
     }
     finished.checked = Some(checked);
     Ok(finished)
+}
+
+/// Whether `change` introduced `failure`: its formatter passes the text the
+/// change replaced.
+fn introduces(change: &Change, failure: &Failure) -> bool {
+    !change.created
+        && !matches!(
+            failure.formatter.format(&change.path, &change.old),
+            Outcome::Failed(_)
+        )
 }
 
 /// Sends the servers the original texts of `changes` back, after an edit that
@@ -384,5 +414,105 @@ pub fn commit_error(err: &GitError, prior: &[(u64, FileChange)]) -> String {
             "error: {problem}, and session entry {id} edited it, so the session's edits can't be committed; start a new session (-s NAME) to commit only the edits from then on"
         ),
         None => format!("error: {err}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    /// A formatter that fails on text holding `bad`, and passes the rest.
+    const FAILS_ON_BAD: &str = "[format]\nrust = [\"sh\", \"-c\", \"input=$(cat); case $input in *bad*) echo 'bad input' >&2; exit 1;; esac; printf '%s\\\\n' \\\"$input\\\"\"]\n";
+
+    /// Finishes a change of `a.rs` from `old` to `new` (`None`: `create`
+    /// makes it), formatted by `FAILS_ON_BAD`.
+    fn finish_change(
+        old: Option<&str>,
+        new: &str,
+        force: bool,
+    ) -> (Result<Finished, Rejected>, Vec<String>) {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(".ned.toml"), FAILS_ON_BAD).unwrap();
+        let changes = [Change {
+            path: dir.path().join("a.rs").to_str().unwrap().into(),
+            old: old.unwrap_or_default().into(),
+            new: new.into(),
+            edits: 1,
+            lang: Some(Language::Rust),
+            created: old.is_none(),
+        }];
+        let settings = Settings {
+            format: true,
+            check: false,
+            force,
+        };
+        let mut messages = Vec::new();
+        let finished = finish(&changes, None, settings, None, &mut messages);
+        let dir = dir.path().to_str().unwrap();
+        let unrooted = |s: &str| s.replace(dir, "DIR");
+        let messages = messages.iter().map(|m| unrooted(m)).collect();
+        let finished = finished.map_err(|r| Rejected {
+            exit: r.exit,
+            message: unrooted(&r.message),
+        });
+        (finished, messages)
+    }
+
+    const NOTE: &str = "note: sh failed: bad input; skipped formatting DIR/a.rs";
+
+    #[test]
+    fn a_formatter_failure_the_edit_introduced_is_rejected() {
+        let (finished, messages) = finish_change(Some("fn f() {}\n"), "fn bad() {}\n", false);
+        assert_eq!(
+            finished,
+            Err(Rejected {
+                exit: 1,
+                message: "error: DIR/a.rs: edit makes sh fail: bad input; fix it, or use --force to apply anyway".into(),
+            })
+        );
+        assert!(messages.is_empty(), "{messages:?}");
+    }
+
+    #[test]
+    fn a_formatter_failure_on_the_old_text_too_is_a_note() {
+        let (finished, messages) = finish_change(Some("fn bad() {}\n"), "fn bad() { x }\n", false);
+        let finished = finished.unwrap();
+        assert!(
+            matches!(finished.outcomes[..], [Outcome::Failed(_)]),
+            "{finished:?}"
+        );
+        assert_eq!(messages, [NOTE]);
+    }
+
+    #[test]
+    fn force_keeps_an_introduced_formatter_failure_a_note() {
+        let (finished, messages) = finish_change(Some("fn f() {}\n"), "fn bad() {}\n", true);
+        assert!(finished.is_ok(), "{finished:?}");
+        assert_eq!(messages, [NOTE]);
+    }
+
+    #[test]
+    fn a_formatter_failure_on_a_created_file_is_a_note() {
+        let (finished, messages) = finish_change(None, "fn bad() {}\n", false);
+        assert!(finished.is_ok(), "{finished:?}");
+        assert_eq!(messages, [NOTE]);
+    }
+
+    #[test]
+    fn a_formatter_that_passes_formats() {
+        let (finished, messages) = finish_change(Some("fn f() {}\n"), "fn g() {}", false);
+        let finished = finished.unwrap();
+        assert_eq!(
+            finished.outcomes,
+            [Outcome::Formatted {
+                name: "sh".into(),
+                text: "fn g() {}\n".into()
+            }]
+        );
+        assert!(messages.is_empty(), "{messages:?}");
     }
 }
