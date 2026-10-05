@@ -12,14 +12,15 @@ siblings, @_ and @_... either without a name. @@ is a literal @, as in a
 decorator, matched with what it decorates:
 `@@Component(@o) class @c { @_... }`; an @ in a string or comment is literal
 anyway. A match arm, case, dict entry or lone decorator isn't a pattern yet:
-write the code around it too. Rust macro arguments are tokens: use a run
-(`dbg!(@x...)`) for an argument. Separators the pattern leaves out (a trailing
-, or ;) are skipped; every other token and node must match, so `fn @f() {}`
-doesn't match `pub fn f() {}`. A match is a span with .lines; matches don't
-overlap. A pattern holding backquotes opens and closes with a longer run of
-them. A pattern parses in place of what the step before it selected (an item's
-body, a part), or alone; spans where it doesn't parse are skipped. `replace`
-puts each capture where its @name is in TEXT.
+write the code around it too.
+Rust macro arguments are tokens: use a run (`dbg!(@x...)`) for an argument.
+Separators (, ; and line breaks) and comments are skipped on both sides; every
+other token and node must match, so `fn @f() {}` doesn't match `pub fn f() {}`.
+A match is a span with .lines; matches don't overlap. A pattern holding
+backquotes opens and closes with a longer run of them. A pattern parses in
+place of what the step before it selected (an item's body, a part), or alone;
+spans where it doesn't parse are skipped. `replace` puts each capture where its
+@name is in TEXT.
 
 Examples:
     show all `dbg!(@x...)`

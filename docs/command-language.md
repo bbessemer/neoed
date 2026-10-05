@@ -883,13 +883,15 @@ error: give the field its struct.
   file also finds the statement inside a function. A pattern of several
   statements or items matches any run of consecutive siblings.
 
-**Matching.** Two nodes match when they have the same kind and their children
-match in order; leaves (names, numbers, string contents) must have the same
-text. Comments are skipped on both sides. Separators in the file that the
-pattern leaves out (`,`, `;` and line breaks) are skipped too, so
-`` `foo(@a, @b)` `` matches `foo(x, y,)`. Every other token and node must match:
-`` `@a + @b` `` doesn't match `x - y`, `` `fn f(self) {}` `` doesn't match
-`fn f(&self) {}`, and `` `fn @name() {}` `` doesn't match `pub fn f() {}`.
+**Matching.** The pattern and the file are compared as abstract syntax trees:
+their syntax trees without comments and separators (`,`, `;` and line breaks).
+So `` `foo(@a, @b)` `` matches `foo(x, y,)`, and `` `foo(@a, @b,)` `` matches
+`foo(x, y)`. Two nodes match when they have the same kind and their children
+match in order, each in the same role, so Rust's `[0; 4]` (a value and a length)
+doesn't match `[0, 4]`; leaves (names, numbers, string contents) must have the
+same text. Every other token and node must match: `` `@a + @b` `` doesn't match
+`x - y`, `` `fn f(self) {}` `` doesn't match `fn f(&self) {}`, and
+`` `fn @name() {}` `` doesn't match `pub fn f() {}`.
 
 **Matches.** A match is a span (§3.8) from the start of the matched node or run
 to its end, with `.lines` but no other parts. It works as any step, like

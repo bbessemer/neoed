@@ -307,9 +307,9 @@ it too.
   holding backquotes opens and closes with a longer run of them, as in Markdown:
   ``` `` `${x}` `` ```. A Rust macro's arguments are tokens, so match one with a
   run: `` `dbg!(@x...)` ``.
-- **Patterns match strictly.** Only separators the pattern leaves out (`,`, `;`,
-  line breaks) and comments are skipped; every other token and node must match,
-  so `` `fn f(self) {}` `` doesn't match `fn f(&self) {}`, nor
+- **Patterns match strictly.** Only separators (`,`, `;`, line breaks) and
+  comments are skipped, in the pattern and the file; every other token and node
+  must match, so `` `fn f(self) {}` `` doesn't match `fn f(&self) {}`, nor
   `` `fn @f() {}` `` `pub fn f() {}`. Put `@_` or `@_...` where code may vary.
   Captures keep the comments at their ends.
 - **A pattern parses where it searches**: in the body of the item before it, in

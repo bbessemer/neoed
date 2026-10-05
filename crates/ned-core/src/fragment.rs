@@ -157,50 +157,6 @@ impl Fragment {
             .collect()
     }
 
-    /// Hole `i`'s node: the outermost node spanning exactly its placeholder,
-    /// within the roots. `None` unless the hole is a node.
-    pub fn hole(&self, i: usize) -> Option<Node<'_>> {
-        let Slot::Node(range) = &self.holes[i] else {
-            return None;
-        };
-        let container = self.container().map(|c| c.id());
-        let mut node = self.spanning(range);
-        while let Some(parent) = node.parent() {
-            if self.span(parent) != *range || Some(parent.id()) == container {
-                break;
-            }
-            node = parent;
-        }
-        Some(node)
-    }
-
-    /// Hole `i`'s gap: the node whose children it lies among, and how many of
-    /// them come before it. `None` unless the hole is a gap.
-    pub fn gap(&self, i: usize) -> Option<(Node<'_>, usize)> {
-        let Slot::Gap(at) = self.holes[i] else {
-            return None;
-        };
-        let mut node = self.tree.root_node().descendant_for_byte_range(at, at)?;
-        while !(node.start_byte() < at && at < node.end_byte() && node.child_count() > 0) {
-            node = node.parent()?;
-        }
-        let before = children_of(node)
-            .iter()
-            .filter(|c| c.end_byte() <= at)
-            .count();
-        Some((node, before))
-    }
-
-    /// The node the roots are children of.
-    fn container(&self) -> Option<Node<'_>> {
-        let node = self.spanning(&self.roots);
-        if self.is_root(node) {
-            node.parent()
-        } else {
-            Some(node)
-        }
-    }
-
     /// Whether `node`, the node spanning the roots, is the one root. The node
     /// the fragment parsed in isn't: when it spans exactly the fragment (Go's
     /// `source_file` for statements, a Python block), its children are the
@@ -450,7 +406,7 @@ fn errors(tree: &Tree) -> Vec<Range<usize>> {
 }
 
 /// A node's children, without comments.
-pub fn children_of(node: Node<'_>) -> Vec<Node<'_>> {
+fn children_of(node: Node<'_>) -> Vec<Node<'_>> {
     let mut cursor = node.walk();
     node.children(&mut cursor)
         .filter(|c| !c.is_extra())
@@ -533,10 +489,6 @@ mod tests {
     fn within_is(lang: Language, text: &str, site: &str, src: &str, kind: &str) {
         let f = within(lang, text, site, src).unwrap_or_else(|e| panic!("{src}: {e}"));
         assert_eq!(root_kinds(&f), [kind], "{src}");
-    }
-
-    fn hole_kind(f: &Fragment, i: usize) -> Option<&str> {
-        f.hole(i).map(|n| n.kind())
     }
 
     #[test]
@@ -761,7 +713,6 @@ mod tests {
     #[test]
     fn holes_are_whole_nodes() {
         let f = &alone(Language::Rust, "foo(@a, @rest...)");
-        assert_eq!(hole_kind(f, 0), Some("identifier"));
         let text = |i: usize| match &f.holes[i] {
             Slot::Node(r) => &f.text[r.clone()],
             slot => panic!("{slot:?}"),
@@ -771,21 +722,11 @@ mod tests {
     }
 
     #[test]
-    fn a_hole_is_its_outermost_node_within_the_roots() {
-        let f = &alone(Language::Python, "if @c:\n    @body");
-        assert_eq!(f.roots()[0].kind(), "if_statement");
-        assert_eq!(hole_kind(f, 0), Some("identifier"));
-        assert_eq!(hole_kind(f, 1), Some("block"));
-        let only = &alone(Language::Python, "@x");
-        assert_eq!(hole_kind(only, 0), Some("identifier"));
-    }
-
-    #[test]
     fn holes_in_strings_and_comments_are_literal() {
         let f = &alone(Language::Rust, "log(\"user@host\", /* @x */ @y)");
         assert_eq!(f.holes[0], Slot::Literal);
         assert_eq!(f.holes[1], Slot::Literal);
-        assert_eq!(hole_kind(f, 2), Some("identifier"));
+        assert!(matches!(f.holes[2], Slot::Node(_)));
         assert!(
             f.text.contains("\"user@host\", /* @x */ __ned_y"),
             "{}",
@@ -811,9 +752,11 @@ mod tests {
     fn a_run_where_no_name_parses_is_a_gap() {
         let f = &alone(Language::Rust, "impl Display for @t { @_... }");
         assert_eq!(f.roots()[0].kind(), "impl_item");
-        assert_eq!(hole_kind(f, 0), Some("type_identifier"));
-        let (node, before) = f.gap(1).unwrap();
-        assert_eq!((node.kind(), before), ("declaration_list", 1));
+        assert!(matches!(f.holes[0], Slot::Node(_)));
+        let Slot::Gap(at) = f.holes[1] else {
+            panic!("{:?}", f.holes[1]);
+        };
+        assert_eq!(&f.text[at - 2..at + 2], "{  }");
     }
 
     #[test]

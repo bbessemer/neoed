@@ -169,10 +169,12 @@ merge-conflict markers from every parse and finds the conflicts (`conflict:N`,
 `.ours`/`.theirs`/`.base`), which `resolve` resolves. Syntax patterns (spec
 §3.10) select code by writing it: `template` lexes `@` placeholders, `fragment`
 parses a pattern in place of the code its previous step selected (or alone, for
-a whole file), and `pattern` matches it against the tree; `replace` substitutes
-its captures. `ned-scheme`, a reader for the Scheme dialect (tree-sitter query
-syntax plus Scheme data) that plugins will be written in, is unused for now.
-MIT-licensed; README has install and usage; CI (`.github/workflows/`) gates PRs.
+a whole file), `ast` lowers it and the file to abstract syntax trees
+(`queries/<lang>/ast.scm` names the tokens they leave out), and `pattern`
+matches them; `replace` substitutes its captures. `ned-scheme`, a reader for the
+Scheme dialect (tree-sitter query syntax plus Scheme data) that plugins will be
+written in, is unused for now. MIT-licensed; README has install and usage; CI
+(`.github/workflows/`) gates PRs.
 
 ## Key Documentation
 

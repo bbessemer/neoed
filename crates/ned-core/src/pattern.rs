@@ -1,15 +1,14 @@
 //! Matching syntax patterns against syntax trees (command-language spec,
-//! §3.10): node by node, skipping comments on both sides and separators the
-//! pattern leaves out.
-
-use std::collections::HashMap;
-use std::ops::Range;
+//! §3.10): the pattern and the file are both lowered to abstract syntax trees
+//! (`crate::ast`), which match node by node.
 
 use std::cmp::Reverse;
+use std::ops::Range;
 
-use tree_sitter::{Node, Tree};
+use tree_sitter::Tree;
 
-use crate::fragment::{self, Context, Fragment, FragmentError, children_of};
+use crate::ast::{Ast, Body};
+use crate::fragment::{self, Context, FragmentError, Slot};
 use crate::lang::Language;
 use crate::template::Template;
 use crate::text::strip_indent;
@@ -17,18 +16,11 @@ use crate::text::strip_indent;
 /// A pattern compiled for one context.
 #[derive(Debug)]
 pub struct Pattern {
-    reading: Reading,
-}
-
-#[derive(Debug)]
-struct Reading {
-    fragment: Fragment,
-    /// The holes' nodes, by node id: the hole's name (`None` for `@_`), and
-    /// whether it's a run.
-    holes: HashMap<usize, (Option<String>, bool)>,
-    /// The runs left out of the text, by the id of the node whose children
-    /// they lie among: how many children come before each, and its name.
-    gaps: HashMap<usize, Vec<(usize, Option<String>)>>,
+    lang: Language,
+    /// Its root node, or its run of sibling root nodes, with a hole for each
+    /// placeholder. A run left out of the text, where no node parsed, is a
+    /// hole without a kind.
+    roots: Vec<Ast>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,33 +85,32 @@ impl Pattern {
                 placeholder: code[span].to_string(),
             },
         })?;
-        let holes = template
-            .holes()
-            .enumerate()
-            .filter_map(|(i, h)| Some((fragment.hole(i)?.id(), (h.name.clone(), h.many))))
+        let mut roots: Vec<Ast> = fragment
+            .roots()
+            .into_iter()
+            .filter_map(|r| Ast::lower(lang, r, &fragment.text, r.byte_range()))
             .collect();
-        let mut gaps: HashMap<usize, Vec<(usize, Option<String>)>> = HashMap::new();
-        for (i, h) in template.holes().enumerate() {
-            if let Some((node, before)) = fragment.gap(i) {
-                gaps.entry(node.id())
-                    .or_default()
-                    .push((before, h.name.clone()));
+        for (h, slot) in template.holes().zip(&fragment.holes) {
+            let hole = Body::Hole {
+                name: h.name.clone(),
+                many: h.many,
+            };
+            match slot {
+                Slot::Node(r) => hole_at(&mut roots, r, hole),
+                Slot::Gap(at) => gap_at(&mut roots, *at, hole),
+                Slot::Literal => {}
             }
         }
-        Ok(Pattern {
-            reading: Reading {
-                fragment,
-                holes,
-                gaps,
-            },
-        })
+        Ok(Pattern { lang, roots })
     }
 
     /// The matches in `tree`, the tree of `text`, that lie within `range`, in
     /// source order. A match inside an earlier one is skipped.
     pub fn find(&self, tree: &Tree, text: &str, range: Range<usize>) -> Vec<PatternMatch> {
         let mut all = Vec::new();
-        self.reading.find(tree.root_node(), text, &range, &mut all);
+        if let Some(file) = Ast::lower(self.lang, tree.root_node(), text, range.clone()) {
+            self.walk(&file, true, text, &range, &mut all);
+        }
         all.sort_by_key(|m| (m.range.start, Reverse(m.range.end)));
         let mut out: Vec<PatternMatch> = Vec::new();
         for m in all {
@@ -131,6 +122,51 @@ impl Pattern {
             }
         }
         out
+    }
+
+    /// Pushes the matches in `node`'s subtree that lie within `range`. The
+    /// `top` node is the whole file, not code to match.
+    fn walk(
+        &self,
+        node: &Ast,
+        top: bool,
+        text: &str,
+        range: &Range<usize>,
+        out: &mut Vec<PatternMatch>,
+    ) {
+        let inside = |r: &Range<usize>| range.start <= r.start && r.end <= range.end;
+        let children = match &node.body {
+            Body::Node(children) => children.as_slice(),
+            _ => &[],
+        };
+        if let [root] = self.roots.as_slice() {
+            let candidate = !top
+                && node.named
+                && (matches!(root.body, Body::Hole { .. }) || root.kind == node.kind);
+            if candidate && inside(&node.range) {
+                let mut m = Matcher::new(text);
+                if m.node(root, node) {
+                    out.push(m.matched(node.range.clone()));
+                }
+            }
+        } else {
+            for (i, start) in children.iter().enumerate() {
+                if !start.named || !inside(&start.range) {
+                    continue;
+                }
+                let mut m = Matcher::new(text);
+                // A run of roots may match no siblings, which is no match.
+                if let Some(end) = m.seq(&self.roots, &children[i..], false).filter(|&n| n > 0) {
+                    let r = start.range.start..children[i + end - 1].range.end;
+                    if inside(&r) {
+                        out.push(m.matched(r));
+                    }
+                }
+            }
+        }
+        for child in children {
+            self.walk(child, false, text, range, out);
+        }
     }
 }
 
@@ -145,269 +181,158 @@ fn excerpt(code: &str, at: usize) -> String {
     line.chars().take(30).collect()
 }
 
-impl Reading {
-    /// Pushes the matches in `root`'s subtree that lie within `range`.
-    fn find<'t>(
-        &self,
-        root: Node<'t>,
-        text: &'t str,
-        range: &Range<usize>,
-        out: &mut Vec<PatternMatch>,
-    ) {
-        let roots: Vec<Elem> = self.fragment.roots().into_iter().map(Elem::Node).collect();
-        self.walk(&roots, root, text, range, out);
-    }
-
-    fn walk<'p, 't>(
-        &'p self,
-        roots: &[Elem<'p>],
-        node: Node<'t>,
-        text: &'t str,
-        range: &Range<usize>,
-        out: &mut Vec<PatternMatch>,
-    ) {
-        if node.end_byte() <= range.start || node.start_byte() >= range.end {
+/// Makes the outermost node among `asts` whose source is `r`, a
+/// placeholder's, a hole.
+fn hole_at(asts: &mut [Ast], r: &Range<usize>, hole: Body) {
+    for a in asts {
+        if a.range == *r {
+            a.body = hole;
             return;
         }
-        let inside = |r: &Range<usize>| range.start <= r.start && r.end <= range.end;
-        let children = children_of(node);
-        if let [Elem::Node(root)] = roots {
-            // The grammar's top node is the whole file, not code to match.
-            let candidate = node.is_named()
-                && !node.is_extra()
-                && node.parent().is_some()
-                && (self.holes.contains_key(&root.id()) || root.kind_id() == node.kind_id());
-            if candidate && inside(&node.byte_range()) {
-                let mut m = Matcher::new(self, text);
-                if m.node(*root, node) {
-                    out.push(m.matched(node.byte_range()));
-                }
-            }
-        } else {
-            for (i, start) in children.iter().enumerate() {
-                if !start.is_named() || !inside(&start.byte_range()) {
-                    continue;
-                }
-                let mut m = Matcher::new(self, text);
-                // A run of roots may match no siblings, which is no match.
-                if let Some(end) = m.seq(roots, &children[i..], false).filter(|&n| n > 0) {
-                    let r = start.start_byte()..children[i + end - 1].end_byte();
-                    if inside(&r) {
-                        out.push(m.matched(r));
-                    }
-                }
-            }
-        }
-        for child in children {
-            self.walk(roots, child, text, range, out);
+        if a.range.start <= r.start
+            && r.end <= a.range.end
+            && let Body::Node(children) = &mut a.body
+        {
+            return hole_at(children, r, hole);
         }
     }
 }
 
-/// An element of a pattern node's children: a node, or a run left out of
-/// the text (a gap).
-#[derive(Clone, Copy)]
-enum Elem<'p> {
-    Node(Node<'p>),
-    Run(&'p Option<String>),
-}
-
-/// `range` without the whitespace at its ends: Go ends a statement node with
-/// its newline.
-fn trim(text: &str, range: Range<usize>) -> Range<usize> {
-    let s = &text[range.clone()];
-    let start = range.start + (s.len() - s.trim_start().len());
-    start..(start + s.trim().len())
-}
-
-/// The range from `first` to `last`, siblings, with the comments between
-/// them and their neighbours, which a capture keeps.
-fn with_comments(first: Node<'_>, last: Node<'_>) -> Range<usize> {
-    let mut start = first;
-    while let Some(p) = start.prev_sibling().filter(|p| p.is_extra()) {
-        start = p;
+/// Puts a hole for a run left out of the text at `at` among the children of
+/// the deepest node in `asts` that holds it, or among `asts` themselves.
+fn gap_at(asts: &mut Vec<Ast>, at: usize, hole: Body) {
+    let holder = asts
+        .iter_mut()
+        .find(|a| a.range.start < at && at < a.range.end && matches!(a.body, Body::Node(_)));
+    if let Some(Ast {
+        body: Body::Node(children),
+        ..
+    }) = holder
+    {
+        return gap_at(children, at, hole);
     }
-    let mut end = last;
-    while let Some(n) = end.next_sibling().filter(|n| n.is_extra()) {
-        end = n;
-    }
-    start.start_byte()..end.end_byte()
+    let i = asts.iter().filter(|a| a.range.end <= at).count();
+    asts.insert(
+        i,
+        Ast {
+            kind: String::new(),
+            named: false,
+            field: None,
+            body: hole,
+            range: at..at,
+            outer: at..at,
+        },
+    );
 }
 
-/// A match of one reading in progress: what its placeholders have bound.
-struct Matcher<'p, 't> {
-    reading: &'p Reading,
+/// A match in progress: what its placeholders have bound.
+struct Matcher<'t> {
     text: &'t str,
     binds: Vec<Bind<'t>>,
 }
 
 struct Bind<'t> {
     name: String,
-    nodes: Vec<Node<'t>>,
+    nodes: Vec<&'t Ast>,
     range: Range<usize>,
 }
 
-impl<'p, 't> Matcher<'p, 't> {
-    fn new(reading: &'p Reading, text: &'t str) -> Self {
+impl<'t> Matcher<'t> {
+    fn new(text: &'t str) -> Self {
         Matcher {
-            reading,
             text,
             binds: Vec::new(),
         }
     }
 
     fn matched(self, range: Range<usize>) -> PatternMatch {
-        let text = self.text;
         PatternMatch {
-            range: trim(text, range),
-            captures: self
-                .binds
-                .into_iter()
-                .map(|b| (b.name, trim(text, b.range)))
-                .collect(),
+            range,
+            captures: self.binds.into_iter().map(|b| (b.name, b.range)).collect(),
         }
-    }
-
-    fn hole(&self, p: Node<'_>) -> Option<&'p (Option<String>, bool)> {
-        self.reading.holes.get(&p.id())
-    }
-
-    fn pattern_text(&self, p: Node<'_>) -> &'p str {
-        &self.reading.fragment.text[p.byte_range()]
-    }
-
-    /// Whether target node `t` is a separator: `,`, `;`, or a line break.
-    fn separator(&self, t: Node<'t>) -> bool {
-        let text = &self.text[t.byte_range()];
-        !t.is_named() && (text == "," || text == ";" || text.trim().is_empty())
-    }
-
-    /// The elements of pattern node `p`'s children: its children, with its gaps
-    /// among them.
-    fn elems(&self, p: Node<'p>) -> Vec<Elem<'p>> {
-        let mut elems: Vec<Elem<'p>> = children_of(p).into_iter().map(Elem::Node).collect();
-        for (k, (before, name)) in self
-            .reading
-            .gaps
-            .get(&p.id())
-            .into_iter()
-            .flatten()
-            .enumerate()
-        {
-            elems.insert(before + k, Elem::Run(name));
-        }
-        elems
     }
 
     /// Whether pattern node `p` matches target node `t`.
-    fn node(&mut self, p: Node<'p>, t: Node<'t>) -> bool {
-        if let Some((name, _)) = self.hole(p) {
-            return self.bind(name, vec![t], with_comments(t, t));
+    fn node(&mut self, p: &Ast, t: &'t Ast) -> bool {
+        match (&p.body, &t.body) {
+            (Body::Hole { name, .. }, _) => t.named && self.bind(name, vec![t], t.outer.clone()),
+            _ if p.kind != t.kind || p.named != t.named => false,
+            (Body::Leaf(a), Body::Leaf(b)) => a == b,
+            (Body::Node(pc), Body::Node(tc)) => self.seq(pc, tc, true).is_some(),
+            _ => false,
         }
-        if p.kind_id() != t.kind_id() {
-            return false;
-        }
-        let (pc, tc) = (self.elems(p), children_of(t));
-        if pc.is_empty() && tc.is_empty() {
-            return !p.is_named() || self.pattern_text(p) == &self.text[t.byte_range()];
-        }
-        self.seq(&pc, &tc, true).is_some()
     }
 
     /// Matches the pattern nodes `ps` against a prefix of the target nodes
-    /// `ts`, or all of them if `all`, skipping target separators the pattern
-    /// leaves out. The number of target nodes matched, if they match.
-    fn seq(&mut self, ps: &[Elem<'p>], ts: &[Node<'t>], all: bool) -> Option<usize> {
-        let Some((&p, rest)) = ps.split_first() else {
-            return (!all || ts.iter().all(|t| self.separator(*t))).then_some(0);
+    /// `ts`, or all of them if `all`, when they're a node's children, each in
+    /// the same field. The number of target nodes matched, if they match.
+    fn seq(&mut self, ps: &[Ast], ts: &'t [Ast], all: bool) -> Option<usize> {
+        let Some((p, rest)) = ps.split_first() else {
+            return (!all || ts.is_empty()).then_some(0);
         };
         let saved = self.binds.len();
-        let run = match p {
-            Elem::Run(name) => Some(name),
-            Elem::Node(n) => match self.hole(n) {
-                Some((name, true)) => Some(name),
-                _ => None,
-            },
-        };
-        if let Some(name) = run {
+        if let Body::Hole { name, many: true } = &p.body {
             // A run takes as few siblings as it can.
-            let mut end = 0;
-            loop {
-                let run: Vec<Node<'t>> =
-                    ts[..end].iter().copied().filter(|n| n.is_named()).collect();
+            for end in 0..=ts.len() {
+                let run = &ts[..end];
                 let range = match (run.first(), run.last()) {
-                    (Some(first), Some(last)) => with_comments(*first, *last),
+                    (Some(first), Some(last)) => first.outer.start..last.outer.end,
                     _ => {
-                        let at = ts.get(end).map_or(0, |t| t.start_byte());
+                        let at = ts.get(end).map_or(0, |t| t.range.start);
                         at..at
                     }
                 };
-                if self.bind(name, run, range)
+                if self.bind(name, run.iter().collect(), range)
                     && let Some(n) = self.seq(rest, &ts[end..], all)
                 {
                     return Some(end + n);
                 }
                 self.binds.truncate(saved);
-                end += ts[end..].iter().position(|n| n.is_named())? + 1;
             }
+            return None;
         }
-        let Elem::Node(p) = p else {
-            unreachable!("a gap is a run");
-        };
-        for (i, &t) in ts.iter().enumerate() {
-            let matched = if p.is_named() || self.hole(p).is_some() {
-                t.is_named() && self.node(p, t)
-            } else {
-                !t.is_named() && p.kind_id() == t.kind_id()
-            };
-            if matched {
-                let n = self.seq(rest, &ts[i + 1..], all);
-                if n.is_none() {
-                    self.binds.truncate(saved);
-                }
-                return n.map(|n| i + 1 + n);
-            }
-            self.binds.truncate(saved);
-            if let Some(n) = self.rest_of(p, t, rest, &ts[i + 1..], all) {
-                return Some(i + 1 + n);
-            }
-            // Only a separator the pattern leaves out can be skipped: any other
-            // token, such as `async` or `&`, changes what the code means.
-            if !self.separator(t) {
-                return None;
-            }
+        let t = ts.first()?;
+        if all && p.field != t.field {
+            return None;
         }
-        None
+        if self.node(p, t)
+            && let Some(n) = self.seq(rest, &ts[1..], all)
+        {
+            return Some(1 + n);
+        }
+        self.binds.truncate(saved);
+        self.rest_of(p, t, rest, &ts[1..], all).map(|n| 1 + n)
     }
 
-    /// Matches pattern node `p`, then the run `rest[0]`, against target `t`, a
-    /// node that starts with a match of `p` (the run takes the rest of `t`, as
-    /// the tail of a method chain), then `rest[1..]` against `ts`. The number
-    /// of `ts` matched, if they match.
+    /// Matches pattern node `p`, then the run left out of the text `rest[0]`,
+    /// against target `t`, a node that starts with a match of `p` (the run
+    /// takes the rest of `t`, as the tail of a method chain), then `rest[1..]`
+    /// against `ts`. The number of `ts` matched, if they match.
     fn rest_of(
         &mut self,
-        p: Node<'p>,
-        t: Node<'t>,
-        rest: &[Elem<'p>],
-        ts: &[Node<'t>],
+        p: &Ast,
+        t: &'t Ast,
+        rest: &[Ast],
+        ts: &'t [Ast],
         all: bool,
     ) -> Option<usize> {
-        let (Elem::Run(name), rest) = rest.split_first()? else {
+        let (run, rest) = rest.split_first()?;
+        let Body::Hole { name, many: true } = &run.body else {
             return None;
         };
-        if !p.is_named() || !t.is_named() {
+        if !run.kind.is_empty() || !p.named || !t.named {
             return None;
         }
         let saved = self.binds.len();
         let mut start = t;
-        while let Some(first) = children_of(start)
-            .into_iter()
-            .next()
-            .filter(|c| c.is_named())
+        while let Body::Node(children) = &start.body
+            && let Some(first) = children.first().filter(|c| c.named)
         {
             start = first;
+            let tail = &self.text[start.range.end..t.range.end];
+            let from = t.range.end - tail.trim_start().len();
             if self.node(p, start)
-                && self.bind(name, Vec::new(), start.end_byte()..t.end_byte())
+                && self.bind(name, Vec::new(), from..t.range.end)
                 && let Some(n) = self.seq(rest, ts, all)
             {
                 return Some(n);
@@ -418,7 +343,7 @@ impl<'p, 't> Matcher<'p, 't> {
     }
 
     /// Binds `name` to `nodes`, or checks them against its earlier binding.
-    fn bind(&mut self, name: &Option<String>, nodes: Vec<Node<'t>>, range: Range<usize>) -> bool {
+    fn bind(&mut self, name: &Option<String>, nodes: Vec<&'t Ast>, range: Range<usize>) -> bool {
         let Some(name) = name else {
             return true;
         };
@@ -434,7 +359,7 @@ impl<'p, 't> Matcher<'p, 't> {
                     .nodes
                     .iter()
                     .zip(&nodes)
-                    .all(|(a, b)| self.equal(*a, *b));
+                    .all(|(a, b)| a.same_code(b));
         }
         self.binds.push(Bind {
             name: name.clone(),
@@ -442,19 +367,6 @@ impl<'p, 't> Matcher<'p, 't> {
             range,
         });
         true
-    }
-
-    /// Whether two target nodes are the same code, ignoring whitespace and
-    /// comments.
-    fn equal(&self, a: Node<'t>, b: Node<'t>) -> bool {
-        let (ac, bc) = (children_of(a), children_of(b));
-        a.kind_id() == b.kind_id()
-            && ac.len() == bc.len()
-            && if ac.is_empty() {
-                self.text[a.byte_range()] == self.text[b.byte_range()]
-            } else {
-                ac.iter().zip(&bc).all(|(x, y)| self.equal(*x, *y))
-            }
     }
 }
 
@@ -549,7 +461,34 @@ mod tests {
     }
 
     #[test]
-    fn only_separators_the_pattern_leaves_out_are_skipped() {
+    fn separators_are_skipped_on_both_sides() {
+        let text = "fn main() { foo(x, y,); foo(x, y); }";
+        assert_eq!(found("foo(@a, @b)", text), ["foo(x, y,)", "foo(x, y)"]);
+        assert_eq!(found("foo(@a, @b,)", text), ["foo(x, y,)", "foo(x, y)"]);
+        assert_eq!(
+            found_in(Language::Python, "foo(@a,)", "foo(x)\nfoo(x,)\n"),
+            ["foo(x)", "foo(x,)"]
+        );
+    }
+
+    #[test]
+    fn children_match_in_the_same_role() {
+        assert_eq!(
+            found("[@v; @n]", "fn main() { let a = [0, 4]; let b = [0; 4]; }"),
+            ["[0; 4]"]
+        );
+    }
+
+    #[test]
+    fn text_between_nodes_must_match() {
+        assert_eq!(
+            found_in(Language::Python, "'a\\nb'", "x = 'a\\nb'\ny = 'c\\nd'\n"),
+            ["'a\\nb'"]
+        );
+    }
+
+    #[test]
+    fn tokens_other_than_separators_must_match() {
         assert!(found("fn f(self) {}", "fn f(&self) {}\n").is_empty());
         assert!(found("|x| x", "fn main() { let f = move |x| x; }").is_empty());
         assert!(
@@ -621,10 +560,7 @@ mod tests {
     #[test]
     fn runs_take_as_few_siblings_as_they_can() {
         assert_eq!(
-            captured(
-                "foo(@first, @rest...)",
-                "fn main() { foo(a, b, c); foo(d); }"
-            ),
+            captured("foo(@first, @rest...)", "fn main() { foo(a, b, c); }"),
             [pairs(&[("first", "a"), ("rest", "b, c")])]
         );
         assert_eq!(
