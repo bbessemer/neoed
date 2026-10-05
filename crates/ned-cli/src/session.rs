@@ -1,10 +1,12 @@
-//! Sessions in the CLI: `-s`, `NED_SESSION`, `ned history` and `ned undo`
-//! (spec §1.2).
+//! Sessions in the CLI: `-s`, `NED_SESSION`, `ned history`, `ned undo` and
+//! `ned session` (spec §1.2).
 
+use std::collections::HashSet;
 use std::env;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use clap::Subcommand;
 use ned_core::diff::{self, DiffStat};
 use ned_core::fs;
 use ned_core::lang::Language;
@@ -49,6 +51,66 @@ pub fn uncommitted(session: &Session) -> Result<Vec<(u64, FileChange)>, Failure>
 
 /// An error to print, and the exit code.
 pub type Failure = (String, u8);
+
+#[derive(Subcommand)]
+pub enum Action {
+    /// List the workspace's sessions.
+    List {
+        /// List every workspace's sessions, under its path.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Delete sessions of the workspace.
+    Delete {
+        #[arg(required = true, value_name = "NAME")]
+        names: Vec<String>,
+        /// The workspace the sessions belong to, instead of the working
+        /// directory's.
+        #[arg(short, long, value_name = "DIR")]
+        workspace: Option<PathBuf>,
+    },
+}
+
+/// `ned session`.
+pub fn run(action: Action) -> Result<(), Failure> {
+    match action {
+        Action::List { all } => list(all),
+        Action::Delete { names, workspace } => delete(names, workspace),
+    }
+}
+
+fn list(all: bool) -> Result<(), Failure> {
+    let state_dir = session::state_dir().map_err(failure)?;
+    if all {
+        for (root, names) in session::workspaces(&state_dir).map_err(failure)? {
+            outln!("{}", root.display());
+            for name in names {
+                outln!("  {name}");
+            }
+        }
+    } else {
+        for name in session::sessions(&state_dir, &here(None)?.1).map_err(failure)? {
+            outln!("{name}");
+        }
+    }
+    Ok(())
+}
+
+fn delete(mut names: Vec<String>, dir: Option<PathBuf>) -> Result<(), Failure> {
+    let mut seen = HashSet::new();
+    names.retain(|name| seen.insert(name.clone()));
+    let root = here(dir)?.1;
+    let sessions = names
+        .into_iter()
+        .map(|name| existing(Some(name), &root))
+        .collect::<Result<Vec<_>, _>>()?;
+    for session in sessions {
+        let name = session.name().to_string();
+        session.delete().map_err(failure)?;
+        outln!("{name}: deleted");
+    }
+    Ok(())
+}
 
 /// `ned history`.
 pub fn history(flag: Option<String>, dir: Option<PathBuf>, all: bool) -> Result<(), Failure> {
@@ -203,7 +265,11 @@ fn existing(flag: Option<String>, root: &Path) -> Result<Session, Failure> {
         let error = format!("error: no session; give one with -s NAME or NED_SESSION ({listed})");
         return Err((error, 2));
     };
-    let session = open(&name, root)?;
+    let session = open(&name, root).map_err(|(error, code)| match code {
+        // An invalid name: the fix is one of the workspace's sessions.
+        2 => (format!("{error}; {}", listing(root)), code),
+        _ => (error, code),
+    })?;
     if !session.exists() {
         let listed = listing(root).replace(" in this workspace", " in it");
         let error = format!("error: no session `{name}` in this workspace; {listed}");

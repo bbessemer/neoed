@@ -102,12 +102,17 @@ pub fn state_dir() -> Result<PathBuf, SessionError> {
 
 /// The names of the sessions with a log for the workspace at `root`, sorted.
 pub fn sessions(state_dir: &Path, root: &Path) -> Result<Vec<String>, SessionError> {
-    let dir = workspace_dir(state_dir, root);
+    names_in(&workspace_dir(state_dir, root))
+}
+
+/// The names of the sessions with a log in `dir`, a workspace's directory,
+/// sorted.
+fn names_in(dir: &Path) -> Result<Vec<String>, SessionError> {
     let io_error = |source| SessionError::Io {
-        path: dir.clone(),
+        path: dir.to_path_buf(),
         source,
     };
-    let read = match fs::read_dir(&dir) {
+    let read = match fs::read_dir(dir) {
         Ok(read) => read,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(io_error(err)),
@@ -121,6 +126,48 @@ pub fn sessions(state_dir: &Path, root: &Path) -> Result<Vec<String>, SessionErr
     }
     names.sort();
     Ok(names)
+}
+
+/// Every workspace with sessions, by path, with its sessions' names, sorted.
+/// A workspace's path is read from its logs' headers, or is its directory if
+/// none can be read.
+pub fn workspaces(state_dir: &Path) -> Result<Vec<(PathBuf, Vec<String>)>, SessionError> {
+    let sessions = state_dir.join("sessions");
+    let io_error = |source| SessionError::Io {
+        path: sessions.clone(),
+        source,
+    };
+    let read = match fs::read_dir(&sessions) {
+        Ok(read) => read,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(io_error(err)),
+    };
+    let mut workspaces = Vec::new();
+    for item in read {
+        let dir = item.map_err(io_error)?.path();
+        let names = names_in(&dir)?;
+        if names.is_empty() {
+            continue;
+        }
+        let root = names
+            .iter()
+            .find_map(|name| log_workspace(&dir.join(format!("{name}.log"))))
+            .unwrap_or(dir);
+        workspaces.push((root, names));
+    }
+    workspaces.sort();
+    Ok(workspaces)
+}
+
+/// The workspace named in the header of the log at `path`, if it can be read.
+fn log_workspace(path: &Path) -> Option<PathBuf> {
+    let mut header = String::new();
+    BufReader::new(File::open(path).ok()?)
+        .read_line(&mut header)
+        .ok()?;
+    serde_json::from_str::<Header>(&header)
+        .ok()
+        .map(|header| header.workspace)
 }
 
 #[derive(Debug, PartialEq, Eq, Error)]
@@ -527,6 +574,24 @@ impl Session {
             session: self,
             _lock: file,
         })
+    }
+
+    /// Deletes the session's log and lock once it holds the lock, and the
+    /// workspace's directory if no other session is left in it.
+    pub fn delete(self) -> Result<(), SessionError> {
+        let held = self.lock()?;
+        for path in [&self.log, &self.lock] {
+            fs::remove_file(path).map_err(|source| SessionError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        }
+        drop(held);
+        if let Some(dir) = self.log.parent() {
+            // Fails, as it should, while another session is left in it.
+            let _ = fs::remove_dir(dir);
+        }
+        Ok(())
     }
 }
 
@@ -937,6 +1002,106 @@ mod tests {
         assert_eq!(dirs.len(), 2);
         assert!(dirs.iter().all(|dir| dir.starts_with("proj-")), "{dirs:?}");
         assert_ne!(dirs[0], dirs[1]);
+    }
+
+    fn record(state: &Path, root: &str, name: &str) {
+        session(state, root, name)
+            .lock()
+            .unwrap()
+            .append(entry("show 1"))
+            .unwrap();
+    }
+
+    #[test]
+    fn workspaces_are_listed_by_path_with_their_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("ned");
+        assert!(workspaces(&state).unwrap().is_empty());
+        record(&state, "/src/proj", "b");
+        record(&state, "/src/proj", "a");
+        record(&state, "/other/proj", "c");
+        session(&state, "/new", "unrecorded");
+
+        assert_eq!(
+            workspaces(&state).unwrap(),
+            [
+                (PathBuf::from("/other/proj"), vec!["c".to_string()]),
+                (
+                    PathBuf::from("/src/proj"),
+                    vec!["a".to_string(), "b".to_string()]
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_workspace_is_named_by_any_readable_log_else_its_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("ned");
+        record(&state, "/src/proj", "a");
+        record(&state, "/src/proj", "b");
+        record(&state, "/other/proj", "c");
+        let dir_of = |name: &str| {
+            fs::read_dir(state.join("sessions"))
+                .unwrap()
+                .map(|dir| dir.unwrap().path())
+                .find(|dir| dir.join(format!("{name}.log")).exists())
+                .unwrap()
+        };
+        fs::write(dir_of("a").join("a.log"), "not json\n").unwrap();
+        let other = dir_of("c");
+        fs::write(other.join("c.log"), "").unwrap();
+
+        assert_eq!(
+            workspaces(&state).unwrap(),
+            [
+                (
+                    PathBuf::from("/src/proj"),
+                    vec!["a".to_string(), "b".to_string()]
+                ),
+                (other, vec!["c".to_string()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn delete_removes_only_its_session_and_then_the_empty_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("ned");
+        record(&state, "/src/proj", "a");
+        record(&state, "/src/proj", "b");
+        record(&state, "/other/proj", "c");
+
+        session(&state, "/src/proj", "a").delete().unwrap();
+        assert!(!session(&state, "/src/proj", "a").exists());
+        assert_eq!(sessions(&state, Path::new("/src/proj")).unwrap(), ["b"]);
+        let dir = workspace_dir(&state, Path::new("/src/proj"));
+        assert!(!dir.join("a.lock").exists());
+
+        session(&state, "/src/proj", "b").delete().unwrap();
+        assert!(!dir.exists());
+        assert_eq!(
+            workspaces(&state).unwrap(),
+            [(PathBuf::from("/other/proj"), vec!["c".to_string()])]
+        );
+    }
+
+    #[test]
+    fn delete_waits_for_the_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("ned");
+        record(&state, "/src/proj", "a");
+        let held = session(&state, "/src/proj", "a");
+        let log = held.lock().unwrap();
+        let deleting = std::thread::spawn({
+            let state = state.clone();
+            move || session(&state, "/src/proj", "a").delete().unwrap()
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(held.exists());
+        drop(log);
+        deleting.join().unwrap();
+        assert!(!held.exists());
     }
 
     #[cfg(unix)]

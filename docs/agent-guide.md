@@ -83,8 +83,8 @@ it to `.claude/settings.json` (for one project) or `~/.claude/settings.json`
 The hook writes the variable to `$CLAUDE_ENV_FILE`, which Claude Code applies to
 every Bash command in the conversation. A resumed conversation keeps its
 session; `/clear` starts a new one. To read a conversation's log, run
-`ned history -s NAME`, with NAME a log's file name from
-`ls ~/.local/state/ned/sessions/*/`, less `.log`.
+`ned history -s NAME`, with NAME one of those `ned session list` prints (or
+`ned session list --all`, for every workspace).
 
 ## Example
 

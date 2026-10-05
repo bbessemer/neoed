@@ -224,6 +224,7 @@ fn color_always_paints_usage_errors() {
            ned help [TOPIC]    (the command language)
            ned daemon start|status|stop [DIR]
            ned history|undo [-s NAME] [-w DIR]
+           ned session list|delete
 
     For more information, try '\e[1m--help\e[0m'.
     ");

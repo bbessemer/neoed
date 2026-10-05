@@ -123,6 +123,7 @@ ned [FLAGS] [FILE... | -w [DIR]] -e SCRIPT   (or the script on stdin)
 ned help [TOPIC]
 ned daemon start|status|stop [DIR]
 ned history|undo [-s NAME] [-w DIR]
+ned session list [--all] | delete NAME... [-w DIR]
 ```
 
 A script is a list of commands, one per line or separated by `;`:

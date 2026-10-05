@@ -13,6 +13,8 @@ ned help [TOPIC]
 ned daemon start|status|stop [DIR]
 ned history [-s NAME] [-w DIR] [--all]
 ned undo [-s NAME] [-w DIR] [--force]
+ned session list [--all]
+ned session delete NAME... [-w DIR]
 ```
 
 ned runs a **script** against a set of files. The script comes from `-e`, which
@@ -62,7 +64,7 @@ same either way.
 - **`ned daemon start|status|stop [DIR]`** manages the
   [language-server daemon](#language-servers) for the workspace containing
   `DIR`, or the current directory.
-- **`ned history`** and **`ned undo`** work with [sessions](#sessions).
+- **`ned history`**, **`ned undo`** and **`ned session`** work with [sessions](#sessions).
 
 A subcommand must be the first argument. To edit a file that happens to be
 called `help`, write it as `./help`.
@@ -857,6 +859,10 @@ text of every file it changed. Session names use letters, digits, `.`, `_` and
   `ned -e '!!:s/prase/parse/'` reruns a command with a typo fixed. The repeat
   runs on the same files, but without the original options. Repeating a dry run
   without `-n` is an error, so that nothing is written by accident.
+- **`ned session list`** names the workspace's sessions; with `--all`, every
+  workspace that has sessions, by path, with its sessions beneath it.
+- **`ned session delete NAME...`** deletes the named sessions of the workspace,
+  or of `-w DIR`.
 
 Sessions are stored under `~/.local/state/ned/sessions/` (or
 `$XDG_STATE_HOME/ned/sessions/`). Several programs can share a session safely,

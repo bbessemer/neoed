@@ -12,14 +12,17 @@ ned help [TOPIC]
 ned daemon start|status|stop [DIR]
 ned history [-s NAME] [-w DIR] [--all]
 ned undo [-s NAME] [-w DIR] [--force]
+ned session list [--all]
+ned session delete NAME... [-w DIR]
 ```
 
 `ned help` prints a summary of the language, sized to fit in an agent's context.
 `ned help TOPIC` details one verb (`show`, `outline`, `check`, `allow`,
 `replace`, `insert`, `delete`, `sub`, `move`, `rename`, `file`, `create`), or
 `selectors`, `text`, `config` or `session`. An unknown topic is a usage error
-that lists the topics. A subcommand (`help`, `daemon`, `history`, `undo`) must
-be the first argument; write a file with one of those names as `./help`, say.
+that lists the topics. A subcommand (`help`, `daemon`, `history`, `undo`,
+`session`) must be the first argument; write a file with one of those names as
+`./help`, say.
 
 - `-e SCRIPT` may be repeated; the scripts are joined with newlines, in order.
 - Without `-e`, the script is read from stdin. If stdin is a terminal, that's a
@@ -220,6 +223,29 @@ does; with neither, or a session the workspace has no log for, they're a usage
 error listing the workspace's sessions. A session belongs to the workspace of
 the invocations it records (§1.1), so one recorded with `-w DIR` is reached with
 `-w DIR`: `ned history -w DIR`, `ned undo -w DIR` and `ned -w DIR -e '!!'`.
+
+`ned session list` prints the names of the workspace's sessions, one per line,
+sorted. With `--all` it prints every workspace that has sessions, by path, each
+followed by its sessions' names indented two spaces:
+
+```
+$ ned session list --all
+/src/other
+  agent
+/src/proj
+  agent
+  review
+```
+
+A workspace's path is read from its logs; one whose logs are all unreadable is
+shown as its directory under `sessions/`.
+
+`ned session delete NAME...` deletes the named sessions of the workspace, or of
+`-w DIR`'s, printing `NAME: deleted` for each. It doesn't read `NED_SESSION`. An
+invalid name, or one the workspace has no log for, is a usage error listing its
+sessions, and nothing is deleted. Each deletion waits for the session's lock, so
+it never cuts short a frontend's append; a workspace's directory is removed with
+its last session.
 
 Sessions live in `$XDG_STATE_HOME/ned/sessions/`, or `~/.local/state/ned/...`
 without it, in a directory per workspace (§1.1) named after the root's last

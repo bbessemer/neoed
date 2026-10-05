@@ -639,3 +639,156 @@ fn a_damaged_log_blocks_only_what_reads_it() {
     let output = ws.ned(&["-s", "agent", "-e", "!!"]);
     assert_eq!(output.status.code(), Some(3), "{output:?}");
 }
+
+/// A workspace with sessions `beta` and `alpha`, and `gamma` in a second
+/// workspace, `other`, inside it.
+fn three_sessions() -> Workspace {
+    let ws = Workspace::new(&[("a.rs", "fn a() {}\n")]);
+    fs::create_dir_all(ws.dir.path().join("other/.git")).unwrap();
+    fs::write(ws.dir.path().join("other/b.rs"), "fn b() {}\n").unwrap();
+    ws.ned(&["-s", "beta", "a.rs", "-e", "show 1"]);
+    ws.ned(&["-s", "alpha", "a.rs", "-e", "show 1"]);
+    ws.ned(&["-s", "gamma", "-w", "other", "-e", "show 1"]);
+    ws
+}
+
+#[test]
+fn session_list_prints_the_workspaces_sessions() {
+    let ws = Workspace::new(&[("a.rs", "fn a() {}\n")]);
+    assert_snapshot!(ws.report(&["session", "list"]), @r"
+    exit: 0
+    --- stdout
+    --- stderr
+    ");
+    let ws = three_sessions();
+    assert_snapshot!(ws.report(&["session", "list"]), @r"
+    exit: 0
+    --- stdout
+    alpha
+    beta
+    --- stderr
+    ");
+}
+
+#[test]
+fn session_list_all_prints_each_workspace_and_its_sessions() {
+    let ws = three_sessions();
+    assert_snapshot!(ws.report(&["session", "list", "--all"]), @r"
+    exit: 0
+    --- stdout
+    {dir}
+      alpha
+      beta
+    {dir}/other
+      gamma
+    --- stderr
+    ");
+}
+
+#[test]
+fn session_delete_deletes_the_named_sessions() {
+    let ws = three_sessions();
+    assert_snapshot!(ws.report(&["session", "delete", "beta", "alpha"]), @r"
+    exit: 0
+    --- stdout
+    beta: deleted
+    alpha: deleted
+    --- stderr
+    ");
+    assert_snapshot!(ws.report(&["history", "-s", "alpha"]), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: no session `alpha` in this workspace; none recorded in it yet
+    ");
+    assert_snapshot!(ws.report(&["session", "list", "--all"]), @r"
+    exit: 0
+    --- stdout
+    {dir}/other
+      gamma
+    --- stderr
+    ");
+}
+
+#[test]
+fn session_delete_deletes_a_name_given_twice_once() {
+    let ws = three_sessions();
+    assert_snapshot!(ws.report(&["session", "delete", "alpha", "beta", "alpha"]), @r"
+    exit: 0
+    --- stdout
+    alpha: deleted
+    beta: deleted
+    --- stderr
+    ");
+}
+
+#[test]
+fn session_delete_takes_the_workspace_from_w_dir() {
+    let ws = three_sessions();
+    assert_eq!(
+        ws.ned(&["session", "delete", "gamma"]).status.code(),
+        Some(2)
+    );
+    assert_snapshot!(ws.report(&["session", "delete", "-w", "other", "gamma"]), @r"
+    exit: 0
+    --- stdout
+    gamma: deleted
+    --- stderr
+    ");
+    assert_snapshot!(ws.report(&["session", "list", "--all"]), @r"
+    exit: 0
+    --- stdout
+    {dir}
+      alpha
+      beta
+    --- stderr
+    ");
+}
+
+#[test]
+fn session_delete_of_an_unknown_or_bad_name_deletes_nothing() {
+    let ws = three_sessions();
+    assert_snapshot!(ws.report(&["session", "delete", "alpha", "delta"]), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: no session `delta` in this workspace; sessions in it: alpha, beta
+    ");
+    assert_snapshot!(ws.report(&["session", "delete", "alpha", ".x"]), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: invalid session name `.x`; use letters, digits, `.`, `_` and `-`, not starting with `.`; sessions in this workspace: alpha, beta
+    ");
+    assert_snapshot!(ws.report(&["session", "delete", "../x"]), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: invalid session name `../x`; use letters, digits, `.`, `_` and `-`, not starting with `.`; sessions in this workspace: alpha, beta
+    ");
+    assert_snapshot!(ws.report(&["session", "list"]), @r"
+    exit: 0
+    --- stdout
+    alpha
+    beta
+    --- stderr
+    ");
+}
+
+#[test]
+fn session_delete_needs_a_name_and_ignores_ned_session() {
+    let ws = three_sessions();
+    let output = ws.ned_with(Some("alpha"), &["session", "delete"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("<NAME>..."),
+        "{output:?}"
+    );
+    assert_snapshot!(ws.report(&["session", "list"]), @r"
+    exit: 0
+    --- stdout
+    alpha
+    beta
+    --- stderr
+    ");
+}

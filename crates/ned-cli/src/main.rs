@@ -59,7 +59,7 @@ type LangFlag = Option<Language>;
     args_conflicts_with_subcommands = true,
     disable_help_subcommand = true,
     // clap leaves a user-defined `help` subcommand out of the usage.
-    override_usage = "ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]\n       ned history|undo [-s NAME] [-w DIR]"
+    override_usage = "ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]\n       ned history|undo [-s NAME] [-w DIR]\n       ned session list|delete"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -144,6 +144,11 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// List or delete sessions.
+    Session {
+        #[command(subcommand)]
+        action: session::Action,
+    },
 }
 
 /// The styles of stdout and stderr, from `--color` (spec §6.6).
@@ -214,6 +219,7 @@ fn main() -> ExitCode {
             workspace,
             force,
         }) => return finish(session::undo(session, workspace, force)),
+        Some(Command::Session { action }) => return finish(session::run(action)),
         None => {}
     }
     if let Some(err) = usage_error(&cli) {

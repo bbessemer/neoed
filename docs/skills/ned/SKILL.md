@@ -275,6 +275,8 @@ it too.
 - **`.sig` stops before the body**: `show` prints its whole lines, but leave out
   the `{` (or Python's `:`): replace it with `fn f(x: u8) -> u8`, not
   `fn f(x: u8) -> u8 {`.
+- **`.body` is inside the braces**: TEXT that replaces it leaves out the `{` and
+  `}`; with them, the new block nests inside the old braces.
 - **Introduced errors block edits** while a daemon runs (`ned daemon start`;
   `status` and `stop` too; Unix only): the error lists what the edit broke. Fix
   the text, or add `allow errors` to the script when the code is knowingly
