@@ -362,7 +362,7 @@ impl<'t> Matcher<'t> {
                     .nodes
                     .iter()
                     .zip(&nodes)
-                    .all(|(a, b)| a.same_code(b));
+                    .all(|(a, b)| a.unwrapped().same_code(b.unwrapped()));
         }
         self.binds.push(Bind {
             name: name.clone(),
@@ -656,6 +656,22 @@ mod tests {
         assert_eq!(
             found("@x == @x", "fn main() { a == a; a == b; f(1) == f( 1 ); }"),
             ["a == a", "f(1) == f( 1 )"]
+        );
+    }
+
+    #[test]
+    fn a_repeated_name_matches_a_declaration_and_a_use() {
+        let ts = "function f(x) { return x; }\nfunction g(x: number) { return x; }\n";
+        assert_eq!(
+            found_in(Language::TypeScript, "function @f(@x) { return @x; }", ts),
+            ["function f(x) { return x; }"]
+        );
+        assert_eq!(
+            found(
+                "fn @f<@T>(x: @T) -> @T { x }",
+                "fn f<T>(x: T) -> T { x }\nfn g<T>(x: U) -> T { x }\n"
+            ),
+            ["fn f<T>(x: T) -> T { x }"]
         );
     }
 

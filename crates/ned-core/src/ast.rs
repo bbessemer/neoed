@@ -73,6 +73,15 @@ impl Ast {
         .node(node, None, outer)
     }
 
+    /// The node without the nodes that only wrap one other, as TypeScript's
+    /// `required_parameter` wraps a parameter's name.
+    pub fn unwrapped(&self) -> &Ast {
+        match &self.body {
+            Body::Node(children) if children.len() == 1 => children[0].unwrapped(),
+            _ => self,
+        }
+    }
+
     /// Whether the two trees are the same code, wherever they are.
     pub fn same_code(&self, other: &Ast) -> bool {
         let children = |a: &[Ast], b: &[Ast]| {
