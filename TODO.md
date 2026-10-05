@@ -126,7 +126,7 @@ Version: minor when a first plugin can load; the spike releases nothing.
 Hints and relaxed errors: each is a patch, and they batch into the next release
 of either kind.
 
-- [ ] `show` with a line range past the end of the file shows up to the last
+- [x] `show` with a line range past the end of the file shows up to the last
       line, with a note, instead of an error (`show 1-60` on a 57-line file);
       edits keep the error
 - [ ] `-e` plus a script on stdin runs both: the `-e` scripts first, then stdin,
@@ -139,15 +139,15 @@ of either kind.
       decide: `item:NAME`, `*:NAME` or a bare name). A minor
 - [ ] `show --raw` prints the selected lines without `N:` prefixes, for copying
       text verbatim. A minor
-- [ ] A sed-style `sub SEL /a/b/` says "`sub` takes `/re/ with TEXT`", instead
+- [x] A sed-style `sub SEL /a/b/` says "`sub` takes `/re/ with TEXT`", instead
       of "unknown regex flag" or a hint about `SEL..SEL` ranges
-- [ ] `sub` with a literal before `with` (`sub 3 "- [ ]" with "- [x]"`) suggests
+- [x] `sub` with a literal before `with` (`sub 3 "- [ ]" with "- [x]"`) suggests
       `replace 3>"- [ ]" with "- [x]"`, since `sub` takes only a regex
-- [ ] Context written `-N` (`show all "x" -3`) says context is `+N`, not a hint
+- [x] Context written `-N` (`show all "x" -3`) says context is `+N`, not a hint
       about `SEL..SEL` ranges
-- [ ] A file path as a selector step (`a.rs>fn:x`) suggests `file:a.rs>fn:x`
+- [x] A file path as a selector step (`a.rs>fn:x`) suggests `file:a.rs>fn:x`
       rather than quoting `a` as a literal
-- [ ] A name with `{` (`import:a::b::{A, B}`) suggests the quoted name `outline`
+- [x] A name with `{` (`import:a::b::{A, B}`) suggests the quoted name `outline`
       prints (`import:"a::b::{A, B}"`), not "unexpected character `{`"
 - [ ] A part or filter picks the Nth line of a multi-line match, since `.lines`
       splits a match into every line and there is no `.lines.first` (syntax to
@@ -155,37 +155,45 @@ of either kind.
 - [ ] `!!` repeats the last script that edited or failed, not a read-only call
       in between: after a failed edit, an `outline` to look around makes `!!`
       refer to the `outline`. A minor, since §1.2 changes
-- [ ] A range whose start also matches inside it (skipped, §3.7) prints a note
+- [x] A range whose start also matches inside it (skipped, §3.7) prints a note
       naming that line: `/^    for x/../^    }/` spanned two identical loops
       when its end matched once, and the edit replaced both
-- [ ] A literal under a `kind>` step that spans two items of the kind
+- [x] A literal under a `kind>` step that spans two items of the kind
       (`import>"use a;\nuse b;"`) suggests a line range, `A..B` or dropping the
       step, instead of only "matches nothing"
+- [x] A flag before a subcommand (`ned -s NAME undo`) reads the subcommand as a
+      file ("cannot read undo"); it should say the subcommand goes first
+      (`ned undo -s NAME`)
+- [x] A regex glued to a step without `>` (`impl:X>fn:y/z/`) suggests splitting
+      it into two commands (`show impl:X>fn:y; show /z/`); it should suggest the
+      nested step, `impl:X>fn:y>/z/`
+- [x] A sed-style line range (`sub 1,2 /a/ with "b"`, `show 10,20`) suggests
+      `1-2`, not quoting literal text
 
 ## Bugs
 
 Each fix is a patch; a fix that changes documented behaviour is a minor.
 
-- [ ] `.lines` on a multi-line literal that matches once
+- [x] `.lines` on a multi-line literal that matches once
       (`insert after "- a b\n  c d".lines "x"`) says "matches 2 items" and lists
       identical candidates
-- [ ] An item whose last line falls inside a conflict's last side stops before
+- [x] An item whose last line falls inside a conflict's last side stops before
       the conflict's `>>>>>>>` line, so `fn:f>conflict` matches nothing; the
       error lists the file's conflicts without saying they lie outside `fn:f`
-- [ ] An unquoted name with a `-` (`import:react-router`) is reported as a
+- [x] An unquoted name with a `-` (`import:react-router`) is reported as a
       malformed range (`ranges between selectors are written SEL..SEL`) instead
       of suggesting quotes (`import:"react-router"`)
-- [ ] `item:"[ ] text*"` matches nothing without suggesting the name without its
+- [x] `item:"[ ] text*"` matches nothing without suggesting the name without its
       task-list checkbox (`item:"text*"`), which is how items are named
-- [ ] A heredoc as `replace`'s selector, with `with` on a later line
+- [x] A heredoc as `replace`'s selector, with `with` on a later line
       (`replace <<END` / body / `END` / `with <<END`), says "expected `with`,
       found end of line" without showing where `with` goes for a heredoc
       selector
-- [ ] A daemon socket path longer than the platform allows (a long
+- [x] A daemon socket path longer than the platform allows (a long
       `XDG_RUNTIME_DIR`) fails as "the daemon didn't start; see its log", and
       the log says only "path must be shorter than SUN_LEN"; the error should
       say so, with a fix (a shorter `XDG_RUNTIME_DIR`)
-- [ ] `move impl:A>fn:f start impl:B` puts `fn:f` directly above `impl:B`'s
+- [x] `move impl:A>fn:f start impl:B` puts `fn:f` directly above `impl:B`'s
       first item, with no blank line between them, though the items around it
       are separated by one
 - [ ] The syntax guard misses Rust that tree-sitter accepts but rustc doesn't:
@@ -194,6 +202,9 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       and the only sign is a `note: rustfmt failed: expected ;`. A formatter's
       parse error on an edit the guard passed should at least be an error-level
       message naming the edit
+- [x] A Rust `use` split over several lines is named after its first line only
+      (`use c::{\n    d,\n};` is `import:"c::{"`); name it by the whole path
+      with its whitespace collapsed (`import:"c::{d}"`; form to decide)
 
 ## Future improvements
 

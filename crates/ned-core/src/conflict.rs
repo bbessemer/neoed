@@ -106,6 +106,23 @@ fn marker(line: &str) -> Option<Marker> {
     }
 }
 
+/// `range` widened to take in each of `conflicts` that it starts or ends
+/// inside, unless it is wholly on one side (§3.3). It ends at the end of the
+/// `>>>>>>>` line, before its newline, as an item ends.
+pub fn widen(range: Range<usize>, conflicts: &[Conflict], text: &str) -> Range<usize> {
+    conflicts.iter().fold(range, |r, c| {
+        let span = c.span();
+        let overlaps = span.start < r.end && r.start < span.end;
+        let contains = r.start <= span.start && span.end <= r.end;
+        let on_a_side = c.sides().any(|s| s.start <= r.start && r.end <= s.end);
+        if !overlaps || contains || on_a_side {
+            return r;
+        }
+        let end = text[c.end.clone()].trim_end_matches(['\n', '\r']).len();
+        r.start.min(span.start)..r.end.max(c.end.start + end)
+    })
+}
+
 /// The well-formed conflicts of `text`, in order.
 pub fn conflicts(text: &str) -> Vec<Conflict> {
     let mut found = Vec::new();

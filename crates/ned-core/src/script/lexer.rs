@@ -71,6 +71,8 @@ pub struct Lexer<'a> {
     pos: usize,
     /// Where the next heredoc body on the current line starts.
     heredoc_cursor: Option<usize>,
+    /// The last regex lexed, from its opening `/` to after its closing one.
+    pub(super) last_regex: Option<Range<usize>>,
 }
 
 impl<'a> Lexer<'a> {
@@ -79,6 +81,7 @@ impl<'a> Lexer<'a> {
             src,
             pos: 0,
             heredoc_cursor: None,
+            last_regex: None,
         }
     }
 
@@ -254,6 +257,7 @@ impl<'a> Lexer<'a> {
                 c => pattern.push(c),
             }
         }
+        self.last_regex = Some(start..self.pos);
         let mut flags = RegexFlags::default();
         while let Some(c) = self.peek().filter(char::is_ascii_alphabetic) {
             match c {
@@ -272,7 +276,11 @@ impl<'a> Lexer<'a> {
     }
 
     fn lines(&mut self) -> Result<TokenKind, ParseError> {
+        let start_pos = self.pos;
         let start = self.line_no()?;
+        if self.peek() == Some(',') && matches!(self.peek_second(), Some('$' | '0'..='9')) {
+            return Err(self.sed_range(start_pos, start));
+        }
         if self.peek() != Some('-') {
             return Ok(TokenKind::Lines { start, end: None });
         }
@@ -292,6 +300,24 @@ impl<'a> Lexer<'a> {
             start,
             end: Some(end),
         })
+    }
+
+    /// The error for sed's `N,M` after `N` (`start`, from `start_pos`), naming
+    /// the `N-M` it means.
+    fn sed_range(&mut self, start_pos: usize, start: LineNo) -> ParseError {
+        let comma = self.pos;
+        self.pos += 1;
+        let end = match self.line_no() {
+            Ok(end) => end,
+            Err(e) => return e,
+        };
+        let (first, last) = (&self.src[start_pos..comma], &self.src[comma + 1..self.pos]);
+        let fix = match (start, end) {
+            (LineNo::Number(a), LineNo::Number(b)) if a > b => format!("{last}-{first}"),
+            (LineNo::Last, LineNo::Number(_)) => format!("{last}-{first}"),
+            _ => format!("{first}-{last}"),
+        };
+        ParseError::new(E::SedRange(fix), comma..self.pos)
     }
 
     fn context(&mut self) -> Result<usize, ParseError> {
@@ -361,7 +387,10 @@ impl<'a> Lexer<'a> {
                 }
                 if !quoted
                     && word != "file"
-                    && let Some(err) = self.dotted_name(word, &name)
+                    && let Some(err) = self
+                        .dotted_name(word, &name)
+                        .or_else(|| self.dashed_name(word, &name))
+                        .or_else(|| self.braced_name(word, &name))
                 {
                     return Err(err);
                 }
@@ -424,6 +453,49 @@ impl<'a> Lexer<'a> {
             }
         };
         Some(ParseError::new(error, span))
+    }
+
+    /// For an unquoted `kind:name` directly followed by `-` and more of the name,
+    /// such as `import:react-router`, an error suggesting the quoted name. A `-`
+    /// before another selector, as in `fn:a-fn:b`, is a malformed range instead.
+    fn dashed_name(&self, kind: &str, name: &str) -> Option<ParseError> {
+        let rest = self.src[self.pos..].strip_prefix('-')?;
+        let end = rest
+            .find(|c| !(is_ident_char(c) || c == '-'))
+            .unwrap_or(rest.len());
+        if end == 0 || rest[end..].starts_with(':') {
+            return None;
+        }
+        let selector = syntax::selector(kind, &format!("{name}-{}", &rest[..end]));
+        Some(ParseError::new(
+            E::DashedName(selector),
+            self.pos..self.pos + 1,
+        ))
+    }
+
+    /// For an unquoted `kind:name` followed by `{`, such as Rust's
+    /// `import:a::{A, B}`, an error suggesting the quoted name up to the
+    /// matching `}` on the same command.
+    fn braced_name(&self, kind: &str, name: &str) -> Option<ParseError> {
+        let rest = self.src[self.pos..].strip_prefix('{')?;
+        let mut depth = 1;
+        let end = rest.find(|c| {
+            match c {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => {}
+            }
+            depth == 0 || matches!(c, '\n' | '\r' | ';' | '|')
+        })?;
+        if !rest[end..].starts_with('}') {
+            return None;
+        }
+        let braced = &self.src[self.pos..self.pos + end + 2];
+        let selector = syntax::selector(kind, &format!("{name}{braced}"));
+        Some(ParseError::new(
+            E::BracedName { selector },
+            self.pos..self.pos + braced.len(),
+        ))
     }
 
     fn query(&mut self, start: usize) -> Result<TokenKind, ParseError> {
@@ -548,14 +620,14 @@ const PARTS: [(&str, Part); 16] = [
     ("base", Part::Base),
 ];
 
-fn part_named(name: &str) -> Option<Part> {
+pub(super) fn part_named(name: &str) -> Option<Part> {
     PARTS
         .iter()
         .find(|(n, _)| *n == name)
         .map(|&(_, part)| part)
 }
 
-fn is_ident_char(c: char) -> bool {
+pub(super) fn is_ident_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
@@ -719,6 +791,24 @@ mod tests {
         assert_eq!(error("20-12").kind, E::ReversedLines { start: 20, end: 12 });
         assert_eq!(error("12- ").kind, E::MissingRangeEnd);
         assert_eq!(error("99999999999999999999999").kind, E::LineOverflow);
+    }
+
+    #[test]
+    fn sed_style_line_ranges_suggest_a_dash() {
+        for (src, fix) in [
+            ("10,20", "10-20"),
+            ("3,$", "3-$"),
+            ("20,10", "10-20"),
+            ("$,2", "2-$"),
+            ("1,2>fn:a", "1-2"),
+        ] {
+            assert_eq!(error(src).kind, E::SedRange(fix.into()), "{src:?}");
+        }
+        assert_eq!(error("show 10,20").span, 7..10);
+        // Not a range: a `,` before anything but a line number keeps its error.
+        assert_eq!(error("3, 4").kind, E::UnexpectedChar(','));
+        assert_eq!(error("3,a").kind, E::UnexpectedChar(','));
+        assert_eq!(error("3,").kind, E::UnexpectedChar(','));
     }
 
     #[test]
@@ -891,6 +981,53 @@ mod tests {
         assert_eq!(
             kinds("fn:a..fn:b"),
             [syntax("fn", "a"), T::DotDot, syntax("fn", "b")]
+        );
+    }
+
+    #[test]
+    fn dashed_names_suggest_quoting() {
+        let kind = |src| error(src).kind;
+        let e = error("show import:react-router");
+        assert_eq!(e.kind, E::DashedName(r#"import:"react-router""#.into()));
+        assert_eq!(e.span, 17..18);
+        assert_eq!(
+            kind("import:react-router-dom.name"),
+            E::DashedName(r#"import:"react-router-dom""#.into())
+        );
+        assert_eq!(kind("fn:a-b"), E::DashedName(r#"fn:"a-b""#.into()));
+        // Not a name: a malformed range, or a `-` after a quoted name or a space.
+        assert_eq!(kind("fn:a-fn:b"), E::UnexpectedChar('-'));
+        assert_eq!(kind("fn:a-/b/"), E::UnexpectedChar('-'));
+        assert_eq!(kind(r#"import:"a"-b"#), E::UnexpectedChar('-'));
+        assert_eq!(kind("fn:a -b"), E::UnexpectedChar('-'));
+    }
+
+    #[test]
+    fn braced_names_suggest_quoting() {
+        let braced = |src, selector: &str| {
+            let e = error(src);
+            assert_eq!(
+                e.kind,
+                E::BracedName {
+                    selector: selector.into()
+                },
+                "{src}"
+            );
+            e.span
+        };
+        let span = braced("show import:a::b::{A, B}", r#"import:"a::b::{A, B}""#);
+        assert_eq!(span, 18..24);
+        braced("import:c::{d::{E, F}, G}", r#"import:"c::{d::{E, F}, G}""#);
+        braced("show import:a::{b} | show fn:x", r#"import:"a::{b}""#);
+        // Without a matching `}` on the line, the `{` isn't part of a name.
+        assert_eq!(error("show import:a::{b").kind, E::UnexpectedChar('{'));
+        assert_eq!(
+            error("show import:a::{b\nshow c}").kind,
+            E::UnexpectedChar('{')
+        );
+        assert_eq!(
+            error("show import:a::{b | show c}").kind,
+            E::UnexpectedChar('{')
         );
     }
 

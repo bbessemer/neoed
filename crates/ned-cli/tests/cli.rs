@@ -1074,6 +1074,38 @@ fn insert_import_after_import() {
 }
 
 #[test]
+fn a_use_over_several_lines_is_named_on_one_line() {
+    let uses = "use a::b;\nuse c::{\n    d,\n    e,\n};\n";
+    let dir = dir_with(&[("uses.rs", uses)]);
+    let out = ned(
+        dir.path(),
+        &["uses.rs", "-e", r#"show import:"c::{d, e}""#],
+        "",
+    );
+    assert_snapshot!(out, @r#"
+    exit: 0
+    --- stdout
+    uses.rs:2-5
+    2:use c::{
+    3:    d,
+    4:    e,
+    5:};
+    --- stderr
+    "#);
+    let out = ned(
+        dir.path(),
+        &["uses.rs", "-e", r#"show import:"c::{d, f}""#],
+        "",
+    );
+    assert_snapshot!(out, @r#"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: script:1:6: import:"c::{d, f}" matches nothing in uses.rs; did you mean import:"c::{d, e}" (2-5)?
+    "#);
+}
+
+#[test]
 fn missing_part_exits_1() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
     let out = ned(dir.path(), &["parser.rs", "-e", "show fn:new.doc"], "");
@@ -1606,6 +1638,101 @@ fn a_command_named_as_a_file_suggests_the_script_form() {
     --- stdout
     --- stderr
     error: `delete` is a command, not a file; give the script with -e: ned a.rs -e 'delete'
+    ");
+}
+
+#[test]
+fn a_subcommand_after_a_flag_suggests_it_first() {
+    let dir = dir_with(&[("a.rs", "fn a() {}\n")]);
+    assert_snapshot!(ned(dir.path(), &["-s", "x", "undo"], ""), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: `undo` is a subcommand, not a file; give it first: ned undo -s x
+    ");
+    assert_snapshot!(ned(dir.path(), &["-w", ".", "history"], ""), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: `history` is a subcommand, not a file; give it first: ned history -w .
+    ");
+    assert_snapshot!(ned(dir.path(), &["-w", "history", "--all"], ""), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: `history` is a subcommand, not a file; give it first: ned history --all
+    ");
+    assert_snapshot!(ned(dir.path(), &["--force", "-ns", "x", "undo"], ""), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: `undo` is a subcommand, not a file; give it first: ned undo --force -s x
+    ");
+    assert_snapshot!(ned(dir.path(), &["-e", "show 1", "help", "outline"], ""), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: `help` is a subcommand, not a file; give it first: ned help outline
+    ");
+    for (args, fix) in [
+        (&["--session=x", "undo"][..], "ned undo --session=x"),
+        (&["-sx", "undo"], "ned undo -s x"),
+        (&["-n", "a.rs", "history"], "ned history"),
+        (&["-X", "undo"], "ned undo"),
+    ] {
+        let out = ned(dir.path(), args, "");
+        assert!(
+            out.ends_with(&format!("give it first: {fix}\n")),
+            "{args:?}: {out}"
+        );
+    }
+}
+
+#[test]
+fn a_subcommand_after_no_flag_is_a_file() {
+    let dir = dir_with(&[("a.rs", "fn a() {}\n")]);
+    assert_snapshot!(ned(dir.path(), &["a.rs", "undo"], ""), @r"
+    exit: 3
+    --- stdout
+    --- stderr
+    error: cannot read undo: no such file (paths are relative to {dir})
+    ");
+    assert_snapshot!(ned(dir.path(), &["--", "undo"], ""), @r"
+    exit: 3
+    --- stdout
+    --- stderr
+    error: cannot read undo: no such file (paths are relative to {dir})
+    ");
+    assert_snapshot!(ned(dir.path(), &["-s", "undo", "a.rs", "-e", "outline"], ""), @r"
+    exit: 0
+    --- stdout
+    a.rs
+    1 fn:a
+    --- stderr
+    ");
+}
+
+#[test]
+fn a_file_named_as_a_subcommand_is_still_a_file() {
+    let dir = dir_with(&[("undo", "a\n")]);
+    let script = ["-e", "replace 1 with \"b\""];
+    assert_snapshot!(ned(dir.path(), &[&["-n", "undo"][..], &script].concat(), ""), @r"
+    exit: 0
+    --- stdout
+    (dry run) undo: 1 edit, +1 -1
+    @@ -1,1 +1,1 @@
+    -a
+    +b
+    --- stderr
+    ");
+    assert_snapshot!(ned(dir.path(), &[&["-n", "./undo"][..], &script].concat(), ""), @r"
+    exit: 0
+    --- stdout
+    (dry run) ./undo: 1 edit, +1 -1
+    @@ -1,1 +1,1 @@
+    -a
+    +b
+    --- stderr
     ");
 }
 

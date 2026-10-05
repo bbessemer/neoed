@@ -594,6 +594,7 @@ dependencies = [
 name = "ned-daemon"
 version = "0.8.0-dev"
 dependencies = [
+ "libc",
  "lsp-types",
  "ned-core",
  "serde",

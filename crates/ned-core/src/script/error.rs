@@ -58,6 +58,10 @@ pub enum ParseErrorKind {
     /// `selector` is the whole dotted name, quoted.
     #[error("unknown part `.{part}`; quote a name that has dots: {selector}")]
     DottedName { selector: String, part: String },
+    /// An unquoted name followed by `-`, as in `import:react-router`; the
+    /// selector is the whole name, quoted.
+    #[error("unexpected character `-`; quote the name: {0}")]
+    DashedName(String),
     /// `selector` nests the dotted name's segments under a placeholder `KIND`;
     /// `method` is the quoted Go method name, for `fn:Recv.Name`.
     #[error(
@@ -69,6 +73,9 @@ pub enum ParseErrorKind {
         part: String,
         method: Option<String>,
     },
+    /// `selector` is the whole name up to the matching `}`, quoted.
+    #[error("unexpected character `{{`; quote a name that has braces: {selector}")]
+    BracedName { selector: String },
     #[error("line numbers start at 1; use 1 for the first line")]
     ZeroLine,
     #[error("expected a line number or `$` after `-`, e.g. 12-20 or 12-$")]
@@ -78,8 +85,14 @@ pub enum ParseErrorKind {
     /// `show SEL +N..+M`; the fix is `show SEL +M`.
     #[error("`+N` is one count of lines around each span, not a range; write {0}")]
     ContextRange(String),
+    /// `show SEL -N`; the fix is `show SEL +N`.
+    #[error("context is written `+N`, not `-N`; write {0}")]
+    MinusContext(String),
     #[error("line range {start}-{end} is reversed; write {end}-{start}")]
     ReversedLines { start: usize, end: usize },
+    /// `N,M`, sed's line range; the fix is the `N-M` range it means.
+    #[error("line ranges are written N-M, not sed's N,M; write {0}")]
+    SedRange(String),
     #[error("line number is too large; use `$` for the last line")]
     LineOverflow,
     #[error("expected a tag after `<<`, e.g. <<END")]
@@ -118,9 +131,18 @@ pub enum ParseErrorKind {
     /// `sub all /re/ with`, holding the regex as written.
     #[error("`sub` already replaces every match; drop `all`: sub {0} with ...")]
     SubAll(String),
+    /// `sub SEL /re/text/`, sed's form; the fix is the `sub` it means.
+    #[error("`sub` takes /re/ with TEXT, not sed's /re/text/; write {0}")]
+    SedSub(String),
+    /// `sub [SEL] "lit" with TEXT`; the fix is the `replace all` it means.
+    #[error("`sub` takes a regex, not a literal; write {0}")]
+    LiteralSub(String),
     /// `all` after a target's selector; the fix puts it before.
     #[error("`all` goes before the selector; write {0}")]
     AllAfterSelector(String),
+    /// A regex, string or pattern glued to a selector; the fix nests it with `>`.
+    #[error("a search in a step goes after `>`; write {0}")]
+    GluedStep(String),
     /// A `$` reference in `sub` TEXT to a group the regex doesn't have; `fix`
     /// splits off the group it starts with, or lists the groups.
     #[error("`{reference}` names group `{name}`, which the regex doesn't have; {fix}")]

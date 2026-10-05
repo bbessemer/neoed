@@ -98,6 +98,19 @@ impl Buffer {
         Ok(self.rope.byte_to_line(offset))
     }
 
+    /// The 0-based line holding the last character of `range`, or, if it's
+    /// empty, its start.
+    pub fn last_line(&self, range: &Range<usize>) -> Result<usize, BufferError> {
+        self.check_range(range)?;
+        let last = if range.is_empty() {
+            range.start
+        } else {
+            let chars = self.rope.byte_to_char(range.end);
+            self.rope.char_to_byte(chars - 1)
+        };
+        Ok(self.rope.byte_to_line(last))
+    }
+
     pub fn byte_to_point(&self, offset: usize) -> Result<Point, BufferError> {
         let line = self.byte_to_line(offset)?;
         Ok(Point {
@@ -256,6 +269,16 @@ mod tests {
         assert_eq!(buf.byte_to_line(3), Ok(1));
         assert_eq!(buf.byte_to_point(4), Ok(pt(1, 1)));
         assert_eq!(buf.byte_to_point(2), Ok(pt(0, 2)));
+    }
+
+    #[test]
+    fn last_line_holds_a_ranges_last_character() {
+        let buf = Buffer::new("ab\ncï\nd\n");
+        assert_eq!(buf.last_line(&(0..3)), Ok(0));
+        assert_eq!(buf.last_line(&(4..6)), Ok(1));
+        assert_eq!(buf.last_line(&(3..7)), Ok(1));
+        assert_eq!(buf.last_line(&(3..3)), Ok(1));
+        assert_eq!(buf.last_line(&(4..5)), Err(BufferError::NotCharBoundary(5)));
     }
 
     #[test]

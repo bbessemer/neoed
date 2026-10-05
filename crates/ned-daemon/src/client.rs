@@ -22,6 +22,10 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 /// For requests that wait on language servers, which time out themselves.
 const SERVER_REPLY_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// The longest socket path the platform can bind: `sun_path` also holds a NUL.
+const MAX_SOCKET_LEN: usize =
+    size_of::<libc::sockaddr_un>() - std::mem::offset_of!(libc::sockaddr_un, sun_path) - 1;
+
 /// A connection point to a running daemon.
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -36,6 +40,11 @@ pub enum ClientError {
     Spawn { source: io::Error },
     #[error("the daemon didn't start; see its log, {}", log.display())]
     NotStarted { log: PathBuf },
+    #[error(
+        "daemon socket path {} is {len} bytes, over the platform's limit of {MAX_SOCKET_LEN}; set XDG_RUNTIME_DIR to a shorter directory",
+        socket.display()
+    )]
+    SocketTooLong { socket: PathBuf, len: usize },
     #[error("the daemon sent an invalid response: {0}; run `ned daemon stop`, then retry")]
     Protocol(String),
 }
@@ -54,6 +63,7 @@ impl Client {
         if let Some(client) = Client::connect(paths) {
             return Ok(client);
         }
+        check_socket_len(&paths.socket)?;
         let spawn = |source| ClientError::Spawn { source };
         let log = File::create(&paths.log).map_err(spawn)?;
         let mut child = Command::new(exe)
@@ -103,6 +113,18 @@ impl Client {
         BufReader::new(stream).read_line(&mut reply)?;
         serde_json::from_str(&reply).map_err(|err| ClientError::Protocol(err.to_string()))
     }
+}
+
+/// Fails unless the platform can bind `socket`.
+fn check_socket_len(socket: &Path) -> Result<(), ClientError> {
+    let len = socket.as_os_str().len();
+    if len > MAX_SOCKET_LEN {
+        return Err(ClientError::SocketTooLong {
+            socket: socket.to_path_buf(),
+            len,
+        });
+    }
+    Ok(())
 }
 
 /// The daemon for the workspace containing a directory, reached (and
@@ -227,5 +249,31 @@ impl Lsp for Workspace {
                 ClientError::Protocol(format!("{other:?}")).to_string(),
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_socket_path_over_the_platform_limit_is_refused_with_a_fix() {
+        let fits = PathBuf::from(format!("/{}", "a".repeat(MAX_SOCKET_LEN - 1)));
+        assert!(check_socket_len(&fits).is_ok());
+        let long = PathBuf::from(format!("/{}", "a".repeat(MAX_SOCKET_LEN)));
+        let err = check_socket_len(&long).unwrap_err();
+        assert!(
+            matches!(&err, ClientError::SocketTooLong { socket, len } if *socket == long && *len == MAX_SOCKET_LEN + 1),
+            "{err}"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains(&format!("is {} bytes", MAX_SOCKET_LEN + 1)),
+            "{message}"
+        );
+        assert!(
+            message.ends_with("set XDG_RUNTIME_DIR to a shorter directory"),
+            "{message}"
+        );
     }
 }

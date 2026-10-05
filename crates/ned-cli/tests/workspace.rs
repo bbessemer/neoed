@@ -104,3 +104,20 @@ fn workspace_edits_write_only_their_files() {
         "// needle c\n"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_file_glob_reads_only_the_files_it_matches() {
+    let dir = workspace();
+    let locked = dir.path().join("src/locked.md");
+    fs::write(&locked, "needle\n").unwrap();
+    fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+    let out = ned(
+        dir.path(),
+        &["-w", "-e", "show all file:src/**/*.rs>/needle/"],
+    );
+    assert_eq!(
+        stdout(&out),
+        "src/a.rs:1\n1:// needle a\nsrc/deep/b.rs:1\n1:// needle b\n"
+    );
+}

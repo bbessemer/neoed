@@ -73,7 +73,7 @@ curl -fsSL https://raw.githubusercontent.com/bbessemer/neoed/main/install.sh | s
 The script downloads the binary for your platform from
 [GitHub Releases](https://github.com/bbessemer/neoed/releases/latest), checks
 its SHA-256, and puts `ned` in `~/.local/bin`. Set `NED_INSTALL_DIR` to install
-elsewhere, or `NED_VERSION` (e.g. `v0.8.0-dev`) to pin a release.
+elsewhere, or `NED_VERSION` (e.g. `v0.8.0`) to pin a release.
 
 To build from source instead, you need Rust 1.90 or later and a C compiler,
 because the tree-sitter grammars are compiled in:
@@ -163,7 +163,8 @@ A selector can be:
   language server;
 - a range (`fn:a..fn:c`);
 - a filter (`fn[.doc == ""]`, `fn:parse.lines[.len > 80]`);
-- scoped to one file (`file:src/a.rs>fn:new`);
+- scoped to one file or a glob's files (`file:src/a.rs>fn:new`,
+  `file:src/*.rs>fn:new`);
 - a merge conflict (`conflict:2`), with `.ours`, `.theirs` and `.base`;
 - a syntax pattern: code with placeholders, matched whatever its spacing and
   comments (`` `foo(@x, @rest...)` ``);

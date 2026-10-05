@@ -275,6 +275,8 @@ it too.
   written, such as an indented line in a test's expected output.
 - **Strings** are `"..."` on one line, with `\n \t \" \\`. Use a heredoc for
   multi-line text.
+- **A `<<TAG` stands in for its text**, so the command stays on one line:
+  `replace <<OLD with <<NEW`, then OLD's body, then NEW's.
 - **`$`** is literal in `replace`. Only `sub` expands `$1`, `${name}` and `$0`.
 - **A literal's quotes aren't in what it selects.** To edit a string in code,
   select it with its quotes escaped (`"\"old\""`) and give `TEXT` its quotes
