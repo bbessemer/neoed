@@ -4,6 +4,7 @@ pub mod apply;
 pub mod ast;
 pub mod buffer;
 pub mod buffers;
+pub mod color;
 pub mod config;
 pub mod conflict;
 pub mod diff;
