@@ -82,7 +82,7 @@ session automatically.
 - [x] Spec
 - [x] Move the one-shot pipeline, session glue, `undo`/`history` and help texts
       from `ned-cli` into `ned-core`
-- [ ] `ned-mcp` protocol (initialize, ping, tools/list) and `ned mcp`
+- [x] `ned-mcp` protocol (initialize, ping, tools/list) and `ned mcp`
 - [ ] `ned`, `outline`, `show` and `help` tools
 - [ ] `history` and `undo` tools
 - [ ] README, agent guide and skill

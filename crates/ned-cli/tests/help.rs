@@ -104,7 +104,8 @@ fn every_verb_topic_has_examples_and_they_parse() {
     );
     for (topic, text) in texts {
         let blocks = examples(&text);
-        let is_verb = !["selectors", "text", "config", "session", "repl"].contains(&topic.as_str());
+        let is_verb =
+            !["selectors", "text", "config", "session", "repl", "mcp"].contains(&topic.as_str());
         assert!(!is_verb || !blocks.is_empty(), "{topic} has no examples");
         for block in blocks {
             if let Err(err) = script::parse(&block) {

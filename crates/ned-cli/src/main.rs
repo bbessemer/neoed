@@ -22,6 +22,7 @@ macro_rules! errln {
 }
 
 mod daemon;
+mod mcp;
 mod repl;
 mod session;
 
@@ -50,7 +51,7 @@ type LangFlag = Option<Language>;
     args_conflicts_with_subcommands = true,
     disable_help_subcommand = true,
     // clap leaves a user-defined `help` subcommand out of the usage.
-    override_usage = "ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...\n       ned repl [OPTIONS] [FILES... | -w [DIR]]    (edit interactively)\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]\n       ned history|undo [-s NAME] [-w DIR]\n       ned session list|delete"
+    override_usage = "ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...\n       ned repl [OPTIONS] [FILES... | -w [DIR]]    (edit interactively)\n       ned mcp [OPTIONS]    (serve agents over MCP)\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]\n       ned history|undo [-s NAME] [-w DIR]\n       ned session list|delete"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -104,6 +105,8 @@ struct Cli {
 enum Command {
     /// Edit interactively, in memory until written (`ned help repl`).
     Repl(repl::ReplArgs),
+    /// Serve ned to an agent over the Model Context Protocol (`ned help mcp`).
+    Mcp(mcp::McpArgs),
     /// Print a summary of the command language, or details of one topic.
     Help {
         #[arg(value_parser = PossibleValuesParser::new(help::TOPICS.iter().map(|(name, _)| name)))]
@@ -201,6 +204,7 @@ fn main() -> ExitCode {
     ));
     match cli.command {
         Some(Command::Repl(args)) => return repl::run(args),
+        Some(Command::Mcp(args)) => return mcp::run(args),
         Some(Command::Help { topic }) => {
             out!(
                 "{}",

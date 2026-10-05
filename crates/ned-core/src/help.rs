@@ -23,6 +23,7 @@ pub const TOPICS: &[(&str, &str)] = &[
     ("config", include_str!("../help/config.txt")),
     ("session", include_str!("../help/session.txt")),
     ("repl", include_str!("../help/repl.txt")),
+    ("mcp", include_str!("../help/mcp.txt")),
 ];
 
 /// The summary of the command language.

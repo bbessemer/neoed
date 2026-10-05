@@ -495,13 +495,14 @@ and `--commit` see an agent's calls whichever way it made them.
 
 **Protocol.** The server answers `initialize`, `ping`, `tools/list` and
 `tools/call`, one request at a time, in order; notifications need no answer and
-are ignored. `initialize` answers with the client's protocol version if it is
-one the server knows (`2025-06-18`, `2025-03-26` or `2024-11-05`), otherwise the
-latest, with the `tools` capability and `serverInfo` naming `ned` and its
-version (`-V`). A line that isn't JSON is a parse error (-32700), a message that
-isn't a request, or a batch, is an invalid request (-32600), an unknown method
-is -32601, and an unknown tool, or arguments missing one that's required or of
-the wrong type, are invalid params (-32602).
+are ignored, as are responses from the client. `initialize` answers with the
+client's protocol version if it is one the server knows (`2025-06-18`,
+`2025-03-26` or `2024-11-05`), otherwise the latest, with the `tools` capability
+and `serverInfo` naming `ned` and its version (`-V`). A line that isn't JSON is
+a parse error (-32700), a message that isn't a request, or a batch, is an
+invalid request (-32600), an unknown method is -32601, and an unknown tool, or
+arguments missing one that's required or of the wrong type, are invalid params
+(-32602).
 
 **Tools.** A call's result is one text content holding what `ned` would print
 for it, stdout then stderr, without colour. If its exit code (§7) isn't 0, the

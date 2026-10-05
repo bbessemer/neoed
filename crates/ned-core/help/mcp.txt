@@ -1,0 +1,22 @@
+mcp
+
+  ned mcp [-w DIR] [-s NAME] [--lang LANG] [--context N]
+  claude mcp add ned -- ned mcp        (register it with Claude Code)
+
+Serves ned over the Model Context Protocol (JSON-RPC on stdio), so an agent
+can run scripts without a shell. Each tool's result is what ned prints;
+a failure sets isError and ends with `exit N`.
+
+Tools:
+  ned      script, files?, workspace?, dry_run?, quiet?, force?, no_fmt?,
+           no_check?, commit?           ned [FILES | -w] [FLAGS] -e SCRIPT
+  outline  files | workspace            outline
+  show     selector, files | workspace  show SELECTOR
+  history  all?                         ned history [--all]
+  undo     force?                       ned undo [--force]
+  help     topic?                       ned help [TOPIC]
+
+files are relative to the server's working directory; workspace is -w.
+It records every call in a session: -s NAME, NED_SESSION, or a new mcp-N,
+so `!!`, undo and history work as in the shell, and ned history shows the
+calls.

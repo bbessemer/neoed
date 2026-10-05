@@ -559,6 +559,7 @@ dependencies = [
  "insta",
  "ned-core",
  "ned-daemon",
+ "ned-mcp",
  "rustyline",
  "serde_json",
  "tempfile",
@@ -601,6 +602,15 @@ dependencies = [
  "thiserror",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "ned-mcp"
+version = "0.8.0-dev"
+dependencies = [
+ "ned-core",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

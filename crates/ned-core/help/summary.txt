@@ -46,7 +46,7 @@ next `|`. After a `|`, check, rename, .refs and .def are errors.
 
 Flags: -n dry run   -q summaries only   --force skip the guards (syntax, check)
        --no-fmt   --no-check   --lang LANG|text   --context N   --commit MSG
-       -w [DIR] every unignored file in the workspace
+       -w [DIR] every unignored workspace file
        -s NAME record the invocation in a session (or NED_SESSION=NAME)
 
 Examples:
@@ -58,4 +58,4 @@ Examples:
     END
 
 Topics: show outline check allow replace insert delete sub move rename resolve
-file create selectors filters patterns conflicts text config session repl
+file create selectors filters patterns conflicts text config session repl mcp
