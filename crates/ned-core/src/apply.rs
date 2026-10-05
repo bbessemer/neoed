@@ -10,6 +10,7 @@ use crate::diff::{self, DiffStat};
 use crate::exec::Change;
 use crate::format::{self, Outcome};
 use crate::git::{FileEdit, GitError, Prepared, Repo};
+use crate::lang::Language;
 use crate::lsp::{self, Checked, Diagnostic, Lsp, LspFailure, Severity};
 use crate::session::FileChange;
 use crate::style::{Role, Style};
@@ -270,6 +271,30 @@ pub fn render(changes: &[Change], finished: &Finished, how: Render) -> String {
                 style,
             ));
         }
+    }
+    out
+}
+
+/// Each of `changes` as a summary line and hunks, as `ned undo` prints them
+/// (spec §1.2), with paths relative to `cwd` where they're inside it.
+pub fn file_changes(changes: &[FileChange], cwd: &Path, context: usize, style: Style) -> String {
+    let mut out = String::new();
+    for change in changes {
+        let path = change.path.strip_prefix(cwd).unwrap_or(&change.path);
+        let path = path.to_string_lossy();
+        let before = change.before.as_deref().unwrap_or_default();
+        let after = change.after.as_deref().unwrap_or_default();
+        let stat = DiffStat::between(before, after);
+        let summary = match (&change.before, &change.after) {
+            (None, _) => diff::created_summary(&path, stat, false),
+            (_, None) => diff::removed_summary(&path, stat),
+            _ => diff::summary(&path, diff::regions(before, after), stat, false),
+        };
+        out.push_str(&style.paint(Role::Header, &summary));
+        out.push('\n');
+        let lang = Language::detect(&path, after);
+        let (before, after) = (diff::Side::new(before, lang), diff::Side::new(after, lang));
+        out.push_str(&diff::hunks(&before, &after, context, style));
     }
     out
 }

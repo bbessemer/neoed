@@ -1,0 +1,745 @@
+//! `ned repl`: a human edits interactively, in memory until written
+//! (command-language spec §1.4).
+
+use std::io::{self, BufRead, IsTerminal};
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use clap::{Args, ValueEnum};
+use ned_core::apply::{self, Finished, Render, Settings};
+use ned_core::buffers::{Buffers, BuffersError};
+use ned_core::diff::{self, DiffStat};
+use ned_core::exec::{Change, Initial, Options};
+use ned_core::format::Outcome;
+use ned_core::lang::{self, Language};
+use ned_core::lsp::{Document, Lsp};
+use ned_core::session::{self, Entry, FileChange, Session};
+use ned_core::style::Role;
+use ned_core::{fs, script, workspace};
+use rustyline::DefaultEditor;
+use rustyline::error::ReadlineError;
+
+use crate::{Cli, Edited, LangFlag, Ran, daemon, help, session as sessions, styles};
+
+/// The REPL's arguments: the file set and the flags it shares with scripts.
+#[derive(Args, Debug, Default)]
+pub struct ReplArgs {
+    /// Files to edit: the initial file set.
+    files: Vec<String>,
+    /// Start with every file in the workspace, DIR or the one containing the
+    /// working directory, instead of FILES.
+    #[arg(short, long, value_name = "DIR", num_args = 0..=1, conflicts_with = "files")]
+    workspace: Option<Option<PathBuf>>,
+    /// Skip the parse-error guard: apply edits even if they introduce syntax
+    /// errors.
+    #[arg(long)]
+    force: bool,
+    /// Don't run formatters.
+    #[arg(long)]
+    no_fmt: bool,
+    /// Don't check edits with language servers.
+    #[arg(long)]
+    no_check: bool,
+    /// Use this language for every file instead of detecting it, or `text` to
+    /// parse none of them.
+    #[arg(long, value_name = "LANG", value_parser = lang::parse_lang)]
+    lang: Option<LangFlag>,
+    /// Context lines around diff hunks.
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    context: usize,
+    /// Record into session NAME; overrides NED_SESSION.
+    #[arg(short, long, value_name = "NAME")]
+    session: Option<String>,
+}
+
+impl ReplArgs {
+    /// The REPL's arguments for bare `ned` on a terminal, or a usage error for
+    /// a flag only scripts take.
+    pub fn from_cli(cli: Cli) -> Result<ReplArgs, String> {
+        let script_only = [
+            (cli.dry_run, "-n"),
+            (cli.quiet, "-q"),
+            (cli.commit.is_some(), "--commit"),
+        ];
+        if let Some((_, flag)) = script_only.iter().find(|(given, _)| *given) {
+            return Err(format!(
+                "{flag} is for scripts, not the REPL; give a script with -e SCRIPT"
+            ));
+        }
+        Ok(ReplArgs {
+            files: cli.files,
+            workspace: cli.workspace,
+            force: cli.force,
+            no_fmt: cli.no_fmt,
+            no_check: cli.no_check,
+            lang: cli.lang,
+            context: cli.context,
+            session: cli.session,
+        })
+    }
+}
+
+/// Runs the REPL until it quits or its input ends.
+pub fn run(args: ReplArgs) -> ExitCode {
+    let mut repl = match Repl::new(args) {
+        Ok(repl) => repl,
+        Err((error, code)) => {
+            errln!("{error}");
+            return ExitCode::from(code);
+        }
+    };
+    errln!("note: recording in session {}", repl.session.name());
+    let mut input = Input::new();
+    loop {
+        let quit = match input.read() {
+            Read::Script(src) => repl.eval(&src),
+            Read::Interrupted => None,
+            Read::End if input.terminal() => repl.command("quit"),
+            Read::End => Some(repl.end()),
+        };
+        if let Some(code) = quit {
+            return ExitCode::from(code);
+        }
+    }
+}
+
+/// The commands, in the order an unknown one lists them. `:wq` is written
+/// only in full, so it's not among them.
+const COMMANDS: [&str; 11] = [
+    "write", "commit", "undo", "diff", "reload", "files", "history", "attach", "detach", "help",
+    "quit",
+];
+
+/// The command `word` names: in full, or by a prefix of only one.
+fn command_name(word: &str) -> Result<&'static str, String> {
+    if word == "wq" {
+        return Ok("wq");
+    }
+    let named: Vec<&str> = COMMANDS
+        .into_iter()
+        .filter(|c| !word.is_empty() && c.starts_with(word))
+        .collect();
+    match named[..] {
+        [name] => Ok(name),
+        [] => {
+            let all: Vec<String> = COMMANDS.iter().map(|c| format!(":{c}")).collect();
+            Err(format!(
+                "error: unknown command `:{word}`; commands are {} :wq",
+                all.join(" ")
+            ))
+        }
+        [ref rest @ .., last] => {
+            let rest: Vec<String> = rest.iter().map(|c| format!(":{c}")).collect();
+            Err(format!(
+                "error: `:{word}` could be {} or :{last}",
+                rest.join(", ")
+            ))
+        }
+    }
+}
+
+struct Repl {
+    args: ReplArgs,
+    cwd: PathBuf,
+    root: PathBuf,
+    /// The file set each script starts with: FILE arguments, or `-w`.
+    files: Vec<String>,
+    workspace: bool,
+    buffers: Buffers,
+    session: Session,
+    daemon: daemon::Workspace,
+}
+
+impl Repl {
+    fn new(args: ReplArgs) -> Result<Repl, sessions::Failure> {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let root = match &args.workspace {
+            Some(Some(dir)) => dir
+                .canonicalize()
+                .map_err(|err| (format!("error: cannot read {}: {err}", dir.display()), 3))?,
+            _ => workspace::root(&cwd).unwrap_or(cwd.clone()),
+        };
+        let session = match sessions::name(args.session.clone()) {
+            Some(name) => sessions::open(&name, &root)?,
+            None => session::state_dir()
+                .and_then(|dir| session::next_free(&dir, &root, "repl"))
+                .map_err(sessions::failure)?,
+        };
+        Ok(Repl {
+            session,
+            daemon: daemon::workspace(root.clone()),
+            files: args.files.clone(),
+            workspace: args.workspace.is_some(),
+            buffers: Buffers::default(),
+            args,
+            cwd,
+            root,
+        })
+    }
+
+    /// Runs a line of input; `Some` exit code to quit.
+    fn eval(&mut self, src: &str) -> Option<u8> {
+        match src.trim().strip_prefix(':') {
+            Some(command) => self.command(command),
+            None if src.trim().is_empty() => None,
+            None => {
+                self.script(src);
+                None
+            }
+        }
+    }
+
+    fn command(&mut self, line: &str) -> Option<u8> {
+        let (word, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+        let (word, force) = match word.strip_suffix('!') {
+            Some(word) => (word, true),
+            None => (word, false),
+        };
+        let args: Vec<&str> = rest.split_whitespace().collect();
+        let done = command_name(word).and_then(|name| match name {
+            "write" => self.write(&args, force).map(|()| None),
+            "wq" => self
+                .write(&args, force)
+                .and_then(|()| self.quit(false))
+                .map(Some),
+            "quit" => self.quit(force).map(Some),
+            "undo" => self.undo().map(|()| None),
+            "diff" => self.diff(&args).map(|()| None),
+            "reload" => self.reload(&args).map(|()| None),
+            "files" => self.set_files(&args).map(|()| None),
+            "history" => self.history(args.contains(&"--all")).map(|()| None),
+            "help" => help(&args).map(|()| None),
+            _ => Err(format!("error: :{name} isn't available yet")),
+        });
+        match done {
+            Ok(quit) => quit,
+            Err(error) => {
+                let prefix = format!("{}/", self.cwd.display());
+                errln!("{}", error.replace(&prefix, ""));
+                None
+            }
+        }
+    }
+
+    /// Runs a script on the buffers and records it, as `ned` would run it.
+    fn script(&mut self, src: &str) {
+        // A repeat runs on its script's file set (spec §1.2).
+        let (mut files, mut workspace) = match session::is_repeat(src) {
+            true => (Vec::new(), None),
+            false => (self.files.clone(), self.workspace.then_some(None)),
+        };
+        let mut root = self.root.clone();
+        let repeated = sessions::repeat(
+            Some(&self.session),
+            src.to_string(),
+            &self.cwd,
+            &mut files,
+            &mut workspace,
+            &mut root,
+            true,
+        );
+        let src = match repeated {
+            Ok(src) => src,
+            Err((error, _)) => {
+                errln!("{error}");
+                return;
+            }
+        };
+        let initial = match workspace {
+            Some(_) => Initial::Workspace(root.clone()),
+            None => Initial::Files(&files),
+        };
+        let ran = self.run_script(&src, initial);
+        let entry = Entry {
+            id: 0,
+            time: session::now(),
+            cwd: self.cwd.clone(),
+            files,
+            workspace: workspace.is_some().then_some(root),
+            script: Some(src),
+            undoes: None,
+            write: false,
+            dry_run: false,
+            exit: ran.exit,
+            error: ran.error,
+            changes: Vec::new(),
+            commit: None,
+        };
+        sessions::record(&self.session, entry);
+    }
+
+    fn run_script(&mut self, src: &str, initial: Initial) -> Ran {
+        let options = Options {
+            lang: self.args.lang,
+            force: self.args.force,
+            style: styles().0,
+            overlay: Some(self.buffers.overlay()),
+        };
+        let settings = Settings {
+            format: !self.args.no_fmt,
+            check: !self.args.no_check,
+            force: self.args.force,
+        };
+        let Edited { changes, finished } =
+            match crate::execute(src, initial, &options, settings, &mut self.daemon) {
+                Ok(edited) => edited,
+                Err(ran) => return ran,
+            };
+        self.buffers
+            .apply(&self.cwd, &changes, &finished.finals(&changes));
+        let how = Render {
+            context: self.args.context,
+            quiet: false,
+            dry_run: false,
+            style: styles().0,
+        };
+        out!("{}", apply::render(&changes, &finished, how));
+        Ran {
+            exit: 0,
+            error: None,
+            changes: Vec::new(),
+            commit: None,
+        }
+    }
+
+    /// `:write`: writes the buffers, then reports what the checks run on save
+    /// find the write introduced (spec §6.5), and records it.
+    fn write(&mut self, args: &[&str], force: bool) -> Result<(), String> {
+        let paths = self.paths(args);
+        let writes = self
+            .buffers
+            .plan_write(paths.as_deref(), sessions::read, force)
+            .map_err(|err| format!("error: {err}"))?;
+        if writes.is_empty() {
+            outln!("no unwritten edits");
+            return Ok(());
+        }
+        let changes: Vec<Change> = writes.iter().map(|w| self.change(w)).collect();
+        let mut messages = Vec::new();
+        let before = match self.args.no_check || !self.daemon.running() {
+            true => None,
+            false => apply::before_save(&mut self.daemon, &changes, &mut messages),
+        };
+        let files: Vec<(PathBuf, String)> = writes
+            .iter()
+            .map(|w| (w.path.clone(), w.after.clone().unwrap_or_default()))
+            .collect();
+        fs::write_atomic(&files, &[])
+            .map_err(|err| format!("error: cannot write files: {err}; no file was changed"))?;
+        self.buffers.written(&writes);
+        let style = styles().0;
+        for change in &changes {
+            let stat = DiffStat::between(&change.old, &change.new);
+            let summary = match change.created {
+                true => diff::created_summary(&change.path, stat, false),
+                false => format!("{}: written, {stat}", change.path),
+            };
+            outln!("{}", style.paint(Role::Header, &summary));
+        }
+        if let Some(before) = before {
+            let finished = Finished {
+                outcomes: vec![Outcome::Unchanged; changes.len()],
+                checked: None,
+            };
+            let found = apply::after_save(
+                &mut self.daemon,
+                before,
+                &changes,
+                &finished,
+                style,
+                &mut messages,
+            );
+            out!("{found}");
+        }
+        for message in messages {
+            errln!("{message}");
+        }
+        let written = writes
+            .into_iter()
+            .map(|w| FileChange {
+                path: w.path.canonicalize().unwrap_or(w.path),
+                ..w
+            })
+            .collect();
+        let entry = Entry {
+            id: 0,
+            time: session::now(),
+            cwd: self.cwd.clone(),
+            files: Vec::new(),
+            workspace: None,
+            script: None,
+            undoes: None,
+            write: true,
+            dry_run: false,
+            exit: 0,
+            error: None,
+            changes: written,
+            commit: None,
+        };
+        sessions::record(&self.session, entry);
+        Ok(())
+    }
+
+    /// The script-like change a write makes to a file, for the checks run on
+    /// save.
+    fn change(&self, write: &FileChange) -> Change {
+        let path = self.shown(&write.path);
+        let new = write.after.clone().unwrap_or_default();
+        Change {
+            lang: self
+                .args
+                .lang
+                .unwrap_or_else(|| Language::detect(&path, &new)),
+            path,
+            old: write.before.clone().unwrap_or_default(),
+            new,
+            edits: 0,
+            created: write.before.is_none(),
+        }
+    }
+
+    fn undo(&mut self) -> Result<(), String> {
+        let changes = self
+            .buffers
+            .undo(sessions::read)
+            .map_err(|err| format!("error: {err}"))?;
+        let style = styles().0;
+        out!(
+            "{}",
+            apply::file_changes(&changes, &self.cwd, self.args.context, style)
+        );
+        let paths: Vec<PathBuf> = changes.into_iter().map(|c| c.path).collect();
+        self.sync(&paths);
+        Ok(())
+    }
+
+    /// `:diff`: what `:write` would write, against the files on disk (spec
+    /// §1.4).
+    fn diff(&self, args: &[&str]) -> Result<(), String> {
+        let paths = self.paths(args).unwrap_or_else(|| self.unwritten());
+        if paths.is_empty() {
+            outln!("no unwritten edits");
+            return Ok(());
+        }
+        let buffers = &self.buffers;
+        let mut changes = Vec::new();
+        for path in paths {
+            let one = std::slice::from_ref(&path);
+            let writes = match buffers.plan_write(Some(one), sessions::read, false) {
+                Err(BuffersError::Overlap { path, line }) => {
+                    errln!(
+                        "note: {}:{line}: the edit overlaps a change made to the file since, so this is what `:write!` writes",
+                        self.shown(&path)
+                    );
+                    buffers.plan_write(Some(one), sessions::read, true)
+                }
+                Err(err @ (BuffersError::Exists { .. } | BuffersError::Removed { .. })) => {
+                    let prefix = format!("{}/", self.cwd.display());
+                    errln!("note: {}", err.to_string().replace(&prefix, ""));
+                    buffers.plan_write(Some(one), sessions::read, true)
+                }
+                writes => writes,
+            };
+            changes.extend(writes.map_err(|err| format!("error: {err}"))?);
+        }
+        let style = styles().0;
+        out!(
+            "{}",
+            apply::file_changes(&changes, &self.cwd, self.args.context, style)
+        );
+        Ok(())
+    }
+
+    fn reload(&mut self, args: &[&str]) -> Result<(), String> {
+        let paths = self.paths(args);
+        let reloaded = paths.clone().unwrap_or_else(|| self.unwritten());
+        self.buffers
+            .reload(paths.as_deref())
+            .map_err(|err| format!("error: {err}"))?;
+        for path in &reloaded {
+            outln!("{}: reloaded", self.shown(path));
+        }
+        self.sync(&reloaded);
+        Ok(())
+    }
+
+    /// `:files`: prints the file set and the buffers with unwritten edits, or
+    /// replaces the set.
+    fn set_files(&mut self, args: &[&str]) -> Result<(), String> {
+        match args {
+            [] => {}
+            ["-w" | "--workspace"] => {
+                self.files.clear();
+                self.workspace = true;
+                return Ok(());
+            }
+            [flag, ..] if flag.starts_with('-') => {
+                return Err(format!(
+                    "error: :files takes FILE... or -w (the REPL's workspace, {}); start another REPL for another workspace",
+                    self.root.display()
+                ));
+            }
+            files => {
+                self.files = files.iter().map(|f| f.to_string()).collect();
+                self.workspace = false;
+                return Ok(());
+            }
+        }
+        match self.workspace {
+            true => outln!("workspace: {}", self.root.display()),
+            false => outln!("files: {}", self.files.join(" ")),
+        }
+        for path in self.unwritten() {
+            let base = self.buffers.base(&path).flatten().unwrap_or_default();
+            let stat = DiffStat::between(base, &self.buffers.overlay()[&path]);
+            outln!("{}: unwritten, {stat}", self.shown(&path));
+        }
+        Ok(())
+    }
+
+    fn history(&self, all: bool) -> Result<(), String> {
+        let entries = self
+            .session
+            .lock()
+            .and_then(|log| log.entries())
+            .map_err(|err| format!("error: {err}"))?;
+        out!("{}", session::history(&entries, all));
+        Ok(())
+    }
+
+    fn quit(&mut self, force: bool) -> Result<u8, String> {
+        let unwritten = self.unwritten();
+        if !unwritten.is_empty() && !force {
+            let names: Vec<String> = unwritten.iter().map(|p| self.shown(p)).collect();
+            return Err(format!(
+                "error: unwritten edits to {}; `:write` them, or `:quit!` to discard them",
+                names.join(", ")
+            ));
+        }
+        self.discard();
+        Ok(0)
+    }
+
+    /// At the end of input that isn't a terminal: discards unwritten edits,
+    /// failing if there were any.
+    fn end(&mut self) -> u8 {
+        let unwritten = self.unwritten();
+        if unwritten.is_empty() {
+            return 0;
+        }
+        let names: Vec<String> = unwritten.iter().map(|p| self.shown(p)).collect();
+        errln!(
+            "error: the input ended with unwritten edits to {}, which were discarded",
+            names.join(", ")
+        );
+        self.discard();
+        1
+    }
+
+    /// Drops every unwritten edit, and tells the servers.
+    fn discard(&mut self) {
+        let unwritten = self.unwritten();
+        let _ = self.buffers.reload(None);
+        self.sync(&unwritten);
+    }
+
+    /// Sends the servers the text of each of `paths` (its buffer's, or the
+    /// file's), so they see what scripts will read.
+    fn sync(&mut self, paths: &[PathBuf]) {
+        if paths.is_empty() || !self.daemon.running() {
+            return;
+        }
+        let documents: Vec<Document> = paths
+            .iter()
+            .filter_map(|path| {
+                let text = match self.buffers.overlay().get(path) {
+                    Some(text) => text.clone(),
+                    None => sessions::read(path).ok()??,
+                };
+                let lang = Language::detect(&path.to_string_lossy(), &text)?;
+                Some(Document {
+                    path: path.clone(),
+                    lang,
+                    text,
+                })
+            })
+            .collect();
+        if let Err(err) = self.daemon.sync(&documents) {
+            errln!("note: {}", err.0);
+        }
+    }
+
+    /// The buffers `args` name, by absolute path; `None` for every one.
+    fn paths(&self, args: &[&str]) -> Option<Vec<PathBuf>> {
+        let absolute = |arg: &&str| ned_core::fs::canonical(&self.cwd.join(arg));
+        (!args.is_empty()).then(|| args.iter().map(absolute).collect())
+    }
+
+    fn unwritten(&self) -> Vec<PathBuf> {
+        self.buffers.unwritten().map(Path::to_path_buf).collect()
+    }
+
+    /// `path` as shown: relative to the working directory, if it's inside.
+    fn shown(&self, path: &Path) -> String {
+        path.strip_prefix(&self.cwd)
+            .unwrap_or(path)
+            .display()
+            .to_string()
+    }
+}
+
+/// `:help [TOPIC]`.
+fn help(args: &[&str]) -> Result<(), String> {
+    let topic = match args.first() {
+        None => None,
+        Some(name) => match help::Topic::from_str(name, true) {
+            Ok(topic) => Some(topic),
+            Err(_) => {
+                let names: Vec<String> = help::Topic::value_variants()
+                    .iter()
+                    .filter_map(|t| Some(t.to_possible_value()?.get_name().to_string()))
+                    .collect();
+                return Err(format!(
+                    "error: unknown topic `{name}`; topics are {}",
+                    names.join(" ")
+                ));
+            }
+        },
+    };
+    out!("{}", help::text(topic));
+    Ok(())
+}
+
+/// What reading a line of input gave.
+enum Read {
+    Script(String),
+    /// Ctrl-C: the line is dropped.
+    Interrupted,
+    /// Ctrl-D, or the end of input that isn't a terminal.
+    End,
+}
+
+/// Lines from a terminal, with editing keys and history, or from stdin.
+struct Input {
+    /// The editor and its history file, on a terminal.
+    editor: Option<(DefaultEditor, Option<PathBuf>)>,
+    /// The prompts for a script's first line and the lines that continue it.
+    prompts: (&'static str, &'static str),
+}
+
+impl Input {
+    fn new() -> Input {
+        let mut input = Input {
+            editor: None,
+            prompts: match unicode() {
+                true => ("ned› ", "   … "),
+                false => ("ned> ", "...> "),
+            },
+        };
+        if !io::stdin().is_terminal() {
+            return input;
+        }
+        let Ok(mut editor) = DefaultEditor::new() else {
+            return input;
+        };
+        let history = session::state_dir()
+            .ok()
+            .map(|dir| dir.join("repl_history"));
+        if let Some(history) = &history {
+            let _ = editor.load_history(history);
+        }
+        input.editor = Some((editor, history));
+        input
+    }
+
+    fn terminal(&self) -> bool {
+        self.editor.is_some()
+    }
+
+    /// A script, read on as many lines as it takes: one that ends inside a
+    /// heredoc or a pattern continues on the next (spec §1.4).
+    fn read(&mut self) -> Read {
+        let mut src = match self.line(self.prompts.0) {
+            Read::Script(src) => src,
+            other => return other,
+        };
+        while !src.trim_start().starts_with(':')
+            && script::parse(&src).is_err_and(|err| err.incomplete())
+        {
+            match self.line(self.prompts.1) {
+                Read::Script(more) => {
+                    src.push('\n');
+                    src.push_str(&more);
+                }
+                Read::Interrupted => return Read::Interrupted,
+                Read::End => break,
+            }
+        }
+        if let Some((editor, history)) = &mut self.editor
+            && !src.trim().is_empty()
+        {
+            let _ = editor.add_history_entry(src.as_str());
+            if let Some(history) = history {
+                let _ = editor.append_history(history);
+            }
+        }
+        Read::Script(src)
+    }
+
+    fn line(&mut self, prompt: &str) -> Read {
+        match &mut self.editor {
+            Some((editor, _)) => match editor.readline(prompt) {
+                Ok(line) => Read::Script(line),
+                Err(ReadlineError::Interrupted) => Read::Interrupted,
+                Err(ReadlineError::Eof) => Read::End,
+                Err(err) => {
+                    errln!("error: cannot read the terminal: {err}");
+                    Read::End
+                }
+            },
+            None => {
+                let mut line = String::new();
+                match io::stdin().lock().read_line(&mut line) {
+                    Ok(0) | Err(_) => Read::End,
+                    Ok(_) => {
+                        let end = line.trim_end_matches(['\n', '\r']).len();
+                        line.truncate(end);
+                        Read::Script(line)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Whether the locale is UTF-8, so the terminal shows Unicode prompts.
+fn unicode() -> bool {
+    utf8(["LC_ALL", "LC_CTYPE", "LANG"].map(|var| std::env::var(var).ok()))
+}
+
+/// Whether the first of a locale's `LC_ALL`, `LC_CTYPE` and `LANG` that's set
+/// names UTF-8.
+fn utf8(values: [Option<String>; 3]) -> bool {
+    let locale = values
+        .into_iter()
+        .flatten()
+        .find(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    locale.contains("utf-8") || locale.contains("utf8")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_first_locale_variable_set_says_whether_it_is_utf8() {
+        let locale = |values: [&str; 3]| utf8(values.map(|v| Some(v.to_string())));
+        assert!(locale(["", "", "en_US.UTF-8"]));
+        assert!(locale(["", "C.utf8", ""]));
+        assert!(!locale(["C", "en_US.UTF-8", "en_US.UTF-8"]));
+        assert!(!locale(["", "", ""]));
+        assert!(!utf8([None, None, None]));
+    }
+}

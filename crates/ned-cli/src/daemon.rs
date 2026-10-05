@@ -4,6 +4,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Subcommand;
+#[cfg(not(unix))]
+use ned_core::lsp::{
+    Diagnosis, Document, Formatting, Locate, Located, LspFailure, Position, Renamed,
+};
 
 /// This build of `ned`, which a daemon must match.
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -114,11 +118,60 @@ fn daemon(_: Action) -> anyhow::Result<()> {
     anyhow::bail!("the daemon is Unix-only for now")
 }
 
+/// The workspace's language servers, through its daemon.
+#[cfg(unix)]
+pub use ned_daemon::client::Workspace;
+
 /// The daemon for the workspace at `root`, for `check` and checking edits.
 #[cfg(unix)]
-pub fn workspace(root: PathBuf) -> ned_daemon::client::Workspace {
+pub fn workspace(root: PathBuf) -> Workspace {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ned"));
-    ned_daemon::client::Workspace::new(exe, root, VERSION)
+    Workspace::new(exe, root, VERSION)
+}
+
+/// Without Unix there's no daemon, so every language-server feature is an
+/// error (spec §1.1).
+#[cfg(not(unix))]
+pub struct Workspace;
+
+#[cfg(not(unix))]
+pub fn workspace(_root: PathBuf) -> Workspace {
+    Workspace
+}
+
+#[cfg(not(unix))]
+impl Workspace {
+    pub fn running(&mut self) -> bool {
+        false
+    }
+}
+
+#[cfg(not(unix))]
+impl ned_core::lsp::Lsp for Workspace {
+    fn diagnose(&mut self, _: &[Document], _: bool) -> Result<Diagnosis, LspFailure> {
+        Err(unix_only())
+    }
+
+    fn sync(&mut self, _: &[Document]) -> Result<(), LspFailure> {
+        Err(unix_only())
+    }
+
+    fn rename(&mut self, _: &Document, _: Position, _: &str) -> Result<Renamed, LspFailure> {
+        Err(unix_only())
+    }
+
+    fn locate(&mut self, _: Locate, _: &Document, _: Position) -> Result<Located, LspFailure> {
+        Err(unix_only())
+    }
+
+    fn format(&mut self, _: &Document) -> Result<Formatting, LspFailure> {
+        Err(unix_only())
+    }
+}
+
+#[cfg(not(unix))]
+fn unix_only() -> LspFailure {
+    LspFailure("language servers run through the daemon, which needs Unix".into())
 }
 
 /// A status line for the daemon, then one per server.

@@ -221,6 +221,7 @@ fn color_always_paints_usage_errors() {
       \e[32mtip:\e[0m to pass '\e[33m--bogus\e[0m' as a value, use '\e[32m-- --bogus\e[0m'
 
     \e[1m\e[4mUsage:\e[0m ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...
+           ned repl [OPTIONS] [FILES... | -w [DIR]]    (edit interactively)
            ned help [TOPIC]    (the command language)
            ned daemon start|status|stop [DIR]
            ned history|undo [-s NAME] [-w DIR]

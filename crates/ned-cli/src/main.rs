@@ -23,6 +23,7 @@ macro_rules! errln {
 
 mod daemon;
 mod help;
+mod repl;
 mod session;
 
 use std::ffi::OsString;
@@ -33,11 +34,10 @@ use std::sync::OnceLock;
 
 use clap::builder::NonEmptyStringValueParser;
 use clap::{Parser, Subcommand};
-use ned_core::apply::{self, Committed, Render, Settings};
-use ned_core::exec::{self, Initial, Options};
+use ned_core::apply::{self, Committed, Finished, Render, Settings};
+use ned_core::exec::{self, Change, Initial, Options};
 use ned_core::git::Repo;
 use ned_core::lang::{self, Language};
-#[cfg(unix)]
 use ned_core::lsp::Lsp;
 use ned_core::session::{Entry, FileChange};
 use ned_core::style::{Style, When};
@@ -55,7 +55,7 @@ type LangFlag = Option<Language>;
     args_conflicts_with_subcommands = true,
     disable_help_subcommand = true,
     // clap leaves a user-defined `help` subcommand out of the usage.
-    override_usage = "ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]\n       ned history|undo [-s NAME] [-w DIR]\n       ned session list|delete"
+    override_usage = "ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...\n       ned repl [OPTIONS] [FILES... | -w [DIR]]    (edit interactively)\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]\n       ned history|undo [-s NAME] [-w DIR]\n       ned session list|delete"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -107,6 +107,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Edit interactively, in memory until written (`ned help repl`).
+    Repl(repl::ReplArgs),
     /// Print a summary of the command language, or details of one topic.
     Help { topic: Option<help::Topic> },
     /// Manage the language-server daemon for the workspace containing DIR.
@@ -200,6 +202,7 @@ fn main() -> ExitCode {
         style(io::stderr().is_terminal()),
     ));
     match cli.command {
+        Some(Command::Repl(args)) => return repl::run(args),
         Some(Command::Help { topic }) => {
             out!("{}", help::text(topic));
             return ExitCode::SUCCESS;
@@ -217,6 +220,15 @@ fn main() -> ExitCode {
         }) => return finish(session::undo(session, workspace, force)),
         Some(Command::Session { action }) => return finish(session::run(action)),
         None => {}
+    }
+    if cli.scripts.is_empty() && io::stdin().is_terminal() && usage_error(&cli).is_none() {
+        return match repl::ReplArgs::from_cli(cli) {
+            Ok(args) => repl::run(args),
+            Err(err) => {
+                errln!("error: {err}");
+                ExitCode::from(2)
+            }
+        };
     }
     if let Some(err) = usage_error(&cli) {
         errln!("error: {err}");
@@ -320,19 +332,44 @@ impl Ran {
     }
 }
 
+/// A script's edits, made and finished (formatted and checked), but not
+/// written.
+struct Edited {
+    changes: Vec<Change>,
+    finished: Finished,
+}
+
+/// Parses and runs `src` on `initial`, printing its reads and notes, and
+/// finishes its edits (spec §6.4, §6.5).
+fn execute(
+    src: &str,
+    initial: Initial,
+    options: &Options,
+    settings: Settings,
+    workspace: &mut daemon::Workspace,
+) -> Result<Edited, Ran> {
+    let parsed = script::parse(src).map_err(|err| Ran::failed(2, err.render(src)))?;
+    let run = exec::run(&parsed, src, initial, options, Some(&mut *workspace));
+    out!("{}", run.output);
+    for note in &run.notes {
+        errln!("note: {note}");
+    }
+    let changes = run
+        .result
+        .map_err(|err| Ran::failed(err.kind.exit_code(), err.render(src)))?;
+    let lsp: Option<&mut dyn Lsp> = workspace.running().then_some(workspace);
+    let mut messages = Vec::new();
+    let finished = apply::finish(&changes, run.allow, settings, lsp, &mut messages);
+    for message in messages {
+        errln!("{message}");
+    }
+    let finished = finished.map_err(|rejected| Ran::failed(rejected.exit, rejected.message))?;
+    Ok(Edited { changes, finished })
+}
+
 /// Runs the script `src`: prints its output and writes its edits, and with
 /// `--commit` commits them after the session's `prior` changes.
 fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf, prior: &[(u64, FileChange)]) -> Ran {
-    let parsed = match script::parse(src) {
-        Ok(parsed) => parsed,
-        Err(err) => return Ran::failed(2, err.render(src)),
-    };
-    let options = Options {
-        lang: cli.lang,
-        force: cli.force,
-        style: styles().0,
-        overlay: None,
-    };
     let top = root.clone();
     // HEAD as the script starts, so a commit made while it runs is noticed.
     let before = cli.commit.as_ref().and_then(|_| Repo::discover(&top).ok());
@@ -340,46 +377,25 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf, prior: &[(u64, FileChang
         Some(_) => Initial::Workspace(root.clone()),
         None => Initial::Files(&cli.files),
     };
-    #[cfg(unix)]
-    let mut workspace = daemon::workspace(root);
-    #[cfg(unix)]
-    let lsp: Option<&mut dyn Lsp> = Some(&mut workspace);
-    #[cfg(not(unix))]
-    let lsp = None;
-    let run = exec::run(&parsed, src, initial, &options, lsp);
-    out!("{}", run.output);
-    for note in &run.notes {
-        errln!("note: {note}");
-    }
-    let changes = match run.result {
-        Ok(changes) => changes,
-        Err(err) => return Ran::failed(err.kind.exit_code(), err.render(src)),
+    let options = Options {
+        lang: cli.lang,
+        force: cli.force,
+        style: styles().0,
+        overlay: None,
     };
-
-    #[cfg(unix)]
-    let mut lsp: Option<&mut dyn Lsp> = workspace.running().then_some(&mut workspace);
-    #[cfg(not(unix))]
-    let mut lsp: Option<&mut dyn ned_core::lsp::Lsp> = None;
     let settings = Settings {
         format: !cli.no_fmt,
         check: !cli.no_check,
         force: cli.force,
     };
+    let mut workspace = daemon::workspace(root);
+    let Edited { changes, finished } =
+        match execute(src, initial, &options, settings, &mut workspace) {
+            Ok(edited) => edited,
+            Err(ran) => return ran,
+        };
+    let mut lsp: Option<&mut dyn Lsp> = workspace.running().then_some(&mut workspace);
     let mut messages = Vec::new();
-    let finished = apply::finish(
-        &changes,
-        run.allow,
-        settings,
-        lsp.as_deref_mut(),
-        &mut messages,
-    );
-    for message in messages.drain(..) {
-        errln!("{message}");
-    }
-    let finished = match finished {
-        Ok(finished) => finished,
-        Err(rejected) => return Ran::failed(rejected.exit, rejected.message),
-    };
     let finals = finished.finals(&changes);
 
     let committed = match &cli.commit {
@@ -498,7 +514,7 @@ fn finish(result: Result<(), session::Failure>) -> ExitCode {
 }
 
 /// A usage error found before the script is read (spec §1): a command's name
-/// given as a FILE, or no script with stdin a terminal.
+/// given as a FILE.
 fn usage_error(cli: &Cli) -> Option<String> {
     let exists = |arg: &str| std::path::Path::new(arg).exists();
     let is_command = |arg: &str| script::error::COMMANDS.split(' ').any(|c| c == arg);
@@ -520,6 +536,5 @@ fn usage_error(cli: &Cli) -> Option<String> {
             words.join(" ")
         ));
     }
-    (cli.scripts.is_empty() && io::stdin().is_terminal())
-        .then(|| "no script: give one with -e SCRIPT or on stdin, e.g. ned FILE -e outline".into())
+    None
 }

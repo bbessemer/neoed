@@ -18,6 +18,7 @@ anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 ned-core = { version = "0.8.0-dev", path = "../ned-core" }
 ned-daemon = { version = "0.8.0-dev", path = "../ned-daemon" }
+rustyline = { version = "18", default-features = false, features = ["with-file-history"] }
 
 [dev-dependencies]
 assert_cmd = "2.2.2"

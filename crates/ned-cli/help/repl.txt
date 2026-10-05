@@ -16,9 +16,9 @@ Commands (any unambiguous prefix works: :w, :u, :q):
   :commit MSG         write, then commit the session's edits since its last
                       commit (as --commit does), and nothing else
   :undo               undo the last script's edits; repeat to go further back
-  :diff [FILE...]     unwritten edits against the files on disk
+  :diff [FILE...]     what :write would write to the files on disk
   :reload [FILE...]   drop unwritten edits
-  :files [FILE... | -w [DIR]]   print, or replace, the file set
+  :files [FILE... | -w]   print, or replace, the file set
   :history [--all]    the session's history
   :attach NAME        follow session NAME (an agent's) and record into it
   :detach             stop following

@@ -347,28 +347,31 @@ it too (§1).
 ```
 $ ned repl src/parser.rs
 note: recording in session repl-1
-ned> replace fn:parse>"end" with "end of input"
+ned› replace fn:parse>"end" with "end of input"
 src/parser.rs: 1 edit, +1 -1
 @@ -14,3 +14,3 @@
 ...
-ned> :write
+ned› :write
 src/parser.rs: written, +1 -1
-ned> :quit
+ned› :quit
 ```
 
 It takes `FILE...` or `-w [DIR]` and the flags `--force`, `--no-check`,
 `--no-fmt`, `--lang`, `--context`, `--color`, `-s` and `--attach NAME`; `-n`,
 `-q`, `--commit` and `-e` are usage errors. On a terminal it reads lines with
 history (kept in `$XDG_STATE_HOME/ned/repl_history`) and the usual editing keys,
-at the prompt `ned> `; otherwise it reads them from stdin without a prompt.
+at the prompt `ned› `, or `ned> ` unless the locale is UTF-8 (the first of
+`LC_ALL`, `LC_CTYPE` and `LANG` that's set names `UTF-8`); otherwise it reads
+them from stdin without a prompt.
 
 **Scripts.** Each input is a script, run on the file set the REPL started with
 (`file` changes it for the rest of that script only, §2.4). A script that ends
-inside a heredoc or a pattern continues on the next line, at the prompt `.. `.
-Its output is what `ned` prints, from the same pipeline: the parse-error guard,
-formatting and edit checks apply, and so do `--force`, `--no-fmt` and
-`--no-check`. An error is printed and the REPL goes on. `!!` repeats the
-session's last script (§1.2), on its file set.
+inside a heredoc or a pattern continues on the next line, at the prompt `…`
+(`...>` unless the locale is UTF-8), right-aligned under the first. Its output
+is what `ned` prints, from the same pipeline: the parse-error guard, formatting
+and edit checks apply, and so do `--force`, `--no-fmt` and `--no-check`. An
+error is printed and the REPL goes on. `!!` repeats the session's last script
+(§1.2), on its file set.
 
 **Buffers.** An edit changes the file's buffer, not the file. A buffer holds the
 file's text as edited, and its **base**: the text on disk when its first
@@ -384,20 +387,20 @@ as any prefix that names only one (`:w` is `:write`, `:u` is `:undo`, `:di` is
 be. `!` after a command's name forces it. `:wq` is a shorthand, written only in
 full, so `:w` is still `:write`.
 
-| Command                        | Effect                                                                                   |
-| ------------------------------ | ---------------------------------------------------------------------------------------- |
-| `:write [FILE...]`             | Write every buffer with unwritten edits, or the named ones                               |
-| `:write! [FILE...]`            | Write them over the files' current text, without merging                                 |
-| `:commit MSG`                  | Write every buffer with unwritten edits, then commit the session's edits to git          |
-| `:undo`                        | Undo the last script's edits to the buffers; repeated, walk further back                 |
-| `:diff [FILE...]`              | Print each buffer's unwritten edits, as summary and hunks against the file on disk       |
-| `:reload [FILE...]`            | Drop the unwritten edits of every buffer, or the named ones                              |
-| `:files [FILE... \| -w [DIR]]` | Print the file set and the buffers with unwritten edits; with arguments, replace the set |
-| `:history [--all]`             | Print the session's history, as `ned history` does                                       |
-| `:attach NAME`, `:detach`      | Follow session `NAME` and record into it; stop                                           |
-| `:help [TOPIC]`                | Print `ned help TOPIC`                                                                   |
-| `:quit`, `:quit!`              | Quit; `:quit!` discards unwritten edits                                                  |
-| `:wq`                          | `:write`, then `:quit` if it succeeded                                                   |
+| Command                   | Effect                                                                                   |
+| ------------------------- | ---------------------------------------------------------------------------------------- |
+| `:write [FILE...]`        | Write every buffer with unwritten edits, or the named ones                               |
+| `:write! [FILE...]`       | Write them over the files' current text, without merging                                 |
+| `:commit MSG`             | Write every buffer with unwritten edits, then commit the session's edits to git          |
+| `:undo`                   | Undo the last script's edits to the buffers; repeated, walk further back                 |
+| `:diff [FILE...]`         | Print what `:write` would write, as summary and hunks against the file on disk           |
+| `:reload [FILE...]`       | Drop the unwritten edits of every buffer, or the named ones                              |
+| `:files [FILE... \| -w]`  | Print the file set and the buffers with unwritten edits; with arguments, replace the set |
+| `:history [--all]`        | Print the session's history, as `ned history` does                                       |
+| `:attach NAME`, `:detach` | Follow session `NAME` and record into it; stop                                           |
+| `:help [TOPIC]`           | Print `ned help TOPIC`                                                                   |
+| `:quit`, `:quit!`         | Quit; `:quit!` discards unwritten edits                                                  |
+| `:wq`                     | `:write`, then `:quit` if it succeeded                                                   |
 
 `:write` writes atomically, all files or none, and prints `PATH: written, +A -R`
 for each (`PATH: created, +N` for a file a `create` made). If a file changed on
@@ -409,6 +412,11 @@ as they are. A write runs no formatter or parse-error guard, and its edits were
 checked when they were made, but the checks servers run on save do run, as for
 any written edit (§6.5), and print what the write introduced after the `written`
 lines.
+
+`:diff` prints the text `:write` would write over each file on disk: the
+buffer's edits, merged into a change made to the file since. Where `:write`
+would refuse (an overlap, a created file that now exists, a file removed since),
+a note gives the error, and it prints what `:write!` would write instead.
 
 `:commit MSG` takes the rest of the line as the message. It writes as `:write`
 does, then commits as `--commit MSG` does in a session (§1.3): every edit the
@@ -432,6 +440,10 @@ buffer can't remove a file (`ned undo` reverts the write). Nothing changes when
 and Ctrl-C clears the line. At the end of input that isn't a terminal, unwritten
 edits are discarded with an error naming the files, and the REPL exits 1;
 otherwise it exits 0.
+
+`:files -w` sets the file set to the REPL's workspace (the one it started in, or
+`-w DIR`'s); its session and language servers belong to that workspace, so
+another one needs another REPL.
 
 **Sessions.** The REPL always records into a session (§1.2): `-s NAME` or
 `NED_SESSION`, otherwise the first of `repl-1`, `repl-2`, ... that the workspace

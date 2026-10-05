@@ -7,13 +7,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
-use ned_core::diff::{self, DiffStat};
+use ned_core::apply;
 use ned_core::fs;
-use ned_core::lang::Language;
 use ned_core::session::{
     self, Entry, FileChange, Session, SessionError, UncommittedError, UndoError,
 };
-use ned_core::style::Role;
 use ned_core::workspace;
 
 /// The session `-s` (`flag`) or `NED_SESSION` names, if any.
@@ -156,23 +154,8 @@ pub fn undo(flag: Option<String>, dir: Option<PathBuf>, force: bool) -> Result<(
         .as_deref()
         .map_or("write".to_string(), session::script_summary);
     outln!("undo {}: {script}", undo.id);
-    for change in &undo.changes {
-        let path = change.path.strip_prefix(&cwd).unwrap_or(&change.path);
-        let path = path.to_string_lossy();
-        let before = change.before.as_deref().unwrap_or_default();
-        let after = change.after.as_deref().unwrap_or_default();
-        let stat = DiffStat::between(before, after);
-        let style = crate::styles().0;
-        let summary = match (&change.before, &change.after) {
-            (None, _) => diff::created_summary(&path, stat, false),
-            (_, None) => diff::removed_summary(&path, stat),
-            _ => diff::summary(&path, diff::regions(before, after), stat, false),
-        };
-        outln!("{}", style.paint(Role::Header, &summary));
-        let lang = Language::detect(&path, after);
-        let (before, after) = (diff::Side::new(before, lang), diff::Side::new(after, lang));
-        out!("{}", diff::hunks(&before, &after, 1, style));
-    }
+    let style = crate::styles().0;
+    out!("{}", apply::file_changes(&undo.changes, &cwd, 1, style));
 
     let entry = Entry {
         id: 0,
@@ -283,12 +266,12 @@ fn existing(flag: Option<String>, root: &Path) -> Result<Session, Failure> {
     Ok(session)
 }
 
-fn failure(err: SessionError) -> Failure {
+pub fn failure(err: SessionError) -> Failure {
     (format!("error: {err}"), exit_code(&err))
 }
 
 /// The text of the file at `path`, `None` if it's missing.
-fn read(path: &Path) -> io::Result<Option<String>> {
+pub fn read(path: &Path) -> io::Result<Option<String>> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
