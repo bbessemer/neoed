@@ -138,9 +138,11 @@ A server that isn't installed is an error when a feature needs it, naming the
 The daemon listens on a Unix socket in `$XDG_RUNTIME_DIR/ned/`, or
 `$TMPDIR/ned-UID/` without it (`/tmp/ned-UID/` if `TMPDIR` is unset too); `ned`
 refuses a directory that isn't owned by the user or that others can access. Its
-log is next to the socket. A daemon serves only the `ned` version that started
-it. The daemon is Unix-only for now; on other platforms, features that need it
-are errors.
+log is next to the socket. A socket path longer than the platform allows (103
+bytes on macOS, 107 on Linux) is an error naming its length, fixed by a shorter
+`XDG_RUNTIME_DIR`. A daemon serves only the `ned` version that started it. The
+daemon is Unix-only for now; on other platforms, features that need it are
+errors.
 
 ### 1.2 Sessions
 
