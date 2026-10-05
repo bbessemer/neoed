@@ -1847,6 +1847,10 @@ fn without_leading(f: &SourceFile, range: Range<usize>, new: &Text) -> Range<usi
     else {
         return range;
     };
+    // The conflict that an item starts inside goes with it (§3.3).
+    if f.conflicts().iter().any(|c| c.span().start == range.start) {
+        return range;
+    }
     let line = t[..item.node.start].rfind('\n').map_or(0, |i| i + 1);
     // An attribute on the item's own line goes with it.
     if item.node.start == range.start || !t[line..item.node.start].trim().is_empty() {
@@ -4557,6 +4561,57 @@ fn main() {}
         );
         let out = exec(CONFLICTS, "show fn:a>conflict:2");
         assert!(out.error().contains("matches nothing"), "{}", out.error());
+    }
+
+    #[test]
+    fn a_conflict_overlapping_a_part_is_named_when_nothing_lies_inside_it() {
+        let text = "fn f() {\n<<<<<<< HEAD\n    a();\n=======\n    b();\n}\n>>>>>>> t\n";
+        let out = exec(text, "show fn:f.body>conflict");
+        assert!(
+            out.error().contains(
+                "fn:f.body>conflict matches nothing in a.rs; conflict:1 (lines 2-7) is not inside fn:f.body (lines 2-5); show it with `show conflict:1`"
+            ),
+            "{}",
+            out.error()
+        );
+    }
+
+    /// `fn f` ends on the theirs side of the conflict.
+    const ENDS_IN_CONFLICT: &str =
+        "fn f() {\n<<<<<<< HEAD\n    a();\n=======\n    b();\n}\n>>>>>>> t\n\nfn g() {}\n";
+
+    #[test]
+    fn an_item_ending_inside_a_conflict_takes_in_the_whole_conflict() {
+        let out = exec(ENDS_IN_CONFLICT, "show fn:f>conflict");
+        assert_eq!(
+            out.output,
+            "a.rs:2-7\n2:<<<<<<< HEAD\n3:    a();\n4:=======\n5:    b();\n6:}\n7:>>>>>>> t\n"
+        );
+        assert_eq!(edited(ENDS_IN_CONFLICT, "delete fn:f"), "fn g() {}\n");
+    }
+
+    #[test]
+    fn an_item_starting_inside_a_conflict_takes_in_the_whole_conflict() {
+        let text = "<<<<<<< HEAD\nfn f() {\n=======\nfn g() {}\n>>>>>>> t\n    x();\n}\n";
+        let out = exec(text, "show fn:f");
+        assert_eq!(
+            out.output,
+            "a.rs:1-7\n1:<<<<<<< HEAD\n2:fn f() {\n3:=======\n4:fn g() {}\n5:>>>>>>> t\n6:    x();\n7:}\n"
+        );
+        assert_eq!(
+            edited(text, "replace fn:f with \"fn h() {}\""),
+            "fn h() {}\n"
+        );
+    }
+
+    #[test]
+    fn an_item_on_one_side_of_a_conflict_is_not_widened() {
+        let text = "<<<<<<< HEAD\nfn f() {\n=======\nfn g() {}\n>>>>>>> t\n    x();\n}\n";
+        assert_eq!(exec(text, "show fn:g").output, "a.rs:4\n4:fn g() {}\n");
+        assert_eq!(
+            exec(CONFLICTS, "show conflict:2.ours>fn:b").output,
+            "a.rs:12\n12:fn b() {}\n"
+        );
     }
 
     #[test]

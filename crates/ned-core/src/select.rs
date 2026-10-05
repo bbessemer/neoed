@@ -82,10 +82,13 @@ impl SourceFile {
     pub fn items(&self) -> Option<&[Item]> {
         let query = self.lang?.selectors();
         let tree = self.tree()?;
-        Some(
-            self.items
-                .get_or_init(|| syntax::items(query, tree, self.masked())),
-        )
+        Some(self.items.get_or_init(|| {
+            let mut items = syntax::items(query, tree, self.masked());
+            for item in &mut items {
+                item.range = conflict::widen(item.range.clone(), self.conflicts(), &self.text);
+            }
+            items
+        }))
     }
 
     /// The text's merge conflicts (§3.11).
@@ -552,7 +555,7 @@ impl<'a> Matcher<'a> {
                 .enumerate()
                 .filter(|(i, _)| n.is_none_or(|n| n == i + 1))
                 .map(|(_, c)| c.span())
-                .filter(within)
+                .filter(in_scope)
                 .collect(),
             Matcher::Query(queries) => {
                 let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
@@ -891,7 +894,20 @@ pub(crate) fn hint(
                 );
             }
         }
-        Primary::Conflict(_) => {
+        Primary::Conflict(n) => {
+            if let Some(parent) = selector[..at].strip_suffix('>')
+                && let Some((i, conflict, p)) = overlapping_conflict(*n, files, parents, &scopes)
+            {
+                let lines = |m: &Match| match location(m) {
+                    l if files.len() > 1 => l,
+                    l => format!("lines {l}"),
+                };
+                return format!(
+                    "; conflict:{i} ({}) is not inside {parent} ({}); show it with `show conflict:{i}`",
+                    lines(&conflict),
+                    lines(p)
+                );
+            }
             let mut searched: Vec<&SourceFile> = parents.iter().map(|p| files[p.file]).collect();
             searched.dedup_by_key(|f| &f.path);
             let conflicted: Vec<String> = searched
@@ -927,6 +943,33 @@ pub(crate) fn hint(
         Primary::Syntax { .. } => "; `outline` lists the items".into(),
         _ => "; `show` prints the text to match against".into(),
     }
+}
+
+/// The first conflict (the `n`th, if given) that overlaps one of `scopes`, the
+/// whole lines of `parents`: its number, its span and that parent.
+fn overlapping_conflict<'a>(
+    n: Option<usize>,
+    files: &[&SourceFile],
+    parents: &'a [Match],
+    scopes: &[Match],
+) -> Option<(usize, Match, &'a Match)> {
+    scopes.iter().zip(parents).find_map(|(scope, p)| {
+        let (i, c) = files[p.file]
+            .conflicts()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| n.is_none_or(|n| n == i + 1))
+            .find(|(_, c)| {
+                let span = c.span();
+                span.start < scope.range.end && scope.range.start < span.end
+            })?;
+        let conflict = Match {
+            file: p.file,
+            range: c.span(),
+            captures: Vec::new(),
+        };
+        Some((i + 1, conflict, p))
+    })
 }
 
 /// The first place within `parents` where `needle` occurs once case and runs
