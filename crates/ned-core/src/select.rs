@@ -1816,6 +1816,15 @@ mod tests {
              fn:a.body>2   a.rs:2\n  \
              fn:a.body>3   a.rs:3"
         );
+        const LIST: &str = "- a b\n  c d\n";
+        assert_eq!(
+            error("delete \"- a b\\n  c d\".lines", &[("a.md", LIST)]),
+            "error: script:1:8: \"- a b\\n  c d\".lines matches 2 items; add `all` or use one of:\n  \
+             \"- a b\\n  c d\">1   a.md:1\n  \
+             \"- a b\\n  c d\">2   a.md:2"
+        );
+        assert_eq!(select("delete \"- a b\\n  c d\">1", LIST), ["- a b\n"]);
+        assert_eq!(select("delete \"- a b\\n  c d\">2", LIST), ["  c d\n"]);
     }
 
     #[test]

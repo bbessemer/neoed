@@ -156,7 +156,7 @@ of either kind.
 
 Each fix is a patch; a fix that changes documented behaviour is a minor.
 
-- [ ] `.lines` on a multi-line literal that matches once
+- [x] `.lines` on a multi-line literal that matches once
       (`insert after "- a b\n  c d".lines "x"`) says "matches 2 items" and lists
       identical candidates
 - [ ] An item whose last line falls inside a conflict's last side stops before
