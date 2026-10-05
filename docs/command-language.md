@@ -1648,18 +1648,21 @@ line-number = "dim"
   `underline`; a value may also be those words alone.
 - `[theme.syntax]` keys are highlight query capture names. A capture without its
   own key takes its longest dotted prefix's (`function.method` falls back to
-  `function`); one with neither is not coloured.
+  `function`); one with neither is not coloured. Where two of a query's patterns
+  capture the same node, the one with more nodes and predicates wins, then the
+  later; a capture that isn't coloured never wins.
 - `[theme.ui]` keys are `header`, `line-number`, `kind`, `dim`, `hunk-header`,
   `error`, `warning`, `info` and `note`. One the theme leaves out looks as it
   does with no theme.
 - An unknown key or bad value is an error at its location, as in §6.4.
 
 In a hunk, a removed or added line's sign and the text between its highlighted
-tokens take `removed` or `added`, and each token's colour is tinted by it. The
-tint multiplies each sRGB channel, from 0 to 1, by the line's colour's. A dark
-theme then sets the result's OKLab lightness back to the token colour's, so
-tinted code stays as legible on a dark background; a light theme keeps the
-darker result. Unchanged lines are highlighted as in `show`.
+tokens take `removed` or `added`, and each token's colour is tinted by it (a
+token with no colour of its own takes the line's). The tint multiplies each sRGB
+channel, from 0 to 1, by the line's colour's. A dark theme then sets the
+result's OKLab lightness back to the token colour's, so tinted code stays as
+legible on a dark background; a light theme keeps the darker result. Unchanged
+lines are highlighted as in `show`.
 
 ## 7. Errors and exit codes
 

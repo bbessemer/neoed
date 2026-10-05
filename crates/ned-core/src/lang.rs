@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tree_sitter::{Parser, Query, Tree};
 
 use crate::conflict;
+use crate::highlight::Highlights;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -139,8 +140,8 @@ impl Language {
 
     /// The compiled highlight query of the language's grammar crate, for
     /// terminal output (§6.6).
-    pub fn highlights(self) -> &'static Query {
-        static QUERIES: [OnceLock<Query>; 7] = [const { OnceLock::new() }; 7];
+    pub fn highlights(self) -> &'static Highlights {
+        static QUERIES: [OnceLock<Highlights>; 7] = [const { OnceLock::new() }; 7];
         // TypeScript's query adds to JavaScript's; its own patterns go last, so they
         // win where both mark a node.
         let sources: &[&str] = match self {
@@ -163,7 +164,8 @@ impl Language {
             ],
         };
         QUERIES[self as usize].get_or_init(|| {
-            Query::new(&self.grammar(), &sources.concat()).expect("highlight queries are valid")
+            Highlights::new(&self.grammar(), &sources.concat())
+                .expect("highlight queries are valid")
         })
     }
 
@@ -383,7 +385,7 @@ mod tests {
     #[test]
     fn every_language_has_a_highlight_query() {
         for lang in Language::ALL {
-            assert!(lang.highlights().pattern_count() > 0, "{lang}");
+            assert!(lang.highlights().query.pattern_count() > 0, "{lang}");
         }
     }
 

@@ -47,7 +47,7 @@ pub struct Look {
     pub underline: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Theme {
     /// Whether the theme is for a dark background.
     pub dark: bool,
@@ -279,7 +279,7 @@ fn look(value: &str) -> Result<Look, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::fs;
 
     use super::*;
@@ -302,6 +302,11 @@ mod tests {
 
     fn config(text: &str) -> Result<Theme, ConfigError> {
         theme(&[("config.toml", text)])
+    }
+
+    /// The theme the user config `text` sets, for the rest of the tests.
+    pub(crate) fn leaked(text: &str) -> &'static Theme {
+        Box::leak(Box::new(config(text).unwrap()))
     }
 
     fn rgb(s: &str) -> Rgb {

@@ -5,10 +5,29 @@ use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::ops::Range;
 
-use tree_sitter::{Node, QueryCursor, StreamingIterator, Tree};
+use tree_sitter::{Node, Query, QueryCursor, QueryError, StreamingIterator, Tree};
 
 use crate::lang::Language;
 use crate::style::{Role, Style};
+
+/// A language's compiled highlight query, and how specific each of its
+/// patterns is.
+pub struct Highlights {
+    pub query: Query,
+    specificity: Vec<usize>,
+}
+
+impl Highlights {
+    pub fn new(grammar: &tree_sitter::Language, source: &str) -> Result<Self, QueryError> {
+        let query = Query::new(grammar, source)?;
+        let specificity = (0..query.pattern_count())
+            .map(|i| {
+                specificity(&source[query.start_byte_for_pattern(i)..query.end_byte_for_pattern(i)])
+            })
+            .collect();
+        Ok(Highlights { query, specificity })
+    }
+}
 
 /// `name` and each of its dotted prefixes, longest first: `function.method`,
 /// then `function`.
@@ -29,7 +48,7 @@ pub fn spans(
     range: Range<usize>,
     style: Style,
 ) -> Vec<(Range<usize>, &'static str)> {
-    let query = lang.highlights();
+    let Highlights { query, specificity } = lang.highlights();
     let names = query.capture_names();
     let mut cursor = QueryCursor::new();
     cursor.set_byte_range(range.clone());
@@ -38,10 +57,13 @@ pub fn spans(
     while let Some(m) = matches.next() {
         for c in m.captures() {
             let capture = match names[c.index as usize] {
-                // A builtin the grammar parses as its own node, such as `self` or
-                // `this`, is a keyword; one parsed as an identifier, such as
-                // JavaScript's `console`, may be shadowed by a local.
-                "variable.builtin" if c.node.kind() != "identifier" => "keyword",
+                // In the 16 colours, a builtin the grammar parses as its own node, such
+                // as `self` or `this`, is a keyword; one parsed as an identifier, such
+                // as JavaScript's `console`, may be shadowed by a local. A theme colours
+                // both as `variable.builtin`.
+                "variable.builtin" if style == Style::Color && c.node.kind() != "identifier" => {
+                    "keyword"
+                }
                 name => name,
             };
             if style.colours(capture) && !c.node.byte_range().is_empty() {
@@ -51,7 +73,8 @@ pub fn spans(
     }
     use std::cmp::Ordering;
     // Outer nodes before inner ones, and a node's patterns in order, so that
-    // painting in order leaves the innermost node's latest pattern.
+    // painting in order leaves the innermost node's most specific, then latest,
+    // pattern.
     captures.sort_by(|(a, a_pattern, _), (b, b_pattern, _)| {
         let key = |node: &Node| (node.start_byte(), Reverse(node.end_byte()));
         key(a)
@@ -61,7 +84,7 @@ pub fn spans(
                 false if encloses(*a, *b) => Ordering::Less,
                 false => Ordering::Greater,
             })
-            .then(a_pattern.cmp(b_pattern))
+            .then((specificity[*a_pattern], a_pattern).cmp(&(specificity[*b_pattern], b_pattern)))
     });
     let mut painted: Vec<Option<&'static str>> = vec![None; range.len()];
     for (node, _, capture) in captures {
@@ -102,6 +125,35 @@ fn encloses(outer: Node, inner: Node) -> bool {
     false
 }
 
+/// How specific a highlight query pattern is: its nodes and predicates.
+fn specificity(pattern: &str) -> usize {
+    let mut count = 0;
+    let mut chars = pattern.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\\' => _ = chars.next(),
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+            }
+            ';' => while chars.next_if(|c| *c != '\n').is_some() {},
+            // A `(` before another, or before space, only groups.
+            '(' if chars
+                .peek()
+                .is_some_and(|c| *c != '(' && !c.is_whitespace()) =>
+            {
+                count += 1
+            }
+            _ => {}
+        }
+    }
+    count
+}
+
 /// `text[range]` painted with `spans`, which `spans` gave for a range
 /// containing it, and the text between them painted as `base`.
 pub fn paint(
@@ -124,7 +176,7 @@ pub fn paint(
         }
         let (start, end) = (span.start.max(range.start), span.end.min(range.end));
         out.push_str(&gap(&text[at..start]));
-        out.push_str(&style.paint(Role::Code(capture), &text[start..end]));
+        out.push_str(&style.code(capture, base, &text[start..end]));
         at = end;
     }
     out.push_str(&gap(&text[at..range.end]));
@@ -321,5 +373,103 @@ mod tests {
         let found = spans(Language::Rust, &tree, text, 0..text.len(), Style::Color);
         assert_eq!(paint(Style::Plain, text, 0..10, &found, None), "let s = 1;");
         assert_eq!(paint(Style::Color, text, 4..5, &[], None), "s");
+    }
+
+    const THEME: &str = r##"
+[theme]
+dark = true
+added = "#00ff00"
+removed = "#ff0000"
+[theme.syntax]
+keyword = "#c678dd"
+function = "#61afef"
+variable = "#abb2bf"
+"variable.builtin" = "#e06c75"
+constructor = "#e5c07b"
+constant = "#d19a66"
+"##;
+
+    fn captures(lang: Language, text: &str) -> Vec<(&str, &'static str)> {
+        let style = Style::Theme(
+            crate::theme::tests::leaked(THEME),
+            crate::style::Depth::Truecolor,
+        );
+        let tree = lang.parse(text);
+        spans(lang, &tree, text, 0..text.len(), style)
+            .into_iter()
+            .map(|(range, capture)| (&text[range], capture))
+            .collect()
+    }
+
+    #[test]
+    fn a_theme_highlights_by_capture_name() {
+        let found = captures(Language::Rust, "fn main() { let x = 1; }\n");
+        assert!(found.contains(&("fn", "keyword")), "{found:?}");
+        assert!(found.contains(&("main", "function")), "{found:?}");
+    }
+
+    #[test]
+    fn a_theme_colours_self_and_this_as_builtin_variables() {
+        let found = captures(Language::Rust, "fn f(&self) { self.a; }\n");
+        assert!(found.contains(&("self", "variable.builtin")), "{found:?}");
+        assert!(!found.contains(&("self", "keyword")), "{found:?}");
+        let found = captures(Language::JavaScript, "this.a;\n");
+        assert!(found.contains(&("this", "variable.builtin")), "{found:?}");
+    }
+
+    #[test]
+    fn a_more_specific_pattern_beats_a_later_catch_all() {
+        // Go's query ends with `(identifier) @variable`, after the patterns that
+        // mark functions.
+        let found = captures(Language::Go, "package p\nfunc main() { foo(x) }\n");
+        assert!(found.contains(&("main", "function")), "{found:?}");
+        assert!(found.contains(&("foo", "function")), "{found:?}");
+        assert!(found.contains(&("x", "variable")), "{found:?}");
+    }
+
+    #[test]
+    fn a_later_pattern_with_a_predicate_beats_an_earlier_catch_all() {
+        let found = captures(Language::Python, "a = Foo\nb = FOO\n");
+        assert!(found.contains(&("a", "variable")), "{found:?}");
+        assert!(found.contains(&("Foo", "constructor")), "{found:?}");
+        assert!(found.contains(&("FOO", "constant")), "{found:?}");
+    }
+
+    #[test]
+    fn specificity_counts_nodes_and_predicates() {
+        assert_eq!(specificity("(identifier) @variable"), 1);
+        assert_eq!(specificity("((identifier) @c (#match? @c \"^[A-Z]\"))"), 2);
+        assert_eq!(
+            specificity("(call_expression function: (identifier) @function)"),
+            2
+        );
+        assert_eq!(
+            specificity("((identifier) @x (#match? @x \"^(a)(b)$\"))"),
+            2
+        );
+        assert_eq!(specificity("((identifier) @x (#eq? @x \"\\\"(\"))"), 2);
+        assert_eq!(specificity("; (comment)\n(identifier) @variable"), 1);
+        assert_eq!(specificity("\"fn\" @keyword"), 0);
+        assert_eq!(specificity("[(a) (b)] @x"), 2);
+    }
+
+    #[test]
+    fn a_theme_tints_highlighted_code_on_changed_lines() {
+        let style = Style::Theme(
+            crate::theme::tests::leaked(THEME),
+            crate::style::Depth::Truecolor,
+        );
+        let text = "let s = 1;\n";
+        let tree = Language::Rust.parse(text);
+        let found = spans(Language::Rust, &tree, text, 0..text.len(), style);
+        let painted = paint(style, text, 0..10, &found, Some(Role::Removed));
+        let expected = [
+            style.code("keyword", Some(Role::Removed), "let"),
+            style.paint(Role::Removed, " s = "),
+            style.code("constant.builtin", Some(Role::Removed), "1"),
+            style.paint(Role::Removed, ";"),
+        ]
+        .concat();
+        assert_eq!(shown(&painted), shown(&expected));
     }
 }

@@ -185,7 +185,7 @@ pub fn hunks(old: &Side, new: &Side, context: usize, style: Style) -> String {
     let split = [lines(old.text), lines(new.text)];
     let diff = TextDiff::from_slices(&split[0], &split[1]);
     let sides = [old, new];
-    let starts = (style == Style::Color).then(|| split.each_ref().map(|l| starts(l)));
+    let starts = (style != Style::Plain).then(|| split.each_ref().map(|l| starts(l)));
     let mut out = String::new();
     for hunk in diff.unified_diff().context_radius(context).iter_hunks() {
         let ops = hunk.ops();

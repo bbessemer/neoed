@@ -1124,8 +1124,8 @@ impl Executor<'_> {
                 .push_str(&format!("{}\n", style.paint(Role::Header, &header)));
             let width = (last + 1).to_string().len();
             let region = |line| f.buffer.line_range(line).expect("line within the file");
-            let spans = match (style, f.lang, f.tree()) {
-                (Style::Color, Some(lang), Some(tree)) => highlight::spans(
+            let spans = match (f.lang, f.tree()) {
+                (Some(lang), Some(tree)) if style != Style::Plain => highlight::spans(
                     lang,
                     tree,
                     &f.text,
@@ -1140,7 +1140,7 @@ impl Executor<'_> {
                 let content = content.strip_suffix('\r').unwrap_or(content);
                 let numbered = match style {
                     Style::Plain => format!("{}:{content}\n", line + 1),
-                    Style::Color => {
+                    Style::Color | Style::Theme(..) => {
                         let number = format!("{:>width$}", line + 1);
                         let content = range.start..range.start + content.len();
                         let code = highlight::paint(style, &f.text, content, &spans, None);

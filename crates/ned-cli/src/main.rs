@@ -187,8 +187,8 @@ fn main() -> ExitCode {
             let args = std::env::args_os().skip(1);
             let text = err.render();
             let text = match color_arg(args).style(terminal, no_color.as_deref()) {
-                Style::Color => text.ansi().to_string(),
                 Style::Plain => text.to_string(),
+                _ => text.ansi().to_string(),
             };
             match err.use_stderr() {
                 true => eprint!("{text}"),
