@@ -524,7 +524,7 @@ delete all query{(call_expression function: (identifier) @f (#eq? @f "dbg")) @se
 ### show
 
 ```text
-show [SEL [+N]]
+show [raw] [SEL [+N]]
 ```
 
 Prints the lines that contain each selected span, numbered, with `N` lines of
@@ -545,6 +545,15 @@ src/parser.rs:14-17
 15:        let tok = self.next().expect("unexpected end");
 16:        self.parse_expr(tok)
 17:    }
+```
+
+`show raw` prints the text alone, without line numbers, for copying it verbatim.
+A single region comes out exactly as it is in the file; several regions keep
+their `PATH:START-END` headers. A bare `raw` right after `show` always means
+this, so select a function named `raw` as `fn:raw`.
+
+```ned
+show raw fn:parse
 ```
 
 ### outline

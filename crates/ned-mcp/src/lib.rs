@@ -513,7 +513,7 @@ fn tools() -> Value {
         ),
         tool(
             "show",
-            "Print the lines a selector matches, numbered (ned's `show SELECTOR`); `all /re/ +2` searches, with 2 lines of context",
+            "Print the lines a selector matches, numbered (ned's `show SELECTOR`); `all /re/ +2` searches, with 2 lines of context; `raw fn:f` prints the text alone, without numbers",
             true,
             json!({
                 "selector": { "type": "string", "description": "The selector, as written after `show`" },

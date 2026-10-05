@@ -67,7 +67,8 @@ ned is for files of code and docs. To search or filter a command's output (test
 results, logs), pipe it to grep as usual.
 
 Read with `outline` and `show SEL` instead of cat (`show all 1-$` for several
-whole files), and make new files with `create` (see `ned help create`).
+whole files; `show raw SEL` drops the line numbers, to copy text verbatim), and
+make new files with `create` (see `ned help create`).
 
 If `NED_SESSION` is set (or with `-s NAME`), each call is recorded. Fix a failed
 call by repeating it with a correction instead of resending the script: `!!` is

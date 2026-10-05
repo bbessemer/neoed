@@ -139,7 +139,7 @@ A script is a list of commands, one per line or separated by `;`:
 
 | Command                                     | What it does                                        |
 | ------------------------------------------- | --------------------------------------------------- |
-| `show [SEL [+N]]`                           | print lines, numbered; `show all /re/` searches     |
+| `show [raw] [SEL [+N]]`                     | print lines, numbered; `show all /re/` searches     |
 | `outline [SEL]`                             | list syntax items as selectors you can paste back   |
 | `replace SEL with TEXT`                     | replace a span                                      |
 | `insert before\|after\|start\|end SEL TEXT` | insert beside or inside a span                      |

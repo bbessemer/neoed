@@ -617,7 +617,7 @@ line       = [ command { ( ";" | "|" ) command } [ "|" ] ] [ comment ] NEWLINE
 command    = show | outline | replace | insert | delete | sub | move | create
            | file | check | allow | rename | resolve ;
 
-show       = "show" [ target [ context ] ] ;
+show       = "show" [ "raw" ] [ target [ context ] ] ;
 outline    = "outline" [ target ] ;
 replace    = "replace" target "with" text ;
 insert     = "insert" position target text ;
@@ -1229,9 +1229,11 @@ END
 
 ### 4.1 Reads
 
-- **`show [SEL [+N]]`** prints the lines containing each selected span, numbered
-  (§6.1), with `N` lines of context around each. Without a selector, it prints
-  each whole file in the set.
+- **`show [raw] [SEL [+N]]`** prints the lines containing each selected span,
+  numbered (§6.1), with `N` lines of context around each. Without a selector, it
+  prints each whole file in the set. `raw` prints the text alone, for copying it
+  verbatim (§6.1); a bare `raw` right after `show` is always this word, so a
+  function named `raw` is selected as `fn:raw`.
 - **`outline [SEL]`** prints the symbol tree (§6.2) of each file, or of the
   items inside `SEL`.
 - **`check [SEL] [LEVEL]`** prints the language server's diagnostics for each
@@ -1490,6 +1492,12 @@ Its lines follow as `N:text`, with no padding. `show SEL +N` adds up to `N`
 lines of context before and after each span. If regions are within one line of
 each other, they merge.
 
+`show raw` prints each line's text alone, with no `N:` before it, and heads the
+regions with `PATH:START-END` only when it prints more than one, so a single
+region's output is the file's text, except that every line ends in `\n`: a
+`\r\n` line ending prints as `\n`, and so does a missing one at the end of the
+file. Context, merging and the messages below are as without `raw`.
+
 `show all` is a search: when its last step (a regex, literal, heredoc or
 `.refs`) matches nothing where the earlier steps matched, it prints
 `no matches for SEL in N files` and the script goes on, exiting 0 if nothing
@@ -1679,7 +1687,8 @@ the terminal's own 16, used when no theme (below) applies:
 
 - `show` prints each line's number right-aligned to the widest in its region,
   dimmed and followed by a space instead of `:`, then the line's code,
-  highlighted with its language's highlight query.
+  highlighted with its language's highlight query; `show raw` prints the code
+  alone.
 - `outline` dims each item's lines and colours its kind.
 - The headers naming a file, a `show` region's or `outline`'s, are bold.
 - An edit's summary line and `fmt` header are bold; in its hunks, `@@` headers

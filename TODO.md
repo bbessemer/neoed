@@ -137,7 +137,7 @@ of either kind.
 - [ ] An any-kind selector matches a name whatever its kind, when that is
       unique, so a long script needn't guess `const:` versus `var:` (syntax to
       decide: `item:NAME`, `*:NAME` or a bare name). A minor
-- [ ] `show --raw` prints the selected lines without `N:` prefixes, for copying
+- [x] `show --raw` prints the selected lines without `N:` prefixes, for copying
       text verbatim. A minor
 - [x] A sed-style `sub SEL /a/b/` says "`sub` takes `/re/ with TEXT`", instead
       of "unknown regex flag" or a hint about `SEL..SEL` ranges

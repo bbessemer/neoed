@@ -498,7 +498,11 @@ impl Executor<'_> {
             _ => {}
         }
         match &command.kind {
-            CommandKind::Show { target, context } => self.show(target.as_ref(), *context)?,
+            CommandKind::Show {
+                target,
+                context,
+                raw,
+            } => self.show(target.as_ref(), *context, *raw)?,
             CommandKind::Outline(target) => self.outline(span, target.as_ref())?,
             CommandKind::Replace { target, text } => {
                 let last = target.selector.steps.last().and_then(|s| s.parts.last());
@@ -1062,7 +1066,12 @@ impl Executor<'_> {
         Ok(())
     }
 
-    fn show(&mut self, target: Option<&Target>, context: usize) -> Result<(), ExecError> {
+    fn show(
+        &mut self,
+        target: Option<&Target>,
+        context: usize,
+        raw: bool,
+    ) -> Result<(), ExecError> {
         // (file, first line, last line, empty side), 0-based.
         let mut spans: Vec<(usize, usize, usize, Option<String>)> = Vec::new();
         match target {
@@ -1146,6 +1155,7 @@ impl Executor<'_> {
                 _ => regions.push((file, first, last, empty)),
             }
         }
+        let headed = !raw || regions.len() > 1;
         for (file, first, last, empty) in regions {
             let f = &self.files[file].file;
             if let Some(side) = empty {
@@ -1160,8 +1170,10 @@ impl Executor<'_> {
             };
             let style = self.options.style;
             let header = format!("{}:{lines}", f.path);
-            self.output
-                .push_str(&format!("{}\n", style.paint(Role::Header, &header)));
+            if headed {
+                self.output
+                    .push_str(&format!("{}\n", style.paint(Role::Header, &header)));
+            }
             let width = (last + 1).to_string().len();
             let region = |line| f.buffer.line_range(line).expect("line within the file");
             let spans = match (f.lang, f.tree()) {
@@ -1179,12 +1191,17 @@ impl Executor<'_> {
                 let content = f.text[range.clone()].trim_end_matches('\n');
                 let content = content.strip_suffix('\r').unwrap_or(content);
                 let numbered = match style {
+                    Style::Plain if raw => format!("{content}\n"),
                     Style::Plain => format!("{}:{content}\n", line + 1),
                     Style::Color | Style::Theme(..) => {
                         let number = format!("{:>width$}", line + 1);
                         let content = range.start..range.start + content.len();
                         let code = highlight::paint(style, &f.text, content, &spans, None);
-                        format!("{} {code}\n", style.paint(Role::LineNumber, &number))
+                        if raw {
+                            format!("{code}\n")
+                        } else {
+                            format!("{} {code}\n", style.paint(Role::LineNumber, &number))
+                        }
                     }
                 };
                 self.output.push_str(&numbered);
@@ -3045,6 +3062,45 @@ mod tests {
             exec(TEXT, "show $ +1").output,
             "a.rs:7-8\n7:    let x = 3;\n8:}\n"
         );
+    }
+
+    #[test]
+    fn show_raw_prints_one_region_as_the_file_text() {
+        assert_eq!(
+            exec(TEXT, "show raw 2-3").output,
+            "    let x = 1;\n    let y = 2;\n"
+        );
+        assert_eq!(
+            exec(TEXT, "show raw 3 +1").output,
+            "    let x = 1;\n    let y = 2;\n}\n"
+        );
+        assert_eq!(exec(TEXT, "show raw").output, TEXT);
+        assert_eq!(exec("a\r\nb\r\n", "show raw $").output, "b\n");
+    }
+
+    #[test]
+    fn show_raw_heads_regions_only_when_there_are_several() {
+        assert_eq!(
+            exec(TEXT, "show raw all /let x/").output,
+            "a.rs:2\n    let x = 1;\na.rs:7\n    let x = 3;\n"
+        );
+        let out = exec_with_options(
+            &[("a.txt", "one\n"), ("b.txt", "two\n")],
+            2,
+            "show raw",
+            &Options::default(),
+        );
+        assert_eq!(out.output, "a.txt:1\none\nb.txt:1\ntwo\n");
+    }
+
+    #[test]
+    fn colored_show_raw_has_no_line_numbers() {
+        let color = Options {
+            style: Style::Color,
+            ..Options::default()
+        };
+        let out = exec_with_options(&[("a.txt", "one\ntwo\n")], 1, "show raw 1-2", &color);
+        assert_eq!(shown(&out.output), "one\ntwo\n");
     }
 
     #[test]

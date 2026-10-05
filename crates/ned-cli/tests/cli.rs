@@ -516,6 +516,21 @@ fn show_prints_lines_and_writes_nothing() {
 }
 
 #[test]
+fn show_raw_prints_the_text_alone() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let out = ned(dir.path(), &["parser.rs", "-e", "show raw 14-17"], "");
+    assert_snapshot!(out, @r#"
+    exit: 0
+    --- stdout
+        pub fn parse(&mut self) -> Result<Ast, Error> {
+            let tok = self.next().expect("unexpected end");
+            self.parse_expr(tok)
+        }
+    --- stderr
+    "#);
+}
+
+#[test]
 fn repeated_scripts_are_joined() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
     let out = ned(

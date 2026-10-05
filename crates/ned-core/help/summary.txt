@@ -9,7 +9,7 @@ applies, or none does.
 
 Commands, separated by newlines or `;`; `|` starts a new stage that sees the
 edits before it (it binds looser than `;`: `a; b | c` is a;b then c):
-  show [SEL [+N]]               print the lines of SEL, numbered, N around
+  show [raw] [SEL [+N]]         print the lines of SEL, numbered, N around
   outline [SEL]                 list syntax items as pasteable selectors
   check [SEL] [LEVEL]           language-server diagnostics; LEVEL error..hint
   allow errors|warnings         apply edits even if they introduce errors
