@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use super::ast::*;
 use super::error::{COMMANDS, ParseError, ParseErrorKind as E};
-use super::lexer::{Lexer, Token, TokenKind};
+use super::lexer::{Lexer, Token, TokenKind, is_ident_char, part_named};
 use crate::lsp::Severity;
 use crate::syntax;
 
@@ -15,6 +15,7 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
         peeked: None,
         last_end: 0,
         command_start: 0,
+        last_heredoc: None,
     };
     let mut commands: Vec<Command> = Vec::new();
     let mut stages: Vec<usize> = Vec::new();
@@ -107,6 +108,8 @@ struct Parser<'a> {
     last_end: usize,
     /// Start of the command being parsed.
     command_start: usize,
+    /// Span of the last heredoc opener consumed.
+    last_heredoc: Option<Range<usize>>,
 }
 
 impl Parser<'_> {
@@ -122,6 +125,9 @@ impl Parser<'_> {
             Some(token) => token,
             None => self.lexer.next_token()?,
         };
+        if let TokenKind::Heredoc { .. } = token.kind {
+            self.last_heredoc = Some(token.span.clone());
+        }
         self.last_end = token.span.end;
         Ok(token)
     }
@@ -145,7 +151,13 @@ impl Parser<'_> {
                 && hint.is_empty()
                 && let Some(usage) = usage(word)
             {
-                *hint = format!("; usage: {usage}");
+                *hint = match (self.through_heredoc(&err.span), usage.rsplit_once("SEL")) {
+                    (Some(written), Some((_, rest))) => format!(
+                        "; a heredoc's body starts on the next line, so finish the command before it: {written}{}",
+                        rest.trim_start_matches(']'),
+                    ),
+                    _ => format!("; usage: {usage}"),
+                };
             }
             err
         })?;
@@ -157,32 +169,7 @@ impl Parser<'_> {
 
     fn command_kind(&mut self, verb: &Token, word: &str) -> Result<CommandKind, ParseError> {
         Ok(match word {
-            "show" => {
-                let target = self.optional_target()?;
-                let context = match self.peek()?.kind {
-                    TokenKind::Context(n) if target.is_some() => {
-                        let start = self.bump()?.span.start;
-                        if self.peek()?.kind == TokenKind::DotDot {
-                            let dots = self.bump()?;
-                            let next = self.peek()?;
-                            let TokenKind::Context(m) = next.kind else {
-                                return Err(expected("end of command", &dots));
-                            };
-                            let end = next.span.end;
-                            let target = target.as_ref().expect("matched a target");
-                            let all = if target.all { "all " } else { "" };
-                            let selector = &self.lexer.src[target.selector.span.clone()];
-                            return Err(ParseError::new(
-                                E::ContextRange(format!("show {all}{selector} +{m}")),
-                                start..end,
-                            ));
-                        }
-                        n
-                    }
-                    _ => 0,
-                };
-                CommandKind::Show { target, context }
-            }
+            "show" => self.show().map_err(|err| self.minus_context(verb, err))?,
             "outline" => CommandKind::Outline(self.optional_target()?),
             "replace" => {
                 let target = self.target()?;
@@ -224,7 +211,7 @@ impl Parser<'_> {
                 }
             }
             "delete" => CommandKind::Delete(self.target()?),
-            "sub" => self.sub()?,
+            "sub" => self.sub().map_err(|e| self.sed_sub(e))?,
             "move" => CommandKind::Move {
                 target: self.target()?,
                 position: self.position()?,
@@ -246,6 +233,71 @@ impl Parser<'_> {
                 ));
             }
         })
+    }
+
+    fn show(&mut self) -> Result<CommandKind, ParseError> {
+        let target = self.optional_target()?;
+        let context = match self.peek()?.kind {
+            TokenKind::Context(n) if target.is_some() => {
+                let start = self.bump()?.span.start;
+                if self.peek()?.kind == TokenKind::DotDot {
+                    let dots = self.bump()?;
+                    let next = self.peek()?;
+                    let TokenKind::Context(m) = next.kind else {
+                        return Err(expected("end of command", &dots));
+                    };
+                    let end = next.span.end;
+                    let target = target.as_ref().expect("matched a target");
+                    let all = if target.all { "all " } else { "" };
+                    let selector = &self.lexer.src[target.selector.span.clone()];
+                    return Err(ParseError::new(
+                        E::ContextRange(format!("show {all}{selector} +{m}")),
+                        start..end,
+                    ));
+                }
+                n
+            }
+            _ => 0,
+        };
+        Ok(CommandKind::Show { target, context })
+    }
+
+    /// Turns the error at the `-` of `show SEL -N` into the fix `show SEL +N`.
+    fn minus_context(&self, verb: &Token, err: ParseError) -> ParseError {
+        if err.kind != E::UnexpectedChar('-') {
+            return err;
+        }
+        let src = self.lexer.src;
+        let shown = src[verb.span.end..err.span.start].trim_end();
+        let after = &src[err.span.end..];
+        let count =
+            &after[..after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len()];
+        let rest = after[count.len()..].trim_start_matches([' ', '\t']);
+        if shown.trim().is_empty()
+            || count.is_empty()
+            || !(rest.is_empty() || rest.starts_with([';', '|', '#', '\n', '\r']))
+        {
+            return err;
+        }
+        ParseError::new(
+            E::MinusContext(if shown.trim().bytes().all(|b| b.is_ascii_digit()) {
+                format!("show{shown} +{count}, or the line range show{shown}-{count}")
+            } else {
+                format!("show{shown} +{count}")
+            }),
+            err.span.start..err.span.end + count.len(),
+        )
+    }
+
+    /// The command up to a heredoc opener that ends its line just before
+    /// `span`, which then holds the line break.
+    fn through_heredoc(&self, span: &Range<usize>) -> Option<&str> {
+        let heredoc = self.last_heredoc.as_ref()?;
+        let between = self.src.get(heredoc.end..span.start)?;
+        (heredoc.start >= self.command_start
+            && between.trim().is_empty()
+            && self.src[span.clone()].trim().is_empty())
+        .then(|| &self.src[self.command_start..heredoc.end])
     }
 
     fn optional_target(&mut self) -> Result<Option<Target>, ParseError> {
@@ -499,7 +551,7 @@ impl Parser<'_> {
 
     /// The primary `first` starts, which may be a range, `first..TO`.
     fn range(&mut self, first: Token) -> Result<Primary, ParseError> {
-        let from = primary(first)?;
+        let from = primary(self.src, first)?;
         let next = self.peek()?;
         if next.kind != TokenKind::DotDot {
             return Ok(from);
@@ -514,7 +566,7 @@ impl Parser<'_> {
         }
         Ok(Primary::Range {
             from: Box::new(from),
-            to: Box::new(primary(token)?),
+            to: Box::new(primary(self.src, token)?),
         })
     }
 
@@ -574,10 +626,32 @@ impl Parser<'_> {
                     }),
                     true,
                 ) if parts.is_empty() => (None, pattern),
+                (
+                    _,
+                    Some(Step {
+                        primary: Primary::Literal(_),
+                        parts,
+                        ..
+                    }),
+                    _,
+                ) if parts.is_empty() => {
+                    let selector = self.src[span.clone()].to_string();
+                    return Err(self.literal_sub(selector, span)?);
+                }
                 _ => return Err(ParseError::new(E::MissingSubPattern, span)),
             }
         } else {
             let token = self.bump()?;
+            if let TokenKind::Str(_) = token.kind
+                && self.peek_is_word("with")?
+            {
+                let selector = format!(
+                    "{}>{}",
+                    &self.src[first.selector.span.clone()],
+                    &self.src[token.span.clone()]
+                );
+                return Err(self.literal_sub(selector, token.span)?);
+            }
             let TokenKind::Regex { pattern, flags } = token.kind else {
                 return Err(ParseError::new(E::MissingSubPattern, token.span));
             };
@@ -601,6 +675,55 @@ impl Parser<'_> {
             pattern,
             text,
         })
+    }
+
+    /// The error for `selector`, a literal, before the `with` of a `sub`: the fix
+    /// is the `replace` that, like `sub`, replaces every match.
+    fn literal_sub(
+        &mut self,
+        selector: String,
+        span: Range<usize>,
+    ) -> Result<ParseError, ParseError> {
+        self.expect_with()?;
+        let token = self.bump()?;
+        // `$` is literal in `replace`: `$$` becomes `$`, and a group reference
+        // has no `replace` equivalent.
+        let text = match token.kind {
+            TokenKind::Str(text) if !text.replace("$$", "").contains('$') => {
+                self.src[token.span].replace("$$", "$")
+            }
+            _ => "...".into(),
+        };
+        let fix = format!("replace all {selector} with {text}");
+        Ok(ParseError::new(E::LiteralSub(fix), span))
+    }
+
+    /// `error`, or, if it falls in sed's `text/flags` after the command's last
+    /// regex, the error that names the `sub` `/re/text/flags` means.
+    fn sed_sub(&self, error: ParseError) -> ParseError {
+        let Some(regex) = (self.lexer.last_regex.clone()).filter(|r| r.start >= self.command_start)
+        else {
+            return error;
+        };
+        let Some((text, flags, len)) = sed_tail(&self.src[regex.end..]) else {
+            return error;
+        };
+        let end = regex.end + len;
+        if !(regex.end..end).contains(&error.span.start) {
+            return error;
+        }
+        let lead = self.src[self.command_start..regex.start].trim_end();
+        let flags: String = ['i', 's']
+            .into_iter()
+            // GNU sed writes `i` as `I` too.
+            .filter(|&f| flags.contains(f) || (f == 'i' && flags.contains('I')))
+            .collect();
+        let fix = format!(
+            "{lead} {}{flags} with \"{}\"",
+            &self.src[regex.clone()],
+            sed_text(text)
+        );
+        ParseError::new(E::SedSub(fix), regex.start..end)
     }
 
     /// Checks that each `$` reference in `text`, read from the token at `at`,
@@ -696,7 +819,7 @@ impl Parser<'_> {
     }
 }
 
-fn primary(token: Token) -> Result<Primary, ParseError> {
+fn primary(src: &str, token: Token) -> Result<Primary, ParseError> {
     Ok(match token.kind {
         TokenKind::Lines { start, end } => Primary::Lines { start, end },
         TokenKind::Regex { pattern, flags } => {
@@ -722,8 +845,58 @@ fn primary(token: Token) -> Result<Primary, ParseError> {
         TokenKind::Code(code) => Primary::Code(code),
         kind => match text_from(kind) {
             Ok(text) => Primary::Literal(text),
-            Err(kind) => return Err(expected("a selector", &Token { kind, ..token })),
+            Err(kind) => {
+                let token = Token { kind, ..token };
+                return Err(
+                    bare_path(src, &token).unwrap_or_else(|| expected("a selector", &token))
+                );
+            }
         },
+    })
+}
+
+/// For a bare word that starts a file path, such as `src/a.rs>fn:x`, an error
+/// suggesting the `file:` step that scopes to it.
+fn bare_path(src: &str, token: &Token) -> Option<ParseError> {
+    let TokenKind::Word(word) = &token.kind else {
+        return None;
+    };
+    let rest = &src[token.span.end..];
+    let selector_end = rest.find(|c: char| c.is_whitespace() || matches!(c, ';' | '|'));
+    let selector = &rest[..selector_end.unwrap_or(rest.len())];
+    let tail = &selector[..selector.find('>').unwrap_or(selector.len())];
+    let is_path = match tail.chars().next() {
+        Some('/') => tail.len() > 1,
+        // `x.body` is more likely a part after unquoted text than a file.
+        Some('.') => {
+            let ext = tail[1..].split(|c| !is_ident_char(c)).next().unwrap_or("");
+            !ext.is_empty() && part_named(ext).is_none()
+        }
+        _ => false,
+    };
+    is_path.then(|| {
+        let rest = &selector[tail.len()..];
+        // A quoted step or filter may hold the whitespace `selector` ended at.
+        let rest = if rest.contains(['"', '`', '/', '[', '<']) {
+            ">…"
+        } else {
+            rest
+        };
+        let file = format!("select the file with a `file:` step: file:{word}{tail}{rest}");
+        // Without a `/` or a step after it, `self.x` may be unquoted text.
+        let hint = if tail.contains('/') || !rest.is_empty() {
+            format!("; {file}")
+        } else {
+            format!("; quote literal text: \"{word}{tail}\", or {file}")
+        };
+        ParseError::new(
+            E::Expected {
+                expected: "a selector",
+                found: format!("`{word}{tail}`"),
+                hint,
+            },
+            token.span.start..token.span.end + tail.len(),
+        )
     })
 }
 
@@ -772,6 +945,58 @@ fn group_refs(text: &str) -> Vec<(Range<usize>, &str)> {
         }
     }
     refs
+}
+
+/// Splits `rest`, what follows a regex, into sed's `text/flags`, with the
+/// length they span; `None` unless they end the command.
+fn sed_tail(rest: &str) -> Option<(&str, &str, usize)> {
+    let mut chars = rest.char_indices();
+    let slash = loop {
+        match chars.next()? {
+            (_, '\n') => return None,
+            (i, '/') => break i,
+            (_, '\\') if chars.next()?.1 == '\n' => return None,
+            _ => {}
+        }
+    };
+    let flags = &rest[slash + 1..];
+    let flags = &flags[..flags
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(flags.len())];
+    let end = slash + 1 + flags.len();
+    (end == rest.len() || rest[end..].starts_with([' ', '\t', '\r', '\n', ';', '|'])).then_some((
+        &rest[..slash],
+        flags,
+        end,
+    ))
+}
+
+/// sed's replacement `text` as the inside of a string for `sub`.
+fn sed_text(text: &str) -> String {
+    fn escaped(out: &mut String, c: char) {
+        match c {
+            '$' => out.push_str("$$"),
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c => out.push(c),
+        }
+    }
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '&' => out.push_str("${0}"),
+            '\\' => match chars.next() {
+                Some(d @ '0'..='9') => out.extend(['$', '{', d, '}']),
+                Some('n') => out.push_str("\\n"),
+                Some('t') => out.push_str("\\t"),
+                Some(c) => escaped(&mut out, c),
+                None => escaped(&mut out, '\\'),
+            },
+            c => escaped(&mut out, c),
+        }
+    }
+    out
 }
 
 /// The script offset of byte `offset` of the value of the string token at
@@ -1528,6 +1753,10 @@ mod tests {
             message("show /a/-/b/"),
             "unexpected character `-`; ranges between selectors are written SEL..SEL, e.g. /a/../b/"
         );
+        assert_eq!(
+            message("show import:react-router"),
+            r#"unexpected character `-`; quote the name: import:"react-router""#
+        );
     }
 
     #[test]
@@ -1556,6 +1785,32 @@ mod tests {
             r#"`+N` is one count of lines around each span, not a range; write show all "x" +5"#
         );
         assert_eq!(e.span, 13..19);
+        let e = error(r#"show all "x" -3"#);
+        assert_eq!(
+            e.kind.to_string(),
+            r#"context is written `+N`, not `-N`; write show all "x" +3"#
+        );
+        assert_eq!(e.span, 13..15);
+        assert_eq!(
+            message("show /re/-12 | show 1"),
+            "context is written `+N`, not `-N`; write show /re/ +12"
+        );
+        assert_eq!(
+            message("show /re/ -2 # c"),
+            "context is written `+N`, not `-N`; write show /re/ +2"
+        );
+        assert_eq!(
+            message("show 10 -20"),
+            "context is written `+N`, not `-N`; write show 10 +20, or the line range show 10-20"
+        );
+        assert_eq!(
+            message("show /re/ -3x"),
+            "unexpected character `-`; ranges between selectors are written SEL..SEL, e.g. /a/../b/"
+        );
+        assert_eq!(
+            message("show -3"),
+            "unexpected character `-`; ranges between selectors are written SEL..SEL, e.g. /a/../b/"
+        );
     }
 
     #[test]
@@ -1749,11 +2004,7 @@ mod tests {
 
     #[test]
     fn sub_needs_a_pattern() {
-        for src in [
-            r#"sub fn:x with "y""#,
-            r#"sub /x/.lines with "y""#,
-            r#"sub fn:x "y" with "z""#,
-        ] {
+        for src in [r#"sub fn:x with "y""#, r#"sub /x/.lines with "y""#] {
             assert_eq!(error(src).kind, E::MissingSubPattern, "{src:?}");
         }
     }
@@ -1767,6 +2018,76 @@ mod tests {
             r"`sub` already replaces every match; drop `all`: sub /x\/y/i with ..."
         );
         assert_eq!(e.span, 4..7);
+    }
+
+    #[test]
+    fn literal_sub_suggests_replace_all() {
+        for (src, fix) in [
+            (
+                r#"sub 1 "- [ ]" with "- [x]""#,
+                r#"replace all 1>"- [ ]" with "- [x]""#,
+            ),
+            (r#"sub "a" with "b""#, r#"replace all "a" with "b""#),
+            (
+                r#"sub fn:x>"a" with "b""#,
+                r#"replace all fn:x>"a" with "b""#,
+            ),
+            (
+                r#"sub all fn:x.body "a" with "b""#,
+                r#"replace all fn:x.body>"a" with "b""#,
+            ),
+            (r#"sub 1 "a" with "$$b""#, r#"replace all 1>"a" with "$b""#),
+            (r#"sub 1 "a" with "${0}b""#, r#"replace all 1>"a" with ..."#),
+            (r#"sub all "a" with "b""#, r#"replace all "a" with "b""#),
+            (
+                "sub 1 \"a\" with <<EOF\nb\nEOF",
+                r#"replace all 1>"a" with ..."#,
+            ),
+        ] {
+            assert_eq!(error(src).kind, E::LiteralSub(fix.into()), "{src:?}");
+        }
+        let e = error(r#"show 1 ; sub 3-5 "a" with "b""#);
+        assert_eq!(
+            e.kind.to_string(),
+            r#"`sub` takes a regex, not a literal; write replace all 3-5>"a" with "b""#
+        );
+        assert_eq!(e.span, 17..20);
+        assert_eq!(error(r#"sub 1 "a" "b""#).kind, E::MissingSubPattern);
+    }
+
+    #[test]
+    fn sed_style_sub_suggests_with() {
+        for (src, fix) in [
+            ("sub 1 /a/b/", r#"sub 1 /a/ with "b""#),
+            ("sub /a/b/", r#"sub /a/ with "b""#),
+            ("sub /a/b/g", r#"sub /a/ with "b""#),
+            ("sub 3-5 /a/b c/gi", r#"sub 3-5 /a/i with "b c""#),
+            ("sub 1 /a/b/I", r#"sub 1 /a/i with "b""#),
+            (r"sub 1 /a/b\tc/", r#"sub 1 /a/ with "b\tc""#),
+            ("sub 1 /a/-b/", r#"sub 1 /a/ with "-b""#),
+            (r"sub /x\/y/i/", r#"sub /x\/y/ with "i""#),
+            ("sub /a/i/", r#"sub /a/ with "i""#),
+            ("sub 1 /a// ; show 1", r#"sub 1 /a/ with """#),
+            (
+                r#"sub /(a)b/\1&$\/"\n/"#,
+                r#"sub /(a)b/ with "${1}${0}$$/\"\n""#,
+            ),
+        ] {
+            assert_eq!(error(src).kind, E::SedSub(fix.into()), "{src:?}");
+        }
+        let e = error("show /x/ ; sub 1 /a/b/");
+        assert_eq!(
+            e.kind.to_string(),
+            r#"`sub` takes /re/ with TEXT, not sed's /re/text/; write sub 1 /a/ with "b""#
+        );
+        assert_eq!(e.span, 17..22);
+    }
+
+    #[test]
+    fn sed_style_regexes_elsewhere_keep_their_errors() {
+        assert_eq!(error("show /a/b/").kind, E::UnknownRegexFlag('b'));
+        assert_eq!(error("sub 1 /a/b c").kind, E::UnknownRegexFlag('b'));
+        assert_eq!(error("sub 1 /a/b/c/").kind, E::UnknownRegexFlag('b'));
     }
 
     #[test]
@@ -1850,6 +2171,42 @@ mod tests {
     }
 
     #[test]
+    fn bare_paths_suggest_a_file_step() {
+        for (src, path, hint) in [
+            ("show a.rs>fn:a", "a.rs", "file:a.rs>fn:a"),
+            (
+                "show src/a.rs>fn:a; show 1",
+                "src/a.rs",
+                "file:src/a.rs>fn:a",
+            ),
+            (
+                "delete lib/mod.test.ts",
+                "lib/mod.test.ts",
+                "file:lib/mod.test.ts",
+            ),
+            (r#"show src/a.rs>"x y""#, "src/a.rs", "file:src/a.rs>…"),
+            ("show a.rs>fn[.len > 3]", "a.rs", "file:a.rs>…"),
+        ] {
+            assert_eq!(
+                message(src),
+                format!(
+                    "expected a selector, found `{path}`; select the file with a `file:` step: {hint}"
+                ),
+                "{src:?}"
+            );
+        }
+        assert_eq!(
+            message("show self.x"),
+            "expected a selector, found `self.x`; quote literal text: \"self.x\", \
+             or select the file with a `file:` step: file:self.x"
+        );
+        assert_eq!(
+            message("show x.body"),
+            r#"expected a selector, found `x`; quote literal text: "x""#
+        );
+    }
+
+    #[test]
     fn other_syntax_errors_show_the_usage() {
         assert_eq!(
             message(r#"replace 3 "x""#),
@@ -1873,6 +2230,38 @@ mod tests {
             message(r#""x""#),
             "expected a command, found a string; \
              commands are show outline check replace insert delete sub move rename resolve file create allow"
+        );
+    }
+
+    #[test]
+    fn a_heredoc_selector_keeps_the_command_on_its_line() {
+        let hint = "a heredoc's body starts on the next line, so finish the command before it:";
+        assert_eq!(
+            message("replace <<END\nx\nEND\nwith \"y\""),
+            format!("expected `with`, found end of line; {hint} replace <<END with TEXT")
+        );
+        assert_eq!(
+            message("replace all <<'END'  \nx\nEND\nwith <<B\ny\nB"),
+            format!("expected `with`, found end of line; {hint} replace all <<'END' with TEXT")
+        );
+        assert_eq!(
+            message("move <<END\nx\nEND\nafter 3"),
+            format!(
+                "expected before, after, start, or end, found end of line; \
+                 {hint} move <<END before|after|start|end DEST"
+            )
+        );
+        assert_eq!(
+            message("insert before <<END\nx\nEND\n\"y\""),
+            format!(
+                "expected text (a string or heredoc), found end of line; \
+                 {hint} insert before <<END TEXT"
+            )
+        );
+        // A heredoc that isn't the last thing before the line break gets the usage.
+        assert_eq!(
+            message("replace <<END.lines\nx\nEND\nwith \"y\""),
+            "expected `with`, found end of line; usage: replace [all] SEL with TEXT"
         );
     }
 

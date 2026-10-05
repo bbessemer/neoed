@@ -189,7 +189,9 @@ shop/cart.py:26
 current directory if there isn't one. Files that your `.gitignore` excludes are
 skipped. To search particular files, name them instead, or give a glob in
 quotes, such as `'shop/*.py'`. ned expands the glob itself, and `**` matches any
-number of directories.
+number of directories. A `file:` step takes a glob too, and narrows a single
+selector to the files it matches: `show all file:tests/*.py>"total()"` searches
+only the tests.
 
 ### When a selector doesn't fit
 

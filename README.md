@@ -153,7 +153,8 @@ A selector can be:
   language server;
 - a range (`fn:a..fn:c`);
 - a filter (`fn[.doc == ""]`, `fn:parse.lines[.len > 80]`);
-- scoped to one file (`file:src/a.rs>fn:new`);
+- scoped to one file or a glob's files (`file:src/a.rs>fn:new`,
+  `file:src/*.rs>fn:new`);
 - a merge conflict (`conflict:2`), with `.ours`, `.theirs` and `.base`;
 - a syntax pattern: code with placeholders, matched whatever its spacing and
   comments (`` `foo(@x, @rest...)` ``);

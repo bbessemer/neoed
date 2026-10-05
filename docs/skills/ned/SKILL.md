@@ -267,6 +267,8 @@ it too.
   written, such as an indented line in a test's expected output.
 - **Strings** are `"..."` on one line, with `\n \t \" \\`. Use a heredoc for
   multi-line text.
+- **A `<<TAG` stands in for its text**, so the command stays on one line:
+  `replace <<OLD with <<NEW`, then OLD's body, then NEW's.
 - **`$`** is literal in `replace`. Only `sub` expands `$1`, `${name}` and `$0`.
 - **Errors end with a fix**: a selector to paste, a closer name, a missing flag.
   Apply it and rerun; nothing was written.

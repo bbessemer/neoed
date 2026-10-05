@@ -16,7 +16,7 @@ use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
 use crate::lang::Language;
 use crate::pattern;
 use crate::script::ast::{
-    LineNo, Part, Pattern, Primary, RegexFlags, Selector, Step, Target, TextKind,
+    CommandKind, LineNo, Part, Pattern, Primary, RegexFlags, Selector, Step, Target, TextKind,
 };
 use crate::span::{Of, Span};
 use crate::syntax::{self, Item};
@@ -82,10 +82,13 @@ impl SourceFile {
     pub fn items(&self) -> Option<&[Item]> {
         let query = self.lang?.selectors();
         let tree = self.tree()?;
-        Some(
-            self.items
-                .get_or_init(|| syntax::items(query, tree, self.masked())),
-        )
+        Some(self.items.get_or_init(|| {
+            let mut items = syntax::items(query, tree, self.masked());
+            for item in &mut items {
+                item.range = conflict::widen(item.range.clone(), self.conflicts(), &self.text);
+            }
+            items
+        }))
     }
 
     /// The text's merge conflicts (§3.11).
@@ -171,8 +174,16 @@ pub struct Match {
 pub type Captures = Vec<(String, Range<usize>)>;
 
 /// Resolves `target` against every file in `files`, enforcing the ambiguity
-/// rules of §3.5. `src` is the script, for error messages.
-pub fn resolve(target: &Target, files: &[&SourceFile], src: &str) -> Result<Vec<Match>, ExecError> {
+/// rules of §3.5. `src` is the script, for error messages. With `cut`, a line
+/// range in the first step that ends past a file's end selects up to its last
+/// line (§6.1).
+pub fn resolve(
+    target: &Target,
+    files: &[&SourceFile],
+    src: &str,
+    cut: bool,
+    notes: &mut Vec<String>,
+) -> Result<Vec<Match>, ExecError> {
     let whole = files
         .iter()
         .enumerate()
@@ -182,7 +193,7 @@ pub fn resolve(target: &Target, files: &[&SourceFile], src: &str) -> Result<Vec<
             captures: Vec::new(),
         })
         .collect();
-    resolve_within(target, files, whole, src)
+    resolve_within(target, files, whole, src, cut, notes)
 }
 
 /// `resolve`, with the first step searching `start` instead of whole files.
@@ -192,6 +203,8 @@ pub fn resolve_within(
     files: &[&SourceFile],
     start: Vec<Match>,
     src: &str,
+    cut: bool,
+    notes: &mut Vec<String>,
 ) -> Result<Vec<Match>, ExecError> {
     let span = &target.selector.span;
     let error = |kind| ExecError::new(kind, Some(span.clone()));
@@ -212,18 +225,29 @@ pub fn resolve_within(
         }
         named.extend(names.into_iter().map(String::from));
     }
-    let mut matches = start;
+    let mut matches = start.clone();
     let mut parents = Vec::new();
     let mut found = Vec::new();
+    let mut skipped = Vec::new();
     for (i, step) in target.selector.steps.iter().enumerate() {
-        found = resolve_step(step, files, &matches).map_err(error)?;
+        found = resolve_step(step, files, &matches, cut && i == 0, &mut skipped).map_err(error)?;
         let next = found.iter().map(|f| f.m.clone()).collect();
         parents = std::mem::replace(&mut matches, next);
         if matches.is_empty() {
-            return Err(error(no_match(target, i, files, &parents, src)));
+            return Err(error(no_match(target, i, files, &parents, &start, src)));
         }
     }
     let selector = &src[span.clone()];
+    for (file, at, from) in skipped {
+        let f = files[file];
+        let line = |offset| line_numbers(&f.buffer, &(offset..offset));
+        notes.push(format!(
+            "{}:{}: {selector} also starts here, inside its range from line {}; narrow the end to pick one",
+            f.path,
+            line(at),
+            line(from)
+        ));
+    }
     match matches.len() {
         1 => Ok(matches),
         _ if target.all => Ok(matches),
@@ -242,6 +266,7 @@ fn no_match(
     failed: usize,
     files: &[&SourceFile],
     parents: &[Match],
+    start: &[Match],
     src: &str,
 ) -> E {
     let selector = &target.selector;
@@ -249,6 +274,9 @@ fn no_match(
     let whole = &src[selector.span.clone()];
     let (named, hint) = match range_precedence(selector, src) {
         Some(hint) => (whole, hint),
+        None if let Some(hint) = spanning(target, failed, files, parents, start, src) => {
+            (&src[selector.span.start..step.span.end], hint)
+        }
         None => (
             &src[selector.span.start..step.span.end],
             hint(
@@ -267,6 +295,93 @@ fn no_match(
         hint,
         searched: last.then(|| searched(step, parents)).flatten(),
     }
+}
+
+/// The fix for a search `step` of `target`, the one at `failed`, that matched
+/// nothing within any one of the `parents` the step before it found but
+/// matches across several (§7): the selector without that step, or with an
+/// `A..B` of their items or a line range in its place, whichever resolves
+/// from `start`.
+fn spanning(
+    target: &Target,
+    failed: usize,
+    files: &[&SourceFile],
+    parents: &[Match],
+    start: &[Match],
+    src: &str,
+) -> Option<String> {
+    let selector = &target.selector;
+    let step = &selector.steps[failed];
+    if !matches!(step.primary, Primary::Regex(_) | Primary::Literal(_)) {
+        return None;
+    }
+    let parent = &selector.steps[failed.checked_sub(1)?];
+    let matcher = Matcher::new(&step.primary, files, parents, false).ok()?;
+    let scopes: Vec<(usize, Range<usize>)> = parents
+        .iter()
+        .map(|p| (p.file, scope(&files[p.file].text, &p.range)))
+        .collect();
+    let within = |file, at| {
+        scopes
+            .iter()
+            .position(|(f, s)| *f == file && s.contains(&at))
+    };
+    let mut searched: Vec<usize> = parents.iter().map(|p| p.file).collect();
+    searched.dedup();
+    let (file, m, first, last) = searched.iter().find_map(|&file| {
+        let f = files[file];
+        matcher
+            .find(f, 0..f.text.len(), &mut Vec::new())
+            .into_iter()
+            .find_map(|(m, _)| {
+                let first = within(file, m.start)?;
+                let last = within(file, m.end.checked_sub(1)?)?;
+                (first != last).then_some((file, m, first, last))
+            })
+    })?;
+    let f = files[file];
+    let lines = line_numbers(&f.buffer, &m);
+    let before = &src[selector.span.start..parent.span.start];
+    let rest = &src[step.span.start..selector.span.end];
+    let item = |p: usize| {
+        let (name, item, _) = named(parent, f, &parents[p].range)?;
+        Some(syntax::selector(item.kind, &name))
+    };
+    let items = item(first)
+        .zip(item(last))
+        .map(|(a, b)| format!("{a}..{b}"));
+    let all = if target.all { "all " } else { "" };
+    let resolves = |fixed: &String| {
+        let script = format!("delete {all}{fixed}");
+        let Ok(parsed) = crate::script::parse(&script) else {
+            return false;
+        };
+        let Some(CommandKind::Delete(target)) = parsed.commands.first().map(|c| &c.kind) else {
+            return false;
+        };
+        resolve_within(
+            target,
+            files,
+            start.to_vec(),
+            &script,
+            false,
+            &mut Vec::new(),
+        )
+        .is_ok()
+    };
+    let ranges = items.into_iter().chain([lines.clone()]);
+    let fixed = std::iter::once(format!("{before}{rest}"))
+        .chain(ranges.map(|r| format!("{before}{r}>{rest}")))
+        .find(resolves)?;
+    let location = if files.len() > 1 {
+        format!("{}:{lines}", f.path)
+    } else {
+        lines
+    };
+    Some(format!(
+        "; it matches across {} spans at {location}: did you mean {fixed}?",
+        last - first + 1
+    ))
 }
 
 /// For a search `step` (a regex, literal or heredoc) that matched nothing
@@ -292,7 +407,15 @@ struct Found {
     line: bool,
 }
 
-fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result<Vec<Found>, E> {
+/// The matches of `step` in `parents`. `skipped` gets each range start the
+/// step skips, as the file, its offset and the offset of its range's start.
+fn resolve_step(
+    step: &Step,
+    files: &[&SourceFile],
+    parents: &[Match],
+    cut: bool,
+    skipped: &mut Vec<(usize, usize, usize)>,
+) -> Result<Vec<Found>, E> {
     // Only a syntax item has parts other than `.lines`, and a conflict its
     // sides; a part's span is neither.
     let mut primary = Some(&step.primary);
@@ -315,11 +438,14 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
         }
         primary = None;
     }
-    let matcher = Matcher::new(&step.primary, files, parents)?;
+    let matcher = Matcher::new(&step.primary, files, parents, cut)?;
     let mut out: Vec<Found> = Vec::new();
     for (p, parent) in parents.iter().enumerate() {
         let f = &files[parent.file];
-        for (range, captured) in matcher.find(f, parent.range.clone()) {
+        let mut starts = Vec::new();
+        let found = matcher.find(f, parent.range.clone(), &mut starts);
+        skipped.extend(starts.into_iter().map(|(at, from)| (parent.file, at, from)));
+        for (range, captured) in found {
             let mut captures = parent.captures.clone();
             captures.extend(captured);
             let core = range.clone();
@@ -371,6 +497,8 @@ enum Matcher<'a> {
     Lines {
         start: LineNo,
         end: LineNo,
+        /// Whether an end past the file's end is its last line.
+        cut: bool,
     },
     Regex(&'a Regex),
     Str(&'a str),
@@ -378,7 +506,7 @@ enum Matcher<'a> {
         lines: Vec<String>,
         raw: bool,
     },
-    File(&'a str),
+    File(FileScope<'a>),
     /// `conflict:N`, or every conflict.
     Conflict(Option<usize>),
     Syntax {
@@ -393,12 +521,21 @@ enum Matcher<'a> {
 }
 
 impl<'a> Matcher<'a> {
-    fn new(primary: &'a Primary, files: &[&SourceFile], parents: &[Match]) -> Result<Self, E> {
+    fn new(
+        primary: &'a Primary,
+        files: &[&SourceFile],
+        parents: &[Match],
+        cut: bool,
+    ) -> Result<Self, E> {
         Ok(match primary {
             Primary::Lines { start, end } => {
                 let end = end.unwrap_or(*start);
-                check_lines(*start, end, files, parents)?;
-                Matcher::Lines { start: *start, end }
+                check_lines(*start, if cut { *start } else { end }, files, parents)?;
+                Matcher::Lines {
+                    start: *start,
+                    end,
+                    cut,
+                }
             }
             Primary::Regex(pattern) => Matcher::Regex(pattern.regex()),
             Primary::Literal(text) => match text.kind {
@@ -413,15 +550,10 @@ impl<'a> Matcher<'a> {
                 },
             },
             Primary::File(path) => {
-                if !files.iter().any(|f| same_path(&f.path, path)) {
-                    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
-                    return Err(E::NotInFileSet {
-                        path: path.clone(),
-                        files: file_list(&paths),
-                        add: add_to_set(&paths, path),
-                    });
-                }
-                Matcher::File(path)
+                let scope = FileScope::new(path);
+                let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+                scope.check(&paths)?;
+                Matcher::File(scope)
             }
             Primary::Conflict(n) => Matcher::Conflict(*n),
             Primary::Syntax { kind, name } => {
@@ -431,14 +563,21 @@ impl<'a> Matcher<'a> {
             Primary::Query(source) => Matcher::Query(compile_query(source, files, parents)?),
             Primary::Code(code) => Matcher::Code(compile_pattern(code, files, parents)?),
             Primary::Range { from, to } => Matcher::Range(
-                Box::new(Matcher::new(from, files, parents)?),
-                Box::new(Matcher::new(to, files, parents)?),
+                Box::new(Matcher::new(from, files, parents, false)?),
+                Box::new(Matcher::new(to, files, parents, false)?),
             ),
         })
     }
 
-    /// The step's matches in `parent`, with what its patterns captured.
-    fn find(&self, f: &SourceFile, parent: Range<usize>) -> Vec<(Range<usize>, Captures)> {
+    /// The step's matches in `parent`, with what its patterns captured. A
+    /// range adds to `skipped` each start it skips before the end of the
+    /// range it lies in, with that range's start.
+    fn find(
+        &self,
+        f: &SourceFile,
+        parent: Range<usize>,
+        skipped: &mut Vec<(usize, usize)>,
+    ) -> Vec<(Range<usize>, Captures)> {
         match self {
             Matcher::Code(patterns) => {
                 let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
@@ -454,11 +593,18 @@ impl<'a> Matcher<'a> {
                     .collect()
             }
             Matcher::Range(from, to) => {
-                let ends = to.find(f, parent.clone());
+                let ends = to.find(f, parent.clone(), skipped);
                 let mut out = Vec::new();
-                let mut searched_to = parent.start;
-                for (start, captures) in from.find(f, parent.clone()) {
+                let (mut searched_to, mut end_start, mut range_start) = (parent.start, 0, 0);
+                for (start, captures) in from.find(f, parent.clone(), skipped) {
                     if start.start < searched_to {
+                        // On the range's first line or after its end, which is on the
+                        // end's line, a start makes the same span, as §3.7 means.
+                        if start.start < end_start
+                            && f.text[range_start..start.start].contains('\n')
+                        {
+                            skipped.push((start.start, range_start));
+                        }
                         continue;
                     }
                     let Some((end, end_captures)) = ends.iter().find(|(e, _)| e.start >= start.end)
@@ -466,7 +612,7 @@ impl<'a> Matcher<'a> {
                         break;
                     };
                     let range = full_lines(&f.text, start.start..end.end);
-                    searched_to = range.end;
+                    (searched_to, end_start, range_start) = (range.end, end.start, range.start);
                     out.push((range, [captures, end_captures.clone()].concat()));
                 }
                 out
@@ -484,7 +630,7 @@ impl<'a> Matcher<'a> {
         let scope = scope(&f.text, &parent);
         let in_scope = |r: &Range<usize>| scope.start <= r.start && r.end <= scope.end;
         match self {
-            Matcher::Lines { start, end } => {
+            Matcher::Lines { start, end, cut } => {
                 let count = f.buffer.line_count();
                 // `$` is the parent's last line, which is the file's at the top level.
                 let last = f
@@ -493,7 +639,7 @@ impl<'a> Matcher<'a> {
                     .expect("parent within the buffer");
                 let (Some(first), Some(last)) = (
                     line_index(*start, count, last),
-                    line_index(*end, count, last),
+                    line_index(*end, count, last).or(cut.then_some(last)),
                 ) else {
                     return Vec::new();
                 };
@@ -544,8 +690,8 @@ impl<'a> Matcher<'a> {
                 }
                 out
             }
-            Matcher::File(path) => {
-                if same_path(&f.path, path) {
+            Matcher::File(scope) => {
+                if scope.matches(&f.path) {
                     vec![parent]
                 } else {
                     Vec::new()
@@ -557,7 +703,7 @@ impl<'a> Matcher<'a> {
                 .enumerate()
                 .filter(|(i, _)| n.is_none_or(|n| n == i + 1))
                 .map(|(_, c)| c.span())
-                .filter(within)
+                .filter(in_scope)
                 .collect(),
             Matcher::Query(queries) => {
                 let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
@@ -590,7 +736,8 @@ impl<'a> Matcher<'a> {
                 out
             }
             Matcher::Code(_) | Matcher::Range(..) => {
-                self.find(f, parent).into_iter().map(|(r, _)| r).collect()
+                let find = self.find(f, parent, &mut Vec::new());
+                find.into_iter().map(|(r, _)| r).collect()
             }
             Matcher::Syntax { kind, name } => f
                 .items()
@@ -896,7 +1043,20 @@ pub(crate) fn hint(
                 );
             }
         }
-        Primary::Conflict(_) => {
+        Primary::Conflict(n) => {
+            if let Some(parent) = selector[..at].strip_suffix('>')
+                && let Some((i, conflict, p)) = overlapping_conflict(*n, files, parents, &scopes)
+            {
+                let lines = |m: &Match| match location(m) {
+                    l if files.len() > 1 => l,
+                    l => format!("lines {l}"),
+                };
+                return format!(
+                    "; conflict:{i} ({}) is not inside {parent} ({}); show it with `show conflict:{i}`",
+                    lines(&conflict),
+                    lines(p)
+                );
+            }
             let mut searched: Vec<&SourceFile> = parents.iter().map(|p| files[p.file]).collect();
             searched.dedup_by_key(|f| &f.path);
             let conflicted: Vec<String> = searched
@@ -932,6 +1092,33 @@ pub(crate) fn hint(
         Primary::Syntax { .. } => "; `outline` lists the items".into(),
         _ => "; `show` prints the text to match against".into(),
     }
+}
+
+/// The first conflict (the `n`th, if given) that overlaps one of `scopes`, the
+/// whole lines of `parents`: its number, its span and that parent.
+fn overlapping_conflict<'a>(
+    n: Option<usize>,
+    files: &[&SourceFile],
+    parents: &'a [Match],
+    scopes: &[Match],
+) -> Option<(usize, Match, &'a Match)> {
+    scopes.iter().zip(parents).find_map(|(scope, p)| {
+        let (i, c) = files[p.file]
+            .conflicts()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| n.is_none_or(|n| n == i + 1))
+            .find(|(_, c)| {
+                let span = c.span();
+                span.start < scope.range.end && scope.range.start < span.end
+            })?;
+        let conflict = Match {
+            file: p.file,
+            range: c.span(),
+            captures: Vec::new(),
+        };
+        Some((i + 1, conflict, p))
+    })
 }
 
 /// The first place within `parents` where `needle` occurs once case and runs
@@ -1031,8 +1218,9 @@ fn fold(text: &str) -> (String, Vec<usize>) {
     (folded, offsets)
 }
 
-/// `; did you mean SEL (LINES)?`, naming the item closest in name to a syntax
-/// `step` that matched nothing within `parents`, if one is close.
+/// `; did you mean SEL (LINES)?`, naming the item a syntax `step` that matched
+/// nothing within `parents` names once its leading checkbox (`[ ] `) is
+/// dropped, or else the item closest in name, if one is close.
 fn close_name(
     step: &Step,
     files: &[&SourceFile],
@@ -1043,6 +1231,31 @@ fn close_name(
     let Primary::Syntax { kind, name } = &step.primary else {
         return None;
     };
+    // A Markdown item is named without its task-list checkbox.
+    let unchecked = ["[ ] ", "[x] ", "[X] "]
+        .iter()
+        .find_map(|c| name.strip_prefix(c));
+    if let Some(unchecked) = unchecked
+        && let Some((file, item)) = parents.iter().find_map(|p| {
+            files[p.file]
+                .items()
+                .unwrap_or_default()
+                .iter()
+                .filter(|i| p.range.start <= i.range.start && i.range.end <= p.range.end)
+                .find(|i| i.kind == kind && syntax::item_matches(unchecked, i))
+                .map(|i| (p.file, i))
+        })
+    {
+        return Some(did_you_mean(
+            selector,
+            at,
+            &syntax::selector(kind, name),
+            &syntax::selector(kind, unchecked),
+            files,
+            file,
+            item,
+        ));
+    }
     if name.contains('*') {
         return None;
     }
@@ -1212,6 +1425,76 @@ pub(crate) fn same_path(a: &str, b: &str) -> bool {
     a.strip_prefix("./").unwrap_or(a) == b.strip_prefix("./").unwrap_or(b)
 }
 
+/// The files a `file:` step names: one path, or a glob's matches (§3.3).
+pub(crate) struct FileScope<'a> {
+    path: &'a str,
+    glob: Option<glob::Pattern>,
+}
+
+impl<'a> FileScope<'a> {
+    /// `path` is a glob under the `file` command's rule: it has a glob
+    /// character and parses as one.
+    pub(crate) fn new(path: &'a str) -> Self {
+        let glob = path
+            .contains(['*', '?', '['])
+            .then(|| glob::Pattern::new(path.strip_prefix("./").unwrap_or(path)).ok())
+            .flatten();
+        FileScope { path, glob }
+    }
+
+    pub(crate) fn is_glob(&self) -> bool {
+        self.glob.is_some()
+    }
+
+    pub(crate) fn matches(&self, path: &str) -> bool {
+        match &self.glob {
+            None => same_path(self.path, path),
+            Some(glob) => {
+                glob.matches_with(path.strip_prefix("./").unwrap_or(path), glob_options())
+            }
+        }
+    }
+
+    /// An error unless some of `paths`, the file set, match.
+    pub(crate) fn check(&self, paths: &[&str]) -> Result<(), E> {
+        if paths.iter().any(|p| self.matches(p)) {
+            return Ok(());
+        }
+        let (files, add) = (file_list(paths), add_to_set(paths, self.path));
+        Err(match self.glob {
+            None => E::NotInFileSet {
+                path: self.path.into(),
+                files,
+                add,
+            },
+            Some(_) => E::NoFileMatch {
+                glob: self.path.into(),
+                files,
+                add: if on_disk(self.path) {
+                    add
+                } else {
+                    "no file on disk matches it either; correct the glob".into()
+                },
+            },
+        })
+    }
+}
+
+fn on_disk(glob: &str) -> bool {
+    glob::glob_with(glob, glob_options())
+        .is_ok_and(|mut paths| paths.any(|p| p.is_ok_and(|p| p.is_file())))
+}
+
+/// How globs match paths, in the file set and on disk: `*` stops at `/`, and
+/// a leading `.` must be literal.
+pub(crate) fn glob_options() -> glob::MatchOptions {
+    glob::MatchOptions {
+        require_literal_separator: true,
+        require_literal_leading_dot: true,
+        ..glob::MatchOptions::new()
+    }
+}
+
 pub(crate) fn part_name(part: Part) -> &'static str {
     match part {
         Part::Body => "body",
@@ -1251,7 +1534,19 @@ fn candidates(
         .last()
         .filter(|s| selector.span.start <= s.span.start && s.span.end <= selector.span.end);
     let split = last.map_or(selector.span.start, |s| s.span.start);
-    let prefix = &src[selector.span.start..split];
+    // A glob `file:` step is replaced by each match's own file.
+    let glob = match selector.steps.first() {
+        Some(Step {
+            primary: Primary::File(path),
+            ..
+        }) => FileScope::new(path).is_glob(),
+        _ => false,
+    };
+    let after_glob = selector.steps.get(1).filter(|_| glob).map(|s| s.span.start);
+    let prefix = |f: &SourceFile| match after_glob {
+        Some(start) => format!("file:{}>{}", f.path, &src[start..split]),
+        None => src[selector.span.start..split].to_string(),
+    };
     let in_file = matches!(
         selector.steps.first(),
         Some(Step {
@@ -1280,6 +1575,10 @@ fn candidates(
             let text = match (chosen, last) {
                 (Some((name, item, true)), Some(step)) => {
                     format!("{}{}", syntax::selector(item.kind, name), parts(step))
+                }
+                // A glob step alone is named by the match's file.
+                (None, Some(_)) if glob && selector.steps.len() == 1 => {
+                    format!("file:{}", files[c.m.file].path)
                 }
                 // Each of several conflicts is named by its number.
                 (None, Some(step)) if step.primary == Primary::Conflict(None) => {
@@ -1343,15 +1642,21 @@ fn candidates(
                 .filter(|&&j| found[j].m.file == c.m.file)
                 .count()
                 == 1;
+            let prefix = prefix(f);
+            // The file scope, unless the prefix already has one.
+            let file = match glob {
+                true => String::new(),
+                false => format!("file:{}>", f.path),
+            };
             let candidate = match unique_item {
                 _ if peers.len() == 1 => Some(format!("{prefix}{last}")),
                 Some(item) => Some(format!("{prefix}{item}>{last}")),
                 None if let Some(side) = unique_side => Some(format!("{prefix}{side}>{last}")),
-                None if files.len() == 1 || in_file => {
+                None if files.len() == 1 || in_file && !glob => {
                     lines_fit.then(|| format!("{prefix}{lines}>{last}"))
                 }
-                None if one_in_file => Some(format!("file:{}>{prefix}{last}", f.path)),
-                None => lines_fit.then(|| format!("file:{}>{prefix}{lines}>{last}", f.path)),
+                None if one_in_file => Some(format!("{file}{prefix}{last}")),
+                None => lines_fit.then(|| format!("{file}{prefix}{lines}>{last}")),
             };
             let at = line_numbers(&f.buffer, &c.m.range);
             let candidate = match c.line {
@@ -1492,7 +1797,13 @@ mod tests {
         let CommandKind::Delete(target) = &parsed.commands[0].kind else {
             panic!("expected delete: {script}");
         };
-        resolve(target, &files.iter().collect::<Vec<_>>(), script)
+        resolve(
+            target,
+            &files.iter().collect::<Vec<_>>(),
+            script,
+            false,
+            &mut Vec::new(),
+        )
     }
 
     /// The text of each span `script` selects in a single file `a.rs`.
@@ -1601,6 +1912,36 @@ mod tests {
     fn ranges_skip_starts_inside_an_earlier_range() {
         assert_eq!(select("delete all /a/../b/", "a b a b\n"), ["a b a b\n"]);
         assert_eq!(select("delete all /a/../b/", "a a b\nb\n"), ["a a b\n"]);
+    }
+
+    #[test]
+    fn ranges_note_starts_skipped_before_their_end() {
+        let notes = |script: &str, text: &str| {
+            let parsed = parse(script).unwrap();
+            let CommandKind::Delete(target) = &parsed.commands[0].kind else {
+                panic!("expected delete: {script}");
+            };
+            let mut notes = Vec::new();
+            let files = files(&[("a.rs", text)]);
+            resolve(
+                target,
+                &files.iter().collect::<Vec<_>>(),
+                script,
+                false,
+                &mut notes,
+            )
+            .unwrap();
+            notes
+        };
+        let text = "fn f() {\n    for x in a {\n        g();\n    } // x\n    for x in a {\n        g();\n    }\n}\n";
+        assert_eq!(
+            notes("delete /^    for x/../^    }$/", text),
+            [
+                "a.rs:5: /^    for x/../^    }$/ also starts here, inside its range from line 2; narrow the end to pick one"
+            ]
+        );
+        assert!(notes("delete all /a/../b/", "a b a b\n").is_empty());
+        assert!(notes("delete /a/../b/", "a a\nb\n").is_empty());
     }
 
     #[test]
@@ -1729,6 +2070,15 @@ mod tests {
              fn:a.body>2   a.rs:2\n  \
              fn:a.body>3   a.rs:3"
         );
+        const LIST: &str = "- a b\n  c d\n";
+        assert_eq!(
+            error("delete \"- a b\\n  c d\".lines", &[("a.md", LIST)]),
+            "error: script:1:8: \"- a b\\n  c d\".lines matches 2 items; add `all` or use one of:\n  \
+             \"- a b\\n  c d\">1   a.md:1\n  \
+             \"- a b\\n  c d\">2   a.md:2"
+        );
+        assert_eq!(select("delete \"- a b\\n  c d\">1", LIST), ["- a b\n"]);
+        assert_eq!(select("delete \"- a b\\n  c d\">2", LIST), ["  c d\n"]);
     }
 
     #[test]
@@ -1910,6 +2260,80 @@ mod tests {
             error("delete file:c.rs>/x/", &[("a.rs", "x\n"), ("b.rs", "x\n")]),
             "error: script:1:8: file:c.rs is not in the file set: a.rs, b.rs; \
              add it with `file a.rs b.rs c.rs`"
+        );
+    }
+
+    #[test]
+    fn file_glob_narrows_to_matching_files() {
+        let set = files(&[("src/a.rs", "x\n"), ("c.rs", "x\n"), ("src/b.rs", "y\nx\n")]);
+        let m = resolve_in("delete all file:src/*.rs>/x/", &set).unwrap();
+        let found: Vec<(usize, Range<usize>)> = m.into_iter().map(|m| (m.file, m.range)).collect();
+        assert_eq!(found, [(0, 0..1), (2, 2..3)]);
+    }
+
+    #[test]
+    fn file_globs_match_like_file_set_globs() {
+        let glob = |glob: &str, path: &str| FileScope::new(glob).matches(path);
+        assert!(glob("src/*.rs", "src/a.rs"));
+        assert!(!glob("src/*.rs", "src/sub/a.rs"));
+        assert!(!glob("*.rs", "src/a.rs"));
+        assert!(glob("src/**/*.rs", "src/sub/deep/a.rs"));
+        assert!(glob("src/**/*.rs", "src/a.rs"));
+        assert!(glob("src/?.rs", "src/a.rs"));
+        assert!(glob("src/[ab].rs", "src/b.rs"));
+        assert!(!glob("src/[ab].rs", "src/c.rs"));
+        assert!(!glob("src/*", "src/.hidden"));
+        assert!(glob("src/.*", "src/.hidden"));
+        assert!(glob("./src/*.rs", "src/a.rs"));
+        assert!(glob("src/*.rs", "./src/a.rs"));
+        // Not a valid glob: a plain path.
+        assert!(glob("a[.rs", "a[.rs"));
+        assert!(!glob("a[.rs", "a.rs"));
+    }
+
+    #[test]
+    fn file_glob_matching_no_file_is_an_error() {
+        let set = [("a.rs", "x\n"), ("b.rs", "x\n")];
+        // Unit tests run in the crate's directory, where `src/*.rs` has files.
+        assert_eq!(
+            error("delete file:src/*.rs>/x/", &set),
+            "error: script:1:8: file:src/*.rs matches no file in the file set: a.rs, b.rs; \
+             add it with `file a.rs b.rs src/*.rs`"
+        );
+        assert_eq!(
+            error("delete file:src/*.rx>/x/", &set),
+            "error: script:1:8: file:src/*.rx matches no file in the file set: a.rs, b.rs; \
+             no file on disk matches it either; correct the glob"
+        );
+    }
+
+    #[test]
+    fn file_glob_candidates_name_their_file() {
+        let set = [
+            ("src/a.rs", "fn new() {}\n"),
+            ("src/b.rs", "fn new() {}\n"),
+            ("c.rs", "fn new() {}\n"),
+        ];
+        assert_eq!(
+            error("delete file:src/*.rs>fn:new", &set),
+            "error: script:1:8: file:src/*.rs>fn:new matches 2 items; add `all` or use one of:\n  \
+             file:src/a.rs>fn:new   src/a.rs:1\n  \
+             file:src/b.rs>fn:new   src/b.rs:1"
+        );
+        assert_eq!(
+            error(
+                "delete file:src/*.rs>/x/",
+                &[("src/a.rs", "x\ny\nx\n"), ("src/b.rs", "y\n")]
+            ),
+            "error: script:1:8: file:src/*.rs>/x/ matches 2 items; add `all` or use one of:\n  \
+             file:src/a.rs>1>/x/   src/a.rs:1\n  \
+             file:src/a.rs>3>/x/   src/a.rs:3"
+        );
+        assert_eq!(
+            error("delete file:src/*.rs", &set),
+            "error: script:1:8: file:src/*.rs matches 2 items; add `all` or use one of:\n  \
+             file:src/a.rs   src/a.rs:1\n  \
+             file:src/b.rs   src/b.rs:1"
         );
     }
 
@@ -2571,6 +2995,33 @@ fn main() {
     }
 
     #[test]
+    fn a_nested_search_matching_across_spans_suggests_a_selector_for_it() {
+        let imports = "use a;\nuse b;\n";
+        assert_eq!(
+            error("delete import>\"use a;\\nuse b;\"", &[("a.rs", imports)]),
+            "error: script:1:8: import>\"use a;\\nuse b;\" matches nothing in a.rs; \
+             it matches across 2 spans at 1-2: did you mean \"use a;\\nuse b;\"?"
+        );
+        // Without the step, it's ambiguous, so the items' range takes its place.
+        let commented = "/*\nuse a;\nuse b;\n*/\nuse a;\nuse b;\n";
+        assert_eq!(
+            error("delete import>\"use a;\\nuse b;\"", &[("a.rs", commented)]),
+            "error: script:1:8: import>\"use a;\\nuse b;\" matches nothing in a.rs; \
+             it matches across 2 spans at 5-6: \
+             did you mean import:a..import:b>\"use a;\\nuse b;\"?"
+        );
+        // Spans that aren't items take a line range.
+        assert_eq!(
+            error(
+                "delete /use .;/>\"use a;\\nuse b;\"",
+                &[("a.rs", commented)]
+            ),
+            "error: script:1:8: /use .;/>\"use a;\\nuse b;\" matches nothing in a.rs; \
+             it matches across 2 spans at 2-3: did you mean 2-3>\"use a;\\nuse b;\"?"
+        );
+    }
+
+    #[test]
     fn a_literal_matching_as_escaped_source_text_is_suggested() {
         let text = "let s = \"a\\nb\\t\";\n";
         assert_eq!(
@@ -2699,6 +3150,25 @@ fn main() {
             error("delete impl:\"Lexer<'a>\">fn:new>\"x\"", &[("a.rs", RUST)]),
             "error: script:1:8: impl:\"Lexer<'a>\" matches nothing in a.rs; \
              did you mean impl:Lexer>fn:new>\"x\" (14-18)?"
+        );
+    }
+
+    #[test]
+    fn no_match_suggests_the_item_name_without_its_checkbox() {
+        let text = "- [ ] text here\n- [x] done\n";
+        assert_eq!(
+            error("delete item:\"[ ] text*\"", &[("a.md", text)]),
+            "error: script:1:8: item:\"[ ] text*\" matches nothing in a.md; \
+             did you mean item:text* (1)?"
+        );
+        assert_eq!(
+            error("delete item:\"[X] done\"", &[("a.md", text)]),
+            "error: script:1:8: item:\"[X] done\" matches nothing in a.md; \
+             did you mean item:done (2)?"
+        );
+        assert_eq!(
+            error("delete item:\"[ ] other*\"", &[("a.md", text)]),
+            "error: script:1:8: item:\"[ ] other*\" matches nothing in a.md; `outline` lists the items"
         );
     }
 

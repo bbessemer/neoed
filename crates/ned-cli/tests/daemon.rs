@@ -156,3 +156,27 @@ fn an_unsafe_runtime_dir_is_refused() {
     assert!(stderr.contains("XDG_RUNTIME_DIR"), "{stderr}");
     fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
 }
+
+#[test]
+fn a_runtime_dir_too_long_for_a_socket_is_refused_with_a_fix() {
+    let ws = Workspace::new();
+    let runtime = ws.runtime.path().join("r".repeat(120));
+    fs::create_dir(&runtime).unwrap();
+    let output = cargo_bin_cmd!("ned")
+        .args(["daemon", "start"])
+        .current_dir(ws.dir.path())
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.starts_with("error: daemon socket path "), "{stderr}");
+    assert!(
+        stderr.contains("bytes, over the platform's limit of "),
+        "{stderr}"
+    );
+    assert!(
+        stderr.ends_with("set XDG_RUNTIME_DIR to a shorter directory\n"),
+        "{stderr}"
+    );
+}

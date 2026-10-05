@@ -4,6 +4,54 @@ Every tagged release of `ned`. Before 0.6.1, every PR to `main` bumped the
 version, so versions merged in quick succession (0.2.0, 0.3.0) were never tagged
 or released on their own; their changes are listed under the next tag.
 
+## 0.7.1 (2026-10-05)
+
+### Added
+
+- `file:GLOB` steps: `file:src/*.rs>fn:new` narrows a selector to the files in
+  the set that the glob matches, with the `file` command's glob syntax. With
+  `-w`, only those files are read.
+- `.mdx` files are read as Markdown.
+
+### Changed
+
+- `show` with a line range alone (`show 1-200`) shows up to each file's last
+  line when the range ends past it, with a note, instead of failing.
+
+### Fixed
+
+- An item that starts or ends inside a merge conflict, but isn't wholly on one
+  of its sides, takes in the whole conflict, so `delete fn:f` leaves no marker
+  line behind and `fn:f>conflict` finds it.
+- `move` to the `start` or `end` of a body whose items are separated by blank
+  lines separates the moved span from its neighbour with one too.
+- A daemon socket path longer than the platform allows (103 bytes on macOS, 107
+  on Linux) is an error naming its length, with a fix (a shorter
+  `XDG_RUNTIME_DIR`), instead of "the daemon didn't start".
+
+### Hints
+
+- Quoting for a name with a `-` (`import:"react-router"`) or braces
+  (`import:"a::b::{A, B}"`).
+- A file path where a selector belongs (`src/a.rs>fn:x`) suggests a `file:`
+  step.
+- `show SEL -N` suggests `show SEL +N` (or, after a line number, the line range
+  `show N-M`).
+- sed's `sub /re/text/flags` suggests `sub /re/flags with "text"`.
+- A literal in `sub` suggests the `replace all` it means.
+- After a heredoc selector, the error shows the rest of the command on the
+  selector's line: `replace <<END with TEXT`.
+- A Markdown item's name with its checkbox (`item:"[x] done"`) suggests the name
+  without it.
+- A nested search that matches only across spans of the step before it suggests
+  the selector without that step, or an `A..B` or line range in its place.
+- A `conflict` step that matches nothing names a conflict that overlaps the
+  searched span without lying inside it.
+- A range that skips a start of `A` inside an earlier range notes that line,
+  since that range likely spans more than meant.
+- `file:GLOB` that matches no file in the set suggests the `file` command that
+  adds its files, or, if none exist, correcting the glob.
+
 ## 0.7.0 (2026-10-04)
 
 ### Added

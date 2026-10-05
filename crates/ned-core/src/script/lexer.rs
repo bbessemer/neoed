@@ -71,6 +71,8 @@ pub struct Lexer<'a> {
     pos: usize,
     /// Where the next heredoc body on the current line starts.
     heredoc_cursor: Option<usize>,
+    /// The last regex lexed, from its opening `/` to after its closing one.
+    pub(super) last_regex: Option<Range<usize>>,
 }
 
 impl<'a> Lexer<'a> {
@@ -79,6 +81,7 @@ impl<'a> Lexer<'a> {
             src,
             pos: 0,
             heredoc_cursor: None,
+            last_regex: None,
         }
     }
 
@@ -254,6 +257,7 @@ impl<'a> Lexer<'a> {
                 c => pattern.push(c),
             }
         }
+        self.last_regex = Some(start..self.pos);
         let mut flags = RegexFlags::default();
         while let Some(c) = self.peek().filter(char::is_ascii_alphabetic) {
             match c {
@@ -361,7 +365,10 @@ impl<'a> Lexer<'a> {
                 }
                 if !quoted
                     && word != "file"
-                    && let Some(err) = self.dotted_name(word, &name)
+                    && let Some(err) = self
+                        .dotted_name(word, &name)
+                        .or_else(|| self.dashed_name(word, &name))
+                        .or_else(|| self.braced_name(word, &name))
                 {
                     return Err(err);
                 }
@@ -424,6 +431,49 @@ impl<'a> Lexer<'a> {
             }
         };
         Some(ParseError::new(error, span))
+    }
+
+    /// For an unquoted `kind:name` directly followed by `-` and more of the name,
+    /// such as `import:react-router`, an error suggesting the quoted name. A `-`
+    /// before another selector, as in `fn:a-fn:b`, is a malformed range instead.
+    fn dashed_name(&self, kind: &str, name: &str) -> Option<ParseError> {
+        let rest = self.src[self.pos..].strip_prefix('-')?;
+        let end = rest
+            .find(|c| !(is_ident_char(c) || c == '-'))
+            .unwrap_or(rest.len());
+        if end == 0 || rest[end..].starts_with(':') {
+            return None;
+        }
+        let selector = syntax::selector(kind, &format!("{name}-{}", &rest[..end]));
+        Some(ParseError::new(
+            E::DashedName(selector),
+            self.pos..self.pos + 1,
+        ))
+    }
+
+    /// For an unquoted `kind:name` followed by `{`, such as Rust's
+    /// `import:a::{A, B}`, an error suggesting the quoted name up to the
+    /// matching `}` on the same command.
+    fn braced_name(&self, kind: &str, name: &str) -> Option<ParseError> {
+        let rest = self.src[self.pos..].strip_prefix('{')?;
+        let mut depth = 1;
+        let end = rest.find(|c| {
+            match c {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => {}
+            }
+            depth == 0 || matches!(c, '\n' | '\r' | ';' | '|')
+        })?;
+        if !rest[end..].starts_with('}') {
+            return None;
+        }
+        let braced = &self.src[self.pos..self.pos + end + 2];
+        let selector = syntax::selector(kind, &format!("{name}{braced}"));
+        Some(ParseError::new(
+            E::BracedName { selector },
+            self.pos..self.pos + braced.len(),
+        ))
     }
 
     fn query(&mut self, start: usize) -> Result<TokenKind, ParseError> {
@@ -548,14 +598,14 @@ const PARTS: [(&str, Part); 16] = [
     ("base", Part::Base),
 ];
 
-fn part_named(name: &str) -> Option<Part> {
+pub(super) fn part_named(name: &str) -> Option<Part> {
     PARTS
         .iter()
         .find(|(n, _)| *n == name)
         .map(|&(_, part)| part)
 }
 
-fn is_ident_char(c: char) -> bool {
+pub(super) fn is_ident_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
@@ -891,6 +941,53 @@ mod tests {
         assert_eq!(
             kinds("fn:a..fn:b"),
             [syntax("fn", "a"), T::DotDot, syntax("fn", "b")]
+        );
+    }
+
+    #[test]
+    fn dashed_names_suggest_quoting() {
+        let kind = |src| error(src).kind;
+        let e = error("show import:react-router");
+        assert_eq!(e.kind, E::DashedName(r#"import:"react-router""#.into()));
+        assert_eq!(e.span, 17..18);
+        assert_eq!(
+            kind("import:react-router-dom.name"),
+            E::DashedName(r#"import:"react-router-dom""#.into())
+        );
+        assert_eq!(kind("fn:a-b"), E::DashedName(r#"fn:"a-b""#.into()));
+        // Not a name: a malformed range, or a `-` after a quoted name or a space.
+        assert_eq!(kind("fn:a-fn:b"), E::UnexpectedChar('-'));
+        assert_eq!(kind("fn:a-/b/"), E::UnexpectedChar('-'));
+        assert_eq!(kind(r#"import:"a"-b"#), E::UnexpectedChar('-'));
+        assert_eq!(kind("fn:a -b"), E::UnexpectedChar('-'));
+    }
+
+    #[test]
+    fn braced_names_suggest_quoting() {
+        let braced = |src, selector: &str| {
+            let e = error(src);
+            assert_eq!(
+                e.kind,
+                E::BracedName {
+                    selector: selector.into()
+                },
+                "{src}"
+            );
+            e.span
+        };
+        let span = braced("show import:a::b::{A, B}", r#"import:"a::b::{A, B}""#);
+        assert_eq!(span, 18..24);
+        braced("import:c::{d::{E, F}, G}", r#"import:"c::{d::{E, F}, G}""#);
+        braced("show import:a::{b} | show fn:x", r#"import:"a::{b}""#);
+        // Without a matching `}` on the line, the `{` isn't part of a name.
+        assert_eq!(error("show import:a::{b").kind, E::UnexpectedChar('{'));
+        assert_eq!(
+            error("show import:a::{b\nshow c}").kind,
+            E::UnexpectedChar('{')
+        );
+        assert_eq!(
+            error("show import:a::{b | show c}").kind,
+            E::UnexpectedChar('{')
         );
     }
 

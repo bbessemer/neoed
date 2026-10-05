@@ -1,6 +1,7 @@
 //! Running scripts against files, and the errors that can stop a run.
 
 use std::borrow::Cow;
+use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
@@ -17,11 +18,11 @@ use crate::lsp::{self, Document, Locate, Located, Lsp, LspFailure, Renamed, Seve
 use crate::outline;
 use crate::script::Script;
 use crate::script::ast::{
-    Command, CommandKind, Keep, Part, Pattern, Position, Primary, Selector, Step, Target, Text,
-    TextKind,
+    Command, CommandKind, Keep, LineNo, Part, Pattern, Position, Primary, Selector, Step, Target,
+    Text, TextKind,
 };
 use crate::script::error::{excerpt, location};
-use crate::select::{self, Match, SourceFile, line_numbers, same_path};
+use crate::select::{self, FileScope, Match, SourceFile, line_numbers, same_path};
 use crate::span::{self, Of, Span};
 use crate::style::{Role, Style};
 use crate::syntax::{self, Item};
@@ -479,7 +480,7 @@ impl Executor<'_> {
                     .steps
                     .iter()
                     .any(|s| !s.primary.patterns().is_empty());
-                for m in self.resolve(target)? {
+                for m in self.resolve(target, false)? {
                     let f = &self.files[m.file].file;
                     let filled;
                     let text = match patterns {
@@ -521,7 +522,7 @@ impl Executor<'_> {
                 target,
                 text,
             } => {
-                for m in self.resolve(&implied_body(target, *position))? {
+                for m in self.resolve(&implied_body(target, *position), false)? {
                     let f = &self.files[m.file].file;
                     let range = heredoc_lines(f, target, *position, text, m.range);
                     let text = separated(f, target, *position, &range, text);
@@ -530,7 +531,7 @@ impl Executor<'_> {
                 }
             }
             CommandKind::Delete(target) => {
-                for m in self.resolve(target)? {
+                for m in self.resolve(target, false)? {
                     let f = &self.files[m.file].file;
                     if let Some(side) = empty_side(f, &m.range) {
                         let line = line_numbers(&f.buffer, &m.range);
@@ -549,7 +550,7 @@ impl Executor<'_> {
                     Keep::Base => &[Side::Base],
                     Keep::Both => &[Side::Ours, Side::Theirs],
                 };
-                for m in self.resolve(target)? {
+                for m in self.resolve(target, false)? {
                     let f = &self.files[m.file].file;
                     let Some((n, conflict)) =
                         f.conflict_at(&m.range).filter(|(_, c)| c.span() == m.range)
@@ -602,32 +603,26 @@ impl Executor<'_> {
 
     /// Resolves `target` in the current file set, returning matches whose
     /// `file` indexes `self.files`. A leading `file:` step reads only its
-    /// file.
-    fn resolve(&mut self, target: &Target) -> Result<Vec<Match>, ExecError> {
+    /// file. `cut` is `select::resolve`'s.
+    fn resolve(&mut self, target: &Target, cut: bool) -> Result<Vec<Match>, ExecError> {
         let located = |s: &Step| s.parts.iter().any(|p| matches!(p, Part::Refs | Part::Def));
         if target.selector.steps.iter().any(located) {
             return self.resolve_located(target);
         }
         let only = match target.selector.steps.first().map(|s| &s.primary) {
             Some(Primary::File(path)) => {
-                if !self.set.iter().any(|m| same_path(&m.path, path)) {
-                    let paths: Vec<&str> = self.set.iter().map(|m| m.path.as_str()).collect();
-                    return Err(ExecError::new(
-                        ExecErrorKind::NotInFileSet {
-                            path: path.clone(),
-                            files: select::file_list(&paths),
-                            add: select::add_to_set(&paths, path),
-                        },
-                        Some(target.selector.span.clone()),
-                    ));
-                }
-                Some(path.clone())
+                let scope = FileScope::new(path);
+                let paths: Vec<&str> = self.set.iter().map(|m| m.path.as_str()).collect();
+                scope
+                    .check(&paths)
+                    .map_err(|kind| ExecError::new(kind, Some(target.selector.span.clone())))?;
+                Some(scope)
             }
             _ => None,
         };
-        let indices = self.read(|p| only.as_ref().is_none_or(|only| same_path(p, only)))?;
+        let indices = self.read(|p| only.as_ref().is_none_or(|only| only.matches(p)))?;
         let set: Vec<&SourceFile> = indices.iter().map(|&i| &self.files[i].file).collect();
-        let matches = select::resolve(target, &set, self.src)?;
+        let matches = select::resolve(target, &set, self.src, cut, &mut self.notes)?;
         Ok(matches
             .into_iter()
             .map(|m| Match {
@@ -676,10 +671,17 @@ impl Executor<'_> {
                 },
             };
             let mut found = match matches {
-                None => self.resolve(&segment)?,
+                None => self.resolve(&segment, false)?,
                 Some(start) => {
                     let files: Vec<&SourceFile> = self.files.iter().map(|l| &l.file).collect();
-                    select::resolve_within(&segment, &files, start, self.src)?
+                    select::resolve_within(
+                        &segment,
+                        &files,
+                        start,
+                        self.src,
+                        false,
+                        &mut self.notes,
+                    )?
                 }
             };
             for part in parts {
@@ -982,8 +984,10 @@ impl Executor<'_> {
             all: false,
             selector: dest.clone(),
         };
-        let to = self.resolve(&implied_body(&dest, position))?.remove(0);
-        for from in self.resolve(target)? {
+        let to = self
+            .resolve(&implied_body(&dest, position), false)?
+            .remove(0);
+        for from in self.resolve(target, false)? {
             let source = &self.files[from.file].file;
             let removal = removal(source, from.range.clone());
             let (mut moved, separated) = moved_text(source, &from.range);
@@ -992,11 +996,19 @@ impl Executor<'_> {
             // Doc comments and attributes attach to the item they move before.
             let attaches =
                 matches!(position, Position::Before) && only_leading(target, &moved.value);
-            if separated && !attaches && text::is_whole_line(&target.text, &at) {
+            let blank_line = match position {
+                Position::Before | Position::After => {
+                    separated && !attaches && text::is_whole_line(&target.text, &at)
+                }
+                Position::Start | Position::End => {
+                    matches!(moved.kind, TextKind::Heredoc)
+                        && body_edge_separated(target, &to.range, position)
+                }
+            };
+            if blank_line {
                 match position {
-                    Position::Before => moved.value.push('\n'),
-                    Position::After => moved.value.insert(0, '\n'),
-                    Position::Start | Position::End => {}
+                    Position::Before | Position::Start => moved.value.push('\n'),
+                    Position::After | Position::End => moved.value.insert(0, '\n'),
                 }
             }
             let moved = with_trailing_comma(target, &at, &moved);
@@ -1031,7 +1043,22 @@ impl Executor<'_> {
                 }
             }
             Some(target) => {
-                let found = match self.resolve(target) {
+                // A line range alone is cut at each file's end (§6.1).
+                let cut = match target.selector.steps.as_slice() {
+                    [
+                        Step {
+                            primary:
+                                Primary::Lines {
+                                    end: Some(LineNo::Number(end)),
+                                    ..
+                                },
+                            parts,
+                            ..
+                        },
+                    ] if parts.is_empty() => Some(*end),
+                    _ => None,
+                };
+                let found = match self.resolve(target, cut.is_some()) {
                     // `show all` is a search, and finding nothing is an answer.
                     Err(err) if target.all => match &err.kind {
                         ExecErrorKind::NoMatch {
@@ -1058,6 +1085,19 @@ impl Executor<'_> {
                     } else {
                         line(m.range.end - 1)
                     };
+                    let count = buffer.line_count();
+                    if cut.is_some_and(|end| end > count) {
+                        let unit = if count == 1 { "line" } else { "lines" };
+                        let showed = if first == last {
+                            format!("{}", first + 1)
+                        } else {
+                            format!("{}-{}", first + 1, last + 1)
+                        };
+                        let path = &self.files[m.file].file.path;
+                        self.notes.push(format!(
+                            "{path} has {count} {unit}, so showed {showed}; use `$` for the last line"
+                        ));
+                    }
                     let empty = empty_side(&self.files[m.file].file, &m.range);
                     let context = if empty.is_some() { 0 } else { context };
                     spans.push((
@@ -1130,7 +1170,7 @@ impl Executor<'_> {
                 .map(|i| (i, None))
                 .collect(),
             Some(target) => self
-                .resolve(target)?
+                .resolve(target, false)?
                 .into_iter()
                 .map(|m| (m.file, Some(m.range)))
                 .collect(),
@@ -1180,7 +1220,7 @@ impl Executor<'_> {
                 .map(|i| (i, None))
                 .collect(),
             Some(target) => self
-                .resolve(target)?
+                .resolve(target, false)?
                 .into_iter()
                 .map(|m| (m.file, Some(m.range)))
                 .collect(),
@@ -1285,7 +1325,7 @@ impl Executor<'_> {
                 span: selector.span.clone(),
             },
         };
-        let m = self.resolve(&target)?.remove(0);
+        let m = self.resolve(&target, false)?.remove(0);
         let (document, position) = self.symbol(&m, "rename", span)?;
         let file = &self.files[m.file].file;
         let line_start = file
@@ -1373,7 +1413,7 @@ impl Executor<'_> {
         let scopes: Vec<Match> = match scope {
             // A scope's whole lines, as a nested step searches them (§3.4).
             Some(target) => self
-                .resolve(target)?
+                .resolve(target, false)?
                 .into_iter()
                 .map(|m| Match {
                     range: select::scope(&self.files[m.file].file.text, &m.range),
@@ -1495,10 +1535,7 @@ fn last_line_hint(line: &str) -> &'static str {
 
 /// The files `path` names: itself, or a glob's sorted matches.
 fn expand(path: &str, span: Option<&Range<usize>>) -> Result<Vec<String>, ExecError> {
-    let options = glob::MatchOptions {
-        require_literal_leading_dot: true,
-        ..glob::MatchOptions::new()
-    };
+    let options = select::glob_options();
     let paths = match glob::glob_with(path, options) {
         Ok(paths) if path.contains(['*', '?', '[']) => paths,
         // Not a glob, or not a valid one, such as `a[.rs`: a plain path.
@@ -1856,6 +1893,10 @@ fn without_leading(f: &SourceFile, range: Range<usize>, new: &Text) -> Range<usi
     else {
         return range;
     };
+    // The conflict that an item starts inside goes with it (§3.3).
+    if f.conflicts().iter().any(|c| c.span().start == range.start) {
+        return range;
+    }
     let line = t[..item.node.start].rfind('\n').map_or(0, |i| i + 1);
     // An attribute on the item's own line goes with it.
     if item.node.start == range.start || !t[line..item.node.start].trim().is_empty() {
@@ -2038,6 +2079,40 @@ fn ends_with_item(f: &SourceFile, text: &str) -> bool {
     syntax::items(lang.selectors(), &lang.parse(text), text)
         .iter()
         .any(|i| i.range.end >= end && !syntax::find_kind(i.kind).is_some_and(|k| k.stacked))
+}
+
+/// Whether the item at the `start` or `end` of `body` has a blank line
+/// between it and the next or previous item, so text moved there should too
+/// (§4.2).
+fn body_edge_separated(f: &SourceFile, body: &Range<usize>, position: Position) -> bool {
+    let t = &f.text;
+    let Some(items) = f.items() else {
+        return false;
+    };
+    let inside = items
+        .iter()
+        .map(|i| text::full_lines(t, i.range.clone()))
+        .filter(|full| body.start <= full.start && full.end <= body.end);
+    let blank = |line: Option<&str>| line.is_some_and(|l| l.trim().is_empty());
+    match position {
+        Position::Start => inside
+            .min_by_key(|full| (full.start, Reverse(full.end)))
+            .is_some_and(|full| {
+                let after = &t[full.end..body.end];
+                t[body.start..full.start].trim().is_empty()
+                    && blank(after.lines().next())
+                    && !after.trim().is_empty()
+            }),
+        Position::End => inside
+            .max_by_key(|full| (full.end, Reverse(full.start)))
+            .is_some_and(|full| {
+                let before = &t[body.start..full.start];
+                t[full.end..body.end].trim().is_empty()
+                    && blank(before.lines().next_back())
+                    && !before.trim().is_empty()
+            }),
+        Position::Before | Position::After => false,
+    }
 }
 
 /// The full lines of the widest unstacked item in `f` that has leading doc
@@ -2371,6 +2446,13 @@ pub enum ExecErrorKind {
     #[error("file:{path} is not in the file set: {files}; {add}")]
     NotInFileSet {
         path: String,
+        files: String,
+        add: String,
+    },
+    /// `add` is the fix: the `file` command that adds the glob's files, if any exist.
+    #[error("file:{glob} matches no file in the file set: {files}; {add}")]
+    NoFileMatch {
+        glob: String,
         files: String,
         add: String,
     },
@@ -2843,6 +2925,61 @@ mod tests {
             exec(TEXT, "show \"2;\\n}\"").output,
             "a.rs:3-4\n3:    let y = 2;\n4:}\n"
         );
+    }
+
+    #[test]
+    fn show_cuts_a_line_range_at_the_end_of_the_file() {
+        let out = exec(TEXT, "show 7-60");
+        assert_eq!(out.output, "a.rs:7-8\n7:    let x = 3;\n8:}\n");
+        assert_eq!(out.result, Ok(vec![]));
+        assert_eq!(
+            out.notes,
+            ["a.rs has 8 lines, so showed 7-8; use `$` for the last line"]
+        );
+        let out = exec("fn a() {}\n", "show all 1-60 +2");
+        assert_eq!(out.output, "a.rs:1\n1:fn a() {}\n");
+        assert_eq!(
+            out.notes,
+            ["a.rs has 1 line, so showed 1; use `$` for the last line"]
+        );
+        assert!(exec(TEXT, "show 7-8").notes.is_empty());
+    }
+
+    #[test]
+    fn show_cuts_a_line_range_at_each_files_end() {
+        let set = [("a.rs", TEXT), ("b.rs", "x\n"), ("c.rs", "x\ny\n")];
+        let out = exec_with(&set, 3, "show all 2-9");
+        assert_eq!(
+            out.output,
+            "a.rs:2-8\n2:    let x = 1;\n3:    let y = 2;\n4:}\n5:\n6:fn b() {\n7:    let x = 3;\n8:}\nc.rs:2\n2:y\n"
+        );
+        assert_eq!(
+            out.notes,
+            [
+                "a.rs has 8 lines, so showed 2-8; use `$` for the last line",
+                "c.rs has 2 lines, so showed 2; use `$` for the last line",
+            ]
+        );
+    }
+
+    #[test]
+    fn only_shows_top_level_line_range_end_is_cut() {
+        for (script, error) in [
+            (
+                "show 9-60",
+                "error: script:1:6: line 9 is past the end of a.rs (8 lines); use `$` for the last line",
+            ),
+            (
+                "show fn:b>7-60",
+                "error: script:1:6: line 60 is past the end of a.rs (8 lines); use `$` for the last line",
+            ),
+            (
+                "delete 7-60",
+                "error: script:1:8: line 60 is past the end of a.rs (8 lines); use `$` for the last line",
+            ),
+        ] {
+            assert_eq!(exec(TEXT, script).error(), error, "{script}");
+        }
     }
 
     #[test]
@@ -4016,6 +4153,17 @@ mod tests {
     }
 
     #[test]
+    fn a_range_start_skipped_inside_the_range_leaves_a_note() {
+        let text = "a\nb // x\na\nb\n";
+        assert_eq!(
+            exec(text, "delete /^a/../^b$/").notes,
+            [
+                "a.rs:3: /^a/../^b$/ also starts here, inside its range from line 1; narrow the end to pick one"
+            ]
+        );
+    }
+
+    #[test]
     fn replacing_part_of_a_line_with_its_rest_leaves_a_note() {
         let notes = |script: &str| exec("let a = f(b);\n", script).notes;
         assert_eq!(
@@ -4199,7 +4347,7 @@ fn main() {}
         assert_eq!(
             edited(MOVE, "move fn:helper_y end impl:A"),
             MOVE.replace("fn helper_y() {}\n\n", "")
-                .replace("    fn b() {}\n", "    fn b() {}\n    fn helper_y() {}\n")
+                .replace("    fn b() {}\n", "    fn b() {}\n\n    fn helper_y() {}\n")
         );
     }
 
@@ -4209,6 +4357,33 @@ fn main() {}
             edited(MOVE, "move fn:b start fn:helper_x"),
             MOVE.replace("\n    fn b() {}\n", "")
                 .replace("{\n    x();", "{\n    fn b() {}\n    x();")
+        );
+    }
+
+    #[test]
+    fn move_to_a_separated_body_adds_a_blank_line() {
+        let text = "impl A {\n    fn f() {}\n}\n\nimpl B {\n    fn g() {}\n\n    fn h() {}\n}\n";
+        let b = |body: &str| format!("impl A {{\n}}\n\nimpl B {{\n{body}}}\n");
+        assert_eq!(
+            edited(text, "move impl:A>fn:f start impl:B"),
+            b("    fn f() {}\n\n    fn g() {}\n\n    fn h() {}\n")
+        );
+        assert_eq!(
+            edited(text, "move impl:A>fn:f end impl:B"),
+            b("    fn g() {}\n\n    fn h() {}\n\n    fn f() {}\n")
+        );
+    }
+
+    #[test]
+    fn move_to_an_unseparated_body_adds_no_blank_line() {
+        let text = "fn f() {}\n\nimpl B {\n    fn g() {}\n    fn h() {}\n}\n";
+        assert_eq!(
+            edited(text, "move fn:f start impl:B"),
+            "impl B {\n    fn f() {}\n    fn g() {}\n    fn h() {}\n}\n"
+        );
+        assert_eq!(
+            edited(text, "move fn:f end impl:B"),
+            "impl B {\n    fn g() {}\n    fn h() {}\n    fn f() {}\n}\n"
         );
     }
 
@@ -4559,6 +4734,57 @@ fn main() {}
         );
         let out = exec(CONFLICTS, "show fn:a>conflict:2");
         assert!(out.error().contains("matches nothing"), "{}", out.error());
+    }
+
+    #[test]
+    fn a_conflict_overlapping_a_part_is_named_when_nothing_lies_inside_it() {
+        let text = "fn f() {\n<<<<<<< HEAD\n    a();\n=======\n    b();\n}\n>>>>>>> t\n";
+        let out = exec(text, "show fn:f.body>conflict");
+        assert!(
+            out.error().contains(
+                "fn:f.body>conflict matches nothing in a.rs; conflict:1 (lines 2-7) is not inside fn:f.body (lines 2-5); show it with `show conflict:1`"
+            ),
+            "{}",
+            out.error()
+        );
+    }
+
+    /// `fn f` ends on the theirs side of the conflict.
+    const ENDS_IN_CONFLICT: &str =
+        "fn f() {\n<<<<<<< HEAD\n    a();\n=======\n    b();\n}\n>>>>>>> t\n\nfn g() {}\n";
+
+    #[test]
+    fn an_item_ending_inside_a_conflict_takes_in_the_whole_conflict() {
+        let out = exec(ENDS_IN_CONFLICT, "show fn:f>conflict");
+        assert_eq!(
+            out.output,
+            "a.rs:2-7\n2:<<<<<<< HEAD\n3:    a();\n4:=======\n5:    b();\n6:}\n7:>>>>>>> t\n"
+        );
+        assert_eq!(edited(ENDS_IN_CONFLICT, "delete fn:f"), "fn g() {}\n");
+    }
+
+    #[test]
+    fn an_item_starting_inside_a_conflict_takes_in_the_whole_conflict() {
+        let text = "<<<<<<< HEAD\nfn f() {\n=======\nfn g() {}\n>>>>>>> t\n    x();\n}\n";
+        let out = exec(text, "show fn:f");
+        assert_eq!(
+            out.output,
+            "a.rs:1-7\n1:<<<<<<< HEAD\n2:fn f() {\n3:=======\n4:fn g() {}\n5:>>>>>>> t\n6:    x();\n7:}\n"
+        );
+        assert_eq!(
+            edited(text, "replace fn:f with \"fn h() {}\""),
+            "fn h() {}\n"
+        );
+    }
+
+    #[test]
+    fn an_item_on_one_side_of_a_conflict_is_not_widened() {
+        let text = "<<<<<<< HEAD\nfn f() {\n=======\nfn g() {}\n>>>>>>> t\n    x();\n}\n";
+        assert_eq!(exec(text, "show fn:g").output, "a.rs:4\n4:fn g() {}\n");
+        assert_eq!(
+            exec(CONFLICTS, "show conflict:2.ours>fn:b").output,
+            "a.rs:12\n12:fn b() {}\n"
+        );
     }
 
     #[test]
