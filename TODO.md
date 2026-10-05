@@ -151,6 +151,9 @@ of either kind.
 - [ ] `!!` repeats the last script that edited or failed, not a read-only call
       in between: after a failed edit, an `outline` to look around makes `!!`
       refer to the `outline`. A minor, since §1.2 changes
+- [x] A range whose start also matches inside it (skipped, §3.7) prints a note
+      naming that line: `/^    for x/../^    }/` spanned two identical loops
+      when its end matched once, and the edit replaced both
 
 ## Bugs
 

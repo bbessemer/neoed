@@ -621,7 +621,7 @@ impl Executor<'_> {
         };
         let indices = self.read(|p| only.as_ref().is_none_or(|only| only.matches(p)))?;
         let set: Vec<&SourceFile> = indices.iter().map(|&i| &self.files[i].file).collect();
-        let matches = select::resolve(target, &set, self.src, cut)?;
+        let matches = select::resolve(target, &set, self.src, cut, &mut self.notes)?;
         Ok(matches
             .into_iter()
             .map(|m| Match {
@@ -673,7 +673,14 @@ impl Executor<'_> {
                 None => self.resolve(&segment, false)?,
                 Some(start) => {
                     let files: Vec<&SourceFile> = self.files.iter().map(|l| &l.file).collect();
-                    select::resolve_within(&segment, &files, start, self.src, false)?
+                    select::resolve_within(
+                        &segment,
+                        &files,
+                        start,
+                        self.src,
+                        false,
+                        &mut self.notes,
+                    )?
                 }
             };
             for part in parts {
@@ -4100,6 +4107,17 @@ mod tests {
         // `}` alone doesn't count, nor does repeating the span's own line.
         assert!(notes(TEXT, "replace 7 with <<END\nlet x = 4;\n}\nEND\n").is_empty());
         assert!(notes(TEXT, "replace 3 with <<END\nlet y = 2;\nlet z = 2;\nEND\n").is_empty());
+    }
+
+    #[test]
+    fn a_range_start_skipped_inside_the_range_leaves_a_note() {
+        let text = "a\nb // x\na\nb\n";
+        assert_eq!(
+            exec(text, "delete /^a/../^b$/").notes,
+            [
+                "a.rs:3: /^a/../^b$/ also starts here, inside its range from line 1; narrow the end to pick one"
+            ]
+        );
     }
 
     #[test]

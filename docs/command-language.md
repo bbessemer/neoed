@@ -751,6 +751,10 @@ delete all query{(call_expression function: (identifier) @f (#eq? @f "dbg")) @se
   ranges on one line are one span.
 - Matches of `A` inside an earlier range are skipped. A match of `A` with no `B`
   after it ends the search.
+- A skipped match of `A` that starts after the earlier range's first line and
+  before its `B` prints a note naming its line, since that range likely spans
+  more than meant:
+  `a.rs:5: /^    for x/../^    }$/ also starts here, inside its range from line 2; narrow the end to pick one`.
 
 ### 3.8 Types
 

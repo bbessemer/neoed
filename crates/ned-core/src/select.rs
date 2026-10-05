@@ -182,6 +182,7 @@ pub fn resolve(
     files: &[&SourceFile],
     src: &str,
     cut: bool,
+    notes: &mut Vec<String>,
 ) -> Result<Vec<Match>, ExecError> {
     let whole = files
         .iter()
@@ -192,7 +193,7 @@ pub fn resolve(
             captures: Vec::new(),
         })
         .collect();
-    resolve_within(target, files, whole, src, cut)
+    resolve_within(target, files, whole, src, cut, notes)
 }
 
 /// `resolve`, with the first step searching `start` instead of whole files.
@@ -203,6 +204,7 @@ pub fn resolve_within(
     start: Vec<Match>,
     src: &str,
     cut: bool,
+    notes: &mut Vec<String>,
 ) -> Result<Vec<Match>, ExecError> {
     let span = &target.selector.span;
     let error = |kind| ExecError::new(kind, Some(span.clone()));
@@ -226,8 +228,9 @@ pub fn resolve_within(
     let mut matches = start;
     let mut parents = Vec::new();
     let mut found = Vec::new();
+    let mut skipped = Vec::new();
     for (i, step) in target.selector.steps.iter().enumerate() {
-        found = resolve_step(step, files, &matches, cut && i == 0).map_err(error)?;
+        found = resolve_step(step, files, &matches, cut && i == 0, &mut skipped).map_err(error)?;
         let next = found.iter().map(|f| f.m.clone()).collect();
         parents = std::mem::replace(&mut matches, next);
         if matches.is_empty() {
@@ -235,6 +238,16 @@ pub fn resolve_within(
         }
     }
     let selector = &src[span.clone()];
+    for (file, at, from) in skipped {
+        let f = files[file];
+        let line = |offset| line_numbers(&f.buffer, &(offset..offset));
+        notes.push(format!(
+            "{}:{}: {selector} also starts here, inside its range from line {}; narrow the end to pick one",
+            f.path,
+            line(at),
+            line(from)
+        ));
+    }
     match matches.len() {
         1 => Ok(matches),
         _ if target.all => Ok(matches),
@@ -303,11 +316,14 @@ struct Found {
     line: bool,
 }
 
+/// The matches of `step` in `parents`. `skipped` gets each range start the
+/// step skips, as the file, its offset and the offset of its range's start.
 fn resolve_step(
     step: &Step,
     files: &[&SourceFile],
     parents: &[Match],
     cut: bool,
+    skipped: &mut Vec<(usize, usize, usize)>,
 ) -> Result<Vec<Found>, E> {
     // Only a syntax item has parts other than `.lines`, and a conflict its
     // sides; a part's span is neither.
@@ -335,7 +351,10 @@ fn resolve_step(
     let mut out: Vec<Found> = Vec::new();
     for (p, parent) in parents.iter().enumerate() {
         let f = &files[parent.file];
-        for (range, captured) in matcher.find(f, parent.range.clone()) {
+        let mut starts = Vec::new();
+        let found = matcher.find(f, parent.range.clone(), &mut starts);
+        skipped.extend(starts.into_iter().map(|(at, from)| (parent.file, at, from)));
+        for (range, captured) in found {
             let mut captures = parent.captures.clone();
             captures.extend(captured);
             let core = range.clone();
@@ -459,8 +478,15 @@ impl<'a> Matcher<'a> {
         })
     }
 
-    /// The step's matches in `parent`, with what its patterns captured.
-    fn find(&self, f: &SourceFile, parent: Range<usize>) -> Vec<(Range<usize>, Captures)> {
+    /// The step's matches in `parent`, with what its patterns captured. A
+    /// range adds to `skipped` each start it skips before the end of the
+    /// range it lies in, with that range's start.
+    fn find(
+        &self,
+        f: &SourceFile,
+        parent: Range<usize>,
+        skipped: &mut Vec<(usize, usize)>,
+    ) -> Vec<(Range<usize>, Captures)> {
         match self {
             Matcher::Code(patterns) => {
                 let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
@@ -476,11 +502,18 @@ impl<'a> Matcher<'a> {
                     .collect()
             }
             Matcher::Range(from, to) => {
-                let ends = to.find(f, parent.clone());
+                let ends = to.find(f, parent.clone(), skipped);
                 let mut out = Vec::new();
-                let mut searched_to = parent.start;
-                for (start, captures) in from.find(f, parent.clone()) {
+                let (mut searched_to, mut end_start, mut range_start) = (parent.start, 0, 0);
+                for (start, captures) in from.find(f, parent.clone(), skipped) {
                     if start.start < searched_to {
+                        // On the range's first line or after its end, which is on the
+                        // end's line, a start makes the same span, as §3.7 means.
+                        if start.start < end_start
+                            && f.text[range_start..start.start].contains('\n')
+                        {
+                            skipped.push((start.start, range_start));
+                        }
                         continue;
                     }
                     let Some((end, end_captures)) = ends.iter().find(|(e, _)| e.start >= start.end)
@@ -488,7 +521,7 @@ impl<'a> Matcher<'a> {
                         break;
                     };
                     let range = full_lines(&f.text, start.start..end.end);
-                    searched_to = range.end;
+                    (searched_to, end_start, range_start) = (range.end, end.start, range.start);
                     out.push((range, [captures, end_captures.clone()].concat()));
                 }
                 out
@@ -612,7 +645,8 @@ impl<'a> Matcher<'a> {
                 out
             }
             Matcher::Code(_) | Matcher::Range(..) => {
-                self.find(f, parent).into_iter().map(|(r, _)| r).collect()
+                let find = self.find(f, parent, &mut Vec::new());
+                find.into_iter().map(|(r, _)| r).collect()
             }
             Matcher::Syntax { kind, name } => f
                 .items()
@@ -1672,7 +1706,13 @@ mod tests {
         let CommandKind::Delete(target) = &parsed.commands[0].kind else {
             panic!("expected delete: {script}");
         };
-        resolve(target, &files.iter().collect::<Vec<_>>(), script, false)
+        resolve(
+            target,
+            &files.iter().collect::<Vec<_>>(),
+            script,
+            false,
+            &mut Vec::new(),
+        )
     }
 
     /// The text of each span `script` selects in a single file `a.rs`.
@@ -1781,6 +1821,36 @@ mod tests {
     fn ranges_skip_starts_inside_an_earlier_range() {
         assert_eq!(select("delete all /a/../b/", "a b a b\n"), ["a b a b\n"]);
         assert_eq!(select("delete all /a/../b/", "a a b\nb\n"), ["a a b\n"]);
+    }
+
+    #[test]
+    fn ranges_note_starts_skipped_before_their_end() {
+        let notes = |script: &str, text: &str| {
+            let parsed = parse(script).unwrap();
+            let CommandKind::Delete(target) = &parsed.commands[0].kind else {
+                panic!("expected delete: {script}");
+            };
+            let mut notes = Vec::new();
+            let files = files(&[("a.rs", text)]);
+            resolve(
+                target,
+                &files.iter().collect::<Vec<_>>(),
+                script,
+                false,
+                &mut notes,
+            )
+            .unwrap();
+            notes
+        };
+        let text = "fn f() {\n    for x in a {\n        g();\n    } // x\n    for x in a {\n        g();\n    }\n}\n";
+        assert_eq!(
+            notes("delete /^    for x/../^    }$/", text),
+            [
+                "a.rs:5: /^    for x/../^    }$/ also starts here, inside its range from line 2; narrow the end to pick one"
+            ]
+        );
+        assert!(notes("delete all /a/../b/", "a b a b\n").is_empty());
+        assert!(notes("delete /a/../b/", "a a\nb\n").is_empty());
     }
 
     #[test]
