@@ -1,6 +1,7 @@
 //! Running scripts against files, and the errors that can stop a run.
 
 use std::borrow::Cow;
+use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
@@ -995,11 +996,19 @@ impl Executor<'_> {
             // Doc comments and attributes attach to the item they move before.
             let attaches =
                 matches!(position, Position::Before) && only_leading(target, &moved.value);
-            if separated && !attaches && text::is_whole_line(&target.text, &at) {
+            let blank_line = match position {
+                Position::Before | Position::After => {
+                    separated && !attaches && text::is_whole_line(&target.text, &at)
+                }
+                Position::Start | Position::End => {
+                    matches!(moved.kind, TextKind::Heredoc)
+                        && body_edge_separated(target, &to.range, position)
+                }
+            };
+            if blank_line {
                 match position {
-                    Position::Before => moved.value.push('\n'),
-                    Position::After => moved.value.insert(0, '\n'),
-                    Position::Start | Position::End => {}
+                    Position::Before | Position::Start => moved.value.push('\n'),
+                    Position::After | Position::End => moved.value.insert(0, '\n'),
                 }
             }
             let moved = with_trailing_comma(target, &at, &moved);
@@ -2070,6 +2079,40 @@ fn ends_with_item(f: &SourceFile, text: &str) -> bool {
     syntax::items(lang.selectors(), &lang.parse(text), text)
         .iter()
         .any(|i| i.range.end >= end && !syntax::find_kind(i.kind).is_some_and(|k| k.stacked))
+}
+
+/// Whether the item at the `start` or `end` of `body` has a blank line
+/// between it and the next or previous item, so text moved there should too
+/// (§4.2).
+fn body_edge_separated(f: &SourceFile, body: &Range<usize>, position: Position) -> bool {
+    let t = &f.text;
+    let Some(items) = f.items() else {
+        return false;
+    };
+    let inside = items
+        .iter()
+        .map(|i| text::full_lines(t, i.range.clone()))
+        .filter(|full| body.start <= full.start && full.end <= body.end);
+    let blank = |line: Option<&str>| line.is_some_and(|l| l.trim().is_empty());
+    match position {
+        Position::Start => inside
+            .min_by_key(|full| (full.start, Reverse(full.end)))
+            .is_some_and(|full| {
+                let after = &t[full.end..body.end];
+                t[body.start..full.start].trim().is_empty()
+                    && blank(after.lines().next())
+                    && !after.trim().is_empty()
+            }),
+        Position::End => inside
+            .max_by_key(|full| (full.end, Reverse(full.start)))
+            .is_some_and(|full| {
+                let before = &t[body.start..full.start];
+                t[full.end..body.end].trim().is_empty()
+                    && blank(before.lines().next_back())
+                    && !before.trim().is_empty()
+            }),
+        Position::Before | Position::After => false,
+    }
 }
 
 /// The full lines of the widest unstacked item in `f` that has leading doc
@@ -4304,7 +4347,7 @@ fn main() {}
         assert_eq!(
             edited(MOVE, "move fn:helper_y end impl:A"),
             MOVE.replace("fn helper_y() {}\n\n", "")
-                .replace("    fn b() {}\n", "    fn b() {}\n    fn helper_y() {}\n")
+                .replace("    fn b() {}\n", "    fn b() {}\n\n    fn helper_y() {}\n")
         );
     }
 
@@ -4314,6 +4357,33 @@ fn main() {}
             edited(MOVE, "move fn:b start fn:helper_x"),
             MOVE.replace("\n    fn b() {}\n", "")
                 .replace("{\n    x();", "{\n    fn b() {}\n    x();")
+        );
+    }
+
+    #[test]
+    fn move_to_a_separated_body_adds_a_blank_line() {
+        let text = "impl A {\n    fn f() {}\n}\n\nimpl B {\n    fn g() {}\n\n    fn h() {}\n}\n";
+        let b = |body: &str| format!("impl A {{\n}}\n\nimpl B {{\n{body}}}\n");
+        assert_eq!(
+            edited(text, "move impl:A>fn:f start impl:B"),
+            b("    fn f() {}\n\n    fn g() {}\n\n    fn h() {}\n")
+        );
+        assert_eq!(
+            edited(text, "move impl:A>fn:f end impl:B"),
+            b("    fn g() {}\n\n    fn h() {}\n\n    fn f() {}\n")
+        );
+    }
+
+    #[test]
+    fn move_to_an_unseparated_body_adds_no_blank_line() {
+        let text = "fn f() {}\n\nimpl B {\n    fn g() {}\n    fn h() {}\n}\n";
+        assert_eq!(
+            edited(text, "move fn:f start impl:B"),
+            "impl B {\n    fn f() {}\n    fn g() {}\n    fn h() {}\n}\n"
+        );
+        assert_eq!(
+            edited(text, "move fn:f end impl:B"),
+            "impl B {\n    fn g() {}\n    fn h() {}\n    fn f() {}\n}\n"
         );
     }
 

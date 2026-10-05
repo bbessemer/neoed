@@ -181,6 +181,9 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       `XDG_RUNTIME_DIR`) fails as "the daemon didn't start; see its log", and
       the log says only "path must be shorter than SUN_LEN"; the error should
       say so, with a fix (a shorter `XDG_RUNTIME_DIR`)
+- [x] `move impl:A>fn:f start impl:B` puts `fn:f` directly above `impl:B`'s
+      first item, with no blank line between them, though the items around it
+      are separated by one
 
 ## Future improvements
 

@@ -1010,7 +1010,10 @@ Notes:
   destination inside a moved span is an error.
 - If a moved whole-line span had a blank line directly above or below it, and it
   moves `before` or `after` a whole-line destination, one blank line separates
-  it from the destination.
+  it from the destination. A whole-line span moved to the `start` (`end`) of a
+  body whose first (last) item has a blank line between it and the next
+  (previous) item is separated from that item by one blank line, whether or not
+  the span had one.
 - `insert before|after` on a syntax item other than an import or a Markdown list
   item, when the item has a blank line directly above or below it, separates the
   new text from it with one blank line, unless the text already starts (for
