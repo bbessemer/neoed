@@ -60,20 +60,31 @@ markdown = false
 /// Runs `ned ARGS` in `dir`, with `stdin` as its input, and reports the exit
 /// code, stdout, and stderr.
 fn ned(dir: &Path, args: &[&str], stdin: &str) -> String {
-    let config = tempfile::tempdir().unwrap();
-    fs::create_dir(config.path().join("ned")).unwrap();
-    fs::write(config.path().join("ned/config.toml"), NO_FORMATTERS).unwrap();
+    ned_with(dir, NO_FORMATTERS, &[], args, stdin)
+}
+
+/// `ned` as above, with `config` as the user config and `env` set.
+fn ned_with(dir: &Path, config: &str, env: &[(&str, &str)], args: &[&str], stdin: &str) -> String {
+    let home = tempfile::tempdir().unwrap();
+    fs::create_dir(home.path().join("ned")).unwrap();
+    fs::write(home.path().join("ned/config.toml"), config).unwrap();
     let output = cargo_bin_cmd!("ned")
         .current_dir(dir)
-        .env("XDG_CONFIG_HOME", config.path())
+        .env("XDG_CONFIG_HOME", home.path())
         .env_remove("NED_SESSION")
+        .env_remove("COLORTERM")
+        .env_remove("TERM")
+        .envs(env.iter().copied())
         .args(args)
         .write_stdin(stdin)
         .output()
         .unwrap();
-    // Messages name the working directory; keep snapshots independent of it.
+    // Messages name the working directory and the user config's; keep
+    // snapshots independent of them.
     let dir = fs::canonicalize(dir).unwrap();
-    report(&output).replace(dir.to_str().unwrap(), "{dir}")
+    report(&output)
+        .replace(dir.to_str().unwrap(), "{dir}")
+        .replace(home.path().to_str().unwrap(), "{config}")
 }
 
 fn report(output: &Output) -> String {
@@ -179,6 +190,133 @@ fn color_always_highlights_shown_code() {
     \e[2m11\e[0m         \e[33mParser\e[0m { src: src.\e[34mto_string\e[0m(), pos: \e[36m0\e[0m }
     \e[2m12\e[0m     }
     --- stderr
+    ");
+}
+
+/// `ned --color always ARGS` with the user config setting `theme`, its
+/// escapes shown as `\e[...m`.
+fn themed(dir: &Path, theme: &str, env: &[(&str, &str)], args: &[&str]) -> String {
+    let config = format!("{theme}\n{NO_FORMATTERS}");
+    let args = [&["--color", "always"], args].concat();
+    ned_with(dir, &config, env, &args, "").replace('\x1b', r"\e")
+}
+
+const TRUECOLOR: &[(&str, &str)] = &[("COLORTERM", "truecolor")];
+
+#[test]
+fn a_theme_paints_shown_code_in_truecolor() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let out = themed(
+        dir.path(),
+        "theme = \"default-dark\"",
+        TRUECOLOR,
+        &["parser.rs", "-e", "show fn:new"],
+    );
+    // default-dark's keyword and function colours.
+    assert!(out.contains(r"\e[38;2;198;120;221mpub\e[0m"), "{out}");
+    assert!(out.contains(r"\e[38;2;97;175;239mnew\e[0m"), "{out}");
+}
+
+#[test]
+fn a_theme_tints_changed_lines() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let script = r#"replace "unexpected end" with "unexpected end of input""#;
+    let theme = r##"
+[theme]
+from = "default-dark"
+added = "#00ff00"
+removed = "#ff0000"
+"##;
+    let out = themed(dir.path(), theme, TRUECOLOR, &["parser.rs", "-e", script]);
+    let lines: Vec<&str> = out.lines().collect();
+    let removed = lines
+        .iter()
+        .find(|l| l.contains("unexpected end\""))
+        .unwrap();
+    let added = lines.iter().find(|l| l.contains("end of input")).unwrap();
+    assert!(removed.starts_with(r"\e[38;2;255;0;0m-\e[0m"), "{out}");
+    assert!(added.starts_with(r"\e[38;2;0;255;0m+\e[0m"), "{out}");
+    // `let` on each side is tinted, so differs from the unchanged keyword colour.
+    let keyword = r"\e[38;2;198;120;221mlet\e[0m";
+    assert!(
+        !removed.contains(keyword) && !added.contains(keyword),
+        "{out}"
+    );
+    assert!(
+        removed.contains("mlet\\e[0m") && added.contains("mlet\\e[0m"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_theme_on_a_256_colour_terminal_uses_the_palette() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let env = [("TERM", "xterm-256color")];
+    let out = themed(
+        dir.path(),
+        "theme = \"default-dark\"",
+        &env,
+        &["parser.rs", "-e", "show fn:new"],
+    );
+    assert!(out.contains(r"\e[38;5;"), "{out}");
+    assert!(!out.contains(r"38;2;"), "{out}");
+}
+
+#[test]
+fn a_theme_on_a_16_colour_terminal_changes_nothing() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let args = ["parser.rs", "-e", "show fn:new; outline"];
+    let env = [("TERM", "xterm"), ("COLORTERM", "yes")];
+    let out = themed(dir.path(), "theme = \"default-dark\"", &env, &args);
+    assert_eq!(out, colored(dir.path(), &args));
+}
+
+#[test]
+fn a_bad_theme_is_an_error_only_where_output_is_coloured() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let args = ["parser.rs", "-e", "show fn:new"];
+    assert_snapshot!(themed(dir.path(), "theme = \"nope\"", TRUECOLOR, &args), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    \e[1;31merror:\e[0m {config}/ned/config.toml:1:9: invalid config: no theme `nope`: it isn't built in (default-dark, default-light) and there is no {config}/ned/themes/nope.toml; write it, or use a built-in
+    ");
+    let config = format!("theme = \"nope\"\n{NO_FORMATTERS}");
+    let never = ned_with(
+        dir.path(),
+        &config,
+        TRUECOLOR,
+        &["--color", "never", "parser.rs", "-e", "show fn:new"],
+        "",
+    );
+    assert!(never.starts_with("exit: 0"), "{never}");
+}
+
+#[test]
+fn bad_theme_keys_stop_no_uncoloured_edit() {
+    let dir = dir_with(&[("g.rs", "fn x() {}\n")]);
+    let config = format!("[theme]\nfrom = \"default-dark\"\ndark = \"yes\"\n{NO_FORMATTERS}");
+    let args = ["--color", "never", "g.rs", "-e", "replace \"x\" with \"y\""];
+    let out = ned_with(dir.path(), &config, TRUECOLOR, &args, "");
+    assert!(out.starts_with("exit: 0"), "{out}");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("g.rs")).unwrap(),
+        "fn y() {}\n"
+    );
+}
+
+#[test]
+fn a_theme_in_a_ned_toml_is_an_error() {
+    let dir = dir_with(&[
+        ("parser.rs", PARSER),
+        (".ned.toml", "theme = \"default-dark\"\n"),
+    ]);
+    let script = r#"replace "unexpected end" with "unexpected end of input""#;
+    assert_snapshot!(ned(dir.path(), &["parser.rs", "-e", script], ""), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: .ned.toml:1:9: invalid config: only the user config sets a theme; move it to ~/.config/ned/config.toml
     ");
 }
 

@@ -164,24 +164,27 @@ in `ned-core`) commits exactly an invocation's edits (in a session, every edit
 since its last commit) with git's plumbing, leaving other staged and unstaged
 changes alone. Terminal output (spec §6.6): `style` paints output under
 `--color`/`NO_COLOR`, and `highlight` colours `show` and diff hunks from the
-grammars' highlight queries; piped output is unchanged. Syntax selectors cover
-Rust, Python, Go, JavaScript, TypeScript/TSX and Markdown; `conflict` hides
-merge-conflict markers from every parse and finds the conflicts (`conflict:N`,
-`.ours`/`.theirs`/`.base`), which `resolve` resolves. Syntax patterns (spec
-§3.10) select code by writing it: `template` lexes `@` placeholders, `fragment`
-parses a pattern in place of the code its previous step selected (or alone, for
-a whole file), `ast` lowers it and the file to abstract syntax trees
-(`queries/<lang>/ast.scm` names the tokens they leave out), and `pattern`
-matches them; `replace` substitutes its captures. `ned-scheme`, a reader for the
-Scheme dialect (tree-sitter query syntax plus Scheme data) that plugins will be
-written in, is unused for now. The REPL (spec §1.4, `ned-cli/src/repl.rs`) runs
-scripts on `buffers` (in-memory edits, undo, merging writes) through `exec`'s
-overlay and `apply`, the post-exec pipeline the CLI shares; it records into a
-session, and `:attach` follows another session's log (`Follower`). An invocation
-(`invoke`: `!!`, run, write, commit, record, and `history`/`undo`) prints
-through `invoke::Output`, so `ned-mcp` (spec §1.5; JSON-RPC on stdio, behind
-`ned mcp`) runs the CLI's pipeline as tools; help texts are `ned-core/help/`.
-MIT-licensed; README has install and usage; CI (`.github/workflows/`) gates PRs.
+grammars' highlight queries; piped output is unchanged. On truecolor and
+256-colour terminals, a `theme` from the user config (built-ins in
+`crates/ned-core/themes/`) colours each capture and tints changed lines
+(`color`). Syntax selectors cover Rust, Python, Go, JavaScript, TypeScript/TSX
+and Markdown; `conflict` hides merge-conflict markers from every parse and finds
+the conflicts (`conflict:N`, `.ours`/`.theirs`/`.base`), which `resolve`
+resolves. Syntax patterns (spec §3.10) select code by writing it: `template`
+lexes `@` placeholders, `fragment` parses a pattern in place of the code its
+previous step selected (or alone, for a whole file), `ast` lowers it and the
+file to abstract syntax trees (`queries/<lang>/ast.scm` names the tokens they
+leave out), and `pattern` matches them; `replace` substitutes its captures.
+`ned-scheme`, a reader for the Scheme dialect (tree-sitter query syntax plus
+Scheme data) that plugins will be written in, is unused for now. The REPL (spec
+§1.4, `ned-cli/src/repl.rs`) runs scripts on `buffers` (in-memory edits, undo,
+merging writes) through `exec`'s overlay and `apply`, the post-exec pipeline the
+CLI shares; it records into a session, and `:attach` follows another session's
+log (`Follower`). An invocation (`invoke`: `!!`, run, write, commit, record, and
+`history`/`undo`) prints through `invoke::Output`, so `ned-mcp` (spec §1.5;
+JSON-RPC on stdio, behind `ned mcp`) runs the CLI's pipeline as tools; help
+texts are `ned-core/help/`. MIT-licensed; README has install and usage; CI
+(`.github/workflows/`) gates PRs.
 
 ## Key Documentation
 

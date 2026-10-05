@@ -34,9 +34,11 @@ use std::sync::OnceLock;
 
 use clap::builder::{NonEmptyStringValueParser, PossibleValuesParser};
 use clap::{Parser, Subcommand};
+use ned_core::config;
 use ned_core::invoke::{self, Failure, Invocation, Output};
 use ned_core::lang::{self, Language};
-use ned_core::style::{Style, When};
+use ned_core::style::{Depth, Style, When};
+use ned_core::theme::Theme;
 use ned_core::{help, script, workspace};
 
 /// A `--lang` value, `None` for text. Clap would read `Option<Option<_>>` as a
@@ -175,6 +177,21 @@ fn color_arg(args: impl Iterator<Item = OsString>) -> When {
     when
 }
 
+/// `styles`, of stdout and stderr, with the theme `read` gives, if any, when
+/// stdout colours on a terminal of `depth`. Only then is the theme read, so a
+/// bad one stops no run whose output a program reads (spec §6.6).
+fn themed<E>(
+    styles: (Style, Style),
+    depth: Option<Depth>,
+    read: impl FnOnce() -> Result<Option<&'static Theme>, E>,
+) -> Result<(Style, Style), E> {
+    if depth.is_none() || styles.0 != Style::Color {
+        return Ok(styles);
+    }
+    let theme = read()?;
+    Ok((styles.0.themed(theme, depth), styles.1.themed(theme, depth)))
+}
+
 fn main() -> ExitCode {
     let no_color = std::env::var_os("NO_COLOR");
     let cli = match Cli::try_parse() {
@@ -198,10 +215,26 @@ fn main() -> ExitCode {
         }
     };
     let style = |terminal| cli.color.style(terminal, no_color.as_deref());
-    let _ = STYLES.set((
+    let styles = (
         style(io::stdout().is_terminal()),
         style(io::stderr().is_terminal()),
-    ));
+    );
+    let var = std::env::var_os;
+    let depth = Depth::detect(var("COLORTERM").as_deref(), var("TERM").as_deref());
+    let read = || {
+        let theme = config::user_theme(config::user_config().as_deref())?;
+        Ok::<_, config::ConfigError>(theme.map(|theme| &*Box::leak(Box::new(theme))))
+    };
+    match themed(styles, depth, read) {
+        Ok(styles) => {
+            let _ = STYLES.set(styles);
+        }
+        Err(err) => {
+            let _ = STYLES.set(styles);
+            errln!("error: {err}");
+            return ExitCode::from(2);
+        }
+    }
     match cli.command {
         Some(Command::Repl(args)) => return repl::run(args),
         Some(Command::Mcp(args)) => return mcp::run(args),
@@ -280,7 +313,7 @@ fn main() -> ExitCode {
         lang: cli.lang,
         context: cli.context,
         commit: cli.commit,
-        style: styles().0,
+        style: crate::styles().0,
         comment: None,
     };
     let exit = invoke::invoke(
@@ -341,4 +374,39 @@ fn usage_error(cli: &Cli) -> Option<String> {
         ));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default() -> &'static Theme {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = \"default-dark\"\n").unwrap();
+        let theme = config::user_theme(Some(&path)).unwrap().unwrap();
+        Box::leak(Box::new(theme))
+    }
+
+    #[test]
+    fn a_coloured_stdout_reads_the_theme_for_both_streams() {
+        let theme = default();
+        let styles = themed((Style::Color, Style::Color), Some(Depth::Xterm256), || {
+            Ok::<_, ()>(Some(theme))
+        });
+        let painted = Style::Theme(theme, Depth::Xterm256);
+        assert_eq!(styles, Ok((painted, painted)));
+    }
+
+    #[test]
+    fn only_a_coloured_stdout_reads_the_theme() {
+        let unread = || -> Result<Option<&'static Theme>, &str> { Err("read") };
+        let depth = Some(Depth::Truecolor);
+        for styles in [(Style::Plain, Style::Color), (Style::Plain, Style::Plain)] {
+            assert_eq!(themed(styles, depth, unread), Ok(styles));
+        }
+        let styles = (Style::Color, Style::Plain);
+        assert_eq!(themed(styles, None, unread), Ok(styles));
+        assert_eq!(themed(styles, depth, unread), Err("read"));
+    }
 }

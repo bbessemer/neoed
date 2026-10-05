@@ -188,6 +188,12 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [ ] `move impl:A>fn:f start impl:B` puts `fn:f` directly above `impl:B`'s
       first item, with no blank line between them, though the items around it
       are separated by one
+- [ ] The syntax guard misses Rust that tree-sitter accepts but rustc doesn't:
+      `insert end fn:f <<END` with a whole `fn g() {}` puts it after the body's
+      last expression (`todo!()` then `fn g() {}`, no `;`), the file is written,
+      and the only sign is a `note: rustfmt failed: expected ;`. A formatter's
+      parse error on an edit the guard passed should at least be an error-level
+      message naming the edit
 
 ## Future improvements
 

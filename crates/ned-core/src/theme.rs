@@ -127,10 +127,6 @@ impl<'de> Deserialize<'de> for Setting {
 
 /// The theme `setting` gives, read from the config file `file`, whose text
 /// is `text`. Names not built in are looked up as `NAME.toml` in `themes`.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "read by the user config from themes/config on")
-)]
 pub(crate) fn resolve(
     setting: Spanned<Setting>,
     file: &Path,

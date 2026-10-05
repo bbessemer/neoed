@@ -55,6 +55,10 @@ With `--color auto`, ned colours its output when it's writing to a terminal and
 Colour never changes what the output says, so output read by a program is the
 same either way.
 
+On a terminal that shows more than 16 colours (`COLORTERM=truecolor`, or a
+`TERM` with `256color`), a [theme](#themes) colours each kind of token its own
+way, and tints the code on changed lines toward red or green.
+
 ### Subcommands
 
 - **`ned help [TOPIC]`** prints a one-screen summary of the command language.
@@ -815,6 +819,46 @@ file's absolute path and `{edition}` for the Rust edition in the nearest
 `Cargo.toml`. A program name without a slash is looked up in `node_modules/.bin`
 directories above the file, then on `PATH`. A path with a slash is relative to
 the configuration file.
+
+### Themes
+
+A theme is set only in the user config. Use a built-in one by name:
+
+```toml
+theme = "default-dark" # or "default-light"
+```
+
+Or write one, starting from another with `from`:
+
+```toml
+[theme]
+from = "default-dark"
+dark = true          # whether it's meant for a dark background
+added = "#98c379"    # added lines
+removed = "#e06c75"  # removed lines
+
+[theme.syntax]
+keyword = "#c678dd bold"
+"function.method" = "#61afef"
+
+[theme.ui]
+hunk-header = "#56b6c2"
+line-number = "dim"
+```
+
+- A colour is `#rrggbb`, followed by any of `bold`, `dim`, `italic` and
+  `underline`; a value may also be those words alone.
+- `[theme.syntax]` keys are highlight capture names; `function.method` falls
+  back to `function`. `[theme.ui]` keys are `header`, `line-number`, `kind`,
+  `dim`, `hunk-header`, `error`, `warning`, `info` and `note`.
+- `from` names a built-in theme, a file `themes/NAME.toml` beside the user
+  config, or a path ending in `.toml`. A theme file has the same keys, at its
+  top level.
+- On a changed line, each token's colour is multiplied by the line's colour. A
+  dark theme keeps the token's lightness, so the code stays readable.
+
+Without a theme, or on a 16-colour terminal, ned uses the terminal's own
+colours.
 
 ## Language servers
 

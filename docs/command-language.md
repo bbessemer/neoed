@@ -1613,7 +1613,9 @@ only on a terminal that reports more than 16 colours: truecolor when `COLORTERM`
 is `truecolor` or `24bit`, else 256 colours when `TERM` contains `256color`,
 where each colour becomes the nearest of the xterm-256 palette's cube and grey
 ramp (by OKLab distance). On other terminals, and with no theme set, output uses
-the 16 colours above. A theme never sets the background.
+the 16 colours above. A theme never sets the background. It is read only when
+stdout is coloured, so an error in it stops no run whose output a program reads;
+when stdout isn't coloured, stderr uses the 16 colours.
 
 Only the user config sets a theme; `[theme]` or `theme` in a `.ned.toml` is an
 error. `theme = "NAME"` uses a theme as it is; a `[theme]` table writes one, or

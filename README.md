@@ -185,7 +185,10 @@ respecting `.gitignore`. `ned help` prints the whole language on one screen;
 
 On a terminal, output is coloured: shown code and diffs are syntax-highlighted,
 with aligned line numbers. A non-empty `NO_COLOR` turns it off, and
-`--color always` or `--color never` overrides both.
+`--color always` or `--color never` overrides both. On a truecolor or 256-colour
+terminal, a theme set in the user config colours each kind of token its own way,
+and tints changed lines red or green: `theme = "default-dark"` (or
+`default-light`, or your own; see `ned help config`).
 
 With `-s NAME`, or `NED_SESSION=NAME` in the environment, `ned` records each
 invocation in a session: `ned history` lists them, `ned undo` reverts the last

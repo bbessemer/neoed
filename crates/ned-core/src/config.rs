@@ -10,6 +10,7 @@ use toml::{Spanned, Value};
 
 use crate::lang::Language;
 use crate::lsp::Severity;
+use crate::theme::{self, Setting, Theme};
 
 const CONFIG_FILE: &str = ".ned.toml";
 
@@ -56,6 +57,8 @@ struct RawConfig {
     daemon: RawDaemon,
     #[serde(default)]
     check: RawCheck,
+    /// Only reading the theme parses it, so a bad one stops nothing else.
+    theme: Option<Spanned<Value>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -102,7 +105,7 @@ impl Config {
     /// Reads the user config at `user`, if it exists.
     pub fn new(user: Option<&Path>) -> Result<Self, ConfigError> {
         Ok(Config {
-            user: user.map(load).transpose()?.flatten(),
+            user: user.map(|path| load(path, true)).transpose()?.flatten(),
             layers: HashMap::new(),
             written: HashMap::new(),
         })
@@ -126,8 +129,8 @@ impl Config {
             if !self.layers.contains_key(ancestor) {
                 let path = ancestor.join(CONFIG_FILE);
                 let layer = match self.written.get(&path) {
-                    Some(text) => Some(parse(&path, text)?),
-                    None => load(&path)?,
+                    Some(text) => Some(parse(&path, text, false)?),
+                    None => load(&path, false)?,
                 };
                 self.layers.insert(ancestor.to_path_buf(), layer);
             }
@@ -188,22 +191,50 @@ pub fn user_config() -> Option<PathBuf> {
     Some(config.join("ned/config.toml"))
 }
 
-/// The config file at `path`, or `None` if there is none.
-fn load(path: &Path) -> Result<Option<Layer>, ConfigError> {
+/// The theme the user config at `path` sets, if any (spec §6.6).
+pub fn user_theme(path: Option<&Path>) -> Result<Option<Theme>, ConfigError> {
+    let Some(path) = path else { return Ok(None) };
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(io_error(path, &err)),
     };
-    parse(path, &text).map(Some)
+    #[derive(Deserialize)]
+    struct UserTheme {
+        theme: Option<Spanned<Setting>>,
+    }
+    let raw: UserTheme = toml::from_str(&text)
+        .map_err(|err| error_at(path, &text, err.span(), err.message().trim().into()))?;
+    let Some(setting) = raw.theme else {
+        return Ok(None);
+    };
+    let themes = path.parent().unwrap_or(path).join("themes");
+    theme::resolve(setting, path, &text, &themes).map(Some)
 }
 
-/// The config file at `path`, whose text is `text`.
-fn parse(path: &Path, text: &str) -> Result<Layer, ConfigError> {
+/// The config file at `path`, the user config if `user`, or `None` if there
+/// is none.
+fn load(path: &Path, user: bool) -> Result<Option<Layer>, ConfigError> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(io_error(path, &err)),
+    };
+    parse(path, &text, user).map(Some)
+}
+
+/// The config file at `path`, whose text is `text`; the user config if
+/// `user`.
+fn parse(path: &Path, text: &str, user: bool) -> Result<Layer, ConfigError> {
     let error =
         |span: Option<std::ops::Range<usize>>, message: String| error_at(path, text, span, message);
     let raw: RawConfig =
         toml::from_str(text).map_err(|err| error(err.span(), err.message().trim().into()))?;
+    if let Some(theme) = raw.theme.as_ref().filter(|_| !user) {
+        let message =
+            "only the user config sets a theme; move it to ~/.config/ned/config.toml".into();
+        return Err(error(Some(theme.span()), message));
+    }
     let entries = |table: BTreeMap<Spanned<String>, Spanned<Value>>| {
         let mut entries = HashMap::new();
         for (key, value) in table {
@@ -491,5 +522,70 @@ pub(crate) mod tests {
                 .unwrap_err();
             assert!(err.message.contains("level"), "{bad}: {err}");
         }
+    }
+
+    #[test]
+    fn a_theme_in_a_ned_toml_is_an_error() {
+        let root = tree(&[(".ned.toml", "theme = \"default-dark\"\n")]);
+        let err = Config::new(None)
+            .unwrap()
+            .idle_timeout(root.path())
+            .unwrap_err();
+        assert!(err.location.ends_with(".ned.toml:1:9"), "{err}");
+        assert!(err.message.contains("user config"), "{err}");
+    }
+
+    #[test]
+    fn the_user_config_may_set_a_theme() {
+        let root = tree(&[(
+            "config.toml",
+            "theme = \"default-light\"\n[daemon]\nidle_timeout = 5\n",
+        )]);
+        let path = root.path().join("config.toml");
+        assert!(Config::new(Some(&path)).is_ok());
+        assert!(!user_theme(Some(&path)).unwrap().unwrap().dark);
+    }
+
+    #[test]
+    fn only_reading_the_theme_resolves_it() {
+        let root = tree(&[("config.toml", "theme = \"nope\"\n")]);
+        let path = root.path().join("config.toml");
+        assert!(Config::new(Some(&path)).is_ok());
+        let err = user_theme(Some(&path)).unwrap_err();
+        assert!(err.location.ends_with("config.toml:1:9"), "{err}");
+        assert!(err.message.contains("default-dark"), "{err}");
+    }
+
+    #[test]
+    fn no_user_theme_without_a_setting_or_a_file() {
+        let root = tree(&[("config.toml", "[daemon]\nidle_timeout = 5\n")]);
+        assert_eq!(user_theme(Some(&root.path().join("config.toml"))), Ok(None));
+        assert_eq!(user_theme(Some(&root.path().join("gone.toml"))), Ok(None));
+        assert_eq!(user_theme(None), Ok(None));
+    }
+
+    #[test]
+    fn bad_theme_keys_are_errors_at_their_location() {
+        let root = tree(&[("config.toml", "[theme]\nfrom = \"default-dark\"\nbad = 1\n")]);
+        let path = root.path().join("config.toml");
+        assert!(Config::new(Some(&path)).is_ok());
+        let err = user_theme(Some(&path)).unwrap_err();
+        assert!(err.location.ends_with("config.toml:3:1"), "{err}");
+        assert!(err.message.contains("bad"), "{err}");
+    }
+
+    #[test]
+    fn user_themes_live_beside_the_user_config() {
+        let root = tree(&[
+            ("config.toml", "theme = \"mine\"\n"),
+            (
+                "themes/mine.toml",
+                "from = \"default-dark\"\nadded = \"#000001\"\n",
+            ),
+        ]);
+        let theme = user_theme(Some(&root.path().join("config.toml")))
+            .unwrap()
+            .unwrap();
+        assert_eq!(theme.added, "#000001".parse().unwrap());
     }
 }
