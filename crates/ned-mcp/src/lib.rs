@@ -5,9 +5,15 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
 use ned_core::help;
+use ned_core::invoke::{self, Invocation, Output};
 use ned_core::lang::Language;
 use ned_core::lsp::Lsp;
+use ned_core::script::{
+    self,
+    ast::{Command, CommandKind},
+};
 use ned_core::session::Session;
+use ned_core::style::Style;
 use serde_json::{Value, json};
 
 /// The protocol versions the server speaks, latest first.
@@ -16,6 +22,7 @@ pub const VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
+const INVALID_PARAMS: i64 = -32602;
 
 /// A server for one workspace, recording into one session.
 pub struct Server<C> {
@@ -87,9 +94,12 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             "initialize" => Ok(self.initialize(&params)),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": tools() })),
+            "tools/call" => self.call(&params),
             _ => Err((
                 METHOD_NOT_FOUND,
-                format!("unknown method `{method}`; methods are initialize ping tools/list"),
+                format!(
+                    "unknown method `{method}`; methods are initialize ping tools/list tools/call"
+                ),
             )),
         };
         Some(match result {
@@ -117,6 +127,213 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             "instructions": instructions,
         })
     }
+
+    /// The result of `tools/call`: the tool's output, or a protocol error for
+    /// an unknown tool or bad arguments.
+    fn call(&mut self, params: &Value) -> Result<Value, (i64, String)> {
+        let Some(name) = params["name"].as_str() else {
+            return Err((
+                INVALID_PARAMS,
+                "tools/call needs the tool's `name`; add one, such as `\"name\": \"ned\"`".into(),
+            ));
+        };
+        let args = Arguments(&params["arguments"]);
+        let mut transcript = Transcript::default();
+        let exit = match name {
+            "ned" => {
+                let script = args.required("script")?;
+                self.run(script, &args, &mut transcript)?
+            }
+            "outline" => self.run("outline".into(), &args, &mut transcript)?,
+            "show" => {
+                let script = format!("show {}", args.required("selector")?);
+                if shows_more_than_a_selector(&script) {
+                    let error = "error: `selector` holds more than a selector; give a script of several commands to the `ned` tool";
+                    transcript.message(error);
+                    2
+                } else {
+                    self.run(script, &args, &mut transcript)?
+                }
+            }
+            "help" => match help::text(args.string("topic")?.as_deref()) {
+                Ok(text) => {
+                    transcript.out(text);
+                    0
+                }
+                Err(error) => {
+                    transcript.message(&error);
+                    2
+                }
+            },
+            _ => {
+                let error =
+                    format!("unknown tool `{name}`; tools are ned outline show history undo help");
+                return Err((INVALID_PARAMS, error));
+            }
+        };
+        Ok(transcript.result(exit))
+    }
+
+    /// Runs `script` as `ned` would with the call's file set and flags,
+    /// returning the exit code.
+    fn run(
+        &mut self,
+        script: String,
+        args: &Arguments,
+        out: &mut Transcript,
+    ) -> Result<u8, (i64, String)> {
+        let invocation = Invocation {
+            cwd: self.cwd.clone(),
+            files: args.strings("files")?,
+            workspace: args.flag("workspace")?,
+            root: self.root.clone(),
+            dry_run: args.flag("dry_run")?,
+            quiet: args.flag("quiet")?,
+            force: args.flag("force")?,
+            no_fmt: args.flag("no_fmt")?,
+            no_check: args.flag("no_check")?,
+            lang: self.lang,
+            context: self.context,
+            commit: args.string("commit")?,
+            style: Style::Plain,
+        };
+        let usage = if !invocation.files.is_empty() && invocation.workspace {
+            Some("error: give `files` or `workspace`, not both")
+        } else if invocation.commit.is_some() && invocation.dry_run {
+            Some("error: `commit` writes the edits, so it can't go with `dry_run`; drop one")
+        } else if invocation.commit.as_deref() == Some("") {
+            Some("error: `commit` needs a message; give one, or drop `commit`")
+        } else {
+            None
+        };
+        if let Some(error) = usage {
+            out.message(error);
+            return Ok(2);
+        }
+        let session = Some(&self.session);
+        Ok(invoke::invoke(
+            invocation,
+            script,
+            session,
+            &mut self.connect,
+            out,
+        ))
+    }
+}
+
+/// What a call prints, as `ned` prints it: stdout, then stderr.
+#[derive(Default)]
+struct Transcript {
+    stdout: String,
+    stderr: String,
+}
+
+impl Output for Transcript {
+    fn out(&mut self, text: &str) {
+        self.stdout.push_str(text);
+    }
+
+    fn message(&mut self, message: &str) {
+        self.stderr.push_str(message);
+        self.stderr.push('\n');
+    }
+}
+
+impl Transcript {
+    /// The call's result, failed if `exit` isn't 0.
+    fn result(self, exit: u8) -> Value {
+        let mut text = self.stdout + &self.stderr;
+        if exit != 0 {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text += &format!("exit {exit}\n");
+        }
+        json!({
+            "content": [{ "type": "text", "text": text }],
+            "isError": exit != 0,
+        })
+    }
+}
+
+/// A call's `arguments`, each checked against its type in the tool's schema.
+struct Arguments<'a>(&'a Value);
+
+impl Arguments<'_> {
+    fn get(&self, key: &str) -> Option<&Value> {
+        self.0.get(key).filter(|value| !value.is_null())
+    }
+
+    fn string(&self, key: &str) -> Result<Option<String>, (i64, String)> {
+        match self.get(key) {
+            None => Ok(None),
+            Some(Value::String(text)) => Ok(Some(text.clone())),
+            Some(_) => Err(wrong(
+                key,
+                "a string",
+                &format!("quote it, as in `\"{key}\": \"...\"`"),
+            )),
+        }
+    }
+
+    fn required(&self, key: &str) -> Result<String, (i64, String)> {
+        let missing = || {
+            (
+                INVALID_PARAMS,
+                format!("missing argument `{key}`; add it to the call's `arguments`"),
+            )
+        };
+        self.string(key)?.ok_or_else(missing)
+    }
+
+    fn flag(&self, key: &str) -> Result<bool, (i64, String)> {
+        match self.get(key) {
+            None => Ok(false),
+            Some(Value::Bool(flag)) => Ok(*flag),
+            Some(_) => Err(wrong(key, "a boolean", "give `true` or `false`")),
+        }
+    }
+
+    fn strings(&self, key: &str) -> Result<Vec<String>, (i64, String)> {
+        let strings = match self.get(key) {
+            None => return Ok(Vec::new()),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|item| item.as_str().map(String::from))
+                .collect(),
+            Some(_) => None,
+        };
+        strings.ok_or_else(|| {
+            wrong(
+                key,
+                "an array of strings",
+                &format!("give a list, as in `\"{key}\": [\"a.rs\"]`"),
+            )
+        })
+    }
+}
+
+/// Whether `script`, a `show` the `show` tool builds, parses as more than that
+/// one command, as `fn:a; delete fn:b` would make it. A script that doesn't
+/// parse runs, to fail as `ned` would.
+fn shows_more_than_a_selector(script: &str) -> bool {
+    script::parse(script).is_ok_and(|parsed| {
+        let show = matches!(
+            parsed.commands[..],
+            [Command {
+                kind: CommandKind::Show { .. },
+                ..
+            }]
+        );
+        !show || !parsed.stages.is_empty()
+    })
+}
+
+fn wrong(key: &str, what: &str, fix: &str) -> (i64, String) {
+    (
+        INVALID_PARAMS,
+        format!("argument `{key}` must be {what}; {fix}"),
+    )
 }
 
 /// A response to the request `id` that failed with `code`.
@@ -422,6 +639,58 @@ mod tests {
     }
 
     #[test]
+    fn bad_arguments_say_how_to_give_them() {
+        let call = |name: &str, arguments: Value| {
+            let params = json!({"name": name, "arguments": arguments});
+            let responses = serve(request(json!(1), "tools/call", params));
+            assert_eq!(error_code(&responses[0]), -32602);
+            responses[0]["error"]["message"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(
+            call("ned", json!({})),
+            "missing argument `script`; add it to the call's `arguments`"
+        );
+        assert_eq!(
+            call("help", json!({"topic": 1})),
+            "argument `topic` must be a string; quote it, as in `\"topic\": \"...\"`"
+        );
+        assert_eq!(
+            call("ned", json!({"script": "outline", "dry_run": "yes"})),
+            "argument `dry_run` must be a boolean; give `true` or `false`"
+        );
+        assert_eq!(
+            call("outline", json!({"files": "a.rs"})),
+            "argument `files` must be an array of strings; give a list, as in `\"files\": [\"a.rs\"]`"
+        );
+    }
+
+    #[test]
+    fn a_commit_without_a_message_says_to_give_one() {
+        let params = json!({"name": "ned", "arguments": {"script": "outline", "commit": ""}});
+        let responses = serve(request(json!(1), "tools/call", params));
+        let text = responses[0]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            text,
+            "error: `commit` needs a message; give one, or drop `commit`\nexit 2\n"
+        );
+    }
+
+    #[test]
+    fn a_call_without_a_name_says_to_give_one() {
+        let responses = serve(request(json!(1), "tools/call", json!({"arguments": {}})));
+        assert_eq!(error_code(&responses[0]), -32602);
+        assert_eq!(
+            responses[0]["error"]["message"],
+            "tools/call needs the tool's `name`; add one, such as `\"name\": \"ned\"`"
+        );
+    }
+
+    #[test]
     fn an_unknown_method_is_method_not_found() {
         let responses = serve(request(json!(3), "resources/list", json!({})));
         assert_eq!(error_code(&responses[0]), -32601);
@@ -429,7 +698,7 @@ mod tests {
         let message = &responses[0]["error"]["message"];
         assert_eq!(
             message,
-            "unknown method `resources/list`; methods are initialize ping tools/list"
+            "unknown method `resources/list`; methods are initialize ping tools/list tools/call"
         );
     }
 

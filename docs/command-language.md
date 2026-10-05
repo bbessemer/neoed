@@ -522,11 +522,12 @@ result, with exit 2, not a protocol error.
 `files` is an array of paths and globs, `workspace` a boolean for `-w`,
 `script`, `selector`, `commit` (`--commit`'s message) and `topic` are strings,
 and the rest are booleans for the flags of the same names. `selector` is written
-as after `show`, so `all /re/ +2` works. A `ned` script may be `!!` (§1.2),
-which repeats on the last script's file set unless the call gives `files` or
-`workspace`. The `ned` tool's description is the `ned help` summary, so an agent
-has the language without asking; `outline`, `show`, `history` and `help` are
-marked read-only.
+as after `show`, so `all /re/ +2` works; one that holds more than a selector,
+such as `fn:a; delete fn:b`, is a usage error. A `ned` script may be `!!`
+(§1.2), which repeats on the last script's file set unless the call gives
+`files` or `workspace`. The `ned` tool's description is the `ned help` summary,
+so an agent has the language without asking; `outline`, `show`, `history` and
+`help` are marked read-only.
 
 ## 2. Scripts
 
