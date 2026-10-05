@@ -1069,8 +1069,9 @@ fn fold(text: &str) -> (String, Vec<usize>) {
     (folded, offsets)
 }
 
-/// `; did you mean SEL (LINES)?`, naming the item closest in name to a syntax
-/// `step` that matched nothing within `parents`, if one is close.
+/// `; did you mean SEL (LINES)?`, naming the item a syntax `step` that matched
+/// nothing within `parents` names once its leading checkbox (`[ ] `) is
+/// dropped, or else the item closest in name, if one is close.
 fn close_name(
     step: &Step,
     files: &[&SourceFile],
@@ -1081,6 +1082,31 @@ fn close_name(
     let Primary::Syntax { kind, name } = &step.primary else {
         return None;
     };
+    // A Markdown item is named without its task-list checkbox.
+    let unchecked = ["[ ] ", "[x] ", "[X] "]
+        .iter()
+        .find_map(|c| name.strip_prefix(c));
+    if let Some(unchecked) = unchecked
+        && let Some((file, item)) = parents.iter().find_map(|p| {
+            files[p.file]
+                .items()
+                .unwrap_or_default()
+                .iter()
+                .filter(|i| p.range.start <= i.range.start && i.range.end <= p.range.end)
+                .find(|i| i.kind == kind && syntax::item_matches(unchecked, i))
+                .map(|i| (p.file, i))
+        })
+    {
+        return Some(did_you_mean(
+            selector,
+            at,
+            &syntax::selector(kind, name),
+            &syntax::selector(kind, unchecked),
+            files,
+            file,
+            item,
+        ));
+    }
     if name.contains('*') {
         return None;
     }
@@ -2912,6 +2938,25 @@ fn main() {
             error("delete impl:\"Lexer<'a>\">fn:new>\"x\"", &[("a.rs", RUST)]),
             "error: script:1:8: impl:\"Lexer<'a>\" matches nothing in a.rs; \
              did you mean impl:Lexer>fn:new>\"x\" (14-18)?"
+        );
+    }
+
+    #[test]
+    fn no_match_suggests_the_item_name_without_its_checkbox() {
+        let text = "- [ ] text here\n- [x] done\n";
+        assert_eq!(
+            error("delete item:\"[ ] text*\"", &[("a.md", text)]),
+            "error: script:1:8: item:\"[ ] text*\" matches nothing in a.md; \
+             did you mean item:text* (1)?"
+        );
+        assert_eq!(
+            error("delete item:\"[X] done\"", &[("a.md", text)]),
+            "error: script:1:8: item:\"[X] done\" matches nothing in a.md; \
+             did you mean item:done (2)?"
+        );
+        assert_eq!(
+            error("delete item:\"[ ] other*\"", &[("a.md", text)]),
+            "error: script:1:8: item:\"[ ] other*\" matches nothing in a.md; `outline` lists the items"
         );
     }
 

@@ -539,7 +539,7 @@ Core kinds. Each language maps a subset of these through
 | `mod`       | modules and namespaces                                             |
 | `import`    | imports (name = the path as written, e.g. `import:std::fmt`)       |
 | `section`   | Markdown sections: a `#` heading and its content (name = its text) |
-| `item`      | Markdown list items (name = the first line of the item's text)     |
+| `item`      | Markdown list items (name = first line, minus any `[ ]` checkbox)  |
 | `table`     | Markdown tables (name = the first header cell)                     |
 | `code`      | Markdown code blocks (name = the language tag, or `""` if none)    |
 

@@ -165,7 +165,7 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [x] An unquoted name with a `-` (`import:react-router`) is reported as a
       malformed range (`ranges between selectors are written SEL..SEL`) instead
       of suggesting quotes (`import:"react-router"`)
-- [ ] `item:"[ ] text*"` matches nothing without suggesting the name without its
+- [x] `item:"[ ] text*"` matches nothing without suggesting the name without its
       task-list checkbox (`item:"text*"`), which is how items are named
 - [x] A heredoc as `replace`'s selector, with `with` on a later line
       (`replace <<END` / body / `END` / `with <<END`), says "expected `with`,
