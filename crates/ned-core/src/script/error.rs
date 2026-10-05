@@ -82,6 +82,9 @@ pub enum ParseErrorKind {
     /// `show SEL +N..+M`; the fix is `show SEL +M`.
     #[error("`+N` is one count of lines around each span, not a range; write {0}")]
     ContextRange(String),
+    /// `show SEL -N`; the fix is `show SEL +N`.
+    #[error("context is written `+N`, not `-N`; write {0}")]
+    MinusContext(String),
     #[error("line range {start}-{end} is reversed; write {end}-{start}")]
     ReversedLines { start: usize, end: usize },
     #[error("line number is too large; use `$` for the last line")]

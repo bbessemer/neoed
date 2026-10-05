@@ -139,7 +139,7 @@ of either kind.
       of "unknown regex flag" or a hint about `SEL..SEL` ranges
 - [ ] `sub` with a literal before `with` (`sub 3 "- [ ]" with "- [x]"`) suggests
       `replace 3>"- [ ]" with "- [x]"`, since `sub` takes only a regex
-- [ ] Context written `-N` (`show all "x" -3`) says context is `+N`, not a hint
+- [x] Context written `-N` (`show all "x" -3`) says context is `+N`, not a hint
       about `SEL..SEL` ranges
 - [ ] A file path as a selector step (`a.rs>fn:x`) suggests `file:a.rs>fn:x`
       rather than quoting `a` as a literal

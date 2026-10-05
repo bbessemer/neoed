@@ -157,32 +157,7 @@ impl Parser<'_> {
 
     fn command_kind(&mut self, verb: &Token, word: &str) -> Result<CommandKind, ParseError> {
         Ok(match word {
-            "show" => {
-                let target = self.optional_target()?;
-                let context = match self.peek()?.kind {
-                    TokenKind::Context(n) if target.is_some() => {
-                        let start = self.bump()?.span.start;
-                        if self.peek()?.kind == TokenKind::DotDot {
-                            let dots = self.bump()?;
-                            let next = self.peek()?;
-                            let TokenKind::Context(m) = next.kind else {
-                                return Err(expected("end of command", &dots));
-                            };
-                            let end = next.span.end;
-                            let target = target.as_ref().expect("matched a target");
-                            let all = if target.all { "all " } else { "" };
-                            let selector = &self.lexer.src[target.selector.span.clone()];
-                            return Err(ParseError::new(
-                                E::ContextRange(format!("show {all}{selector} +{m}")),
-                                start..end,
-                            ));
-                        }
-                        n
-                    }
-                    _ => 0,
-                };
-                CommandKind::Show { target, context }
-            }
+            "show" => self.show().map_err(|err| self.minus_context(verb, err))?,
             "outline" => CommandKind::Outline(self.optional_target()?),
             "replace" => {
                 let target = self.target()?;
@@ -246,6 +221,60 @@ impl Parser<'_> {
                 ));
             }
         })
+    }
+
+    fn show(&mut self) -> Result<CommandKind, ParseError> {
+        let target = self.optional_target()?;
+        let context = match self.peek()?.kind {
+            TokenKind::Context(n) if target.is_some() => {
+                let start = self.bump()?.span.start;
+                if self.peek()?.kind == TokenKind::DotDot {
+                    let dots = self.bump()?;
+                    let next = self.peek()?;
+                    let TokenKind::Context(m) = next.kind else {
+                        return Err(expected("end of command", &dots));
+                    };
+                    let end = next.span.end;
+                    let target = target.as_ref().expect("matched a target");
+                    let all = if target.all { "all " } else { "" };
+                    let selector = &self.lexer.src[target.selector.span.clone()];
+                    return Err(ParseError::new(
+                        E::ContextRange(format!("show {all}{selector} +{m}")),
+                        start..end,
+                    ));
+                }
+                n
+            }
+            _ => 0,
+        };
+        Ok(CommandKind::Show { target, context })
+    }
+
+    /// Turns the error at the `-` of `show SEL -N` into the fix `show SEL +N`.
+    fn minus_context(&self, verb: &Token, err: ParseError) -> ParseError {
+        if err.kind != E::UnexpectedChar('-') {
+            return err;
+        }
+        let src = self.lexer.src;
+        let shown = src[verb.span.end..err.span.start].trim_end();
+        let after = &src[err.span.end..];
+        let count =
+            &after[..after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len()];
+        let rest = after[count.len()..].trim_start_matches([' ', '\t']);
+        if shown.trim().is_empty()
+            || count.is_empty()
+            || !(rest.is_empty() || rest.starts_with([';', '|', '#', '\n', '\r']))
+        {
+            return err;
+        }
+        ParseError::new(
+            E::MinusContext(if shown.trim().bytes().all(|b| b.is_ascii_digit()) {
+                format!("show{shown} +{count}, or the line range show{shown}-{count}")
+            } else {
+                format!("show{shown} +{count}")
+            }),
+            err.span.start..err.span.end + count.len(),
+        )
     }
 
     fn optional_target(&mut self) -> Result<Option<Target>, ParseError> {
@@ -1560,6 +1589,32 @@ mod tests {
             r#"`+N` is one count of lines around each span, not a range; write show all "x" +5"#
         );
         assert_eq!(e.span, 13..19);
+        let e = error(r#"show all "x" -3"#);
+        assert_eq!(
+            e.kind.to_string(),
+            r#"context is written `+N`, not `-N`; write show all "x" +3"#
+        );
+        assert_eq!(e.span, 13..15);
+        assert_eq!(
+            message("show /re/-12 | show 1"),
+            "context is written `+N`, not `-N`; write show /re/ +12"
+        );
+        assert_eq!(
+            message("show /re/ -2 # c"),
+            "context is written `+N`, not `-N`; write show /re/ +2"
+        );
+        assert_eq!(
+            message("show 10 -20"),
+            "context is written `+N`, not `-N`; write show 10 +20, or the line range show 10-20"
+        );
+        assert_eq!(
+            message("show /re/ -3x"),
+            "unexpected character `-`; ranges between selectors are written SEL..SEL, e.g. /a/../b/"
+        );
+        assert_eq!(
+            message("show -3"),
+            "unexpected character `-`; ranges between selectors are written SEL..SEL, e.g. /a/../b/"
+        );
     }
 
     #[test]
