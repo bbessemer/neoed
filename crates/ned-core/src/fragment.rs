@@ -8,7 +8,7 @@ use std::ops::Range;
 use tree_sitter::{Node, Tree};
 
 use crate::lang::Language;
-use crate::template::{HoleText, Template};
+use crate::template::{Count, HoleText, Template};
 
 /// Where a fragment parses (§3.10): in place of some code in a file.
 #[derive(Debug, Clone)]
@@ -192,7 +192,7 @@ pub fn parse(
     let runs: HashSet<usize> = template
         .holes()
         .enumerate()
-        .filter_map(|(i, h)| h.many.then_some(i))
+        .filter_map(|(i, h)| (h.count != Count::One).then_some(i))
         .collect();
     // Alone, the fragment ends with a newline: Go ends a statement with one.
     let (before, after) = context.map_or(("", "\n"), |c| (c.before, c.after));

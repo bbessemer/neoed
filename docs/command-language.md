@@ -816,7 +816,7 @@ makes them matter, as Python's indentation does.
 
 ```
 show all `dbg!(@x...)`
-delete all fn:main>`println!(@_...);`
+delete all fn:main>`println!(@_...?);`
 show `impl Display for @t { @_... }`>fn:fmt
 ```
 
@@ -830,12 +830,13 @@ common to the pattern's lines is ignored.
 
 **Placeholders** stand for the parts of the code that vary:
 
-| Placeholder      | Matches                                         | Captures |
-| ---------------- | ----------------------------------------------- | -------- |
-| `@name`          | any one node: an expression, statement, name... | yes      |
-| `@name...`       | a run of zero or more sibling nodes             | yes      |
-| `@_` and `@_...` | the same                                        | no       |
-| `@@`             | a literal `@`                                   | -        |
+| Placeholder                | Matches                                         | Captures |
+| -------------------------- | ----------------------------------------------- | -------- |
+| `@name`                    | any one node: an expression, statement, name... | yes      |
+| `@name...`                 | a run of one or more sibling nodes              | yes      |
+| `@name...?`                | a run of zero or more sibling nodes             | yes      |
+| `@_`, `@_...` and `@_...?` | the same                                        | no       |
+| `@@`                       | a literal `@`                                   | -        |
 
 - A name is a letter or `_` followed by letters, digits and `_`. An `@` before
   anything else is literal: `a @ b`.
@@ -847,7 +848,9 @@ common to the pattern's lines is ignored.
   `` `@@Component(@opts) class @c { @_... }` ``.
 - `@name...` matches as few siblings as it can while the rest of the pattern
   still matches: in `` `foo(@first, @rest...)` ``, `@first` is the first
-  argument and `@rest` the others.
+  argument and `@rest` the others. Separators don't count, so it matches calls
+  of two or more arguments, and `` `foo(@first, @rest...?)` `` also `foo(x)`. To
+  follow a run with a `?` token, put a space between: `` `@e... ?` ``.
 - A name used twice in a pattern matches only equal code, ignoring whitespace
   and comments: `` `@x == @x` ``.
 - A Rust macro's arguments are tokens, not expressions, so a placeholder there
@@ -906,8 +909,8 @@ appear in only one step; `` `impl @t { @_... }`>fn:new `` captures `@t` for each
 `new`.
 
 **Substitution.** When `replace`'s target has pattern steps, `@name` in `TEXT`
-expands to the selected span's capture (`@name...` is the same), and `@@` to
-`@`. An `@name` that nothing captured is a script error.
+expands to the selected span's capture (`@name...` and `@name...?` are the
+same), and `@@` to `@`. An `@name` that nothing captured is a script error.
 
 - A capture spanning several lines keeps the indentation of its later lines
   relative to its first, under the indentation of the `TEXT` line where `@name`

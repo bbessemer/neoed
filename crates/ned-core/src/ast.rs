@@ -10,6 +10,7 @@ use std::ops::Range;
 use tree_sitter::{Node, QueryCursor, StreamingIterator};
 
 use crate::lang::Language;
+use crate::template::Count;
 
 /// A node of an abstract syntax tree.
 #[derive(Debug, Clone)]
@@ -31,10 +32,10 @@ pub enum Body {
     /// A node without children: its text.
     Leaf(String),
     Node(Vec<Ast>),
-    /// A pattern's placeholder (§3.10): `None` for `@_`; `many` for a run.
+    /// A pattern's placeholder (§3.10): `None` for `@_`.
     Hole {
         name: Option<String>,
-        many: bool,
+        count: Count,
     },
 }
 
@@ -74,7 +75,7 @@ impl Ast {
             && match (&self.body, &other.body) {
                 (Body::Leaf(a), Body::Leaf(b)) => a == b,
                 (Body::Node(a), Body::Node(b)) => children(a, b),
-                (Body::Hole { name: a, many: m }, Body::Hole { name: b, many: n }) => {
+                (Body::Hole { name: a, count: m }, Body::Hole { name: b, count: n }) => {
                     a == b && m == n
                 }
                 _ => false,
@@ -90,12 +91,8 @@ impl fmt::Display for Ast {
             write!(f, "{field}: ")?;
         }
         match &self.body {
-            Body::Hole { name, many } => {
-                write!(f, "@{}", name.as_deref().unwrap_or("_"))?;
-                if *many {
-                    f.write_str("...")?;
-                }
-                Ok(())
+            Body::Hole { name, count } => {
+                write!(f, "@{}{}", name.as_deref().unwrap_or("_"), count.suffix())
             }
             Body::Leaf(text) if !self.named => quoted(f, text),
             Body::Leaf(text) => {
@@ -270,21 +267,29 @@ mod tests {
 
     #[test]
     fn prints_placeholders_as_written() {
-        let hole = |name: Option<&str>, many| Ast {
+        let hole = |name: Option<&str>, count| Ast {
             kind: "identifier".into(),
             named: true,
             field: Some("left".into()),
             body: Body::Hole {
                 name: name.map(String::from),
-                many,
+                count,
             },
             range: 0..0,
             outer: 0..0,
         };
-        assert_eq!(hole(Some("x"), false).to_string(), "left: @x");
-        assert_eq!(hole(Some("rest"), true).to_string(), "left: @rest...");
-        assert_eq!(hole(None, false).to_string(), "left: @_");
-        assert_eq!(hole(None, true).to_string(), "left: @_...");
+        assert_eq!(hole(Some("x"), Count::One).to_string(), "left: @x");
+        assert_eq!(
+            hole(Some("rest"), Count::OneOrMore).to_string(),
+            "left: @rest..."
+        );
+        assert_eq!(
+            hole(Some("rest"), Count::ZeroOrMore).to_string(),
+            "left: @rest...?"
+        );
+        assert_eq!(hole(None, Count::One).to_string(), "left: @_");
+        assert_eq!(hole(None, Count::OneOrMore).to_string(), "left: @_...");
+        assert_eq!(hole(None, Count::ZeroOrMore).to_string(), "left: @_...?");
     }
 
     #[test]

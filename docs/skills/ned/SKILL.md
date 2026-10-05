@@ -190,12 +190,12 @@ show /^## Usage/../^## License/
 
 Select code by writing it: a backquoted pattern matches whatever the spacing,
 line breaks and comments. `@name` stands for one node (an expression, a
-statement, a name), `@name...` for a run of them, `@_` for either without a
-name:
+statement, a name), `@name...` for a run of one or more (`@name...?` zero or
+more), `@_` for any of them without a name:
 
 ```ned
 show all `dbg!(@x...)`
-delete all fn:main>`println!(@_...);`
+delete all fn:main>`println!(@_...?);`
 show `impl Display for @t { @_... }`>fn:fmt
 ```
 
@@ -268,6 +268,10 @@ it too.
 - **Strings** are `"..."` on one line, with `\n \t \" \\`. Use a heredoc for
   multi-line text.
 - **`$`** is literal in `replace`. Only `sub` expands `$1`, `${name}` and `$0`.
+- **A literal's quotes aren't in what it selects.** To edit a string in code,
+  select it with its quotes escaped (`"\"old\""`) and give `TEXT` its quotes
+  too; select only `"old"` and `TEXT` replaces just the contents, so quotes
+  written into `TEXT` double up.
 - **Errors end with a fix**: a selector to paste, a closer name, a missing flag.
   Apply it and rerun; nothing was written.
 - **Syntax guard.** An edit that introduces a parse error is rejected. Fix the
@@ -310,8 +314,8 @@ it too.
 - **Patterns match strictly.** Only separators (`,`, `;`, line breaks) and
   comments are skipped, in the pattern and the file; every other token and node
   must match, so `` `fn f(self) {}` `` doesn't match `fn f(&self) {}`, nor
-  `` `fn @f() {}` `` `pub fn f() {}`. Put `@_` or `@_...` where code may vary.
-  Captures keep the comments at their ends.
+  `` `fn @f() {}` `` `pub fn f() {}`. Put `@_` or `@_...` where code may vary,
+  `@_...?` where it may be absent. Captures keep the comments at their ends.
 - **A pattern parses where it searches**: in the body of the item before it, in
   a part, or alone at the top of a file. Give code that only parses inside
   something its context: `` struct:Foo>`x: u32` ``, `` fn:f.params>`x: u32` ``.

@@ -10,7 +10,7 @@ use tree_sitter::Tree;
 use crate::ast::{Ast, Body};
 use crate::fragment::{self, Context, FragmentError, Slot};
 use crate::lang::Language;
-use crate::template::Template;
+use crate::template::{Count, Template};
 use crate::text::strip_indent;
 
 /// A pattern compiled for one context.
@@ -93,7 +93,7 @@ impl Pattern {
         for (h, slot) in template.holes().zip(&fragment.holes) {
             let hole = Body::Hole {
                 name: h.name.clone(),
-                many: h.many,
+                count: h.count,
             };
             match slot {
                 Slot::Node(r) => hole_at(&mut roots, r, hole),
@@ -271,9 +271,11 @@ impl<'t> Matcher<'t> {
             return (!all || ts.is_empty()).then_some(0);
         };
         let saved = self.binds.len();
-        if let Body::Hole { name, many: true } = &p.body {
+        if let Body::Hole { name, count } = &p.body
+            && *count != Count::One
+        {
             // A run takes as few siblings as it can.
-            for end in 0..=ts.len() {
+            for end in usize::from(*count == Count::OneOrMore)..=ts.len() {
                 let run = &ts[..end];
                 let range = match (run.first(), run.last()) {
                     (Some(first), Some(last)) => first.outer.start..last.outer.end,
@@ -317,10 +319,10 @@ impl<'t> Matcher<'t> {
         all: bool,
     ) -> Option<usize> {
         let (run, rest) = rest.split_first()?;
-        let Body::Hole { name, many: true } = &run.body else {
+        let Body::Hole { name, count } = &run.body else {
             return None;
         };
-        if !run.kind.is_empty() || !p.named || !t.named {
+        if *count == Count::One || !run.kind.is_empty() || !p.named || !t.named {
             return None;
         }
         let saved = self.binds.len();
@@ -564,7 +566,7 @@ mod tests {
             [pairs(&[("first", "a"), ("rest", "b, c")])]
         );
         assert_eq!(
-            captured("foo(@args...)", "fn main() { foo(); foo(a, b); }"),
+            captured("foo(@args...?)", "fn main() { foo(); foo(a, b); }"),
             [pairs(&[("args", "")]), pairs(&[("args", "a, b")])]
         );
         assert_eq!(
@@ -574,10 +576,45 @@ mod tests {
     }
 
     #[test]
+    fn a_run_is_one_or_more_siblings_unless_it_may_be_empty() {
+        let text = "fn main() { foo(a, b, c); foo(d); foo(); }";
+        assert_eq!(found("foo(@first, @rest...)", text), ["foo(a, b, c)"]);
+        assert_eq!(
+            captured("foo(@first, @rest...?)", text),
+            [
+                pairs(&[("first", "a"), ("rest", "b, c")]),
+                pairs(&[("first", "d"), ("rest", "")])
+            ]
+        );
+        assert_eq!(found("foo(@_...)", text), ["foo(a, b, c)", "foo(d)"]);
+        assert_eq!(
+            found("foo(@_...?)", text),
+            ["foo(a, b, c)", "foo(d)", "foo()"]
+        );
+    }
+
+    #[test]
+    fn a_run_left_out_of_the_text_may_be_empty_too() {
+        let text = "struct A;\nimpl Display for A {}\nimpl Debug for A { fn fmt() {} }\n";
+        assert_eq!(
+            found("impl @_ for A { @_... }", text),
+            ["impl Debug for A { fn fmt() {} }"]
+        );
+        assert_eq!(found("impl @_ for A { @_...? }", text).len(), 2);
+    }
+
+    #[test]
     fn a_run_after_a_node_matches_the_rest_of_a_longer_node() {
         assert_eq!(
-            captured(
+            found(
                 "let n = items[i] @rest...;",
+                "fn main() { let n = items[i].iter().count(); let n = items[i]; }"
+            ),
+            ["let n = items[i].iter().count();"]
+        );
+        assert_eq!(
+            captured(
+                "let n = items[i] @rest...?;",
                 "fn main() { let n = items[i].iter().count(); let n = items[i]; let n = other[i].len(); }"
             ),
             [
@@ -606,7 +643,7 @@ mod tests {
     fn a_repeated_name_matches_equal_rests() {
         assert_eq!(
             found(
-                "foo(a @t..., b @t...)",
+                "foo(a @t...?, b @t...?)",
                 "fn main() { foo(a.x(), b.x()); foo(a.x(), b.y()); foo(a, b); }"
             ),
             ["foo(a.x(), b.x())", "foo(a, b)"]
@@ -680,7 +717,7 @@ mod tests {
 
     #[test]
     fn a_pattern_of_runs_matching_nothing_is_no_match() {
-        assert!(found_in(Language::Python, "@a...\n@b...", "x = 1\ny = 2\n").is_empty());
+        assert!(found_in(Language::Python, "@a...?\n@b...?", "x = 1\ny = 2\n").is_empty());
     }
 
     #[test]
