@@ -6,7 +6,7 @@ repl
 An editor for humans. Each line is a script, run on the file set as `ned`
 runs it, but edits go to in-memory buffers until written. Output, the
 syntax guard, formatting and edit checks are as for `ned`; :write also
-reports what checks run on save (cargo check) find the write introduced.
+reports what save-time checks (cargo check) find it introduced.
 A script that ends inside a heredoc or pattern continues on the next line.
 `!!` repeats the session's last script.
 
@@ -27,4 +27,4 @@ Commands (any unambiguous prefix works: :w, :u, :q):
 
 It records into a session: -s NAME, NED_SESSION, or a new repl-N. Each
 script is recorded, and each :write as a `write` entry that `ned undo` reverts.
-Attached, it prints each entry the agent records, with its diff.
+Attached, it prints each edit the agent makes, merging it into your buffers.

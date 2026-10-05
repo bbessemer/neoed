@@ -187,6 +187,12 @@ nothing else: other changes in the working tree and index, staged or not, stay
 uncommitted. In a session, it commits every edit since the session's last
 commit.
 
+`ned repl` (or plain `ned` on a terminal) is an editor for humans: each line is
+a script, but its edits stay in memory until `:write`, so they can be read and
+undone first (`:undo`, `:diff`). `:commit MSG` writes and commits.
+`:attach NAME` follows an agent's session, printing each edit it makes, and
+records your corrections into that session. `ned help repl` lists the commands.
+
 ## Languages
 
 | Language        | Syntax items                                                                     |
@@ -234,8 +240,6 @@ to develop ned itself, but the language may still change before 1.0.
 
 In order, with details in [`TODO.md`](TODO.md):
 
-- `ned-repl`: an interactive session for humans, which can also follow an
-  agent's session
 - `ned-mcp`: an MCP server that exposes scripts, `outline` and `show` as tools
 - User-supplied tree-sitter grammars and query files, without rebuilding `ned`
 - Later, plugins: a Scheme over tree-sitter queries for new languages, custom

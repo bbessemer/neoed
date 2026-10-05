@@ -60,21 +60,16 @@ which it is. When to release 1.0 is TBD.
   leaving other staged and unstaged changes alone.
 - **Merge conflicts** (0.7.0): conflict markers are hidden from every parse;
   `conflict:N` with `.ours`, `.theirs` and `.base`; `resolve` keeps a side.
+- **REPL**: `ned repl` (and bare `ned` on a terminal) runs scripts on in-memory
+  buffers with `:write` (merging into files changed since), `:undo`, `:diff` and
+  `:commit`; records into a session; `:attach` follows an agent's session and
+  records corrections into it. Written edits, in the CLI too, report what checks
+  run on save (`cargo check`) find they introduced.
 
 ## Phase 2
 
-The REPL and the MCP server read sessions, and the REPL builds on terminal
-output, both done. User-supplied grammars and plugins close the phase and may
-slip.
-
-### REPL
-
-`ned-repl`: a human edits interactively with persistent buffers, undo and an
-explicit write, using the same command language, and can attach to an agent's
-session to watch and correct its work. It records into a session automatically.
-Depends on Sessions and Terminal output.
-
-Version: minor; a new binary.
+The MCP server reads sessions, which are done. User-supplied grammars and
+plugins close the phase and may slip.
 
 ### MCP server
 
@@ -151,6 +146,12 @@ of either kind.
 - [ ] `!!` repeats the last script that edited or failed, not a read-only call
       in between: after a failed edit, an `outline` to look around makes `!!`
       refer to the `outline`. A minor, since §1.2 changes
+- [ ] A range whose start also matches inside it (skipped, §3.7) prints a note
+      naming that line: `/^    for x/../^    }/` spanned two identical loops
+      when its end matched once, and the edit replaced both
+- [ ] A literal under a `kind>` step that spans two items of the kind
+      (`import>"use a;\nuse b;"`) suggests a line range, `A..B` or dropping the
+      step, instead of only "matches nothing"
 
 ## Bugs
 

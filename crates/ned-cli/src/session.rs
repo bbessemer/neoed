@@ -26,11 +26,15 @@ pub fn open(name: &str, root: &Path) -> Result<Session, Failure> {
     Session::new(&session::state_dir().map_err(failure)?, root, name).map_err(failure)
 }
 
-/// Appends `entry` to `session`; a failure is only a note, since the
-/// invocation's files are already written.
-pub fn record(session: &Session, entry: Entry) {
-    if let Err(err) = session.lock().and_then(|mut log| log.append(entry)) {
-        errln!("note: not recorded in session {}: {err}", session.name());
+/// Appends `entry` to `session`, returning its id; a failure is only a note,
+/// since the invocation's files are already written.
+pub fn record(session: &Session, entry: Entry) -> Option<u64> {
+    match session.lock().and_then(|mut log| log.append(entry)) {
+        Ok(id) => Some(id),
+        Err(err) => {
+            errln!("note: not recorded in session {}: {err}", session.name());
+            None
+        }
     }
 }
 

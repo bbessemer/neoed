@@ -375,11 +375,11 @@ error is printed and the REPL goes on. `!!` repeats the session's last script
 
 **Buffers.** An edit changes the file's buffer, not the file. A buffer holds the
 file's text as edited, and its **base**: the text on disk when its first
-unwritten edit was made. Scripts read buffers in place of the files, and files
-without one from disk, so another program's change to a file without unwritten
-edits is seen by the next script. Language servers see the buffers' text, so
-`check` and `.refs` see unwritten edits; save-time checks (`cargo check`) see
-only written files.
+unwritten edit was made, or that a followed session last wrote (below). Scripts
+read buffers in place of the files, and files without one from disk, so another
+program's change to a file without unwritten edits is seen by the next script.
+Language servers see the buffers' text, so `check` and `.refs` see unwritten
+edits; save-time checks (`cargo check`) see only written files.
 
 **Commands** start with `:` and aren't scripts. A command is written in full or
 as any prefix that names only one (`:w` is `:write`, `:u` is `:undo`, `:di` is
@@ -457,10 +457,14 @@ say: it prints the session's last 10 history lines, then each entry another
 program appends, as its history line prefixed by the session's name followed by
 the hunks of each file it changed. The REPL records into `NAME` from then on, so
 a correction lands in the agent's history, and the agent's `ned undo` and `!!`
-see it. A file the entry changed whose buffer has unwritten edits gets a note
-that `:write` will merge into it. `:detach` stops following and records into the
-REPL's own session again. A session the workspace has no log for is an error
-listing its sessions.
+see it. When an entry changes a file whose buffer has unwritten edits, the
+change is merged into the buffer as it arrives, as `:write` would merge it, and
+the file's new text becomes the buffer's base; a note says so. If the change
+overlaps the unwritten edits, the buffer is left as it was and the note names
+the line, so `:write` refuses until the overlap is resolved (`:write!`
+overwrites the change, `:reload` drops the edits). `:detach` stops following and
+records into the REPL's own session again. A session the workspace has no log
+for is an error listing its sessions.
 
 ## 2. Scripts
 

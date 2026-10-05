@@ -1,23 +1,28 @@
 //! `ned repl`: a human edits interactively, in memory until written
 //! (command-language spec §1.4).
 
+use std::collections::HashSet;
 use std::io::{self, BufRead, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
+use std::time::Duration;
 
 use clap::{Args, ValueEnum};
-use ned_core::apply::{self, Finished, Render, Settings};
+use ned_core::apply::{self, Committed, Finished, Render, Settings};
 use ned_core::buffers::{Buffers, BuffersError};
 use ned_core::diff::{self, DiffStat};
 use ned_core::exec::{Change, Initial, Options};
 use ned_core::format::Outcome;
+use ned_core::git::{GitError, Repo};
 use ned_core::lang::{self, Language};
 use ned_core::lsp::{Document, Lsp};
-use ned_core::session::{self, Entry, FileChange, Session};
+use ned_core::session::{self, Entry, FileChange, Follower, Session};
 use ned_core::style::Role;
 use ned_core::{fs, script, workspace};
-use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
+use rustyline::{DefaultEditor, ExternalPrinter};
 
 use crate::{Cli, Edited, LangFlag, Ran, daemon, help, session as sessions, styles};
 
@@ -50,6 +55,9 @@ pub struct ReplArgs {
     /// Record into session NAME; overrides NED_SESSION.
     #[arg(short, long, value_name = "NAME")]
     session: Option<String>,
+    /// Follow session NAME, an agent's, say, and record into it.
+    #[arg(long, value_name = "NAME")]
+    attach: Option<String>,
 }
 
 impl ReplArgs {
@@ -75,6 +83,7 @@ impl ReplArgs {
             lang: cli.lang,
             context: cli.context,
             session: cli.session,
+            attach: None,
         })
     }
 }
@@ -89,9 +98,25 @@ pub fn run(args: ReplArgs) -> ExitCode {
         }
     };
     errln!("note: recording in session {}", repl.session.name());
+    if let Some(name) = repl.args.attach.clone()
+        && let Err(error) = repl.attach(&[name.as_str()])
+    {
+        errln!("{error}");
+        return ExitCode::from(2);
+    }
     let mut input = Input::new();
     loop {
-        let quit = match input.read() {
+        // The printer starts on the first attach (see `Input::follow`).
+        if repl.attached.is_some() {
+            input.follow(&repl.follow);
+        }
+        let read = input.read();
+        // On a terminal, a thread prints what the followed session records as
+        // it does; otherwise it's printed before each input runs.
+        if !input.terminal() {
+            repl.poll();
+        }
+        let quit = match read {
             Read::Script(src) => repl.eval(&src),
             Read::Interrupted => None,
             Read::End if input.terminal() => repl.command("quit"),
@@ -138,6 +163,73 @@ fn command_name(word: &str) -> Result<&'static str, String> {
     }
 }
 
+/// Following another session's log (spec §1.4).
+struct Follow {
+    name: String,
+    follower: Follower,
+    /// The entries this REPL recorded, which aren't printed.
+    own: HashSet<u64>,
+    /// The REPL's buffers, into which it merges what the session writes.
+    buffers: Arc<Mutex<Buffers>>,
+    cwd: PathBuf,
+    context: usize,
+    /// Whether reading the log failed, which is noted once.
+    failed: bool,
+}
+
+impl Follow {
+    /// What the session recorded since the last poll, for stdout, and notes
+    /// for stderr.
+    fn poll(&mut self) -> (String, String) {
+        let entries = match self.follower.poll() {
+            Ok(entries) => entries,
+            Err(_) if self.failed => return Default::default(),
+            Err(err) => {
+                self.failed = true;
+                let note = format!("note: stopped following session {}: {err}\n", self.name);
+                return (String::new(), styles().1.message(&note).into_owned());
+            }
+        };
+        let (mut printed, mut notes) = (String::new(), String::new());
+        let style = styles().0;
+        for entry in entries.iter().filter(|e| !self.own.contains(&e.id)) {
+            let line = session::history(std::slice::from_ref(entry), true);
+            printed.push_str(&style.paint(Role::Header, &format!("{} {line}", self.name)));
+            printed.push_str(&apply::file_changes(
+                &entry.changes,
+                &self.cwd,
+                self.context,
+                style,
+            ));
+            for change in &entry.changes {
+                let Some(after) = &change.after else {
+                    continue;
+                };
+                let path = change.path.strip_prefix(&self.cwd).unwrap_or(&change.path);
+                let mut buffers = self.buffers.lock().unwrap();
+                let same = |key: &&Path| {
+                    *key == change.path || key.canonicalize().is_ok_and(|k| k == change.path)
+                };
+                let Some(key) = buffers.unwritten().find(same).map(Path::to_path_buf) else {
+                    continue;
+                };
+                let note = match buffers.rebase(&key, after) {
+                    Ok(_) => format!(
+                        "note: merged the change into your unwritten edits to {}\n",
+                        path.display()
+                    ),
+                    Err(err) => {
+                        let prefix = format!("{}/", self.cwd.display());
+                        format!("note: {}\n", err.to_string().replace(&prefix, ""))
+                    }
+                };
+                notes.push_str(&styles().1.message(&note));
+            }
+        }
+        (printed, notes)
+    }
+}
+
 struct Repl {
     args: ReplArgs,
     cwd: PathBuf,
@@ -145,8 +237,16 @@ struct Repl {
     /// The file set each script starts with: FILE arguments, or `-w`.
     files: Vec<String>,
     workspace: bool,
-    buffers: Buffers,
+    /// Shared with the thread that merges a followed session's edits into
+    /// them.
+    buffers: Arc<Mutex<Buffers>>,
+    /// The REPL's own session.
     session: Session,
+    /// The session it follows and records into instead, if attached.
+    attached: Option<Session>,
+    /// Following `attached`, shared with the thread that prints what it
+    /// records, on a terminal.
+    follow: Arc<Mutex<Option<Follow>>>,
     daemon: daemon::Workspace,
 }
 
@@ -167,10 +267,12 @@ impl Repl {
         };
         Ok(Repl {
             session,
+            attached: None,
+            follow: Arc::default(),
             daemon: daemon::workspace(root.clone()),
             files: args.files.clone(),
             workspace: args.workspace.is_some(),
-            buffers: Buffers::default(),
+            buffers: Arc::default(),
             args,
             cwd,
             root,
@@ -197,9 +299,12 @@ impl Repl {
         };
         let args: Vec<&str> = rest.split_whitespace().collect();
         let done = command_name(word).and_then(|name| match name {
-            "write" => self.write(&args, force).map(|()| None),
+            "write" => self.write(&args, force, None).map(|()| None),
+            "commit" => self.commit(rest).map(|()| None),
+            "attach" => self.attach(&args).map(|()| None),
+            "detach" => self.detach().map(|()| None),
             "wq" => self
-                .write(&args, force)
+                .write(&args, force, None)
                 .and_then(|()| self.quit(false))
                 .map(Some),
             "quit" => self.quit(force).map(Some),
@@ -209,7 +314,7 @@ impl Repl {
             "files" => self.set_files(&args).map(|()| None),
             "history" => self.history(args.contains(&"--all")).map(|()| None),
             "help" => help(&args).map(|()| None),
-            _ => Err(format!("error: :{name} isn't available yet")),
+            _ => unreachable!("every command is handled"),
         });
         match done {
             Ok(quit) => quit,
@@ -230,7 +335,7 @@ impl Repl {
         };
         let mut root = self.root.clone();
         let repeated = sessions::repeat(
-            Some(&self.session),
+            Some(self.recording()),
             src.to_string(),
             &self.cwd,
             &mut files,
@@ -265,15 +370,18 @@ impl Repl {
             changes: Vec::new(),
             commit: None,
         };
-        sessions::record(&self.session, entry);
+        self.record(entry);
     }
 
     fn run_script(&mut self, src: &str, initial: Initial) -> Ran {
+        // Held while the script runs, so a followed edit merged meanwhile
+        // can't slip between what the script read and what it changed.
+        let mut buffers = self.buffers.lock().unwrap();
         let options = Options {
             lang: self.args.lang,
             force: self.args.force,
             style: styles().0,
-            overlay: Some(self.buffers.overlay()),
+            overlay: Some(buffers.overlay()),
         };
         let settings = Settings {
             format: !self.args.no_fmt,
@@ -285,8 +393,8 @@ impl Repl {
                 Ok(edited) => edited,
                 Err(ran) => return ran,
             };
-        self.buffers
-            .apply(&self.cwd, &changes, &finished.finals(&changes));
+        buffers.apply(&self.cwd, &changes, &finished.finals(&changes));
+        drop(buffers);
         let how = Render {
             context: self.args.context,
             quiet: false,
@@ -302,20 +410,26 @@ impl Repl {
         }
     }
 
-    /// `:write`: writes the buffers, then reports what the checks run on save
-    /// find the write introduced (spec §6.5), and records it.
-    fn write(&mut self, args: &[&str], force: bool) -> Result<(), String> {
+    /// `:write`, and `:commit` with a `message`: writes the buffers, committing
+    /// them first with the session's earlier edits (spec §1.3), then reports
+    /// what the checks run on save find the write introduced (spec §6.5), and
+    /// records it.
+    fn write(&mut self, args: &[&str], force: bool, message: Option<&str>) -> Result<(), String> {
         let paths = self.paths(args);
         let writes = self
-            .buffers
+            .buffers()
             .plan_write(paths.as_deref(), sessions::read, force)
             .map_err(|err| format!("error: {err}"))?;
-        if writes.is_empty() {
+        if writes.is_empty() && message.is_none() {
             outln!("no unwritten edits");
             return Ok(());
         }
         let changes: Vec<Change> = writes.iter().map(|w| self.change(w)).collect();
         let mut messages = Vec::new();
+        let committed = match message {
+            None => None,
+            Some(message) => Some(self.commit_writes(&changes, message, &mut messages)?),
+        };
         let before = match self.args.no_check || !self.daemon.running() {
             true => None,
             false => apply::before_save(&mut self.daemon, &changes, &mut messages),
@@ -324,9 +438,17 @@ impl Repl {
             .iter()
             .map(|w| (w.path.clone(), w.after.clone().unwrap_or_default()))
             .collect();
-        fs::write_atomic(&files, &[])
-            .map_err(|err| format!("error: cannot write files: {err}; no file was changed"))?;
-        self.buffers.written(&writes);
+        if let Err(err) = fs::write_atomic(&files, &[]) {
+            if let Some(Committed { repo, prepared }) = &committed
+                && let Err(git) = repo.retreat(prepared)
+            {
+                errln!("error: {git}");
+            }
+            return Err(format!(
+                "error: cannot write files: {err}; no file was changed"
+            ));
+        }
+        self.buffers().written(&writes);
         let style = styles().0;
         for change in &changes {
             let stat = DiffStat::between(&change.old, &change.new);
@@ -351,6 +473,9 @@ impl Repl {
             );
             out!("{found}");
         }
+        if let Some(committed) = &committed {
+            outln!("{}", committed.line(message.unwrap_or_default()));
+        }
         for message in messages {
             errln!("{message}");
         }
@@ -374,10 +499,112 @@ impl Repl {
             exit: 0,
             error: None,
             changes: written,
-            commit: None,
+            commit: committed.map(|c| c.prepared.commit),
         };
-        sessions::record(&self.session, entry);
+        self.record(entry);
         Ok(())
+    }
+
+    /// `:commit MSG` (spec §1.4).
+    fn commit(&mut self, message: &str) -> Result<(), String> {
+        match message.trim() {
+            "" => Err("error: :commit needs a message: `:commit MSG`".into()),
+            message => self.write(&[], false, Some(message)),
+        }
+    }
+
+    /// Commits `changes`, a write about to be made, after the session's edits
+    /// since its last commit, as `--commit` does.
+    fn commit_writes(
+        &mut self,
+        changes: &[Change],
+        message: &str,
+        messages: &mut Vec<String>,
+    ) -> Result<Committed, String> {
+        let prior = sessions::uncommitted(self.recording()).map_err(|(error, _)| error)?;
+        let head = Repo::discover(&self.root).ok();
+        let finals: Vec<&str> = changes.iter().map(|c| c.new.as_str()).collect();
+        let commit = apply::commit(
+            &self.root, head, &self.cwd, &prior, changes, &finals, message, messages,
+        );
+        commit.map_err(|err| match err {
+            GitError::NothingToCommit => "error: nothing to commit: the session's edits leave every file as HEAD has it; edit a file, then `:commit MSG`".into(),
+            err => apply::commit_error(&err, &prior),
+        })
+    }
+
+    /// `:attach NAME`: prints the session's history, then follows it and
+    /// records into it.
+    fn attach(&mut self, args: &[&str]) -> Result<(), String> {
+        let [name] = args else {
+            return Err("error: :attach takes a session's name: `:attach NAME`".into());
+        };
+        let names = session::state_dir()
+            .and_then(|dir| session::sessions(&dir, &self.root))
+            .map_err(|err| format!("error: {err}"))?;
+        if !names.iter().any(|n| n == name) {
+            let known = match names.is_empty() {
+                true => "it has none".to_string(),
+                false => format!("its sessions are {}", names.join(", ")),
+            };
+            return Err(format!(
+                "error: the workspace has no session {name}; {known}"
+            ));
+        }
+        let attached = sessions::open(name, &self.root).map_err(|(error, _)| error)?;
+        let (entries, follower) = attached
+            .lock()
+            .and_then(|log| log.follow())
+            .map_err(|err| format!("error: {err}"))?;
+        out!("{}", session::history(&entries, false));
+        *self.follow.lock().unwrap() = Some(Follow {
+            name: name.to_string(),
+            follower,
+            own: HashSet::new(),
+            buffers: Arc::clone(&self.buffers),
+            cwd: self.cwd.clone(),
+            context: self.args.context,
+            failed: false,
+        });
+        self.attached = Some(attached);
+        Ok(())
+    }
+
+    fn detach(&mut self) -> Result<(), String> {
+        if self.attached.take().is_none() {
+            return Err("error: not attached to a session; `:attach NAME` follows one".into());
+        }
+        *self.follow.lock().unwrap() = None;
+        Ok(())
+    }
+
+    fn buffers(&self) -> MutexGuard<'_, Buffers> {
+        self.buffers.lock().unwrap()
+    }
+
+    /// The session the REPL records into: the attached one, or its own.
+    fn recording(&self) -> &Session {
+        self.attached.as_ref().unwrap_or(&self.session)
+    }
+
+    /// Records `entry`; one recorded into an attached session isn't printed
+    /// as followed. The follower's lock is held throughout, so it can't read
+    /// the entry before it's known as the REPL's.
+    fn record(&mut self, entry: Entry) {
+        let mut follow = self.follow.lock().unwrap();
+        let id = sessions::record(self.recording(), entry);
+        if let (Some(follow), Some(id)) = (follow.as_mut(), id) {
+            follow.own.insert(id);
+        }
+    }
+
+    /// Prints what the followed session recorded since the last poll.
+    fn poll(&mut self) {
+        if let Some(follow) = self.follow.lock().unwrap().as_mut() {
+            let (printed, notes) = follow.poll();
+            out!("{printed}");
+            eprint!("{notes}");
+        }
     }
 
     /// The script-like change a write makes to a file, for the checks run on
@@ -400,7 +627,7 @@ impl Repl {
 
     fn undo(&mut self) -> Result<(), String> {
         let changes = self
-            .buffers
+            .buffers()
             .undo(sessions::read)
             .map_err(|err| format!("error: {err}"))?;
         let style = styles().0;
@@ -421,7 +648,7 @@ impl Repl {
             outln!("no unwritten edits");
             return Ok(());
         }
-        let buffers = &self.buffers;
+        let buffers = self.buffers();
         let mut changes = Vec::new();
         for path in paths {
             let one = std::slice::from_ref(&path);
@@ -453,7 +680,7 @@ impl Repl {
     fn reload(&mut self, args: &[&str]) -> Result<(), String> {
         let paths = self.paths(args);
         let reloaded = paths.clone().unwrap_or_else(|| self.unwritten());
-        self.buffers
+        self.buffers()
             .reload(paths.as_deref())
             .map_err(|err| format!("error: {err}"))?;
         for path in &reloaded {
@@ -490,8 +717,9 @@ impl Repl {
             false => outln!("files: {}", self.files.join(" ")),
         }
         for path in self.unwritten() {
-            let base = self.buffers.base(&path).flatten().unwrap_or_default();
-            let stat = DiffStat::between(base, &self.buffers.overlay()[&path]);
+            let buffers = self.buffers();
+            let base = buffers.base(&path).flatten().unwrap_or_default();
+            let stat = DiffStat::between(base, &buffers.overlay()[&path]);
             outln!("{}: unwritten, {stat}", self.shown(&path));
         }
         Ok(())
@@ -499,7 +727,7 @@ impl Repl {
 
     fn history(&self, all: bool) -> Result<(), String> {
         let entries = self
-            .session
+            .recording()
             .lock()
             .and_then(|log| log.entries())
             .map_err(|err| format!("error: {err}"))?;
@@ -539,7 +767,7 @@ impl Repl {
     /// Drops every unwritten edit, and tells the servers.
     fn discard(&mut self) {
         let unwritten = self.unwritten();
-        let _ = self.buffers.reload(None);
+        let _ = self.buffers().reload(None);
         self.sync(&unwritten);
     }
 
@@ -552,7 +780,7 @@ impl Repl {
         let documents: Vec<Document> = paths
             .iter()
             .filter_map(|path| {
-                let text = match self.buffers.overlay().get(path) {
+                let text = match self.buffers().overlay().get(path) {
                     Some(text) => text.clone(),
                     None => sessions::read(path).ok()??,
                 };
@@ -576,7 +804,7 @@ impl Repl {
     }
 
     fn unwritten(&self) -> Vec<PathBuf> {
-        self.buffers.unwritten().map(Path::to_path_buf).collect()
+        self.buffers().unwritten().map(Path::to_path_buf).collect()
     }
 
     /// `path` as shown: relative to the working directory, if it's inside.
@@ -625,12 +853,15 @@ struct Input {
     editor: Option<(DefaultEditor, Option<PathBuf>)>,
     /// The prompts for a script's first line and the lines that continue it.
     prompts: (&'static str, &'static str),
+    /// Whether a thread prints what a followed session records.
+    following: bool,
 }
 
 impl Input {
     fn new() -> Input {
         let mut input = Input {
             editor: None,
+            following: false,
             prompts: match unicode() {
                 true => ("ned› ", "   … "),
                 false => ("ned> ", "...> "),
@@ -650,6 +881,31 @@ impl Input {
         }
         input.editor = Some((editor, history));
         input
+    }
+
+    /// On a terminal, prints what the session `follow` follows records, as it
+    /// records it, above the line being edited. The printer and its thread
+    /// start on the first attach, so a REPL that never attaches has neither.
+    fn follow(&mut self, follow: &Arc<Mutex<Option<Follow>>>) {
+        let Some((editor, _)) = self.editor.as_mut().filter(|_| !self.following) else {
+            return;
+        };
+        let Ok(mut printer) = editor.create_external_printer() else {
+            return;
+        };
+        self.following = true;
+        let follow = Arc::clone(follow);
+        thread::spawn(move || {
+            loop {
+                thread::sleep(Duration::from_millis(250));
+                let polled = follow.lock().unwrap().as_mut().map(Follow::poll);
+                if let Some((printed, notes)) = polled
+                    && !(printed.is_empty() && notes.is_empty())
+                {
+                    let _ = printer.print(format!("{printed}{notes}"));
+                }
+            }
+        });
     }
 
     fn terminal(&self) -> bool {

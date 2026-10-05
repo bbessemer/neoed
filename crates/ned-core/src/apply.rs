@@ -355,7 +355,7 @@ pub fn commit(
         .collect();
     let found = Repo::discover(paths.first().map_or(top, PathBuf::as_path))?;
     let repo = before.filter(|b| b.top == found.top).unwrap_or(found);
-    if changes.is_empty() {
+    if edits.is_empty() {
         return Err(GitError::NothingToCommit);
     }
     let mut prepared = repo.prepare(&edits, message)?;

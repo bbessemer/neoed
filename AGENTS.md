@@ -131,8 +131,8 @@ Neoed (`ned`) is a line editor for AI coding agents, replacing `sed`/ad-hoc
 Python. LLMs, like teletypes, work over an append-only text stream where every
 token costs, so `ned` offers a concise, word-based command language,
 syntax-aware addressing (tree-sitter, plus LSP through a per-workspace daemon),
-and automatic formatting. MVP is a one-shot CLI; a human REPL and an MCP server
-come later.
+and automatic formatting. It is a one-shot CLI plus `ned repl`, a human REPL; an
+MCP server comes later.
 
 ## Status
 
@@ -174,8 +174,11 @@ a whole file), `ast` lowers it and the file to abstract syntax trees
 (`queries/<lang>/ast.scm` names the tokens they leave out), and `pattern`
 matches them; `replace` substitutes its captures. `ned-scheme`, a reader for the
 Scheme dialect (tree-sitter query syntax plus Scheme data) that plugins will be
-written in, is unused for now. MIT-licensed; README has install and usage; CI
-(`.github/workflows/`) gates PRs.
+written in, is unused for now. The REPL (spec §1.4, `ned-cli/src/repl.rs`) runs
+scripts on `buffers` (in-memory edits, undo, merging writes) through `exec`'s
+overlay and `apply`, the post-exec pipeline the CLI shares; it records into a
+session, and `:attach` follows another session's log (`Follower`). MIT-licensed;
+README has install and usage; CI (`.github/workflows/`) gates PRs.
 
 ## Key Documentation
 
@@ -208,7 +211,7 @@ written in, is unused for now. MIT-licensed; README has install and usage; CI
 ```
 Cargo.toml         workspace; shared version, edition, lints
 crates/ned-core/   library: buffer, script parser, selectors, languages, exec, formatting
-crates/ned-cli/    `ned` binary: args, I/O, output rendering, help texts, daemon client glue
+crates/ned-cli/    `ned` binary: args, I/O, the REPL, help texts, daemon client glue
 crates/ned-daemon/ per-workspace daemon (Unix socket), its sync client, language servers
 crates/ned-scheme/ reader for the Scheme dialect of query files and (later) plugins
 queries/<lang>/    tree-sitter selector queries (.scm), one dir per language
@@ -216,8 +219,7 @@ docs/              specs, agent guide, Claude Code skill; web/ is the project we
 bench/             token-cost (cases/ back spec §8's table) and --commit git-process benchmarks (uv project)
 ```
 
-Planned crates: `ned-repl`, `ned-mcp`. All logic lives in `ned-core` so
-frontends stay thin.
+Planned crates: `ned-mcp`. All logic lives in `ned-core` so frontends stay thin.
 
 ## Design Decisions
 

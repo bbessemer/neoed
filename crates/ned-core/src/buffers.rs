@@ -240,6 +240,31 @@ impl Buffers {
         }
     }
 
+    /// Merges a change another program wrote to the file at `path`, whose text
+    /// is now `disk`, into the buffer's unwritten edits, as a write would merge
+    /// it, and makes `disk` the buffer's base (spec §1.4). `false` without a
+    /// buffer; an overlap leaves the buffer as it was.
+    pub fn rebase(&mut self, path: &Path, disk: &str) -> Result<bool, BuffersError> {
+        let Some(text) = self.texts.get(path) else {
+            return Ok(false);
+        };
+        let merged = match &self.bases[path] {
+            None => {
+                return Err(BuffersError::Exists {
+                    path: path.to_path_buf(),
+                });
+            }
+            Some(base) => diff::merge(base, text, disk).map_err(|line| BuffersError::Overlap {
+                path: path.to_path_buf(),
+                line,
+            })?,
+        };
+        self.bases
+            .insert(path.to_path_buf(), Some(disk.to_string()));
+        self.set(path, merged);
+        Ok(true)
+    }
+
     /// Sets the buffer for `path`, which has a base, to `text`, or drops it if
     /// that's its base: nothing is left to write.
     fn set(&mut self, path: &Path, text: String) {
@@ -577,5 +602,53 @@ mod tests {
         ));
         buffers.reload(None).unwrap();
         assert_eq!(buffers.unwritten().count(), 0);
+    }
+
+    #[test]
+    fn rebasing_merges_a_change_into_the_unwritten_edits() {
+        let mut buffers = Buffers::default();
+        script(&mut buffers, &[change("a.rs", "1\n2\n3\n", "x\n2\n3\n")]);
+        assert!(buffers.rebase(&path("a.rs"), "1\n2\ny\n").unwrap());
+        assert_eq!(text(&buffers, "a.rs"), Some("x\n2\ny\n"));
+        assert_eq!(buffers.base(&path("a.rs")), Some(Some("1\n2\ny\n")));
+        let writes = buffers
+            .plan_write(None, disk(&[("a.rs", "1\n2\ny\n")]), false)
+            .unwrap();
+        assert_eq!(
+            writes,
+            [file_change("a.rs", Some("1\n2\ny\n"), Some("x\n2\ny\n"))]
+        );
+        assert!(!buffers.rebase(&path("b.rs"), "b\n").unwrap());
+    }
+
+    #[test]
+    fn a_change_that_makes_the_same_edit_leaves_nothing_unwritten() {
+        let mut buffers = Buffers::default();
+        script(&mut buffers, &[change("a.rs", "a\n", "b\n")]);
+        assert!(buffers.rebase(&path("a.rs"), "b\n").unwrap());
+        assert_eq!(buffers.unwritten().count(), 0);
+    }
+
+    #[test]
+    fn an_overlapping_change_leaves_the_buffer_as_it_was() {
+        let mut buffers = Buffers::default();
+        script(&mut buffers, &[change("a.rs", "1\n2\n3\n", "x\n2\n3\n")]);
+        match buffers.rebase(&path("a.rs"), "z\n2\n3\n") {
+            Err(BuffersError::Overlap { line: 1, .. }) => {}
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(text(&buffers, "a.rs"), Some("x\n2\n3\n"));
+        assert_eq!(buffers.base(&path("a.rs")), Some(Some("1\n2\n3\n")));
+    }
+
+    #[test]
+    fn a_created_file_that_another_program_writes_is_an_error() {
+        let mut buffers = Buffers::default();
+        script(&mut buffers, &[created("n.rs", "n\n")]);
+        assert!(matches!(
+            buffers.rebase(&path("n.rs"), "m\n"),
+            Err(BuffersError::Exists { .. })
+        ));
+        assert_eq!(text(&buffers, "n.rs"), Some("n\n"));
     }
 }

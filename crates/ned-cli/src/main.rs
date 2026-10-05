@@ -400,6 +400,9 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf, prior: &[(u64, FileChang
 
     let committed = match &cli.commit {
         Some(message) => {
+            // A script that changes nothing has nothing to commit, whatever
+            // the session's earlier edits (spec §1.3).
+            let prior = if changes.is_empty() { &[][..] } else { prior };
             let commit = apply::commit(
                 &top,
                 before,
