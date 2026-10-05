@@ -120,6 +120,23 @@ impl Language {
             .get_or_init(|| Query::new(&self.grammar(), source).expect("error queries are valid"))
     }
 
+    /// The compiled `queries/<lang>/ast.scm`: what lowering to an abstract
+    /// syntax tree leaves out (`crate::ast`).
+    pub fn ast(self) -> &'static Query {
+        static QUERIES: [OnceLock<Query>; 7] = [const { OnceLock::new() }; 7];
+        let source = match self {
+            Language::Rust => include_str!("../../../queries/rust/ast.scm"),
+            Language::Python => include_str!("../../../queries/python/ast.scm"),
+            Language::Go => include_str!("../../../queries/go/ast.scm"),
+            Language::JavaScript | Language::TypeScript | Language::Tsx => {
+                include_str!("../../../queries/ecma/ast.scm")
+            }
+            Language::Markdown => "",
+        };
+        QUERIES[self as usize]
+            .get_or_init(|| Query::new(&self.grammar(), source).expect("ast queries are valid"))
+    }
+
     /// The compiled highlight query of the language's grammar crate, for
     /// terminal output (§6.6).
     pub fn highlights(self) -> &'static Query {
