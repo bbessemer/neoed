@@ -131,8 +131,8 @@ Neoed (`ned`) is a line editor for AI coding agents, replacing `sed`/ad-hoc
 Python. LLMs, like teletypes, work over an append-only text stream where every
 token costs, so `ned` offers a concise, word-based command language,
 syntax-aware addressing (tree-sitter, plus LSP through a per-workspace daemon),
-and automatic formatting. It is a one-shot CLI plus `ned repl`, a human REPL; an
-MCP server comes later.
+and automatic formatting. It is a one-shot CLI, plus `ned repl`, a human REPL,
+and `ned mcp`, an MCP server.
 
 ## Status
 
@@ -177,8 +177,11 @@ Scheme dialect (tree-sitter query syntax plus Scheme data) that plugins will be
 written in, is unused for now. The REPL (spec §1.4, `ned-cli/src/repl.rs`) runs
 scripts on `buffers` (in-memory edits, undo, merging writes) through `exec`'s
 overlay and `apply`, the post-exec pipeline the CLI shares; it records into a
-session, and `:attach` follows another session's log (`Follower`). MIT-licensed;
-README has install and usage; CI (`.github/workflows/`) gates PRs.
+session, and `:attach` follows another session's log (`Follower`). An invocation
+(`invoke`: `!!`, run, write, commit, record, and `history`/`undo`) prints
+through `invoke::Output`, so `ned-mcp` (spec §1.5; JSON-RPC on stdio, behind
+`ned mcp`) runs the CLI's pipeline as tools; help texts are `ned-core/help/`.
+MIT-licensed; README has install and usage; CI (`.github/workflows/`) gates PRs.
 
 ## Key Documentation
 
@@ -191,27 +194,28 @@ README has install and usage; CI (`.github/workflows/`) gates PRs.
 
 ## Tech Stack / Dependencies
 
-| Technology                        | Role                                       |
-| --------------------------------- | ------------------------------------------ |
-| Rust (edition 2024)               | Language; single fast-starting binary      |
-| `tree-sitter` + grammar crates    | Parsing: Rust, Python, TS/JS, Go, Markdown |
-| `ropey`                           | Rope text buffer                           |
-| `regex`                           | Regex selectors and `sub`                  |
-| `glob`, `ignore`                  | File-set globs; `-w` workspace walk        |
-| `similar`                         | Diff output                                |
-| `serde` + `toml`                  | Config (`.ned.toml`)                       |
-| `thiserror` / `anyhow`            | Errors in core / CLI                       |
-| `clap` (derive)                   | CLI arguments                              |
-| `tokio`, `serde_json`, `libc`     | Daemon: event loop, protocol, `getuid`     |
-| `lsp-types`, `url`                | LSP messages and file URIs                 |
-| `insta`, `assert_cmd`, `tempfile` | Snapshot, CLI, and fs tests                |
+| Technology                        | Role                                        |
+| --------------------------------- | ------------------------------------------- |
+| Rust (edition 2024)               | Language; single fast-starting binary       |
+| `tree-sitter` + grammar crates    | Parsing: Rust, Python, TS/JS, Go, Markdown  |
+| `ropey`                           | Rope text buffer                            |
+| `regex`                           | Regex selectors and `sub`                   |
+| `glob`, `ignore`                  | File-set globs; `-w` workspace walk         |
+| `similar`                         | Diff output                                 |
+| `serde` + `toml`                  | Config (`.ned.toml`)                        |
+| `thiserror` / `anyhow`            | Errors in core / CLI                        |
+| `clap` (derive)                   | CLI arguments                               |
+| `tokio`, `serde_json`, `libc`     | Daemon, MCP: event loop, protocol, `getuid` |
+| `lsp-types`, `url`                | LSP messages and file URIs                  |
+| `insta`, `assert_cmd`, `tempfile` | Snapshot, CLI, and fs tests                 |
 
 ## Repository Structure
 
 ```
 Cargo.toml         workspace; shared version, edition, lints
 crates/ned-core/   library: buffer, script parser, selectors, languages, exec, formatting
-crates/ned-cli/    `ned` binary: args, I/O, the REPL, help texts, daemon client glue
+crates/ned-cli/    `ned` binary: args, I/O, the REPL, daemon client glue
+crates/ned-mcp/    MCP server (protocol and tools) behind `ned mcp`
 crates/ned-daemon/ per-workspace daemon (Unix socket), its sync client, language servers
 crates/ned-scheme/ reader for the Scheme dialect of query files and (later) plugins
 queries/<lang>/    tree-sitter selector queries (.scm), one dir per language
@@ -219,7 +223,7 @@ docs/              specs, agent guide, Claude Code skill; web/ is the project we
 bench/             token-cost (cases/ back spec §8's table) and --commit git-process benchmarks (uv project)
 ```
 
-Planned crates: `ned-mcp`. All logic lives in `ned-core` so frontends stay thin.
+All logic lives in `ned-core` so frontends stay thin.
 
 ## Design Decisions
 

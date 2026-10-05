@@ -108,6 +108,14 @@ cp -r neoed/docs/skills/ned ~/.claude/skills/
 
 Claude then uses ned when it reads, searches or edits files.
 
+**MCP:** `ned mcp` serves the same scripts as tools (`ned`, `outline`, `show`,
+`history`, `undo`, `help`) over the Model Context Protocol, for agents without a
+shell. It records every call in a session, so `undo` and `!!` work there too:
+
+```sh
+claude mcp add ned -- ned mcp
+```
+
 To let each conversation undo its own edits and repeat a failed command with a
 fix, give it a session with a `SessionStart` hook; the
 [agent guide](docs/agent-guide.md#setup) has the snippet.
@@ -240,7 +248,6 @@ to develop ned itself, but the language may still change before 1.0.
 
 In order, with details in [`TODO.md`](TODO.md):
 
-- `ned-mcp`: an MCP server that exposes scripts, `outline` and `show` as tools
 - User-supplied tree-sitter grammars and query files, without rebuilding `ned`
 - Later, plugins: a Scheme over tree-sitter queries for new languages, custom
   commands and syntax-aware code generation

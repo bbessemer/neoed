@@ -45,6 +45,11 @@ Short scripts with no `'` in them can use `-e`:
 script: `ned`'s heredocs read no escapes, so a `\x27` in one goes in as written.
 Add `-n` to preview without writing.
 
+With ned's MCP server connected (`ned mcp`), call its `ned` tool instead of the
+shell: `script` is the script, `files` the files (or `workspace: true` for
+`-w`), and `dry_run`, `commit` and the other flags are arguments. Its `outline`,
+`show`, `history`, `undo` and `help` tools do what those commands do.
+
 Search with `show all` instead of grep. It prints each match's line with its
 number, under the file's name, across a glob or the whole workspace (`-w`, which
 skips ignored files), or `no matches for ...` if there are none; add `+N` for

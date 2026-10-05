@@ -481,8 +481,8 @@ $ claude mcp add ned -- ned mcp
 It takes `-w DIR`, `-s NAME`, `--lang` and `--context`, which apply to every
 call; another flag, or `FILE` arguments, are a usage error. Its workspace is the
 one detected from its working directory, or `DIR` (§1.1), and the `files` of a
-call are relative to its working directory. It connects to the workspace's
-daemon as `ned` does, once for the server's life, and never colours its output.
+call are relative to its working directory. It uses the workspace's daemon as
+`ned` does, and never colours its output.
 
 **Sessions.** The server always records into a session (§1.2): `-s NAME` or
 `NED_SESSION`, otherwise the first of `mcp-1`, `mcp-2`, ... that the workspace
