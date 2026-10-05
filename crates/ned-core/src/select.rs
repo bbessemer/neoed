@@ -16,7 +16,7 @@ use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
 use crate::lang::Language;
 use crate::pattern;
 use crate::script::ast::{
-    LineNo, Part, Pattern, Primary, RegexFlags, Selector, Step, Target, TextKind,
+    CommandKind, LineNo, Part, Pattern, Primary, RegexFlags, Selector, Step, Target, TextKind,
 };
 use crate::span::{Of, Span};
 use crate::syntax::{self, Item};
@@ -225,7 +225,7 @@ pub fn resolve_within(
         }
         named.extend(names.into_iter().map(String::from));
     }
-    let mut matches = start;
+    let mut matches = start.clone();
     let mut parents = Vec::new();
     let mut found = Vec::new();
     let mut skipped = Vec::new();
@@ -234,7 +234,7 @@ pub fn resolve_within(
         let next = found.iter().map(|f| f.m.clone()).collect();
         parents = std::mem::replace(&mut matches, next);
         if matches.is_empty() {
-            return Err(error(no_match(target, i, files, &parents, src)));
+            return Err(error(no_match(target, i, files, &parents, &start, src)));
         }
     }
     let selector = &src[span.clone()];
@@ -266,6 +266,7 @@ fn no_match(
     failed: usize,
     files: &[&SourceFile],
     parents: &[Match],
+    start: &[Match],
     src: &str,
 ) -> E {
     let selector = &target.selector;
@@ -273,6 +274,9 @@ fn no_match(
     let whole = &src[selector.span.clone()];
     let (named, hint) = match range_precedence(selector, src) {
         Some(hint) => (whole, hint),
+        None if let Some(hint) = spanning(target, failed, files, parents, start, src) => {
+            (&src[selector.span.start..step.span.end], hint)
+        }
         None => (
             &src[selector.span.start..step.span.end],
             hint(
@@ -291,6 +295,93 @@ fn no_match(
         hint,
         searched: last.then(|| searched(step, parents)).flatten(),
     }
+}
+
+/// The fix for a search `step` of `target`, the one at `failed`, that matched
+/// nothing within any one of the `parents` the step before it found but
+/// matches across several (§7): the selector without that step, or with an
+/// `A..B` of their items or a line range in its place, whichever resolves
+/// from `start`.
+fn spanning(
+    target: &Target,
+    failed: usize,
+    files: &[&SourceFile],
+    parents: &[Match],
+    start: &[Match],
+    src: &str,
+) -> Option<String> {
+    let selector = &target.selector;
+    let step = &selector.steps[failed];
+    if !matches!(step.primary, Primary::Regex(_) | Primary::Literal(_)) {
+        return None;
+    }
+    let parent = &selector.steps[failed.checked_sub(1)?];
+    let matcher = Matcher::new(&step.primary, files, parents, false).ok()?;
+    let scopes: Vec<(usize, Range<usize>)> = parents
+        .iter()
+        .map(|p| (p.file, scope(&files[p.file].text, &p.range)))
+        .collect();
+    let within = |file, at| {
+        scopes
+            .iter()
+            .position(|(f, s)| *f == file && s.contains(&at))
+    };
+    let mut searched: Vec<usize> = parents.iter().map(|p| p.file).collect();
+    searched.dedup();
+    let (file, m, first, last) = searched.iter().find_map(|&file| {
+        let f = files[file];
+        matcher
+            .find(f, 0..f.text.len(), &mut Vec::new())
+            .into_iter()
+            .find_map(|(m, _)| {
+                let first = within(file, m.start)?;
+                let last = within(file, m.end.checked_sub(1)?)?;
+                (first != last).then_some((file, m, first, last))
+            })
+    })?;
+    let f = files[file];
+    let lines = line_numbers(&f.buffer, &m);
+    let before = &src[selector.span.start..parent.span.start];
+    let rest = &src[step.span.start..selector.span.end];
+    let item = |p: usize| {
+        let (name, item, _) = named(parent, f, &parents[p].range)?;
+        Some(syntax::selector(item.kind, &name))
+    };
+    let items = item(first)
+        .zip(item(last))
+        .map(|(a, b)| format!("{a}..{b}"));
+    let all = if target.all { "all " } else { "" };
+    let resolves = |fixed: &String| {
+        let script = format!("delete {all}{fixed}");
+        let Ok(parsed) = crate::script::parse(&script) else {
+            return false;
+        };
+        let Some(CommandKind::Delete(target)) = parsed.commands.first().map(|c| &c.kind) else {
+            return false;
+        };
+        resolve_within(
+            target,
+            files,
+            start.to_vec(),
+            &script,
+            false,
+            &mut Vec::new(),
+        )
+        .is_ok()
+    };
+    let ranges = items.into_iter().chain([lines.clone()]);
+    let fixed = std::iter::once(format!("{before}{rest}"))
+        .chain(ranges.map(|r| format!("{before}{r}>{rest}")))
+        .find(resolves)?;
+    let location = if files.len() > 1 {
+        format!("{}:{lines}", f.path)
+    } else {
+        lines
+    };
+    Some(format!(
+        "; it matches across {} spans at {location}: did you mean {fixed}?",
+        last - first + 1
+    ))
 }
 
 /// For a search `step` (a regex, literal or heredoc) that matched nothing
@@ -2900,6 +2991,33 @@ fn main() {
                 &[("a.rs", text)]
             )
             .ends_with("did you mean mod:m>fn:a>\"x\"..\"y\"?")
+        );
+    }
+
+    #[test]
+    fn a_nested_search_matching_across_spans_suggests_a_selector_for_it() {
+        let imports = "use a;\nuse b;\n";
+        assert_eq!(
+            error("delete import>\"use a;\\nuse b;\"", &[("a.rs", imports)]),
+            "error: script:1:8: import>\"use a;\\nuse b;\" matches nothing in a.rs; \
+             it matches across 2 spans at 1-2: did you mean \"use a;\\nuse b;\"?"
+        );
+        // Without the step, it's ambiguous, so the items' range takes its place.
+        let commented = "/*\nuse a;\nuse b;\n*/\nuse a;\nuse b;\n";
+        assert_eq!(
+            error("delete import>\"use a;\\nuse b;\"", &[("a.rs", commented)]),
+            "error: script:1:8: import>\"use a;\\nuse b;\" matches nothing in a.rs; \
+             it matches across 2 spans at 5-6: \
+             did you mean import:a..import:b>\"use a;\\nuse b;\"?"
+        );
+        // Spans that aren't items take a line range.
+        assert_eq!(
+            error(
+                "delete /use .;/>\"use a;\\nuse b;\"",
+                &[("a.rs", commented)]
+            ),
+            "error: script:1:8: /use .;/>\"use a;\\nuse b;\" matches nothing in a.rs; \
+             it matches across 2 spans at 2-3: did you mean 2-3>\"use a;\\nuse b;\"?"
         );
     }
 

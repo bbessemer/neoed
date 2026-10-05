@@ -154,6 +154,9 @@ of either kind.
 - [x] A range whose start also matches inside it (skipped, §3.7) prints a note
       naming that line: `/^    for x/../^    }/` spanned two identical loops
       when its end matched once, and the edit replaced both
+- [x] A literal under a `kind>` step that spans two items of the kind
+      (`import>"use a;\nuse b;"`) suggests a line range, `A..B` or dropping the
+      step, instead of only "matches nothing"
 
 ## Bugs
 
