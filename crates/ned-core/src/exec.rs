@@ -77,7 +77,7 @@ pub struct Options<'o> {
     pub overlay: Option<&'o Overlay>,
 }
 
-/// File texts by absolute path (as `std::path::absolute` makes it), read in
+/// File texts by absolute path (as `fs::canonical` makes it), read in
 /// place of the files; a path that doesn't exist on disk is a file made but
 /// not yet written.
 pub type Overlay = BTreeMap<PathBuf, String>;
@@ -470,7 +470,9 @@ impl Executor<'_> {
 
     /// The overlay's text for `path`, read in place of the file (§1.4).
     fn buffer(&self, path: &str) -> Option<&String> {
-        self.options.overlay?.get(&std::path::absolute(path).ok()?)
+        self.options
+            .overlay?
+            .get(&crate::fs::canonical(Path::new(path)))
     }
 
     fn command(&mut self, index: usize, command: &Command) -> Result<(), ExecError> {
@@ -5555,6 +5557,18 @@ fn main() {}
             ("fn b() {}\n", "fn c() {}\n")
         );
         assert!(!changes[0].created);
+    }
+
+    #[test]
+    fn an_overlaid_file_is_read_from_its_buffer_by_any_path() {
+        let out = overlaid(
+            &[("a.rs", "fn a() {}\n"), ("sub/x.txt", "")],
+            &[("a.rs", "fn b() {}\n")],
+            Some(&["sub/../a.rs"]),
+            "replace fn:b.name with \"c\"",
+        );
+        let changes = out.result.unwrap();
+        assert_eq!(changes[0].old, "fn b() {}\n");
     }
 
     #[test]

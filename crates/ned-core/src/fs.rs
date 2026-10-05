@@ -2,10 +2,35 @@
 
 use std::fs::{self, File};
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use thiserror::Error;
+
+/// `path`, absolute, with each part that exists resolved as the system
+/// resolves it (symlinks, `.` and `..`), and the rest normalized as text: one
+/// path for a file however it's reached, even one not made yet.
+pub fn canonical(path: &Path) -> PathBuf {
+    let Ok(absolute) = std::path::absolute(path) else {
+        return path.to_path_buf();
+    };
+    let mut resolved = PathBuf::new();
+    for part in absolute.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            part => {
+                resolved.push(part);
+                if let Ok(real) = resolved.canonicalize() {
+                    resolved = real;
+                }
+            }
+        }
+    }
+    resolved
+}
 
 /// Replaces the contents of every file in `files`, preserving permissions and
 /// writing through symlinks to their targets, and removes the files in

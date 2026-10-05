@@ -182,11 +182,11 @@ $ ned history
 ```
 
 `ned undo` reverts the files of the session's last entry that changed files and
-isn't undone, and prints `undo N: SCRIPT` (the script's first line) followed by
-the summary and hunks of each file it changed, as for an edit (§6.3). Repeated,
-it walks further back; there is no redo. A file the entry created is removed,
-and summarized as `PATH: removed, -N`. Undo writes files atomically and runs no
-formatter, guard or check.
+isn't undone, and prints `undo N: SCRIPT` (the script's first line, or `write`
+for a REPL write) followed by the summary and hunks of each file it changed, as
+for an edit (§6.3). Repeated, it walks further back; there is no redo. A file
+the entry created is removed, and summarized as `PATH: removed, -N`. Undo writes
+files atomically and runs no formatter, guard or check.
 
 If a file no longer holds the text the entry wrote, `undo` is refused (exit 1),
 naming the file. `--force` instead merges the undo into the file's current text,
@@ -403,9 +403,17 @@ full, so `:w` is still `:write`.
 for each (`PATH: created, +N` for a file a `create` made). If a file changed on
 disk since its buffer's base, the buffer's edits are merged into its current
 text, as `ned undo --force` merges (§1.2); an edit that overlaps the change is
-an error naming the line, and nothing is written. A created file that now exists
-is an error too. `:write!` writes the buffers as they are. A write runs no
-formatter, guard or check: they ran when the edits were made.
+an error naming the line, and nothing is written. A created file that now
+exists, or a file removed since, is an error too. `:write!` writes the buffers
+as they are. A write runs no formatter or parse-error guard, and its edits were
+checked when they were made (§6.5), but checks a server runs on save (§6.5;
+rust-analyzer's `cargo check`) run now: if a daemon is running and `--no-check`
+isn't given, the servers diagnose each written file's text before the write as
+saved, then its written text as saved, and the diagnostics the write introduced
+(as §6.5 defines them, at `[check] show` or above) are printed after the
+`written` lines, in `check`'s format. They never undo the write. A file the
+write created has no diagnostics before it. A server that fails or doesn't
+answer in time skips this with a note.
 
 `:commit MSG` takes the rest of the line as the message. It writes as `:write`
 does, then commits as `--commit MSG` does in a session (§1.3): every edit the
@@ -420,7 +428,10 @@ edits.
 `:undo` reverts each file the last script edited (that `:undo` hasn't undone) to
 its text before the script, written or not, and prints the hunks, like
 `ned undo`. If the buffer changed since, the undo is merged into it, and an
-overlap is an error naming the line. There is no redo.
+overlap is an error naming the line. A file the script created is dropped if it
+hasn't been written; once written, undoing its creation is an error, since a
+buffer can't remove a file (`ned undo` reverts the write). Nothing changes when
+`:undo` fails. There is no redo.
 
 `:quit` with unwritten edits is refused, naming the files. Ctrl-D is `:quit`,
 and Ctrl-C clears the line. At the end of input that isn't a terminal, unwritten
@@ -429,9 +440,10 @@ otherwise it exits 0.
 
 **Sessions.** The REPL always records into a session (§1.2): `-s NAME` or
 `NED_SESSION`, otherwise the first of `repl-1`, `repl-2`, ... that the workspace
-has no log for. A note on stderr names it at start. Each script is recorded with
-no changes, and `:write` and `:commit` as a `write` entry (`:commit`'s holding
-its `commit`), so `ned undo` reverts a write and `--commit` includes it.
+has no log for, whose log it creates at start so that two started together take
+different names. A note on stderr names it at start. Each script is recorded
+with no changes, and `:write` and `:commit` as a `write` entry (`:commit`'s
+holding its `commit`), so `ned undo` reverts a write and `--commit` includes it.
 
 `:attach NAME` (or `--attach NAME` at start) follows session `NAME`, an agent's
 say: it prints the session's last 10 history lines, then each entry another

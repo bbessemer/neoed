@@ -285,6 +285,7 @@ fn main() -> ExitCode {
                 workspace: cli.workspace.is_some().then_some(root),
                 script: Some(src),
                 undoes: None,
+                write: false,
                 dry_run: cli.dry_run,
                 exit: ran.exit,
                 error: ran.error,

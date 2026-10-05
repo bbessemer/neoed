@@ -418,7 +418,7 @@ impl Repo {
     /// the repository doesn't hold it (or one nested in its tree, or a
     /// submodule, does).
     fn relative(&self, path: &Path) -> Result<Option<String>, GitError> {
-        let path = canonical(path);
+        let path = crate::fs::canonical(path);
         let Ok(rel) = path.strip_prefix(&self.top) else {
             return Ok(None);
         };
@@ -742,25 +742,6 @@ fn toplevel(dir: &Path) -> Result<Option<PathBuf>, GitError> {
 /// The nearest of `path` and its ancestors that is a directory.
 fn existing_dir(path: &Path) -> &Path {
     path.ancestors().find(|dir| dir.is_dir()).unwrap_or(path)
-}
-
-/// `path` with its longest existing ancestor canonicalized, for a file the
-/// script creates.
-fn canonical(path: &Path) -> PathBuf {
-    let mut rest = Vec::new();
-    let mut at = path;
-    loop {
-        if let Ok(found) = at.canonicalize() {
-            return rest.iter().rev().fold(found, |p, part| p.join(part));
-        }
-        match (at.parent(), at.file_name()) {
-            (Some(parent), Some(name)) => {
-                rest.push(name.to_owned());
-                at = parent;
-            }
-            _ => return path.to_path_buf(),
-        }
-    }
 }
 
 /// `path` with `suffix` added to its name.

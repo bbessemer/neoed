@@ -16,7 +16,7 @@ use thiserror::Error;
 /// The log format version, in the header's `ned_session` field.
 pub const FORMAT: u64 = 1;
 
-/// One recorded invocation: a script, or an undo.
+/// One recorded invocation: a script, an undo, or a REPL's write.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     /// Assigned by [`Log::append`], numbering entries from 1.
@@ -26,9 +26,12 @@ pub struct Entry {
     pub cwd: PathBuf,
     pub files: Vec<String>,
     pub workspace: Option<PathBuf>,
-    /// `None` for an undo.
+    /// `None` for an undo or a write.
     pub script: Option<String>,
     pub undoes: Option<u64>,
+    /// A REPL's write of its buffers (spec §1.4).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub write: bool,
     pub dry_run: bool,
     pub exit: u8,
     pub error: Option<String>,
@@ -170,6 +173,19 @@ fn log_workspace(path: &Path) -> Option<PathBuf> {
         .map(|header| header.workspace)
 }
 
+/// The first of `PREFIX-1`, `PREFIX-2`, ... that the workspace at `root` has
+/// no log for, a new session, whose log it creates so no other caller takes
+/// the same name.
+pub fn next_free(state_dir: &Path, root: &Path, prefix: &str) -> Result<Session, SessionError> {
+    for n in 1.. {
+        let session = Session::new(state_dir, root, &format!("{prefix}-{n}"))?;
+        if session.lock()?.create()? {
+            return Ok(session);
+        }
+    }
+    unreachable!("there are always more names")
+}
+
 #[derive(Debug, PartialEq, Eq, Error)]
 pub enum RepeatError {
     #[error("`!!` repeats the session's last script, but it has none; write the script out")]
@@ -286,6 +302,7 @@ pub fn history(entries: &[Entry], all: bool) -> String {
     let mut out = String::new();
     for entry in shown {
         let mut parts = vec![match (entry.undoes, entry.exit, entry.dry_run) {
+            _ if entry.write => "write".to_string(),
             (Some(id), _, _) => format!("undo {id}"),
             (None, 0, true) => "dry run".to_string(),
             (None, 0, false) => "ok".to_string(),
@@ -620,21 +637,37 @@ fn newline_before(file: &mut File, before: u64) -> io::Result<Option<u64>> {
 }
 
 impl Log<'_> {
+    /// Creates the log with just its header, unless it exists: whether it did.
+    fn create(&self) -> Result<bool, SessionError> {
+        let path = &self.session.log;
+        let io_error = |source| SessionError::Io {
+            path: path.clone(),
+            source,
+        };
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(err) => return Err(io_error(err)),
+        };
+        file.write_all(self.header().as_bytes()).map_err(io_error)?;
+        Ok(true)
+    }
+
+    /// The log's first line.
+    fn header(&self) -> String {
+        let header = Header {
+            ned_session: FORMAT,
+            workspace: self.session.root.clone(),
+        };
+        serde_json::to_string(&header).expect("a header serializes") + "\n"
+    }
+
     /// Every entry, oldest first; none if nothing has been recorded.
     pub fn entries(&self) -> Result<Vec<Entry>, SessionError> {
         let Some(text) = self.read()? else {
             return Ok(Vec::new());
         };
-        // A last line without its newline is an append cut short, which the next
-        // append replaces.
-        let text = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
-        let mut lines = text.lines().enumerate();
-        if let Some((_, header)) = lines.next() {
-            self.check_header(header)?;
-        }
-        lines
-            .map(|(i, line)| serde_json::from_str(line).map_err(|err| self.malformed(i, &err)))
-            .collect()
+        parse(&self.session.log, complete(&text), 0)
     }
 
     /// Appends `entry` with the id after the last entry's, which it returns.
@@ -661,12 +694,7 @@ impl Log<'_> {
 
         let mut record = String::new();
         let last = if end == 0 {
-            let header = Header {
-                ned_session: FORMAT,
-                workspace: self.session.root.clone(),
-            };
-            record.push_str(&serde_json::to_string(&header).expect("a header serializes"));
-            record.push('\n');
+            record.push_str(&self.header());
             0
         } else {
             let mut header = String::new();
@@ -674,7 +702,7 @@ impl Log<'_> {
             BufReader::new(&file)
                 .read_line(&mut header)
                 .map_err(io_error)?;
-            self.check_header(header.trim_end())?;
+            check_header(&self.session.log, header.trim_end())?;
             match self.last_id(&mut file, end).map_err(io_error)? {
                 Some(id) => id,
                 // Not an entry: `entries` says where the log is malformed.
@@ -725,24 +753,120 @@ impl Log<'_> {
         }
     }
 
-    fn check_header(&self, line: &str) -> Result<(), SessionError> {
-        let header: Header = serde_json::from_str(line).map_err(|err| self.malformed(0, &err))?;
-        if header.ned_session != FORMAT {
-            return Err(SessionError::UnknownFormat {
-                path: self.session.log.clone(),
-                version: header.ned_session,
-            });
-        }
-        Ok(())
+    /// Every entry, as [`Log::entries`] reads them, and a [`Follower`] that reads
+    /// the entries appended after them.
+    pub fn follow(&self) -> Result<(Vec<Entry>, Follower), SessionError> {
+        let text = self.read()?.unwrap_or_default();
+        let text = complete(&text);
+        let entries = parse(&self.session.log, text, 0)?;
+        let follower = Follower {
+            log: self.session.log.clone(),
+            offset: text.len() as u64,
+            line: text.lines().count(),
+            file: fs::metadata(&self.session.log)
+                .ok()
+                .as_ref()
+                .and_then(identity),
+        };
+        Ok((entries, follower))
     }
+}
 
-    /// The error for the log's line `index` (from 0).
-    fn malformed(&self, index: usize, err: &serde_json::Error) -> SessionError {
-        SessionError::Malformed {
-            path: self.session.log.clone(),
-            line: index + 1,
-            message: err.to_string(),
+/// What tells one file from another at the same path: its device and inode.
+#[cfg(unix)]
+fn identity(metadata: &fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    Some((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+fn identity(_: &fs::Metadata) -> Option<(u64, u64)> {
+    None
+}
+
+/// Reads the entries appended to a session's log, without its lock: appends
+/// write whole lines, and a line without its newline yet is left for the next
+/// [`Follower::poll`].
+#[derive(Debug)]
+pub struct Follower {
+    log: PathBuf,
+    /// Where the next line starts.
+    offset: u64,
+    /// The index of the line at `offset`, for errors.
+    line: usize,
+    /// The log's device and inode when last read, to tell a log made anew.
+    file: Option<(u64, u64)>,
+}
+
+impl Follower {
+    /// The entries appended since the last poll, oldest first.
+    pub fn poll(&mut self) -> Result<Vec<Entry>, SessionError> {
+        let io_error = |source| SessionError::Io {
+            path: self.log.clone(),
+            source,
+        };
+        let mut file = match File::open(&self.log) {
+            Ok(file) => file,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(io_error(err)),
+        };
+        let metadata = file.metadata().map_err(io_error)?;
+        // A log deleted and recorded in again is read from its start.
+        if metadata.len() < self.offset || identity(&metadata) != self.file {
+            self.offset = 0;
+            self.line = 0;
         }
+        self.file = identity(&metadata);
+        let mut bytes = Vec::new();
+        file.seek(SeekFrom::Start(self.offset))
+            .and_then(|_| file.read_to_end(&mut bytes))
+            .map_err(io_error)?;
+        let text = String::from_utf8_lossy(&bytes);
+        let text = complete(&text);
+        let entries = parse(&self.log, text, self.line)?;
+        self.offset += text.len() as u64;
+        self.line += text.lines().count();
+        Ok(entries)
+    }
+}
+
+/// `text` up to the end of its last line: a last line without its newline is
+/// an append cut short, which the next append replaces, or one in progress.
+fn complete(text: &str) -> &str {
+    &text[..text.rfind('\n').map_or(0, |i| i + 1)]
+}
+
+/// The entries in `text`, whole lines of the log at `log` from line index
+/// `first` (the header's is 0, which is checked instead).
+fn parse(log: &Path, text: &str, first: usize) -> Result<Vec<Entry>, SessionError> {
+    let mut entries = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let i = first + i;
+        match i {
+            0 => check_header(log, line)?,
+            _ => entries.push(serde_json::from_str(line).map_err(|err| malformed(log, i, &err))?),
+        }
+    }
+    Ok(entries)
+}
+
+fn check_header(log: &Path, line: &str) -> Result<(), SessionError> {
+    let header: Header = serde_json::from_str(line).map_err(|err| malformed(log, 0, &err))?;
+    if header.ned_session != FORMAT {
+        return Err(SessionError::UnknownFormat {
+            path: log.to_path_buf(),
+            version: header.ned_session,
+        });
+    }
+    Ok(())
+}
+
+/// The error for line `index` (from 0) of the log at `log`.
+fn malformed(log: &Path, index: usize, err: &serde_json::Error) -> SessionError {
+    SessionError::Malformed {
+        path: log.to_path_buf(),
+        line: index + 1,
+        message: err.to_string(),
     }
 }
 
@@ -764,6 +888,7 @@ mod tests {
             workspace: None,
             script: Some(script.into()),
             undoes: None,
+            write: false,
             dry_run: false,
             exit: 0,
             error: None,
@@ -1200,6 +1325,159 @@ mod tests {
 8 exit 2: show 1 (+1 line)
 "
         );
+    }
+
+    #[test]
+    fn a_write_is_recorded_without_a_script_and_shown_as_a_write() {
+        let mut write = recorded(2, None, 0, 1);
+        write.write = true;
+        let entries = [recorded(1, Some("show 1"), 0, 0), write.clone()];
+        assert_eq!(history(&entries, false), "1 ok: show 1\n2 write, 1 file\n");
+
+        let json = serde_json::to_string(&write).unwrap();
+        assert!(json.contains("\"write\":true"), "{json}");
+        assert_eq!(serde_json::from_str::<Entry>(&json).unwrap(), write);
+        let script = serde_json::to_string(&entries[0]).unwrap();
+        assert!(!script.contains("write"), "{script}");
+        assert!(!serde_json::from_str::<Entry>(&script).unwrap().write);
+
+        let (repeated, script) = repeat("!!", &entries, false).unwrap().unwrap();
+        assert_eq!((repeated.id, script.as_str()), (1, "show 1"));
+    }
+
+    #[test]
+    fn a_new_session_takes_the_first_free_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("ned");
+        let root = Path::new("/src/proj");
+        assert_eq!(next_free(&state, root, "repl").unwrap().name(), "repl-1");
+        for name in ["repl-1", "repl-3", "agent"] {
+            session(&state, "/src/proj", name)
+                .lock()
+                .unwrap()
+                .append(entry("show 1"))
+                .unwrap();
+        }
+        assert_eq!(next_free(&state, root, "repl").unwrap().name(), "repl-2");
+        assert_eq!(
+            next_free(&state, Path::new("/src/other"), "repl")
+                .unwrap()
+                .name(),
+            "repl-1"
+        );
+    }
+
+    #[test]
+    fn a_new_session_reserves_its_name_before_anything_is_recorded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("ned");
+        let root = Path::new("/src/proj");
+        let first = next_free(&state, root, "mcp").unwrap();
+        let second = next_free(&state, root, "mcp").unwrap();
+        assert_eq!([first.name(), second.name()], ["mcp-1", "mcp-2"]);
+        assert_eq!(sessions(&state, root).unwrap(), ["mcp-1", "mcp-2"]);
+        assert!(first.exists());
+        assert!(first.lock().unwrap().entries().unwrap().is_empty());
+        assert_eq!(first.lock().unwrap().append(entry("show 1")).unwrap(), 1);
+        assert_eq!(
+            history(&first.lock().unwrap().entries().unwrap(), false)
+                .lines()
+                .count(),
+            1
+        );
+        second.delete().unwrap();
+        assert_eq!(sessions(&state, root).unwrap(), ["mcp-1"]);
+    }
+
+    #[test]
+    fn a_follower_reads_each_entry_appended_once_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("ned");
+        let session = session(&state, "/src/proj", "default");
+        let (entries, mut follower) = session.lock().unwrap().follow().unwrap();
+        assert!(entries.is_empty());
+        assert!(follower.poll().unwrap().is_empty());
+
+        session.lock().unwrap().append(entry("show 1")).unwrap();
+        session.lock().unwrap().append(entry("show 2")).unwrap();
+        let ids = |entries: Vec<Entry>| entries.iter().map(|e| e.id).collect::<Vec<_>>();
+        assert_eq!(ids(follower.poll().unwrap()), [1, 2]);
+        assert!(follower.poll().unwrap().is_empty());
+
+        let (entries, mut later) = session.lock().unwrap().follow().unwrap();
+        assert_eq!(ids(entries), [1, 2]);
+        assert!(later.poll().unwrap().is_empty());
+
+        // An append in progress: its line has no newline yet.
+        let path = log_path(&state);
+        let text = fs::read_to_string(&path).unwrap();
+        let mut third = entry("show 3");
+        third.id = 3;
+        let line = serde_json::to_string(&third).unwrap();
+        fs::write(&path, format!("{text}{}", &line[..10])).unwrap();
+        assert!(follower.poll().unwrap().is_empty());
+        fs::write(&path, format!("{text}{line}\n")).unwrap();
+        assert_eq!(follower.poll().unwrap(), [third.clone()]);
+        assert_eq!(later.poll().unwrap(), [third]);
+    }
+
+    #[test]
+    fn a_follower_starts_over_on_a_log_made_anew() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("ned");
+        let ids = |entries: Vec<Entry>| entries.iter().map(|e| e.id).collect::<Vec<_>>();
+        let (_, mut follower) = session(&state, "/src/proj", "default")
+            .lock()
+            .unwrap()
+            .follow()
+            .unwrap();
+        let append = |script| {
+            session(&state, "/src/proj", "default")
+                .lock()
+                .unwrap()
+                .append(entry(script))
+                .unwrap()
+        };
+        append("show 1");
+        append("show 2");
+        assert_eq!(ids(follower.poll().unwrap()), [1, 2]);
+
+        // Deleted and recorded in again: shorter than what was read.
+        session(&state, "/src/proj", "default").delete().unwrap();
+        append("show 3");
+        assert_eq!(
+            follower.poll().unwrap()[0].script.as_deref(),
+            Some("show 3")
+        );
+
+        // Replaced by a longer log: another file.
+        let path = log_path(&state);
+        let other = tmp.path().join("other.log");
+        let mut text = fs::read_to_string(&path).unwrap();
+        for id in 2..=4 {
+            let mut entry = entry("show 4");
+            entry.id = id;
+            text += &(serde_json::to_string(&entry).unwrap() + "\n");
+        }
+        fs::write(&other, text).unwrap();
+        fs::rename(&other, &path).unwrap();
+        assert_eq!(ids(follower.poll().unwrap()), [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn a_follower_names_a_malformed_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("ned");
+        let session = session(&state, "/src/proj", "default");
+        session.lock().unwrap().append(entry("show 1")).unwrap();
+        let (_, mut follower) = session.lock().unwrap().follow().unwrap();
+        let path = log_path(&state);
+        let text = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!("{text}not json\n")).unwrap();
+        match follower.poll() {
+            Err(SessionError::Malformed { line: 3, .. }) => {}
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

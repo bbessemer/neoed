@@ -150,8 +150,12 @@ pub fn undo(flag: Option<String>, dir: Option<PathBuf>, force: bool) -> Result<(
         ));
     }
 
-    let script = undo.script.as_deref().map(session::script_summary);
-    outln!("undo {}: {}", undo.id, script.unwrap_or_default());
+    // An entry undo can revert has no script only if it's a REPL write.
+    let script = undo
+        .script
+        .as_deref()
+        .map_or("write".to_string(), session::script_summary);
+    outln!("undo {}: {script}", undo.id);
     for change in &undo.changes {
         let path = change.path.strip_prefix(&cwd).unwrap_or(&change.path);
         let path = path.to_string_lossy();
@@ -178,6 +182,7 @@ pub fn undo(flag: Option<String>, dir: Option<PathBuf>, force: bool) -> Result<(
         workspace: None,
         script: None,
         undoes: Some(undo.id),
+        write: false,
         dry_run: false,
         exit: 0,
         error: None,

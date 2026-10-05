@@ -5,9 +5,10 @@ repl
 
 An editor for humans. Each line is a script, run on the file set as `ned`
 runs it, but edits go to in-memory buffers until written. Output, the
-syntax guard, formatting and edit checks are as for `ned`. A script that ends
-inside a heredoc or pattern continues on the next line. `!!` repeats the
-session's last script.
+syntax guard, formatting and edit checks are as for `ned`; :write also
+reports what checks run on save (cargo check) find the write introduced.
+A script that ends inside a heredoc or pattern continues on the next line.
+`!!` repeats the session's last script.
 
 Commands (any unambiguous prefix works: :w, :u, :q):
   :write [FILE...]    write unwritten edits, merging into files changed since
