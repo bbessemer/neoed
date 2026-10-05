@@ -9,6 +9,7 @@ changing behaviour.
 ```
 ned [FLAGS] [FILE... | -w [DIR]] [-e SCRIPT]...
 ned repl [FLAGS] [FILE... | -w [DIR]] [--attach NAME]
+ned mcp [FLAGS]
 ned help [TOPIC]
 ned daemon start|status|stop [DIR]
 ned history [-s NAME] [-w DIR] [--all]
@@ -20,10 +21,10 @@ ned session delete NAME... [-w DIR]
 `ned help` prints a summary of the language, sized to fit in an agent's context.
 `ned help TOPIC` details one verb (`show`, `outline`, `check`, `allow`,
 `replace`, `insert`, `delete`, `sub`, `move`, `rename`, `file`, `create`), or
-`selectors`, `text`, `config`, `session` or `repl`. An unknown topic is a usage
-error that lists the topics. A subcommand (`repl`, `help`, `daemon`, `history`,
-`undo`, `session`) must be the first argument; write a file with one of those
-names as `./help`, say.
+`selectors`, `text`, `config`, `session`, `repl` or `mcp`. An unknown topic is a
+usage error that lists the topics. A subcommand (`repl`, `mcp`, `help`,
+`daemon`, `history`, `undo`, `session`) must be the first argument; write a file
+with one of those names as `./help`, say.
 
 - `-e SCRIPT` may be repeated; the scripts are joined with newlines, in order.
 - Without `-e`, the script is read from stdin. If stdin is a terminal, `ned`
@@ -465,6 +466,66 @@ the line, so `:write` refuses until the overlap is resolved (`:write!`
 overwrites the change, `:reload` drops the edits). `:detach` stops following and
 records into the REPL's own session again. A session the workspace has no log
 for is an error listing its sessions.
+
+### 1.5 MCP server
+
+`ned mcp` serves `ned` to an agent framework over the Model Context Protocol, so
+an agent can run scripts without a shell. It speaks JSON-RPC 2.0 on stdin and
+stdout, one message per line; stdout carries nothing else, and notes go to
+stderr. It runs until stdin ends, then exits 0.
+
+```
+$ claude mcp add ned -- ned mcp
+```
+
+It takes `-w DIR`, `-s NAME`, `--lang` and `--context`, which apply to every
+call; another flag, or `FILE` arguments, are a usage error. Its workspace is the
+one detected from its working directory, or `DIR` (§1.1), and the `files` of a
+call are relative to its working directory. It connects to the workspace's
+daemon as `ned` does, once for the server's life, and never colours its output.
+
+**Sessions.** The server always records into a session (§1.2): `-s NAME` or
+`NED_SESSION`, otherwise the first of `mcp-1`, `mcp-2`, ... that the workspace
+has no log for, whose log it creates at start so that two started together take
+different names. A note on stderr names it at start, and so do the
+`instructions` it returns from `initialize`. Each call that runs a script is
+recorded as the `ned` invocation it stands for (its `files` as `FILE` arguments,
+`workspace` as `-w`), and `undo` as `ned undo` is, so `ned history`, `ned undo`
+and `--commit` see an agent's calls whichever way it made them.
+
+**Protocol.** The server answers `initialize`, `ping`, `tools/list` and
+`tools/call`, one request at a time, in order; notifications need no answer and
+are ignored. `initialize` answers with the client's protocol version if it is
+one the server knows (`2025-06-18`, `2025-03-26` or `2024-11-05`), otherwise the
+latest, with the `tools` capability and `serverInfo` naming `ned` and its
+version (`-V`). A line that isn't JSON is a parse error (-32700), a message that
+isn't a request, or a batch, is an invalid request (-32600), an unknown method
+is -32601, and an unknown tool, or arguments missing one that's required or of
+the wrong type, are invalid params (-32602).
+
+**Tools.** A call's result is one text content holding what `ned` would print
+for it, stdout then stderr, without colour. If its exit code (§7) isn't 0, the
+result has `isError` set and its text ends with the line `exit N`. A usage error
+(both `files` and `workspace`, or `commit` with `dry_run`, say) is such a
+result, with exit 2, not a protocol error.
+
+| Tool      | Arguments                                                                                                  | Runs                                  |
+| --------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| `ned`     | `script`, and optionally `files`, `workspace`, `dry_run`, `quiet`, `force`, `no_fmt`, `no_check`, `commit` | `ned [FILES \| -w] [FLAGS] -e SCRIPT` |
+| `outline` | `files` or `workspace`                                                                                     | `outline`                             |
+| `show`    | `selector`, and `files` or `workspace`                                                                     | `show SELECTOR`                       |
+| `history` | optionally `all`                                                                                           | `ned history [--all]`                 |
+| `undo`    | optionally `force`                                                                                         | `ned undo [--force]`                  |
+| `help`    | optionally `topic`                                                                                         | `ned help [TOPIC]`                    |
+
+`files` is an array of paths and globs, `workspace` a boolean for `-w`,
+`script`, `selector`, `commit` (`--commit`'s message) and `topic` are strings,
+and the rest are booleans for the flags of the same names. `selector` is written
+as after `show`, so `all /re/ +2` works. A `ned` script may be `!!` (§1.2),
+which repeats on the last script's file set unless the call gives `files` or
+`workspace`. The `ned` tool's description is the `ned help` summary, so an agent
+has the language without asking; `outline`, `show`, `history` and `help` are
+marked read-only.
 
 ## 2. Scripts
 

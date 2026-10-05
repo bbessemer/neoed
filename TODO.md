@@ -71,14 +71,23 @@ which it is. When to release 1.0 is TBD.
 The MCP server reads sessions, which are done. User-supplied grammars and
 plugins close the phase and may slip.
 
-### MCP server
+### MCP server _(split)_
 
-`ned-mcp`: an MCP server exposes script execution, `outline` and `show` as
-tools, so agent frameworks call `ned` without a shell. It is a thin client of
-`ned-core` and the session store, with no logic of its own, and records into a
-session automatically. Depends on Sessions.
+`ned mcp` (spec §1.5): an MCP server exposes script execution, `outline`,
+`show`, `history`, `undo` and `help` as tools, so agent frameworks call `ned`
+without a shell. Its protocol lives in the `ned-mcp` crate, a thin client of
+`ned-core` and the session store with no logic of its own, and it records into a
+session automatically.
 
-Version: minor; a new binary.
+- [x] Spec
+- [ ] Move the one-shot pipeline, session glue, `undo`/`history` and help texts
+      from `ned-cli` into `ned-core`
+- [ ] `ned-mcp` protocol (initialize, ping, tools/list) and `ned mcp`
+- [ ] `ned`, `outline`, `show` and `help` tools
+- [ ] `history` and `undo` tools
+- [ ] README, agent guide and skill
+
+Version: minor; a new subcommand.
 
 ### User-supplied grammars _(split)_
 
