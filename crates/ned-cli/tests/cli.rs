@@ -218,6 +218,33 @@ fn a_theme_paints_shown_code_in_truecolor() {
 }
 
 #[test]
+fn ned_theme_sets_a_theme_without_a_config_file() {
+    let dir = dir_with(&[
+        ("parser.rs", PARSER),
+        (
+            "t.toml",
+            "from = \"default-dark\"\n[syntax]\nkeyword = \"#010203\"\n",
+        ),
+    ]);
+    let args = ["--color", "always", "parser.rs", "-e", "show fn:new"];
+    let run = |theme| {
+        let env = [("COLORTERM", "truecolor"), ("NED_THEME", theme)];
+        ned_with(dir.path(), NO_FORMATTERS, &env, &args, "").replace('\x1b', r"\e")
+    };
+    // default-light's keyword colour.
+    let light = run("default-light");
+    assert!(light.contains(r"\e[38;2;166;38;164mpub\e[0m"), "{light}");
+    let file = run("t.toml");
+    assert!(file.contains(r"\e[38;2;1;2;3mpub\e[0m"), "{file}");
+    assert_snapshot!(run("nope"), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    \e[1;31merror:\e[0m NED_THEME: invalid config: no theme `nope`: it isn't built in (default-dark, default-light) and there is no {config}/ned/themes/nope.toml; write it, or use a built-in
+    ");
+}
+
+#[test]
 fn a_theme_tints_changed_lines() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
     let script = r#"replace "unexpected end" with "unexpected end of input""#;

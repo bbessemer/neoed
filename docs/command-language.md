@@ -1619,7 +1619,9 @@ when stdout isn't coloured, stderr uses the 16 colours.
 
 Only the user config sets a theme; `[theme]` or `theme` in a `.ned.toml` is an
 error. `theme = "NAME"` uses a theme as it is; a `[theme]` table writes one, or
-changes one named by `from`:
+changes one named by `from`. A non-empty `NED_THEME` environment variable names
+a theme as `theme = "NAME"` does, instead of the user config's, with a path
+relative to the working directory:
 
 ```toml
 [theme]

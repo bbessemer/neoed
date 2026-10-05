@@ -188,7 +188,8 @@ with aligned line numbers. A non-empty `NO_COLOR` turns it off, and
 `--color always` or `--color never` overrides both. On a truecolor or 256-colour
 terminal, a theme set in the user config colours each kind of token its own way,
 and tints changed lines red or green: `theme = "default-dark"` (or
-`default-light`, or your own; see `ned help config`).
+`default-light`, or your own; see `ned help config`), or
+`NED_THEME=default-dark` in the environment.
 
 With `-s NAME`, or `NED_SESSION=NAME` in the environment, `ned` records each
 invocation in a session: `ned history` lists them, `ned undo` reverts the last

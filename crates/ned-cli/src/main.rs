@@ -26,7 +26,7 @@ mod mcp;
 mod repl;
 mod session;
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -222,7 +222,11 @@ fn main() -> ExitCode {
     let var = std::env::var_os;
     let depth = Depth::detect(var("COLORTERM").as_deref(), var("TERM").as_deref());
     let read = || {
-        let theme = config::user_theme(config::user_config().as_deref())?;
+        let env = var("NED_THEME");
+        let theme = config::user_theme(
+            config::user_config().as_deref(),
+            env.as_deref().and_then(OsStr::to_str),
+        )?;
         Ok::<_, config::ConfigError>(theme.map(|theme| &*Box::leak(Box::new(theme))))
     };
     match themed(styles, depth, read) {
@@ -381,10 +385,9 @@ mod tests {
     use super::*;
 
     fn default() -> &'static Theme {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "theme = \"default-dark\"\n").unwrap();
-        let theme = config::user_theme(Some(&path)).unwrap().unwrap();
+        let theme = config::user_theme(None, Some("default-dark"))
+            .unwrap()
+            .unwrap();
         Box::leak(Box::new(theme))
     }
 

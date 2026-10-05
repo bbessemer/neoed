@@ -191,8 +191,18 @@ pub fn user_config() -> Option<PathBuf> {
     Some(config.join("ned/config.toml"))
 }
 
-/// The theme the user config at `path` sets, if any (spec §6.6).
-pub fn user_theme(path: Option<&Path>) -> Result<Option<Theme>, ConfigError> {
+/// The theme `NED_THEME`, as `env`, names when not empty, else the one the
+/// user config at `path` sets, if any (spec §6.6).
+pub fn user_theme(path: Option<&Path>, env: Option<&str>) -> Result<Option<Theme>, ConfigError> {
+    let themes = path
+        .and_then(Path::parent)
+        .map(|dir| dir.join("themes"))
+        .unwrap_or_default();
+    if let Some(name) = env.filter(|name| !name.is_empty()) {
+        let at = env::current_dir().unwrap_or_default().join("NED_THEME");
+        let setting = Spanned::new(0..0, Setting::Name(name.into()));
+        return theme::resolve(setting, &at, "", &themes).map(Some);
+    }
     let Some(path) = path else { return Ok(None) };
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
@@ -208,7 +218,6 @@ pub fn user_theme(path: Option<&Path>) -> Result<Option<Theme>, ConfigError> {
     let Some(setting) = raw.theme else {
         return Ok(None);
     };
-    let themes = path.parent().unwrap_or(path).join("themes");
     theme::resolve(setting, path, &text, &themes).map(Some)
 }
 
@@ -322,7 +331,9 @@ pub(crate) fn error_at(
     message: String,
 ) -> ConfigError {
     let mut location = display(path);
-    if let Some(span) = span {
+    // A setting from outside a file, such as `NED_THEME`, has no text to point
+    // into.
+    if let Some(span) = span.filter(|_| !text.is_empty()) {
         let (line, col) = crate::script::error::location(text, span.start);
         location = format!("{location}:{line}:{col}");
     }
@@ -543,7 +554,7 @@ pub(crate) mod tests {
         )]);
         let path = root.path().join("config.toml");
         assert!(Config::new(Some(&path)).is_ok());
-        assert!(!user_theme(Some(&path)).unwrap().unwrap().dark);
+        assert!(!user_theme(Some(&path), None).unwrap().unwrap().dark);
     }
 
     #[test]
@@ -551,7 +562,7 @@ pub(crate) mod tests {
         let root = tree(&[("config.toml", "theme = \"nope\"\n")]);
         let path = root.path().join("config.toml");
         assert!(Config::new(Some(&path)).is_ok());
-        let err = user_theme(Some(&path)).unwrap_err();
+        let err = user_theme(Some(&path), None).unwrap_err();
         assert!(err.location.ends_with("config.toml:1:9"), "{err}");
         assert!(err.message.contains("default-dark"), "{err}");
     }
@@ -559,9 +570,15 @@ pub(crate) mod tests {
     #[test]
     fn no_user_theme_without_a_setting_or_a_file() {
         let root = tree(&[("config.toml", "[daemon]\nidle_timeout = 5\n")]);
-        assert_eq!(user_theme(Some(&root.path().join("config.toml"))), Ok(None));
-        assert_eq!(user_theme(Some(&root.path().join("gone.toml"))), Ok(None));
-        assert_eq!(user_theme(None), Ok(None));
+        assert_eq!(
+            user_theme(Some(&root.path().join("config.toml")), None),
+            Ok(None)
+        );
+        assert_eq!(
+            user_theme(Some(&root.path().join("gone.toml")), None),
+            Ok(None)
+        );
+        assert_eq!(user_theme(None, None), Ok(None));
     }
 
     #[test]
@@ -569,7 +586,7 @@ pub(crate) mod tests {
         let root = tree(&[("config.toml", "[theme]\nfrom = \"default-dark\"\nbad = 1\n")]);
         let path = root.path().join("config.toml");
         assert!(Config::new(Some(&path)).is_ok());
-        let err = user_theme(Some(&path)).unwrap_err();
+        let err = user_theme(Some(&path), None).unwrap_err();
         assert!(err.location.ends_with("config.toml:3:1"), "{err}");
         assert!(err.message.contains("bad"), "{err}");
     }
@@ -583,9 +600,59 @@ pub(crate) mod tests {
                 "from = \"default-dark\"\nadded = \"#000001\"\n",
             ),
         ]);
-        let theme = user_theme(Some(&root.path().join("config.toml")))
+        let theme = user_theme(Some(&root.path().join("config.toml")), None)
             .unwrap()
             .unwrap();
         assert_eq!(theme.added, "#000001".parse().unwrap());
+    }
+
+    #[test]
+    fn ned_theme_needs_no_user_config() {
+        let theme = user_theme(None, Some("default-light")).unwrap().unwrap();
+        assert!(!theme.dark);
+    }
+
+    #[test]
+    fn ned_theme_wins_over_the_user_config() {
+        let root = tree(&[("config.toml", "theme = \"default-dark\"\n")]);
+        let path = root.path().join("config.toml");
+        let theme = user_theme(Some(&path), Some("default-light"))
+            .unwrap()
+            .unwrap();
+        assert!(!theme.dark);
+        let theme = user_theme(Some(&path), Some("")).unwrap().unwrap();
+        assert!(theme.dark);
+        assert_eq!(user_theme(None, Some("")), Ok(None));
+    }
+
+    #[test]
+    fn ned_theme_names_themes_beside_the_user_config_or_a_path() {
+        let root = tree(&[
+            (
+                "themes/mine.toml",
+                "from = \"default-dark\"\nadded = \"#000001\"\n",
+            ),
+            (
+                "elsewhere/t.toml",
+                "from = \"default-dark\"\nadded = \"#000002\"\n",
+            ),
+        ]);
+        let path = root.path().join("config.toml");
+        let theme = user_theme(Some(&path), Some("mine")).unwrap().unwrap();
+        assert_eq!(theme.added, "#000001".parse().unwrap());
+        let other = root.path().join("elsewhere/t.toml");
+        let theme = user_theme(Some(&path), other.to_str()).unwrap().unwrap();
+        assert_eq!(theme.added, "#000002".parse().unwrap());
+    }
+
+    #[test]
+    fn ned_theme_errors_name_the_variable() {
+        let err = user_theme(None, Some("nope")).unwrap_err();
+        assert_eq!(err.location, "NED_THEME");
+        assert!(err.message.contains("default-dark"), "{err}");
+        let root = tree(&[("bad.toml", "dark = 1\n")]);
+        let bad = root.path().join("bad.toml");
+        let err = user_theme(None, bad.to_str()).unwrap_err();
+        assert!(err.location.ends_with("bad.toml:1:8"), "{err}");
     }
 }
