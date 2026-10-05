@@ -1421,8 +1421,9 @@ The fix each error suggests:
   e.g. `show all /re/`; `;` or a new line between commands for a second
   selector, e.g. `show fn:a; show fn:b`; the rest of the command on a heredoc
   selector's line, before its body, e.g. `replace <<END with TEXT`;
-  `sub /re/ with TEXT` for sed's `sub /re/text/`; otherwise the command's usage,
-  e.g. `usage: replace [all] SEL with TEXT`
+  `sub /re/ with TEXT` for sed's `sub /re/text/`; the line range `N-M` for sed's
+  `N,M`; otherwise the command's usage, e.g.
+  `usage: replace [all] SEL with TEXT`
 - `check`, `rename`, `.refs` or `.def` after a `|`: Running it before the first
   `|`, or in a separate `ned` call
 - `all` in `sub` (`sub all /re/ with TEXT`, or after its regex or TEXT):

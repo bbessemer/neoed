@@ -157,6 +157,8 @@ of either kind.
 - [x] A literal under a `kind>` step that spans two items of the kind
       (`import>"use a;\nuse b;"`) suggests a line range, `A..B` or dropping the
       step, instead of only "matches nothing"
+- [x] A sed-style line range (`sub 1,2 /a/ with "b"`, `show 10,20`) suggests
+      `1-2`, not quoting literal text
 
 ## Bugs
 

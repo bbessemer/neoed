@@ -276,7 +276,11 @@ impl<'a> Lexer<'a> {
     }
 
     fn lines(&mut self) -> Result<TokenKind, ParseError> {
+        let start_pos = self.pos;
         let start = self.line_no()?;
+        if self.peek() == Some(',') && matches!(self.peek_second(), Some('$' | '0'..='9')) {
+            return Err(self.sed_range(start_pos, start));
+        }
         if self.peek() != Some('-') {
             return Ok(TokenKind::Lines { start, end: None });
         }
@@ -296,6 +300,24 @@ impl<'a> Lexer<'a> {
             start,
             end: Some(end),
         })
+    }
+
+    /// The error for sed's `N,M` after `N` (`start`, from `start_pos`), naming
+    /// the `N-M` it means.
+    fn sed_range(&mut self, start_pos: usize, start: LineNo) -> ParseError {
+        let comma = self.pos;
+        self.pos += 1;
+        let end = match self.line_no() {
+            Ok(end) => end,
+            Err(e) => return e,
+        };
+        let (first, last) = (&self.src[start_pos..comma], &self.src[comma + 1..self.pos]);
+        let fix = match (start, end) {
+            (LineNo::Number(a), LineNo::Number(b)) if a > b => format!("{last}-{first}"),
+            (LineNo::Last, LineNo::Number(_)) => format!("{last}-{first}"),
+            _ => format!("{first}-{last}"),
+        };
+        ParseError::new(E::SedRange(fix), comma..self.pos)
     }
 
     fn context(&mut self) -> Result<usize, ParseError> {
@@ -769,6 +791,24 @@ mod tests {
         assert_eq!(error("20-12").kind, E::ReversedLines { start: 20, end: 12 });
         assert_eq!(error("12- ").kind, E::MissingRangeEnd);
         assert_eq!(error("99999999999999999999999").kind, E::LineOverflow);
+    }
+
+    #[test]
+    fn sed_style_line_ranges_suggest_a_dash() {
+        for (src, fix) in [
+            ("10,20", "10-20"),
+            ("3,$", "3-$"),
+            ("20,10", "10-20"),
+            ("$,2", "2-$"),
+            ("1,2>fn:a", "1-2"),
+        ] {
+            assert_eq!(error(src).kind, E::SedRange(fix.into()), "{src:?}");
+        }
+        assert_eq!(error("show 10,20").span, 7..10);
+        // Not a range: a `,` before anything but a line number keeps its error.
+        assert_eq!(error("3, 4").kind, E::UnexpectedChar(','));
+        assert_eq!(error("3,a").kind, E::UnexpectedChar(','));
+        assert_eq!(error("3,").kind, E::UnexpectedChar(','));
     }
 
     #[test]

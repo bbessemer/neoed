@@ -2091,6 +2091,22 @@ mod tests {
     }
 
     #[test]
+    fn sed_style_line_ranges_suggest_a_dash() {
+        for (src, fix) in [
+            ("show 10,20", "10-20"),
+            (r#"sub 1,2 /a/ with "b""#, "1-2"),
+            ("show 3,$", "3-$"),
+        ] {
+            assert_eq!(error(src).kind, E::SedRange(fix.into()), "{src:?}");
+        }
+        let e = error("show 10,20");
+        assert_eq!(
+            e.kind.to_string(),
+            "line ranges are written N-M, not sed's N,M; write 10-20"
+        );
+    }
+
+    #[test]
     fn sub_references_name_groups_the_regex_has() {
         for src in [
             r#"sub /(a)/ with "$0 $1 ${1}x ${0}""#,

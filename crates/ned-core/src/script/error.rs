@@ -90,6 +90,9 @@ pub enum ParseErrorKind {
     MinusContext(String),
     #[error("line range {start}-{end} is reversed; write {end}-{start}")]
     ReversedLines { start: usize, end: usize },
+    /// `N,M`, sed's line range; the fix is the `N-M` range it means.
+    #[error("line ranges are written N-M, not sed's N,M; write {0}")]
+    SedRange(String),
     #[error("line number is too large; use `$` for the last line")]
     LineOverflow,
     #[error("expected a tag after `<<`, e.g. <<END")]
