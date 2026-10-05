@@ -15,6 +15,7 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
         peeked: None,
         last_end: 0,
         command_start: 0,
+        last_heredoc: None,
     };
     let mut commands: Vec<Command> = Vec::new();
     let mut stages: Vec<usize> = Vec::new();
@@ -107,6 +108,8 @@ struct Parser<'a> {
     last_end: usize,
     /// Start of the command being parsed.
     command_start: usize,
+    /// Span of the last heredoc opener consumed.
+    last_heredoc: Option<Range<usize>>,
 }
 
 impl Parser<'_> {
@@ -122,6 +125,9 @@ impl Parser<'_> {
             Some(token) => token,
             None => self.lexer.next_token()?,
         };
+        if let TokenKind::Heredoc { .. } = token.kind {
+            self.last_heredoc = Some(token.span.clone());
+        }
         self.last_end = token.span.end;
         Ok(token)
     }
@@ -145,7 +151,13 @@ impl Parser<'_> {
                 && hint.is_empty()
                 && let Some(usage) = usage(word)
             {
-                *hint = format!("; usage: {usage}");
+                *hint = match (self.through_heredoc(&err.span), usage.rsplit_once("SEL")) {
+                    (Some(written), Some((_, rest))) => format!(
+                        "; a heredoc's body starts on the next line, so finish the command before it: {written}{}",
+                        rest.trim_start_matches(']'),
+                    ),
+                    _ => format!("; usage: {usage}"),
+                };
             }
             err
         })?;
@@ -275,6 +287,17 @@ impl Parser<'_> {
             }),
             err.span.start..err.span.end + count.len(),
         )
+    }
+
+    /// The command up to a heredoc opener that ends its line just before
+    /// `span`, which then holds the line break.
+    fn through_heredoc(&self, span: &Range<usize>) -> Option<&str> {
+        let heredoc = self.last_heredoc.as_ref()?;
+        let between = self.src.get(heredoc.end..span.start)?;
+        (heredoc.start >= self.command_start
+            && between.trim().is_empty()
+            && self.src[span.clone()].trim().is_empty())
+        .then(|| &self.src[self.command_start..heredoc.end])
     }
 
     fn optional_target(&mut self) -> Result<Option<Target>, ParseError> {
@@ -2207,6 +2230,38 @@ mod tests {
             message(r#""x""#),
             "expected a command, found a string; \
              commands are show outline check replace insert delete sub move rename resolve file create allow"
+        );
+    }
+
+    #[test]
+    fn a_heredoc_selector_keeps_the_command_on_its_line() {
+        let hint = "a heredoc's body starts on the next line, so finish the command before it:";
+        assert_eq!(
+            message("replace <<END\nx\nEND\nwith \"y\""),
+            format!("expected `with`, found end of line; {hint} replace <<END with TEXT")
+        );
+        assert_eq!(
+            message("replace all <<'END'  \nx\nEND\nwith <<B\ny\nB"),
+            format!("expected `with`, found end of line; {hint} replace all <<'END' with TEXT")
+        );
+        assert_eq!(
+            message("move <<END\nx\nEND\nafter 3"),
+            format!(
+                "expected before, after, start, or end, found end of line; \
+                 {hint} move <<END before|after|start|end DEST"
+            )
+        );
+        assert_eq!(
+            message("insert before <<END\nx\nEND\n\"y\""),
+            format!(
+                "expected text (a string or heredoc), found end of line; \
+                 {hint} insert before <<END TEXT"
+            )
+        );
+        // A heredoc that isn't the last thing before the line break gets the usage.
+        assert_eq!(
+            message("replace <<END.lines\nx\nEND\nwith \"y\""),
+            "expected `with`, found end of line; usage: replace [all] SEL with TEXT"
         );
     }
 
