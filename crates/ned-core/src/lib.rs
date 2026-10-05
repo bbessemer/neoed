@@ -29,4 +29,5 @@ pub mod style;
 pub mod syntax;
 pub mod template;
 pub mod text;
+pub mod theme;
 pub mod workspace;

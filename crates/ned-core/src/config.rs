@@ -200,14 +200,8 @@ fn load(path: &Path) -> Result<Option<Layer>, ConfigError> {
 
 /// The config file at `path`, whose text is `text`.
 fn parse(path: &Path, text: &str) -> Result<Layer, ConfigError> {
-    let error = |span: Option<std::ops::Range<usize>>, message: String| {
-        let mut location = display(path);
-        if let Some(span) = span {
-            let (line, col) = crate::script::error::location(text, span.start);
-            location = format!("{location}:{line}:{col}");
-        }
-        ConfigError { location, message }
-    };
+    let error =
+        |span: Option<std::ops::Range<usize>>, message: String| error_at(path, text, span, message);
     let raw: RawConfig =
         toml::from_str(text).map_err(|err| error(err.span(), err.message().trim().into()))?;
     let entries = |table: BTreeMap<Spanned<String>, Spanned<Value>>| {
@@ -286,6 +280,22 @@ pub(crate) fn program(program: &str, base: Option<&Path>, dir: &Path) -> String 
 
 fn not_a_command(lang: Language) -> String {
     format!("`{lang}` must be a command (an array of strings) or false")
+}
+
+/// An error in the config file at `path`, whose text is `text`, at `span`
+/// when known.
+pub(crate) fn error_at(
+    path: &Path,
+    text: &str,
+    span: Option<std::ops::Range<usize>>,
+    message: String,
+) -> ConfigError {
+    let mut location = display(path);
+    if let Some(span) = span {
+        let (line, col) = crate::script::error::location(text, span.start);
+        location = format!("{location}:{line}:{col}");
+    }
+    ConfigError { location, message }
 }
 
 pub(crate) fn io_error(path: &Path, err: &io::Error) -> ConfigError {
