@@ -487,12 +487,13 @@ fn resolve_step(
             captures.extend(captured);
             let core = range.clone();
             let of = match &step.primary {
-                Primary::Syntax { kind, .. } => f
-                    .items()
-                    .unwrap_or_default()
-                    .iter()
-                    .find(|i| i.kind == kind && i.range == range)
-                    .map_or(Of::Plain, Of::Item),
+                Primary::Syntax { kind, .. } => {
+                    let items = f.items().unwrap_or_default();
+                    items
+                        .iter()
+                        .find(|i| selects(kind, i, items) && i.range == range)
+                        .map_or(Of::Plain, Of::Item)
+                }
                 Primary::Conflict(_) => f
                     .conflict_at(&range)
                     .map_or(Of::Plain, |(n, c)| Of::Conflict(n, c)),
@@ -784,14 +785,15 @@ impl<'a> Matcher<'a> {
                 let find = self.find(f, p, parent, &mut Vec::new());
                 find.into_iter().map(|(r, _)| r).collect()
             }
-            Matcher::Syntax { kind, name } => f
-                .items()
-                .unwrap_or_default()
-                .iter()
-                .filter(|i| i.kind == *kind && syntax::item_matches(name, i))
-                .map(|i| i.range.clone())
-                .filter(within)
-                .collect(),
+            Matcher::Syntax { kind, name } => {
+                let items = f.items().unwrap_or_default();
+                items
+                    .iter()
+                    .filter(|i| selects(kind, i, items) && syntax::item_matches(name, i))
+                    .map(|i| i.range.clone())
+                    .filter(within)
+                    .collect()
+            }
         }
     }
 }
@@ -833,7 +835,8 @@ fn check_lines(
     Err(E::LineOutOfRange { line, files })
 }
 
-/// Fails unless some searched file's language has selector items of `kind`;
+/// Fails unless some searched file's language has selector items of `kind`
+/// (of any kind, for `*`);
 /// files whose language lacks them are skipped. The error is the first such
 /// file's, or `NoLanguage` if no searched file has a language.
 fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]) -> Result<(), E> {
@@ -843,7 +846,7 @@ fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]
     for &i in &searched {
         let Some(lang) = files[i].lang else { continue };
         let kinds = syntax::kinds(lang.selectors());
-        if kinds.contains(&kind) {
+        if kinds.contains(&kind) || kind == "*" && !kinds.is_empty() {
             return Ok(());
         }
         first_error.get_or_insert(E::UnknownKind {
@@ -864,6 +867,17 @@ fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]
                     .collect::<Vec<_>>(),
             ),
         }),
+    }
+}
+
+/// Whether a syntax step of `kind` selects `item`, one of `items`. `*`
+/// selects each node once, as the first of its kinds in `KINDS`.
+fn selects(kind: &str, item: &Item, items: &[Item]) -> bool {
+    match kind {
+        "*" => !items
+            .iter()
+            .any(|o| o.node == item.node && syntax::rank(o.kind) < syntax::rank(item.kind)),
+        _ => item.kind == kind,
     }
 }
 
@@ -1312,7 +1326,7 @@ fn close_name(
                 .unwrap_or_default()
                 .iter()
                 .filter(|i| p.range.start <= i.range.start && i.range.end <= p.range.end)
-                .find(|i| i.kind == kind && syntax::item_matches(unchecked, i))
+                .find(|i| (kind == "*" || i.kind == kind) && syntax::item_matches(unchecked, i))
                 .map(|i| (p.file, i))
         })
     {
@@ -1338,7 +1352,7 @@ fn close_name(
                 .items()
                 .unwrap_or_default()
                 .iter()
-                .filter(|i| i.kind == kind && p.range.start <= i.range.start)
+                .filter(|i| (kind == "*" || i.kind == kind) && p.range.start <= i.range.start)
                 .filter(|i| i.range.end <= p.range.end)
                 .map(|i| {
                     // A trait impl is also named by its self type.
@@ -1398,6 +1412,10 @@ fn other_kind(
     let Primary::Syntax { kind, name } = &step.primary else {
         return None;
     };
+    // A `*:` step matched items of every kind already.
+    if kind == "*" {
+        return None;
+    }
     let (file, item) = parents
         .iter()
         .flat_map(|p| {
@@ -1687,7 +1705,9 @@ fn candidates(
             // The matches this candidate's last step also selects.
             let mut peers: Vec<usize> = (0..found.len())
                 .filter(|&j| match (&chosen[i], &chosen[j]) {
-                    (Some((name, ..)), Some((_, item, _))) => syntax::item_matches(name, item),
+                    (Some((name, of, _)), Some((_, item, _))) => {
+                        of.kind == item.kind && syntax::item_matches(name, item)
+                    }
                     _ => named[j] == *last,
                 })
                 .collect();
@@ -1760,7 +1780,8 @@ fn candidates(
 
 /// The name that `last`, a syntax step, selects `range`'s item by in a
 /// candidate, the item, and whether the name replaces the step's: it does
-/// for a wildcard, and for a trait impl found by its self type.
+/// for a wildcard, for a `*:` step, which names the item's kind, and for a
+/// trait impl found by its self type.
 fn named<'f>(
     last: &Step,
     f: &'f SourceFile,
@@ -1769,12 +1790,12 @@ fn named<'f>(
     let Primary::Syntax { kind, name } = &last.primary else {
         return None;
     };
-    let item = f
-        .items()?
+    let items = f.items()?;
+    let item = items
         .iter()
-        .find(|i| i.kind == kind && i.range == *range)?;
+        .find(|i| selects(kind, i, items) && i.range == *range)?;
     Some(
-        if name.contains('*') || !syntax::name_matches(name, &item.name) {
+        if kind == "*" || name.contains('*') || !syntax::name_matches(name, &item.name) {
             (item.name.clone(), item, true)
         } else {
             (name.clone(), item, false)
@@ -3284,5 +3305,94 @@ fn main() {
             resolve_in("delete fn:main", &files(&[("a.txt", RUST), ("b.rs", RUST)])).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].file, 1);
+    }
+
+    const MIXED: &str = "\
+const LIMIT: u32 = 3;
+
+struct Parser;
+
+impl Parser {
+    fn new() -> Self {
+        Parser
+    }
+}
+
+fn test_a() {}
+
+static test_b: u8 = 1;
+";
+
+    #[test]
+    fn any_kind_selects_a_unique_item_whatever_its_kind() {
+        assert_eq!(select("delete *:LIMIT", MIXED), ["const LIMIT: u32 = 3;"]);
+        assert_eq!(
+            select_in("delete *:limit", "a.py", "limit = 3\n"),
+            ["limit = 3"]
+        );
+        assert_eq!(
+            select("delete *:Parser>fn:new", MIXED),
+            ["fn new() -> Self {\n        Parser\n    }"]
+        );
+        assert_eq!(select("delete *:new.body", MIXED), ["        Parser\n"]);
+        assert_eq!(select("delete *:main.body", RUST), ["    let x = 1;\n"]);
+    }
+
+    #[test]
+    fn any_kind_names_take_wildcards() {
+        assert_eq!(
+            select("delete all *:test_*", MIXED),
+            ["fn test_a() {}", "static test_b: u8 = 1;"]
+        );
+        assert_eq!(
+            select("delete all *:*", "fn a() {}\n\nstruct B;\n").len(),
+            2
+        );
+    }
+
+    #[test]
+    fn any_kind_selects_an_item_of_several_kinds_once() {
+        let text = "const f = () => {\n  return 1;\n};\n";
+        assert_eq!(
+            select_in("delete *:f", "a.js", text),
+            ["const f = () => {\n  return 1;\n};"]
+        );
+        assert_eq!(
+            select_in("delete *:f.body", "a.ts", text),
+            ["  return 1;\n"]
+        );
+        assert_eq!(select_in("delete all *:*", "a.js", text).len(), 1);
+    }
+
+    #[test]
+    fn any_kind_candidates_name_their_kind() {
+        assert_eq!(
+            error("delete *:Parser", &[("a.rs", MIXED)]),
+            "error: script:1:8: *:Parser matches 2 items; add `all` or use one of:\n  \
+             struct:Parser   a.rs:3\n  \
+             impl:Parser     a.rs:5-9"
+        );
+        assert_eq!(
+            error("delete *:test_*.name", &[("a.rs", MIXED)]),
+            "error: script:1:8: *:test_*.name matches 2 items; add `all` or use one of:\n  \
+             fn:test_a.name      a.rs:11\n  \
+             const:test_b.name   a.rs:13"
+        );
+    }
+
+    #[test]
+    fn any_kind_matching_nothing_suggests_a_close_name() {
+        assert_eq!(
+            error("delete *:LIMT", &[("a.rs", MIXED)]),
+            "error: script:1:8: *:LIMT matches nothing in a.rs; did you mean *:LIMIT (1)?"
+        );
+        assert_eq!(
+            error("delete *:nothing_like_it", &[("a.rs", MIXED)]),
+            "error: script:1:8: *:nothing_like_it matches nothing in a.rs; `outline` lists the items"
+        );
+        assert_eq!(
+            error("delete *:main", &[("a.txt", RUST)]),
+            "error: script:1:8: *:main needs a language, but a.txt has none; use --lang"
+        );
     }
 }

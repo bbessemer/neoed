@@ -2,12 +2,13 @@ selectors
 
 Lines: 12, 12-20, 12-$, $ (last line).
 Regex: /re/, flags i s. Literal: "text" (escapes \n \t \" \\).
-Block: <<END heredoc, whole lines, indentation ignored.
-Syntax: kind:name, * a wildcard (fn alone is fn:*); quote others: import:"a.b".
+Block: <<END heredoc: whole lines, any indentation.
+Syntax: kind:name, * a wildcard (fn is fn:*); quote others: import:"a.b".
+  *:name is any kind: *:LIMIT.
   Kinds: fn class struct enum variant trait interface impl type const var
   field mod import, and in Markdown section item table code (per language;
   outline lists them). section:"Intro" is a # heading and its content; its
-  .body is what follows the heading, subsections too.
+  .body is all after the heading.
   impl:Name is the impl's self type; a trait impl is also impl:"Trait for Name".
   A Go method is fn:"Recv.Name"; fn:Name matches every Name.
   An item includes its docs and attributes (decorators; in JS/TS, export).

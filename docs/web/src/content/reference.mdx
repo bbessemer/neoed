@@ -243,6 +243,12 @@ kind, so `fn` means the same as `fn:*`. Names containing characters other than
 letters, digits, `_`, `:` and `*` must be quoted: `import:"os.path"`,
 `impl:"Display for Parser"`.
 
+`*:name` selects items of any kind by name, for when you don't know whether
+`LIMIT` is a `const` or a `var`: `show *:LIMIT`. An item that is two kinds at
+once, like a JavaScript arrow function bound to a `const`, matches once. If the
+name matches items of several kinds, such as a Rust struct and its impl, the
+error lists each by its kind: `struct:Parser`, `impl:Parser`.
+
 | Kind        | Selects                                                    |
 | ----------- | ---------------------------------------------------------- |
 | `fn`        | functions and methods                                      |

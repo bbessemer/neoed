@@ -757,6 +757,37 @@ fn ambiguous_selector_exits_1() {
 }
 
 #[test]
+fn any_kind_selects_an_item_whatever_its_kind() {
+    let text = "use std::fmt;\n\nstruct Parser;\n\nimpl Parser {}\n";
+    let dir = dir_with(&[("a.rs", text)]);
+    let out = ned(dir.path(), &["a.rs", "-e", "delete *:Parser"], "");
+    assert_snapshot!(out, @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: script:1:8: *:Parser matches 2 items; add `all` or use one of:
+      struct:Parser   a.rs:3
+      impl:Parser     a.rs:5
+    ");
+    // An import is still stacked with its neighbours.
+    let out = ned(
+        dir.path(),
+        &["a.rs", "-e", "insert after *:std::fmt \"use std::io;\""],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs: 1 edit, +1 -0
+    @@ -1,2 +1,3 @@
+     use std::fmt;
+    +use std::io;
+     
+    --- stderr
+    ");
+}
+
+#[test]
 fn failed_script_keeps_reads_and_writes_nothing() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
     let out = ned(

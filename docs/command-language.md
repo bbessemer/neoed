@@ -653,7 +653,7 @@ primary    = lines | regex | literal | syntax | conflict | query | pattern ;
 lines      = lineno [ "-" lineno ] ;
 lineno     = digit { digit } | "$" ;
 literal    = string | heredoc ;
-syntax     = kind [ ":" name ] ;
+syntax     = kind [ ":" name ] | "*:" name ;
 kind       = ident ;
 name       = name-char { name-char } | string ;   (* name-char: [A-Za-z0-9_:*] *)
 conflict   = "conflict" [ ":" number ] ;
@@ -780,6 +780,15 @@ Regexes see the file's raw text.
 characters, such as `.` or `-`, must be quoted: `import:"os.path"`. A kind
 without `:name` selects every item of the kind: `fn` is `fn:*`, so
 `impl:Parser>fn` is every method of `Parser`.
+
+`*:name` selects items of any kind by name, so a script needn't know whether
+`LIMIT` is a `const` or a `var`: `show *:LIMIT`. An item that is several kinds
+at once (a JavaScript arrow function bound to a `const` is `fn` and `const`) is
+one match, of the first kind in the table below. Names, parts, nesting and
+filters work as with a kind: `*:test_*`, `*:parse.body`, `*:Parser>fn:new`, and
+`*:*` is every item. When the name matches items of several kinds (a Rust struct
+and its impl), it is ambiguous (§3.5), and each candidate names its item's kind:
+`struct:Parser`, `impl:Parser`. A bare `*` is an error that suggests `*:NAME`.
 
 Core kinds. Each language maps a subset of these through
 `queries/<lang>/selectors.scm` (JavaScript and TypeScript both start with
@@ -983,7 +992,9 @@ The kinds each language supports, and the items they cover there:
   counts them and suggests selecting longer text, or `all`.
 - When the last step is a syntax step with a `*` in its name, each candidate
   names its item instead (`fn:test_*` lists `fn:test_parse`), and is scoped as
-  above only among the matches with the same name.
+  above only among the matches with the same name. Likewise a `*:` step's
+  candidates name their item's kind (`*:Parser` lists `struct:Parser` and
+  `impl:Parser`).
 - A line that `.lines` split from a multi-line span is listed as its step
   without `.lines` and any parts or filters after it, with its line number
   nested after the step: `fn:new.lines` lists `fn:new>41`, `fn:new>42`, and so

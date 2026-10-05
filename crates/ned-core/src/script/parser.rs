@@ -1705,6 +1705,28 @@ mod tests {
     }
 
     #[test]
+    fn any_kind_is_a_star_syntax_step() {
+        let show = |steps| CommandKind::Show {
+            target: Some(target(steps)),
+            context: 0,
+            raw: false,
+        };
+        assert_eq!(one("show *:LIMIT"), show(vec![syntax("*", "LIMIT")]));
+        assert_eq!(
+            one("show *:Parser>fn:new"),
+            show(vec![syntax("*", "Parser"), syntax("fn", "new")])
+        );
+        assert_eq!(
+            one("show *:parse.body"),
+            show(vec![parts(syntax("*", "parse"), &[Part::Body])])
+        );
+        assert_eq!(
+            message("show *"),
+            "`*` alone selects nothing; *:NAME is the item NAME of any kind, e.g. *:parse, and *:* is every item"
+        );
+    }
+
+    #[test]
     fn filters_follow_a_step_and_its_parts() {
         let show = |steps| CommandKind::Show {
             target: Some(target(steps)),

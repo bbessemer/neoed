@@ -2151,8 +2151,21 @@ fn separated<'t>(
             primary: Primary::Syntax { kind, .. },
             parts,
             ..
-        }) => (parts.is_empty() && !syntax::find_kind(kind).is_some_and(|k| k.stacked))
-            .then(|| text::full_lines(t, range.clone())),
+        }) => {
+            // A `*:` step's item takes the first of its kinds, as it's selected.
+            let kind = match kind.as_str() {
+                "*" => f
+                    .items()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|i| i.range == *range)
+                    .min_by_key(|i| syntax::rank(i.kind))
+                    .map_or("*", |i| i.kind),
+                kind => kind,
+            };
+            (parts.is_empty() && !syntax::find_kind(kind).is_some_and(|k| k.stacked))
+                .then(|| text::full_lines(t, range.clone()))
+        }
         Some(Step { parts, .. })
             if parts.is_empty()
                 && matches!(position, Position::Before)

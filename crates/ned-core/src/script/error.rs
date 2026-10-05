@@ -101,6 +101,10 @@ pub enum ParseErrorKind {
     UnterminatedHeredoc(String),
     #[error("expected a name after `{0}:`, e.g. {0}:foo or {0}:*")]
     MissingName(String),
+    #[error(
+        "`*` alone selects nothing; *:NAME is the item NAME of any kind, e.g. *:parse, and *:* is every item"
+    )]
+    BareStar,
     #[error("unknown command `{0}`; commands are {list}", list = COMMANDS)]
     UnknownCommand(String),
     #[error("`{0}:` is a part, not a kind; select the symbol and add .{0}, e.g. fn:NAME.{0}")]

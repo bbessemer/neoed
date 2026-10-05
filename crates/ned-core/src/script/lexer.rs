@@ -129,6 +129,11 @@ impl<'a> Lexer<'a> {
             '.' => TokenKind::Part(self.part()?),
             '[' => TokenKind::Filter(self.filter()?),
             '`' => self.code(start)?,
+            '*' if self.src[self.pos..].starts_with("*:") => {
+                self.pos += 1;
+                self.syntax(start, "*")?
+            }
+            '*' => return Err(ParseError::new(E::BareStar, start..start + 1)),
             c if c.is_ascii_alphabetic() || c == '_' => self.word()?,
             c => {
                 return Err(ParseError::new(
@@ -361,47 +366,49 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
         let word = self.take_while(is_ident_char);
         match self.peek() {
-            Some(':') => {
-                self.pos += 1;
-                let quoted = self.peek() == Some('"');
-                let name = match self.peek() {
-                    Some('"') => self.string()?,
-                    _ if word == "file" => self
-                        .take_while(|c| !matches!(c, ' ' | '\t' | '\r' | '\n' | '>' | ';' | '|'))
-                        .to_string(),
-                    // Any name, so the parser can say what a conflict's number is.
-                    _ if word == "conflict" => self
-                        .take_while(|c| {
-                            !c.is_whitespace() && !matches!(c, '>' | ';' | '|' | '.' | '[')
-                        })
-                        .to_string(),
-                    _ => self
-                        .take_while(|c| is_ident_char(c) || c == ':' || c == '*')
-                        .to_string(),
-                };
-                if name.is_empty() && word != "conflict" {
-                    return Err(ParseError::new(
-                        E::MissingName(word.into()),
-                        start..self.pos,
-                    ));
-                }
-                if !quoted
-                    && word != "file"
-                    && let Some(err) = self
-                        .dotted_name(word, &name)
-                        .or_else(|| self.dashed_name(word, &name))
-                        .or_else(|| self.braced_name(word, &name))
-                {
-                    return Err(err);
-                }
-                Ok(TokenKind::Syntax {
-                    kind: word.into(),
-                    name,
-                })
-            }
+            Some(':') => self.syntax(start, word),
             Some('{') if word == "query" => self.query(start),
             _ => Ok(TokenKind::Word(word.into())),
         }
+    }
+
+    /// The rest of a `kind:name` selector, from the `:` after `kind`, which
+    /// starts at byte `start`.
+    fn syntax(&mut self, start: usize, word: &'a str) -> Result<TokenKind, ParseError> {
+        self.pos += 1;
+        let quoted = self.peek() == Some('"');
+        let name = match self.peek() {
+            Some('"') => self.string()?,
+            _ if word == "file" => self
+                .take_while(|c| !matches!(c, ' ' | '\t' | '\r' | '\n' | '>' | ';' | '|'))
+                .to_string(),
+            // Any name, so the parser can say what a conflict's number is.
+            _ if word == "conflict" => self
+                .take_while(|c| !c.is_whitespace() && !matches!(c, '>' | ';' | '|' | '.' | '['))
+                .to_string(),
+            _ => self
+                .take_while(|c| is_ident_char(c) || c == ':' || c == '*')
+                .to_string(),
+        };
+        if name.is_empty() && word != "conflict" {
+            return Err(ParseError::new(
+                E::MissingName(word.into()),
+                start..self.pos,
+            ));
+        }
+        if !quoted
+            && word != "file"
+            && let Some(err) = self
+                .dotted_name(word, &name)
+                .or_else(|| self.dashed_name(word, &name))
+                .or_else(|| self.braced_name(word, &name))
+        {
+            return Err(err);
+        }
+        Ok(TokenKind::Syntax {
+            kind: word.into(),
+            name,
+        })
     }
 
     /// For an unquoted `kind:name` followed by `.SEGMENT`s that aren't parts,
@@ -770,6 +777,28 @@ mod tests {
         let e = error("delete fn: x");
         assert_eq!(e.kind, E::MissingName("fn".into()));
         assert_eq!(e.span.start, 7);
+    }
+
+    #[test]
+    fn any_kind_selectors() {
+        assert_eq!(kinds("*:LIMIT"), [syntax("*", "LIMIT")]);
+        assert_eq!(kinds("*:test_*"), [syntax("*", "test_*")]);
+        assert_eq!(kinds("*:*"), [syntax("*", "*")]);
+        assert_eq!(kinds(r#"*:"os.path""#), [syntax("*", "os.path")]);
+        assert_eq!(
+            kinds("*:Parser>fn:new.body"),
+            [
+                syntax("*", "Parser"),
+                T::Gt,
+                syntax("fn", "new"),
+                T::Part(Part::Body)
+            ]
+        );
+        let e = error("show *");
+        assert_eq!(e.kind, E::BareStar);
+        assert_eq!(e.span, 5..6);
+        assert_eq!(error("show all *>fn:a").kind, E::BareStar);
+        assert_eq!(error("show *: x").kind, E::MissingName("*".into()));
     }
 
     #[test]
