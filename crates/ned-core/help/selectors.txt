@@ -16,7 +16,7 @@ Syntax: kind:name, * a wildcard (fn is fn:*); quote others: import:"a.b".
   its .sig stops before the colon. In JS/TS, const f = () => {} is fn:f
   and const:f.
 Parts: .body .params (inside delimiters) .name .sig .doc .attrs .ret .type
-  .value .whole (with docs); .lines splits into lines (fn:f>12 picks one).
+  .value .whole (with docs); .lines (each line), .lines:2 (2nd), .lines:$.
   Via the language server, any step: .refs (each use), .def (the defining
   item): all fn:parse.refs, "helper(".def. With -w they reach every file.
 Nest with > (no spaces): impl:Parser>fn:new>"x". Scope: 40-80>fn:new,

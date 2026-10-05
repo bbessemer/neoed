@@ -1425,6 +1425,40 @@ mod tests {
     }
 
     #[test]
+    fn line_of_a_span() {
+        let show = |steps| CommandKind::Show {
+            target: Some(target(steps)),
+            context: 0,
+            raw: false,
+        };
+        assert_eq!(
+            one("show fn:a.lines:2"),
+            show(vec![parts(
+                syntax("fn", "a"),
+                &[Part::Line(LineNo::Number(2))]
+            )])
+        );
+        assert_eq!(
+            one("show fn:f.body.lines:$>/x/"),
+            show(vec![
+                parts(syntax("fn", "f"), &[Part::Body, Part::Line(LineNo::Last)]),
+                step(Primary::Regex(pattern("x")))
+            ])
+        );
+        let CommandKind::Show {
+            target: Some(target),
+            ..
+        } = one("show all fn.body.lines:1[.text ~= /x/]")
+        else {
+            panic!("not a show");
+        };
+        let step = &target.selector.steps[0];
+        assert!(target.all);
+        assert_eq!(step.parts, [Part::Body, Part::Line(LineNo::Number(1))]);
+        assert_eq!(step.filters.len(), 1);
+    }
+
+    #[test]
     fn sub_without_scope() {
         assert_eq!(
             one(r#"sub /\bold_name\b/ with "new_name""#),

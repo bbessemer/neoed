@@ -720,26 +720,37 @@ impl Executor<'_> {
                 found = match part {
                     Part::Refs => self.locate(Locate::References, &found, what, &span)?,
                     Part::Def => self.locate(Locate::Definition, &found, what, &span)?,
-                    part => found
-                        .into_iter()
-                        .map(|m| {
-                            let plain = Span {
-                                range: m.range,
-                                of: Of::Plain,
-                            };
-                            let spans = plain.part(*part, &self.files[m.file].file.text)?;
-                            let (file, captures) = (m.file, m.captures);
-                            Ok(spans.into_iter().map(move |s| Match {
-                                file,
-                                range: s.range,
-                                captures: captures.clone(),
-                            }))
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|kind| ExecError::new(kind, Some(span.clone())))?
-                        .into_iter()
-                        .flatten()
-                        .collect(),
+                    part => {
+                        let mut short = 0;
+                        let picked = found
+                            .into_iter()
+                            .map(|m| {
+                                let plain = Span {
+                                    range: m.range,
+                                    of: Of::Plain,
+                                };
+                                let spans = plain.part(*part, &self.files[m.file].file.text)?;
+                                short += usize::from(spans.is_empty());
+                                let (file, captures) = (m.file, m.captures);
+                                Ok(spans.into_iter().map(move |s| Match {
+                                    file,
+                                    range: s.range,
+                                    captures: captures.clone(),
+                                }))
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                            .map_err(|kind| ExecError::new(kind, Some(span.clone())))?
+                            .into_iter()
+                            .flatten()
+                            .collect();
+                        if let Part::Line(n) = part
+                            && short > 0
+                        {
+                            let note = select::skipped_spans(*n, short);
+                            self.notes.push(format!("{what}: {note}"));
+                        }
+                        picked
+                    }
                 };
             }
             let filters = match split {
@@ -2316,7 +2327,7 @@ fn heredoc_lines(
     let item_part = target.selector.steps.last().is_some_and(|s| {
         s.parts
             .iter()
-            .any(|p| !matches!(p, Part::Lines | Part::Refs | Part::Def))
+            .any(|p| !matches!(p, Part::Lines | Part::Line(_) | Part::Refs | Part::Def))
     });
     let beside = matches!(position, Position::Before | Position::After);
     if beside && new.kind != TextKind::Str && !item_part && !text::is_whole_line(&f.text, &range) {

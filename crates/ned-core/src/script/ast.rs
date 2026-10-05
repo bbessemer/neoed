@@ -273,6 +273,8 @@ pub enum Part {
     Value,
     Whole,
     Lines,
+    /// `.lines:N`: one of the lines `.lines` selects, counting from 1.
+    Line(LineNo),
     Refs,
     Def,
     Ours,

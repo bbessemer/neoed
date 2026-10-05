@@ -231,6 +231,7 @@ Select by a property instead of a name with a filter: `.text`, `.len`
 show all fn[.doc == ""]
 delete all impl:Parser>fn[.name ~= /^old_/ || .body.len == 0]
 show all fn:parse.lines[.len > 100]
+show all fn[.lines:1 ~= /async/]
 ```
 
 Add a statement at the start of a Python method, after its docstring; ned
@@ -339,9 +340,11 @@ it too.
   own beside the match's lines instead (but in place beside `.body` and other
   item parts). `replace /re/` replaces only the match, so add `.lines` to
   replace its line; a note says so when TEXT repeats the rest of the line. On a
-  span of several lines, `.lines` selects each line: use `all`, or a range for
-  one span. TEXT for a partial span keeps its first line as written and indents
-  the rest by the first line's indentation, so leave that indentation off.
+  span of several lines, `.lines` selects each line: use `all`, or `.lines:N`
+  for its Nth line (`.lines:$` the last, `fn:f.body.lines:1` the first of the
+  body; a shorter span is skipped, with a note). TEXT for a partial span keeps
+  its first line as written and indents the rest by the first line's
+  indentation, so leave that indentation off.
 - **Re-basing follows the target line.** `<<END` text takes the indentation of
   the target's first line (after a literal or regex, its last line), or, for
   `insert start|end`, of the first line inside it; `insert after` the last line

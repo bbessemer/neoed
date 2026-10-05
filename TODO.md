@@ -129,6 +129,11 @@ of either kind.
 - [x] `show` with a line range past the end of the file shows up to the last
       line, with a note, instead of an error (`show 1-60` on a 57-line file);
       edits keep the error
+- [x] `-e` plus a script on stdin runs both, where `-e -` names stdin, joined
+      with newlines as several `-e`s are (today stdin is ignored silently, so
+      `ned -e 'file X' <<'EOF' ... EOF` drops the heredoc). A minor, since §1
+      changes. Decide how not to wait on an open pipe that never closes, which
+      `-e` alone doesn't read today
 - [x] An any-kind selector matches a name whatever its kind, when that is
       unique, so a long script needn't guess `const:` versus `var:` (syntax to
       decide: `item:NAME`, `*:NAME` or a bare name). A minor
@@ -144,7 +149,7 @@ of either kind.
       rather than quoting `a` as a literal
 - [x] A name with `{` (`import:a::b::{A, B}`) suggests the quoted name `outline`
       prints (`import:"a::b::{A, B}"`), not "unexpected character `{`"
-- [ ] A part or filter picks the Nth line of a multi-line match, since `.lines`
+- [x] A part or filter picks the Nth line of a multi-line match, since `.lines`
       splits a match into every line and there is no `.lines.first` (syntax to
       decide). A minor
 - [x] `!!` repeats the last script that edited or failed, not a read-only call
@@ -162,6 +167,9 @@ of either kind.
 - [x] A regex glued to a step without `>` (`impl:X>fn:y/z/`) suggests splitting
       it into two commands (`show impl:X>fn:y; show /z/`); it should suggest the
       nested step, `impl:X>fn:y>/z/`
+- [x] A part with a line number (`fn:a.lines:2`) says "unexpected character
+      `:`"; it should say a line is picked by its number, `fn:a>12` (absolute)
+      or `fn:a>$`
 - [x] A sed-style line range (`sub 1,2 /a/ with "b"`, `show 10,20`) suggests
       `1-2`, not quoting literal text
 

@@ -5,12 +5,14 @@ STEP[COND] keeps each span of a step, after its parts, for which COND holds:
     fn[.doc == ""]               functions without doc comments
     fn:parse.lines[.len > 80]    long lines of parse
     fn[.body.len > 50]           functions with long bodies
+    fn[.lines:1 ~= /async/]      functions whose first line has async
 
 A condition is PROPERTY OP VALUE. Properties:
   .text   the span's text, without a final line break
   .len    characters on one line; the number of lines on several
   .PART   a part's text (.name, .doc, .body, ...); "" if the item has none.
           Add .len or .text: .body.len. Parts need a syntax item.
+          .lines:N is the Nth line, "" if the span is shorter.
 .len takes == != < > <= >= and a number. Text takes == != and a "string",
 or ~= and a /regex/ (unanchored unless the regex says so).
 

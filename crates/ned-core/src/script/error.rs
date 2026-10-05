@@ -113,6 +113,13 @@ pub enum ParseErrorKind {
         "`conflict:{0}` isn't a conflict's number; conflicts count from 1 in file order, as in conflict:1, and `conflict` is each of them"
     )]
     ConflictNumber(String),
+    #[error(
+        "`.lines:{0}` isn't a line's number; lines count from 1 within the span, as in .lines:1, and .lines:$ is the last"
+    )]
+    LineIndex(String),
+    /// `.PART:N` for a part other than `.lines`.
+    #[error("`.{part}` takes no number; pick a line of it with .{part}.lines:{number}")]
+    PartNumber { part: String, number: String },
     /// `hint` is empty, or `; ` and a fix.
     #[error("expected {expected}, found {found}{hint}")]
     Expected {

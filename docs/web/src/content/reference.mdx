@@ -351,6 +351,7 @@ selector with a dot: `fn:parse.body`, `struct:Config>field:port.type`.
 | `.value`                    | The value given to a constant, variable, field or variant, or the type that a type alias names.         |
 | `.whole`                    | The whole item, including doc comments, attributes and a trailing comma. `replace` replaces all of it.  |
 | `.lines`                    | Each whole line the span touches. This part works on any selector, not just items.                      |
+| `.lines:N`, `.lines:$`      | The span's Nth line, counting from 1, or its last line.                                                 |
 | `.refs`                     | Each reference to the symbol, found by the [language server](#language-servers).                        |
 | `.def`                      | The symbol's definition, found by the language server.                                                  |
 | `.ours`, `.theirs`, `.base` | The sides of a [merge conflict](#merge-conflicts).                                                      |
@@ -367,7 +368,12 @@ Some details:
 - A Markdown section's `.body` includes its subsections, so
   `insert end section:Usage` adds text after the last of them.
 - On a span that covers several lines, `.lines` produces one span per line. Use
-  `all`, or nest a line number (`fn:parse>12`), to act on them.
+  `all` to act on them, or pick one: `.lines:N` is the span's Nth line, counting
+  from 1 (`fn:parse.body.lines:1` is the first line of the body), and `.lines:$`
+  its last. A filter after it tests that line. A span with fewer lines is
+  skipped, with a note saying how many were, and if every span is skipped the
+  selector matches nothing. A nested line number (`fn:parse>12`) also picks a
+  line, but counts from the start of the file.
 - `.refs` and `.def` work on any selector. On an item, they look up the symbol
   at its name; otherwise, the symbol at the start of the span, as in
   `fn:main>"helper(".def`.
@@ -410,7 +416,9 @@ A condition compares a **property** of the match with a value:
   on a single line, or the number of lines on several.
 - A part, such as `.name` or `.doc`, is that part's text, and adding `.len` or
   `.text` after it (`.body.len`) gives its length or text. An item without the
-  part counts as empty.
+  part counts as empty. `.lines:N` is the match's Nth line, so
+  `all fn[.lines:1 ~= /async/]` is every function whose first line says `async`;
+  a match with fewer lines has `""` there.
 
 Lengths are compared with numbers using `==`, `!=`, `<`, `>`, `<=` or `>=`. Text
 is compared with a string using `==` or `!=`, or with a regular expression using

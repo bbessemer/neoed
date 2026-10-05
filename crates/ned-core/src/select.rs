@@ -231,17 +231,41 @@ pub fn resolve_within(
     let mut parents = Vec::new();
     let mut found = Vec::new();
     let mut skipped = Vec::new();
+    let selector = &src[span.clone()];
     for (i, step) in target.selector.steps.iter().enumerate() {
-        found = resolve_step(step, files, &matches, &scopes, cut && i == 0, &mut skipped)
-            .map_err(error)?;
+        let mut short = Vec::new();
+        found = resolve_step(
+            step,
+            files,
+            &matches,
+            &scopes,
+            cut && i == 0,
+            &mut skipped,
+            &mut short,
+        )
+        .map_err(error)?;
         scopes = found.iter().map(|f| f.scope.clone()).collect();
         let next = found.iter().map(|f| f.m.clone()).collect();
         parents = std::mem::replace(&mut matches, next);
+        let short = too_short(&short);
         if matches.is_empty() {
-            return Err(error(no_match(target, i, files, &parents, &start, src)));
+            let mut kind = no_match(target, i, files, &parents, &start, src);
+            if let (E::NoMatch { hint, .. }, Some((n, count))) = (&mut kind, short.first()) {
+                let fix = match min_lines(*n) {
+                    1 if *count == 1 => format!("drop {} to select the span", line_part(*n)),
+                    1 => format!("drop {} to select the spans", line_part(*n)),
+                    _ => "use .lines:$ for the last line".into(),
+                };
+                *hint = format!("; it {}; {fix}", skipped_spans(*n, *count));
+            }
+            return Err(error(kind));
         }
+        notes.extend(
+            short
+                .into_iter()
+                .map(|(n, count)| format!("{selector}: {}", skipped_spans(n, count))),
+        );
     }
-    let selector = &src[span.clone()];
     for (file, at, from) in skipped {
         let f = files[file];
         let line = |offset| line_numbers(&f.buffer, &(offset..offset));
@@ -259,6 +283,44 @@ pub fn resolve_within(
             selector: selector.into(),
             candidates: candidates(&found, &parents, files, &target.selector, src),
         })),
+    }
+}
+
+/// Each line of `short`, the lines too short a span had for, and how many
+/// spans were.
+fn too_short(short: &[LineNo]) -> Vec<(LineNo, usize)> {
+    let mut counts: Vec<(LineNo, usize)> = Vec::new();
+    for &n in short {
+        match counts.iter_mut().find(|(m, _)| *m == n) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((n, 1)),
+        }
+    }
+    counts
+}
+
+/// The fewest lines a span has for `.lines:N` to pick one.
+fn min_lines(n: LineNo) -> usize {
+    match n {
+        LineNo::Number(n) => n,
+        LineNo::Last => 1,
+    }
+}
+
+fn line_part(n: LineNo) -> String {
+    match n {
+        LineNo::Number(n) => format!(".lines:{n}"),
+        LineNo::Last => ".lines:$".into(),
+    }
+}
+
+/// `skipped 2 spans with fewer than 4 lines`, for `count` spans too short for
+/// `.lines:N`.
+pub(crate) fn skipped_spans(n: LineNo, count: usize) -> String {
+    let spans = if count == 1 { "span" } else { "spans" };
+    match min_lines(n) {
+        1 => format!("skipped {count} {spans} with no lines"),
+        m => format!("skipped {count} {spans} with fewer than {m} lines"),
     }
 }
 
@@ -444,7 +506,8 @@ fn item_scope(item: &Item, parts: &[Part], text: &str) -> Option<Scope> {
     })
 }
 /// The matches of `step` in `parents`. `skipped` gets each range start the
-/// step skips, as the file, its offset and the offset of its range's start.
+/// step skips, as the file, its offset and the offset of its range's start,
+/// and `short` the line of each span too short for its `.lines:N`.
 fn resolve_step(
     step: &Step,
     files: &[&SourceFile],
@@ -452,6 +515,7 @@ fn resolve_step(
     scopes: &[Option<Scope>],
     cut: bool,
     skipped: &mut Vec<(usize, usize, usize)>,
+    short: &mut Vec<LineNo>,
 ) -> Result<Vec<Found>, E> {
     // Only a syntax item has parts other than `.lines`, and a conflict its
     // sides; a part's span is neither.
@@ -459,7 +523,7 @@ fn resolve_step(
     for &part in &step.parts {
         let side = matches!(part, Part::Ours | Part::Theirs | Part::Base);
         match primary {
-            _ if part == Part::Lines => {}
+            _ if matches!(part, Part::Lines | Part::Line(_)) => {}
             Some(Primary::Conflict(_)) if side => {}
             Some(Primary::Syntax { .. }) if !side => {}
             _ if side => {
@@ -504,12 +568,18 @@ fn resolve_step(
                 _ => None,
             };
             let mut spans = vec![Span { range, of }];
-            for part in &step.parts {
-                spans = spans
-                    .iter()
-                    .map(|s| s.part(*part, &f.text))
-                    .collect::<Result<Vec<_>, _>>()?
-                    .concat();
+            for &part in &step.parts {
+                let mut picked = Vec::new();
+                for s in &spans {
+                    let parts = s.part(part, &f.text)?;
+                    if let Part::Line(n) = part
+                        && parts.is_empty()
+                    {
+                        short.push(n);
+                    }
+                    picked.extend(parts);
+                }
+                spans = picked;
             }
             let line = spans.len() > 1;
             for span in spans {
@@ -1595,7 +1665,7 @@ pub(crate) fn part_name(part: Part) -> &'static str {
         Part::Type => "type",
         Part::Value => "value",
         Part::Whole => "whole",
-        Part::Lines => "lines",
+        Part::Lines | Part::Line(_) => "lines",
         Part::Refs => "refs",
         Part::Def => "def",
         Part::Ours => "ours",
@@ -1657,7 +1727,10 @@ fn candidates(
             let parts = |step: &Step| -> String {
                 step.parts
                     .iter()
-                    .map(|&p| format!(".{}", part_name(p)))
+                    .map(|&p| match p {
+                        Part::Line(n) => line_part(n),
+                        p => format!(".{}", part_name(p)),
+                    })
                     .collect()
             };
             let text = match (chosen, last) {
@@ -2003,25 +2076,27 @@ mod tests {
         assert_eq!(select("delete all /a/../b/", "a a b\nb\n"), ["a a b\n"]);
     }
 
+    /// The notes resolving the target of `script`, a `delete`, adds.
+    fn notes(script: &str, text: &str) -> Vec<String> {
+        let parsed = parse(script).unwrap();
+        let CommandKind::Delete(target) = &parsed.commands[0].kind else {
+            panic!("expected delete: {script}");
+        };
+        let mut notes = Vec::new();
+        let files = files(&[("a.rs", text)]);
+        resolve(
+            target,
+            &files.iter().collect::<Vec<_>>(),
+            script,
+            false,
+            &mut notes,
+        )
+        .unwrap();
+        notes
+    }
+
     #[test]
     fn ranges_note_starts_skipped_before_their_end() {
-        let notes = |script: &str, text: &str| {
-            let parsed = parse(script).unwrap();
-            let CommandKind::Delete(target) = &parsed.commands[0].kind else {
-                panic!("expected delete: {script}");
-            };
-            let mut notes = Vec::new();
-            let files = files(&[("a.rs", text)]);
-            resolve(
-                target,
-                &files.iter().collect::<Vec<_>>(),
-                script,
-                false,
-                &mut notes,
-            )
-            .unwrap();
-            notes
-        };
         let text = "fn f() {\n    for x in a {\n        g();\n    } // x\n    for x in a {\n        g();\n    }\n}\n";
         assert_eq!(
             notes("delete /^    for x/../^    }$/", text),
@@ -2168,6 +2243,102 @@ mod tests {
         );
         assert_eq!(select("delete \"- a b\\n  c d\">1", LIST), ["- a b\n"]);
         assert_eq!(select("delete \"- a b\\n  c d\">2", LIST), ["  c d\n"]);
+    }
+
+    #[test]
+    fn lines_n_picks_one_line_of_each_span() {
+        assert_eq!(select("delete fn:b.lines:1", TEXT), ["fn b() {\n"]);
+        assert_eq!(select("delete fn:b.lines:$", TEXT), ["}\n"]);
+        assert_eq!(select("delete fn:a.lines:2", TEXT), ["    let x = 1;\n"]);
+        assert_eq!(
+            select("delete all fn.body.lines:1", TEXT),
+            ["    let x = 1;\n", "    let x = 3;\n"]
+        );
+        assert_eq!(
+            select("delete all fn.body.lines:$", TEXT),
+            ["    let y = 2;\n", "    let x = 3;\n"]
+        );
+        assert_eq!(
+            select("delete \"x = 3\".lines:1", TEXT),
+            ["    let x = 3;\n"]
+        );
+        assert_eq!(select("delete fn:a.lines:3>\"y\"", TEXT), ["y"]);
+    }
+
+    #[test]
+    fn lines_n_filters_test_the_picked_line() {
+        assert_eq!(
+            select("delete all fn.lines:2[.text ~= /x/]", TEXT),
+            ["    let x = 1;\n", "    let x = 3;\n"]
+        );
+        assert_eq!(
+            select("delete fn.lines:3[.text ~= /y/]", TEXT),
+            ["    let y = 2;\n"]
+        );
+        let e = error("delete fn:a.lines:3[.text ~= /x/]", &[("a.rs", TEXT)]);
+        assert!(e.contains("matches nothing"), "{e}");
+    }
+
+    #[test]
+    fn lines_n_is_a_filter_property() {
+        let a = "fn a() {\n    let x = 1;\n    let y = 2;\n}";
+        let b = "fn b() {\n    let x = 3;\n}";
+        assert_eq!(select("delete fn[.lines:4 ~= /}/]", TEXT), [a]);
+        assert_eq!(select("delete fn[.lines:$ ~= /}/][.len == 3]", TEXT), [b]);
+        // A span too short for the line has "" there.
+        assert_eq!(select("delete fn[.lines:4 == \"\"]", TEXT), [b]);
+        assert_eq!(select("delete fn[.lines:3.len > 1]", TEXT), [a]);
+        assert!(notes("delete fn[.lines:4 == \"\"]", TEXT).is_empty());
+    }
+
+    #[test]
+    fn lines_n_skips_spans_too_short() {
+        // fn:a has 4 lines, fn:b 3.
+        assert_eq!(select("delete fn.lines:4", TEXT), ["}\n"]);
+        assert_eq!(
+            notes("delete fn.lines:4", TEXT),
+            ["fn.lines:4: skipped 1 span with fewer than 4 lines"]
+        );
+        assert_eq!(
+            notes("delete all fn.body.lines:2>/let/", TEXT),
+            ["fn.body.lines:2>/let/: skipped 1 span with fewer than 2 lines"]
+        );
+        assert!(notes("delete all fn.lines:$", TEXT).is_empty());
+        assert_eq!(
+            error("delete fn:b.lines:4", &[("a.rs", TEXT)]),
+            "error: script:1:8: fn:b.lines:4 matches nothing in a.rs; it skipped 1 span with \
+             fewer than 4 lines; use .lines:$ for the last line"
+        );
+        assert_eq!(
+            error("delete all fn.lines:5", &[("a.rs", TEXT)]),
+            "error: script:1:12: fn.lines:5 matches nothing in a.rs; it skipped 2 spans with \
+             fewer than 5 lines; use .lines:$ for the last line"
+        );
+    }
+
+    #[test]
+    fn lines_n_skips_empty_sides() {
+        let text = "<<<<<<< HEAD\n=======\nb\n>>>>>>> x\n";
+        assert_eq!(
+            error("delete conflict:1.ours.lines:$", &[("a.rs", text)]),
+            "error: script:1:8: conflict:1.ours.lines:$ matches nothing in a.rs; it skipped \
+             1 span with no lines; drop .lines:$ to select the span"
+        );
+        let two = format!("{text}x\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> x\n");
+        assert_eq!(
+            notes("delete all conflict.ours.lines:$", &two),
+            ["conflict.ours.lines:$: skipped 1 span with no lines"]
+        );
+    }
+
+    #[test]
+    fn lines_n_candidates_keep_the_line() {
+        assert_eq!(
+            error("delete fn.body.lines:1", &[("a.rs", TEXT)]),
+            "error: script:1:8: fn.body.lines:1 matches 2 items; add `all` or use one of:\n  \
+             fn:a.body.lines:1   a.rs:2\n  \
+             fn:b.body.lines:1   a.rs:7"
+        );
     }
 
     #[test]

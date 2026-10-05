@@ -638,8 +638,8 @@ selector   = step { ">" step } ;
 step       = primary [ ".." primary ] { part } { filter } ;
 context    = "+" digit { digit } ;
 part       = ".body" | ".sig" | ".params" | ".name" | ".doc" | ".attrs"
-           | ".ret" | ".type" | ".value" | ".whole" | ".lines" | ".refs"
-           | ".def" | ".ours" | ".theirs" | ".base" ;
+           | ".ret" | ".type" | ".value" | ".whole" | ".lines" [ ":" lineno ]
+           | ".refs" | ".def" | ".ours" | ".theirs" | ".base" ;
 filter     = "[" or "]" ;   (* whitespace allowed inside *)
 or         = and { "||" and } ;
 and        = cond { "&&" cond } ;
@@ -915,6 +915,7 @@ The kinds each language supports, and the items they cover there:
 | `.value`                    | the value a constant, variable, field or variant is given; the type a `type` item names                                          |
 | `.whole`                    | the item's default span (§3.3), doc comments, attributes and trailing `,` included, which `replace` replaces whole               |
 | `.lines`                    | each whole line the span touches, as a span of its own (any selector)                                                            |
+| `.lines:N`, `.lines:$`      | the span's `N`th line, counting from 1, or its last: one of the lines `.lines` selects                                           |
 | `.refs`                     | each reference to the symbol at the span (below), without its declaration                                                        |
 | `.def`                      | the symbol's definition: the item it names, or its identifier if it names no item                                                |
 | `.ours`, `.theirs`, `.base` | a conflict's sides (§3.11)                                                                                                       |
@@ -967,7 +968,16 @@ The kinds each language supports, and the items they cover there:
   another part, as in `.body.name`.
 - `.lines` on a span within one line widens it to that line. On a multi-line
   span it selects each line separately, so `fn:parse.lines` is many spans: use
-  `all`, or nest a line number (`fn:parse>12`).
+  `all`, or pick one line.
+- `.lines:N` picks the `N`th of those lines, counting from 1 within each span
+  (`fn:parse.body.lines:1` is the first line of the body of each `parse`), and
+  `.lines:$` the last; filters after it test the picked line. A span with fewer
+  than `N` lines is skipped, with a note on how many were
+  (`note: fn.lines:4: skipped 2 spans with fewer than 4 lines`); only an empty
+  conflict side (§3.11) is too short for `.lines:$`, and the note says it has no
+  lines. Skipped spans don't count toward the ambiguity rules (§3.5); if every
+  span is skipped, the selector matches nothing. A line number nested in the
+  span picks a line too, but counts from the start of the file: `fn:parse>12`.
 
 ### 3.5 Ambiguity and `all`
 
@@ -978,15 +988,15 @@ The kinds each language supports, and the items they cover there:
 - `all SEL` applies the verb to every match. Zero matches is still an error.
 - An ambiguous `.refs` or `.def` result lists where its matches are instead of
   candidate selectors, since no scope picks one out; add `all`.
-- There is no nth-match syntax, except for conflicts (§3.11). To disambiguate,
-  nest (`impl:Lexer>fn:new`), scope by lines (`40-80>fn:new`), or scope by file
-  (`file:src/a.rs>fn:new`). Error messages list the candidates in exactly these
-  forms (§7): nested in the match's nearest enclosing item (within the previous
-  step's span) if that's unique among the matches, otherwise scoped by file if
-  that's unique, otherwise by lines. A `file:` scope goes first; an item or line
-  scope goes just before the selector's last step
-  (`impl:Lexer>fn:new>40-44>/x/`), and a line scope covers the whole matched
-  item, even when a part follows it.
+- There is no nth-match syntax, except for conflicts (§3.11) and a span's lines
+  (`.lines:N`, §3.4). To disambiguate, nest (`impl:Lexer>fn:new`), scope by
+  lines (`40-80>fn:new`), or scope by file (`file:src/a.rs>fn:new`). Error
+  messages list the candidates in exactly these forms (§7): nested in the
+  match's nearest enclosing item (within the previous step's span) if that's
+  unique among the matches, otherwise scoped by file if that's unique, otherwise
+  by lines. A `file:` scope goes first; an item or line scope goes just before
+  the selector's last step (`impl:Lexer>fn:new>40-44>/x/`), and a line scope
+  covers the whole matched item, even when a part follows it.
 - Every listed candidate picks exactly one match. Matches that share a line with
   another match can't be picked by scope, so they aren't listed; the error
   counts them and suggests selecting longer text, or `all`.
@@ -1062,8 +1072,10 @@ filter follows the step's parts and tests the spans they select.
     `.text` after it for its length or text: `fn[.body.len > 50]`. An item
     without the part, such as a function without doc comments, has `""` there,
     with length 0. A part needs an item (or a conflict, for its sides):
-    `/x/[.name == "a"]` is an error, as `/x/.name` is. `.lines`, `.refs` and
-    `.def` can't be properties.
+    `/x/[.name == "a"]` is an error, as `/x/.name` is. `.lines:N` and `.lines:$`
+    are the picked line (§3.4), and a span with fewer than `N` lines has `""`
+    there: `all fn[.lines:1 ~= /async/]`, `fn[.lines:2.len > 80]`. `.lines`
+    alone, `.refs` and `.def` can't be properties.
 - `.len` is a number, compared with `==`, `!=`, `<`, `>`, `<=` or `>=` and a
   number. Text is compared with `==` or `!=` and a string, or with `~=` and a
   regex, which matches anywhere in it unless anchored (`~= /^test_/`). Any other
@@ -1832,6 +1844,10 @@ The fix each error suggests:
 - Ambiguous selector: Candidate selectors (§3.5), or longer text for matches
   that share a line
 - Missing part, part on a non-syntax step: The parts the item has, or an example
+- `.lines:N` that skipped every span as too short: How many it skipped, and
+  `.lines:$` for the last line (dropping `.lines:N`, for spans with no lines); a
+  number or `$` for `.lines:` with anything else; for another part followed by
+  `:N`, `.lines:N` after it
 - `resolve` of a span that isn't a whole conflict: Selecting one with
   `conflict:N`, or `replace`
 - Invalid query: The closest node type or field name in the grammar

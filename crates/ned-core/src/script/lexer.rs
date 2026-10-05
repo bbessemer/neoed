@@ -355,10 +355,32 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
         self.pos += 1;
         let name = self.take_while(is_ident_char);
-        match name {
-            "" => Err(ParseError::new(E::UnexpectedChar('.'), start..start + 1)),
+        let part = match name {
+            "" => return Err(ParseError::new(E::UnexpectedChar('.'), start..start + 1)),
             _ => part_named(name)
-                .ok_or_else(|| ParseError::new(E::UnknownPart(name.into()), start..self.pos)),
+                .ok_or_else(|| ParseError::new(E::UnknownPart(name.into()), start..self.pos))?,
+        };
+        if self.peek() != Some(':') {
+            return Ok(part);
+        }
+        self.pos += 1;
+        // Any number, so the error can say what a line's number is.
+        let number = self
+            .take_while(|c| !c.is_whitespace() && !matches!(c, '>' | ';' | '|' | '.' | '['))
+            .to_string();
+        let error = |kind| Err(ParseError::new(kind, start..self.pos));
+        match (part, number.as_str()) {
+            (Part::Lines, "$") => Ok(Part::Line(LineNo::Last)),
+            (Part::Lines, n) => match n.parse() {
+                Ok(n) if n > 0 && number.bytes().all(|b| b.is_ascii_digit()) => {
+                    Ok(Part::Line(LineNo::Number(n)))
+                }
+                _ => error(E::LineIndex(number)),
+            },
+            _ => error(E::PartNumber {
+                part: name.into(),
+                number,
+            }),
         }
     }
 
@@ -865,6 +887,48 @@ mod tests {
         assert_eq!(e.span, 3..4);
         assert_eq!(error("/abc\n/").kind, E::UnterminatedRegex);
         assert_eq!(error(r"/abc\/").kind, E::UnterminatedRegex);
+    }
+
+    #[test]
+    fn line_of_a_span() {
+        assert_eq!(
+            kinds("fn:a.lines:2"),
+            [syntax("fn", "a"), T::Part(Part::Line(N(2)))]
+        );
+        assert_eq!(
+            kinds("fn:f.body.lines:$>/x/"),
+            [
+                syntax("fn", "f"),
+                T::Part(Part::Body),
+                T::Part(Part::Line(LineNo::Last)),
+                T::Gt,
+                regex("x", false, false)
+            ]
+        );
+        let filtered = kinds("/x/.lines:10[.len > 3]");
+        assert_eq!(filtered[1], T::Part(Part::Line(N(10))));
+        assert!(matches!(filtered[2], T::Filter(_)));
+    }
+
+    #[test]
+    fn bad_line_of_a_span() {
+        let e = error("fn:a.lines:0");
+        assert_eq!(e.kind, E::LineIndex("0".into()));
+        assert_eq!(e.span, 4..12);
+        assert_eq!(error("fn:a.lines:x").kind, E::LineIndex("x".into()));
+        assert_eq!(error("fn:a.lines:").kind, E::LineIndex(String::new()));
+        assert_eq!(error("fn:a.lines:2x>b").kind, E::LineIndex("2x".into()));
+        assert_eq!(
+            error("fn:a.lines:99999999999999999999999").kind,
+            E::LineIndex("99999999999999999999999".into())
+        );
+        assert_eq!(
+            error("fn:a.body:2").kind,
+            E::PartNumber {
+                part: "body".into(),
+                number: "2".into()
+            }
+        );
     }
 
     #[test]

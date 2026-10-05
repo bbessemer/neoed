@@ -1100,6 +1100,55 @@ fn lines_of_an_item_are_listed_by_line_number() {
 }
 
 #[test]
+fn lines_n_picks_a_line_of_each_span() {
+    let dir = dir_with(&[(
+        "a.rs",
+        "fn a() {\n    x();\n}\n\nfn b() {\n    y();\n    z();\n}\n",
+    )]);
+    let out = ned(
+        dir.path(),
+        &["a.rs", "-e", "show fn:a.lines:2; show all fn.body.lines:$"],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs:2
+    2:    x();
+    a.rs:2
+    2:    x();
+    a.rs:7
+    7:    z();
+    --- stderr
+    ");
+    let out = ned(dir.path(), &["a.rs", "-e", "show fn.lines:4"], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs:8
+    8:}
+    --- stderr
+    note: fn.lines:4: skipped 1 span with fewer than 4 lines
+    ");
+    let out = ned(dir.path(), &["a.rs", "-e", "show fn:a.lines:4"], "");
+    assert_snapshot!(out, @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: script:1:6: fn:a.lines:4 matches nothing in a.rs; it skipped 1 span with fewer than 4 lines; use .lines:$ for the last line
+    ");
+    let out = ned(dir.path(), &["a.rs", "-e", "show fn:a.lines:0"], "");
+    assert_snapshot!(out, @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:10: `.lines:0` isn't a line's number; lines count from 1 within the span, as in .lines:1, and .lines:$ is the last
+    1:show fn:a.lines:0
+               ^
+    ");
+}
+
+#[test]
 fn ambiguous_filter_lists_filtered_candidates() {
     let dir = dir_with(&[(
         "a.rs",

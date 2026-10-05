@@ -589,6 +589,7 @@ pub fn part(item: &Item, part: Part, text: &str) -> Option<Range<usize>> {
         Part::Value => item.value.clone(),
         Part::Whole
         | Part::Lines
+        | Part::Line(_)
         | Part::Refs
         | Part::Def
         | Part::Ours
