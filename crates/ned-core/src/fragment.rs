@@ -302,13 +302,27 @@ fn build(
     // Later lines of the fragment take the indentation the prefix ends at.
     let last_line = &before[before.rfind('\n').map_or(0, |i| i + 1)..];
     let indent = &last_line[..last_line.len() - last_line.trim_start().len()];
-    let at = |offset: usize| {
-        before.len() + offset + indent.len() * source.text[..offset].matches('\n').count()
+    // The terminator goes after the code, before the comments that end it.
+    let cut = match terminator.is_empty() {
+        true => source.text.trim_end().len(),
+        false => code_end(lang, &source.text),
     };
-    let code = source.text.replace('\n', &format!("\n{indent}"));
-    let text = format!("{before}{code}{terminator}{after}");
+    let at = |offset: usize| {
+        let terminated = if offset > cut { terminator.len() } else { 0 };
+        before.len()
+            + offset
+            + terminated
+            + indent.len() * source.text[..offset].matches('\n').count()
+    };
+    let indented = |s: &str| s.replace('\n', &format!("\n{indent}"));
+    let code = format!(
+        "{}{terminator}{}",
+        indented(&source.text[..cut]),
+        indented(&source.text[cut..])
+    );
+    let text = format!("{before}{code}{after}");
     let tree = lang.parse(&text);
-    let inserted = before.len()..before.len() + code.len() + terminator.len();
+    let inserted = before.len()..before.len() + code.len();
     let errors = errors(&tree);
     if errors.len() > site.errors
         || errors
@@ -319,7 +333,7 @@ fn build(
     }
     // A terminator ends a statement only as a token of its own, not at the end
     // of a comment.
-    let ends = inserted.end - terminator.len()..inserted.end;
+    let ends = at(cut)..at(cut) + terminator.len();
     if !terminator.is_empty()
         && tree
             .root_node()
@@ -329,7 +343,7 @@ fn build(
         return None;
     }
     let start = source.text.len() - source.text.trim_start().len();
-    let end = source.text.trim_end().len();
+    let end = cut;
     if start >= end {
         return None;
     }
@@ -363,6 +377,23 @@ fn build(
         return None;
     }
     Some(f)
+}
+
+/// Where `code` ends without the comments after it.
+fn code_end(lang: Language, code: &str) -> usize {
+    let tree = lang.parse(code);
+    let mut end = code.trim_end().len();
+    while end > 0
+        && let Some(comment) = tree
+            .root_node()
+            .descendant_for_byte_range(end - 1, end)
+            .and_then(|n| {
+                std::iter::successors(Some(n), Node::parent).find(|a| a.is_extra() && !a.is_error())
+            })
+    {
+        end = code[..comment.start_byte()].trim_end().len();
+    }
+    end
 }
 
 /// Whether the fragment's roots start at one of `node`'s children and end at
@@ -533,6 +564,16 @@ mod tests {
         assert_eq!(root_kinds(&f), ["call_expression"]);
         assert_eq!(&f.text[f.roots.clone()], "foo(__ned_a, 1)");
         alone_is(Language::Rust, "@a + @b", "binary_expression");
+    }
+
+    #[test]
+    fn the_terminator_goes_before_trailing_comments() {
+        let f = alone(Language::Rust, "foo(@a, 1) // c");
+        assert_eq!(root_kinds(&f), ["call_expression"]);
+        assert_eq!(&f.text[f.roots.clone()], "foo(__ned_a, 1)");
+        let f = alone(Language::Rust, "foo(@a) /* x */ // @b");
+        assert_eq!(&f.text[f.roots.clone()], "foo(__ned_a)");
+        assert_eq!(f.holes[1], Slot::Literal);
     }
 
     #[test]

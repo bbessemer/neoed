@@ -685,6 +685,14 @@ mod tests {
     }
 
     #[test]
+    fn a_pattern_may_end_in_a_comment() {
+        assert_eq!(
+            found("foo(1, @x) // c", "fn main() { foo(1, x); }"),
+            ["foo(1, x)"]
+        );
+    }
+
+    #[test]
     fn matches_do_not_overlap() {
         assert_eq!(
             found("foo(@a)", "fn main() { foo(foo(1)); }"),
