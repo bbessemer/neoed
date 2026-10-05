@@ -20,6 +20,8 @@ ned undo [-s NAME] [-w DIR] [--force]
 `selectors`, `text`, `config` or `session`. An unknown topic is a usage error
 that lists the topics. A subcommand (`help`, `daemon`, `history`, `undo`) must
 be the first argument; write a file with one of those names as `./help`, say.
+One after a flag (`ned -s x undo`) is a usage error suggesting it first, with
+the flags it takes (`ned undo -s x`).
 
 - `-e SCRIPT` may be repeated; the scripts are joined with newlines, in order.
 - Without `-e`, the script is read from stdin. If stdin is a terminal, that's a
@@ -1449,6 +1451,8 @@ The fix each error suggests:
   their lines and `show conflict:N`
   (`conflict:1 (lines 2-7) is not inside fn:f.body (lines 2-5); show it with show conflict:1`)
 - Command's name given as a `FILE`: The `-e` form of the arguments
+- Subcommand after a flag: The arguments with the subcommand first, keeping the
+  flags it takes
 - Ambiguous selector: Candidate selectors (§3.5), or longer text for matches
   that share a line
 - Missing part, part on a non-syntax step: The parts the item has, or an example
@@ -1531,9 +1535,10 @@ Exit codes:
   `.refs`/`.def` result, nothing to undo, undo of a file changed or removed
   since, undo merge overlap, a refused `--commit` (§1.3)
 - `2`: Usage error (bad flags or arguments, a command's name given as a `FILE`,
-  no script on a terminal, no files to edit, a bad session name, no session, a
-  bad `!!`, `--commit` with `-n` or outside a git repository), script syntax
-  error, invalid query, pattern or config, or no language server
+  a subcommand after a flag, no script on a terminal, no files to edit, a bad
+  session name, no session, a bad `!!`, `--commit` with `-n` or outside a git
+  repository), script syntax error, invalid query, pattern or config, or no
+  language server
 - `3`: I/O error: unreadable or non-UTF-8 file, glob matched nothing, write
   failure, language server failure, an unsafe or unknown-version session store,
   or a failing git command
