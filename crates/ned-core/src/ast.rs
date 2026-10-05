@@ -1,7 +1,8 @@
 //! Abstract syntax trees (command-language spec, §3.10): a syntax tree without
 //! what doesn't change what the code means. Comments and tokens of only
 //! whitespace go everywhere; `queries/<lang>/ast.scm` marks each language's
-//! separators with `@skip`, and those that stay anyway with `@keep`.
+//! separators with `@skip`, those that stay anyway with `@keep`, and nodes
+//! that hold a list with `@list`.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -20,6 +21,9 @@ pub struct Ast {
     pub named: bool,
     /// Its field in its parent.
     pub field: Option<String>,
+    /// Whether it holds a list (`@list` in `ast.scm`), which a placeholder that
+    /// is its only element stands in, not for.
+    pub list: bool,
     pub body: Body,
     /// Its source, without whitespace at its ends.
     pub range: Range<usize>,
@@ -45,7 +49,7 @@ impl Ast {
     /// out.
     pub fn lower(lang: Language, node: Node<'_>, text: &str, range: Range<usize>) -> Option<Ast> {
         let query = lang.ast();
-        let (mut skip, mut keep) = (HashSet::new(), HashSet::new());
+        let (mut skip, mut keep, mut list) = (HashSet::new(), HashSet::new(), HashSet::new());
         let mut cursor = QueryCursor::new();
         cursor.set_byte_range(range.clone());
         let mut matches = cursor.matches(query, node, text.as_bytes());
@@ -53,13 +57,20 @@ impl Ast {
             for c in m.captures() {
                 match query.capture_names()[c.index as usize] {
                     "keep" => keep.insert(c.node.id()),
+                    "list" => list.insert(c.node.id()),
                     _ => skip.insert(c.node.id()),
                 };
             }
         }
         skip.retain(|id| !keep.contains(id));
         let outer = trim(text, node.byte_range());
-        Lowering { text, range, skip }.node(node, None, outer)
+        Lowering {
+            text,
+            range,
+            skip,
+            list,
+        }
+        .node(node, None, outer)
     }
 
     /// Whether the two trees are the same code, wherever they are.
@@ -117,6 +128,7 @@ struct Lowering<'t> {
     text: &'t str,
     range: Range<usize>,
     skip: HashSet<usize>,
+    list: HashSet<usize>,
 }
 
 impl Lowering<'_> {
@@ -142,6 +154,7 @@ impl Lowering<'_> {
             kind: node.kind().to_string(),
             named: node.is_named(),
             field,
+            list: self.list.contains(&node.id()),
             body,
             range: trim(self.text, r),
             outer,
@@ -189,6 +202,7 @@ impl Lowering<'_> {
             kind: text.to_string(),
             named: false,
             field: None,
+            list: false,
             body: Body::Leaf(text.to_string()),
             range: r.clone(),
             outer: r,
@@ -271,6 +285,7 @@ mod tests {
             kind: "identifier".into(),
             named: true,
             field: Some("left".into()),
+            list: false,
             body: Body::Hole {
                 name: name.map(String::from),
                 count,

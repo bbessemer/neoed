@@ -4,3 +4,7 @@
 
 "," @skip
 ";" @skip
+
+; Lists: a placeholder that is a list's only element stands for the element,
+; so `if @c:\n    @body...` doesn't take in an `else`.
+(block) @list

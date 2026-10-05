@@ -4,3 +4,9 @@
 
 "," @skip
 ";" @skip
+
+; Lists: a placeholder that is a list's only element stands for the element,
+; so `if @c { @s }` matches a block of one statement and `return @x` returns
+; one value.
+(statement_list) @list
+(expression_list) @list

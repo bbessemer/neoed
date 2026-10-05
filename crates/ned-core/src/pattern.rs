@@ -182,10 +182,10 @@ fn excerpt(code: &str, at: usize) -> String {
 }
 
 /// Makes the outermost node among `asts` whose source is `r`, a
-/// placeholder's, a hole.
+/// placeholder's, a hole, short of a list it's the only element of.
 fn hole_at(asts: &mut [Ast], r: &Range<usize>, hole: Body) {
     for a in asts {
-        if a.range == *r {
+        if a.range == *r && !a.list {
             a.body = hole;
             return;
         }
@@ -218,6 +218,7 @@ fn gap_at(asts: &mut Vec<Ast>, at: usize, hole: Body) {
             kind: String::new(),
             named: false,
             field: None,
+            list: false,
             body: hole,
             range: at..at,
             outer: at..at,
@@ -802,6 +803,30 @@ mod tests {
             ),
             ["console.log(1)"]
         );
+    }
+
+    #[test]
+    fn a_placeholder_alone_in_a_list_stands_for_its_element() {
+        let python =
+            "if ok:\n    run()\nelse:\n    stop()\n\ntry:\n    go()\nexcept E:\n    pass\n";
+        assert!(found_in(Language::Python, "if @c:\n    @body...", python).is_empty());
+        assert!(found_in(Language::Python, "try:\n    @body...", python).is_empty());
+        assert_eq!(
+            found_in(
+                Language::Python,
+                "if @c:\n    @body...\nelse:\n    @e...",
+                python
+            ),
+            ["if ok:\n    run()\nelse:\n    stop()"]
+        );
+        let go = "package p\n\nfunc f() {\n\tif x {\n\t\ta()\n\t\tb()\n\t}\n\tif y {\n\t\tc()\n\t}\n\treturn a, b\n}\n";
+        assert_eq!(
+            found_in(Language::Go, "if @c { @s }", go),
+            ["if y {\n\t\tc()\n\t}"]
+        );
+        assert_eq!(found_in(Language::Go, "if @c { @s... }", go).len(), 2);
+        assert!(found_in(Language::Go, "return @x", go).is_empty());
+        assert_eq!(found_in(Language::Go, "return @x...", go), ["return a, b"]);
     }
 
     #[test]
