@@ -1,10 +1,11 @@
 ned: a line editor for coding agents. A script is one transaction: every edit
-applies, or none does. Output is a per-file summary plus diff hunks.
+applies, or none does.
 
   ned [FLAGS] [FILE... | -w [DIR]] -e SCRIPT   (or the script on stdin)
   ned help [TOPIC]
-  ned daemon start|status|stop [DIR]           (the language-server daemon)
-  ned history|undo|session ...                 (sessions; see `session`)
+  ned daemon start|status|stop [DIR]           (language servers)
+  ned history|undo|session ...                 (see `session`)
+  ned repl [FILE... | -w [DIR]]                (interactive; see `repl`)
 
 Commands, separated by newlines or `;`; `|` starts a new stage that sees the
 edits before it (it binds looser than `;`: `a; b | c` is a;b then c):
@@ -57,4 +58,4 @@ Examples:
     END
 
 Topics: show outline check allow replace insert delete sub move rename resolve
-file create selectors filters patterns conflicts text config session
+file create selectors filters patterns conflicts text config session repl

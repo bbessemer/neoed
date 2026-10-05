@@ -8,6 +8,7 @@ changing behaviour.
 
 ```
 ned [FLAGS] [FILE... | -w [DIR]] [-e SCRIPT]...
+ned repl [FLAGS] [FILE... | -w [DIR]] [--attach NAME]
 ned help [TOPIC]
 ned daemon start|status|stop [DIR]
 ned history [-s NAME] [-w DIR] [--all]
@@ -19,14 +20,15 @@ ned session delete NAME... [-w DIR]
 `ned help` prints a summary of the language, sized to fit in an agent's context.
 `ned help TOPIC` details one verb (`show`, `outline`, `check`, `allow`,
 `replace`, `insert`, `delete`, `sub`, `move`, `rename`, `file`, `create`), or
-`selectors`, `text`, `config` or `session`. An unknown topic is a usage error
-that lists the topics. A subcommand (`help`, `daemon`, `history`, `undo`,
-`session`) must be the first argument; write a file with one of those names as
-`./help`, say.
+`selectors`, `text`, `config`, `session` or `repl`. An unknown topic is a usage
+error that lists the topics. A subcommand (`repl`, `help`, `daemon`, `history`,
+`undo`, `session`) must be the first argument; write a file with one of those
+names as `./help`, say.
 
 - `-e SCRIPT` may be repeated; the scripts are joined with newlines, in order.
-- Without `-e`, the script is read from stdin. If stdin is a terminal, that's a
-  usage error instead of a wait for input.
+- Without `-e`, the script is read from stdin. If stdin is a terminal, `ned`
+  starts the REPL (§1.4) on the file set instead, with the same flags; a flag
+  the REPL doesn't take is a usage error.
 - A `FILE` that doesn't exist but is a command's name (`ned outline a.rs`) is a
   usage error suggesting the `-e` form (`ned a.rs -e 'outline'`).
 - `FILE...` sets the initial **file set** (§2.4). A script may also name files
@@ -160,13 +162,16 @@ failures (a script syntax error too), so a failed one can be repeated with a
 fix. An entry holds the script, the `FILE` arguments or `-w` directory, the
 working directory, the exit code and, for one that wrote files, each file's text
 before and after. A successful `ned undo` records an entry too; a failed one
-isn't recorded. Usage errors from the arguments themselves are not recorded.
+isn't recorded. Usage errors from the arguments themselves are not recorded. The
+REPL (§1.4) records each script it runs with no changes, since its edits stay in
+memory, and each write as an entry of its own.
 
 `ned history` prints the session's last 10 entries, or with `--all` every entry,
 oldest first, one line each: the entry's number, its outcome (`ok`, `dry run`,
-`exit N`, or `undo N` for an undo), the number of files it changed, `commit SHA`
-(its first 7 characters) if it made a commit (§1.3), `undone` if it has been,
-and the script's first line, followed by `(+N lines)` if it has more.
+`exit N`, `undo N` for an undo, or `write` for a REPL write), the number of
+files it changed, `commit SHA` (its first 7 characters) if it made a commit
+(§1.3), `undone` if it has been, and the script's first line, followed by
+`(+N lines)` if it has more.
 
 ```
 $ ned history
@@ -269,8 +274,9 @@ it:
 | `cwd`       | The absolute working directory                                                                 |
 | `files`     | The `FILE` arguments as given                                                                  |
 | `workspace` | The `-w` workspace's absolute root, or `null`                                                  |
-| `script`    | The script (after `!!` expansion), or `null` for an undo                                       |
+| `script`    | The script (after `!!` expansion), or `null` for an undo or a write                            |
 | `undoes`    | The `id` an undo reverted, or `null`                                                           |
+| `write`     | Whether it is a REPL write (§1.4); read as `false` if missing                                  |
 | `dry_run`   | Whether `-n` was given                                                                         |
 | `exit`      | The exit code                                                                                  |
 | `error`     | The error message, or `null`                                                                   |
@@ -330,6 +336,112 @@ src/parser.rs: 1 edit, +1 -1
 ...
 commit 3f9c2a1: Say what input ended
 ```
+
+### 1.4 REPL
+
+`ned repl` is an editor for a human. It runs scripts as `ned` does, but keeps
+their edits in memory until they're written, so a change can be read, undone and
+reworked before any file changes. Bare `ned` on a terminal without `-e` starts
+it too (§1).
+
+```
+$ ned repl src/parser.rs
+note: recording in session repl-1
+ned> replace fn:parse>"end" with "end of input"
+src/parser.rs: 1 edit, +1 -1
+@@ -14,3 +14,3 @@
+...
+ned> :write
+src/parser.rs: written, +1 -1
+ned> :quit
+```
+
+It takes `FILE...` or `-w [DIR]` and the flags `--force`, `--no-check`,
+`--no-fmt`, `--lang`, `--context`, `--color`, `-s` and `--attach NAME`; `-n`,
+`-q`, `--commit` and `-e` are usage errors. On a terminal it reads lines with
+history (kept in `$XDG_STATE_HOME/ned/repl_history`) and the usual editing keys,
+at the prompt `ned> `; otherwise it reads them from stdin without a prompt.
+
+**Scripts.** Each input is a script, run on the file set the REPL started with
+(`file` changes it for the rest of that script only, §2.4). A script that ends
+inside a heredoc or a pattern continues on the next line, at the prompt `.. `.
+Its output is what `ned` prints, from the same pipeline: the parse-error guard,
+formatting and edit checks apply, and so do `--force`, `--no-fmt` and
+`--no-check`. An error is printed and the REPL goes on. `!!` repeats the
+session's last script (§1.2), on its file set.
+
+**Buffers.** An edit changes the file's buffer, not the file. A buffer holds the
+file's text as edited, and its **base**: the text on disk when its first
+unwritten edit was made. Scripts read buffers in place of the files, and files
+without one from disk, so another program's change to a file without unwritten
+edits is seen by the next script. Language servers see the buffers' text, so
+`check` and `.refs` see unwritten edits; save-time checks (`cargo check`) see
+only written files.
+
+**Commands** start with `:` and aren't scripts. A command is written in full or
+as any prefix that names only one (`:w` is `:write`, `:u` is `:undo`, `:di` is
+`:diff`); an ambiguous or unknown one is an error listing the commands it could
+be. `!` after a command's name forces it. `:wq` is a shorthand, written only in
+full, so `:w` is still `:write`.
+
+| Command                        | Effect                                                                                   |
+| ------------------------------ | ---------------------------------------------------------------------------------------- |
+| `:write [FILE...]`             | Write every buffer with unwritten edits, or the named ones                               |
+| `:write! [FILE...]`            | Write them over the files' current text, without merging                                 |
+| `:commit MSG`                  | Write every buffer with unwritten edits, then commit the session's edits to git          |
+| `:undo`                        | Undo the last script's edits to the buffers; repeated, walk further back                 |
+| `:diff [FILE...]`              | Print each buffer's unwritten edits, as summary and hunks against the file on disk       |
+| `:reload [FILE...]`            | Drop the unwritten edits of every buffer, or the named ones                              |
+| `:files [FILE... \| -w [DIR]]` | Print the file set and the buffers with unwritten edits; with arguments, replace the set |
+| `:history [--all]`             | Print the session's history, as `ned history` does                                       |
+| `:attach NAME`, `:detach`      | Follow session `NAME` and record into it; stop                                           |
+| `:help [TOPIC]`                | Print `ned help TOPIC`                                                                   |
+| `:quit`, `:quit!`              | Quit; `:quit!` discards unwritten edits                                                  |
+| `:wq`                          | `:write`, then `:quit` if it succeeded                                                   |
+
+`:write` writes atomically, all files or none, and prints `PATH: written, +A -R`
+for each (`PATH: created, +N` for a file a `create` made). If a file changed on
+disk since its buffer's base, the buffer's edits are merged into its current
+text, as `ned undo --force` merges (§1.2); an edit that overlaps the change is
+an error naming the line, and nothing is written. A created file that now exists
+is an error too. `:write!` writes the buffers as they are. A write runs no
+formatter, guard or check: they ran when the edits were made.
+
+`:commit MSG` takes the rest of the line as the message. It writes as `:write`
+does, then commits as `--commit MSG` does in a session (§1.3): every edit the
+session recorded since its last commit, its own write included, and nothing else
+in the working tree or index. It prints the write's lines, then
+`commit SHA: SUBJECT`. With no unwritten edits it commits the session's earlier
+edits alone; with none of those either, it's "nothing to commit". Attached to an
+agent's session, that includes the agent's edits. Its errors are `--commit`'s,
+and like `--commit`, a refused commit writes nothing: the buffers keep their
+edits.
+
+`:undo` reverts each file the last script edited (that `:undo` hasn't undone) to
+its text before the script, written or not, and prints the hunks, like
+`ned undo`. If the buffer changed since, the undo is merged into it, and an
+overlap is an error naming the line. There is no redo.
+
+`:quit` with unwritten edits is refused, naming the files. Ctrl-D is `:quit`,
+and Ctrl-C clears the line. At the end of input that isn't a terminal, unwritten
+edits are discarded with an error naming the files, and the REPL exits 1;
+otherwise it exits 0.
+
+**Sessions.** The REPL always records into a session (§1.2): `-s NAME` or
+`NED_SESSION`, otherwise the first of `repl-1`, `repl-2`, ... that the workspace
+has no log for. A note on stderr names it at start. Each script is recorded with
+no changes, and `:write` and `:commit` as a `write` entry (`:commit`'s holding
+its `commit`), so `ned undo` reverts a write and `--commit` includes it.
+
+`:attach NAME` (or `--attach NAME` at start) follows session `NAME`, an agent's
+say: it prints the session's last 10 history lines, then each entry another
+program appends, as its history line prefixed by the session's name followed by
+the hunks of each file it changed. The REPL records into `NAME` from then on, so
+a correction lands in the agent's history, and the agent's `ned undo` and `!!`
+see it. A file the entry changed whose buffer has unwritten edits gets a note
+that `:write` will merge into it. `:detach` stops following and records into the
+REPL's own session again. A session the workspace has no log for is an error
+listing its sessions.
 
 ## 2. Scripts
 

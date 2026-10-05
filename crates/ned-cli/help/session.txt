@@ -13,8 +13,8 @@ live in $XDG_STATE_HOME/ned/sessions (default ~/.local/state). A run with
 -w DIR too.
 
 `ned history` prints the last 10 entries (--all: every one), a line each:
-the entry's number, its outcome (ok, dry run, exit N, or undo N), how many
-files it wrote, `undone` if it has been, and the script's first line:
+the entry's number, its outcome (ok, dry run, exit N, undo N, write), how
+many files it wrote, `undone` if it has been, and the script's first line:
 
   3 ok, 1 file: replace fn:parse>"end" with "end of input"
 
