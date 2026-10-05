@@ -1,7 +1,7 @@
 //! Running scripts against files, and the errors that can stop a run.
 
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::ops::Range;
@@ -65,7 +65,7 @@ pub struct Change {
 
 /// Settings from the command line that affect a run.
 #[derive(Debug, Clone, Default)]
-pub struct Options {
+pub struct Options<'o> {
     /// The language of every file, instead of detecting it; `Some(None)` reads
     /// every file as text.
     pub lang: Option<Option<Language>>,
@@ -73,7 +73,14 @@ pub struct Options {
     pub force: bool,
     /// How reads paint their output (§6.6).
     pub style: Style,
+    /// Texts to read in place of the files on disk: the REPL's buffers (§1.4).
+    pub overlay: Option<&'o Overlay>,
 }
+
+/// File texts by absolute path (as `std::path::absolute` makes it), read in
+/// place of the files; a path that doesn't exist on disk is a file made but
+/// not yet written.
+pub type Overlay = BTreeMap<PathBuf, String>;
 
 /// Runs `script` (parsed from `src`) on the `initial` file set. Nothing is
 /// written.
@@ -81,7 +88,7 @@ pub fn run<'s, 'l: 's>(
     script: &Script,
     src: &'s str,
     initial: Initial,
-    options: &'s Options,
+    options: &'s Options<'s>,
     lsp: Option<&'s mut (dyn Lsp + 'l)>,
 ) -> Run {
     let mut executor = Executor {
@@ -156,7 +163,7 @@ struct Member {
 
 struct Executor<'s> {
     src: &'s str,
-    options: &'s Options,
+    options: &'s Options<'s>,
     /// Every file loaded so far, in order of first appearance.
     files: Vec<Loaded>,
     /// The current file set, read as commands need it.
@@ -181,7 +188,12 @@ impl Executor<'_> {
             Initial::Files(paths) => self.open(paths, None)?,
             Initial::Workspace(root) => {
                 let cwd = std::env::current_dir().unwrap_or_default();
-                let paths = workspace::files(&root, &cwd);
+                let paths = with_unwritten(
+                    workspace::files(&root, &cwd),
+                    &root,
+                    &cwd,
+                    self.options.overlay,
+                );
                 self.workspace = Some(paths.clone());
                 paths
                     .into_iter()
@@ -301,7 +313,7 @@ impl Executor<'_> {
     fn create(&mut self, path: &str, new: &Text) -> Result<(), ExecErrorKind> {
         let loaded = self.files.iter().any(|l| same_path(&l.file.path, path))
             || self.set.iter().any(|m| same_path(&m.path, path));
-        if loaded || std::path::Path::new(path).exists() {
+        if loaded || self.buffer(path).is_some() || std::path::Path::new(path).exists() {
             return Err(ExecErrorKind::FileExists { path: path.into() });
         }
         let lang = self.lang(path, &new.value);
@@ -344,7 +356,7 @@ impl Executor<'_> {
     ) -> Result<Vec<Member>, ExecError> {
         let mut set: Vec<Member> = Vec::new();
         for path in paths {
-            for path in expand(path, span)? {
+            for path in expand(path, self.options.overlay, span)? {
                 if set.iter().any(|m| same_path(&m.path, &path)) {
                     continue;
                 }
@@ -353,6 +365,7 @@ impl Executor<'_> {
                     .iter()
                     .position(|l| same_path(&l.file.path, &path));
                 if file.is_none()
+                    && self.buffer(&path).is_none()
                     && let Err(err) = fs::metadata(&path)
                 {
                     let message = match err.kind() {
@@ -427,11 +440,19 @@ impl Executor<'_> {
                 span.clone(),
             )
         };
+        if let Some(text) = self.buffer(path).cloned() {
+            return Ok(self.push_loaded(path, text));
+        }
         let bytes = fs::read(path).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => io(format!("no such file{}", relative_note(path))),
             _ => io(e.to_string()),
         })?;
         let text = String::from_utf8(bytes).map_err(|_| io("not valid UTF-8".into()))?;
+        Ok(self.push_loaded(path, text))
+    }
+
+    /// Adds the file at `path`, holding `text`, to `files`; its index.
+    fn push_loaded(&mut self, path: &str, text: String) -> usize {
         let lang = self.lang(path, &text);
         let file = SourceFile::new(path, text, lang);
         let edits = EditSet::new(&file.buffer);
@@ -444,7 +465,12 @@ impl Executor<'_> {
             applied: 0,
             created: false,
         });
-        Ok(self.files.len() - 1)
+        self.files.len() - 1
+    }
+
+    /// The overlay's text for `path`, read in place of the file (§1.4).
+    fn buffer(&self, path: &str) -> Option<&String> {
+        self.options.overlay?.get(&std::path::absolute(path).ok()?)
     }
 
     fn command(&mut self, index: usize, command: &Command) -> Result<(), ExecError> {
@@ -1493,8 +1519,13 @@ fn last_line_hint(line: &str) -> &'static str {
     }
 }
 
-/// The files `path` names: itself, or a glob's sorted matches.
-fn expand(path: &str, span: Option<&Range<usize>>) -> Result<Vec<String>, ExecError> {
+/// The files `path` names: itself, or a glob's sorted matches, among them the
+/// `overlay`'s files not yet written.
+fn expand(
+    path: &str,
+    overlay: Option<&Overlay>,
+    span: Option<&Range<usize>>,
+) -> Result<Vec<String>, ExecError> {
     let options = glob::MatchOptions {
         require_literal_leading_dot: true,
         ..glob::MatchOptions::new()
@@ -1509,6 +1540,27 @@ fn expand(path: &str, span: Option<&Range<usize>>) -> Result<Vec<String>, ExecEr
         .filter(|p| p.is_file())
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
+    // An unwritten file's key is canonical (§1.4), so the glob's literal leading
+    // directories are resolved before matching, and the match is shown under them
+    // as written.
+    let glob_at = path.find(['*', '?', '[']).unwrap_or(path.len());
+    let (literal, rest) = path.split_at(path[..glob_at].rfind('/').map_or(0, |i| i + 1));
+    if let Ok(pattern) = glob::Pattern::new(rest) {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let base = crate::fs::canonical(&cwd.join(literal));
+        let unwritten = overlay
+            .into_iter()
+            .flat_map(|o| o.keys())
+            .filter(|k| !k.exists());
+        for key in unwritten {
+            let Ok(tail) = key.strip_prefix(&base) else {
+                continue;
+            };
+            if pattern.matches_path_with(tail, options) {
+                files.push(format!("{literal}{}", tail.display()));
+            }
+        }
+    }
     if files.is_empty() {
         let kind = ExecErrorKind::NoGlobMatch {
             glob: path.into(),
@@ -1518,6 +1570,25 @@ fn expand(path: &str, span: Option<&Range<usize>>) -> Result<Vec<String>, ExecEr
     }
     files.sort();
     Ok(files)
+}
+
+/// The workspace's `files`, with the `overlay`'s files under `root` not yet
+/// written added in order, shown as `workspace::files` shows paths.
+fn with_unwritten(
+    mut files: Vec<String>,
+    root: &Path,
+    cwd: &Path,
+    overlay: Option<&Overlay>,
+) -> Vec<String> {
+    let unwritten = overlay
+        .into_iter()
+        .flat_map(|o| o.keys())
+        .filter(|k| k.starts_with(root) && !k.exists());
+    for key in unwritten {
+        files.push(key.strip_prefix(cwd).unwrap_or(key).display().to_string());
+    }
+    files.sort_by(|a, b| Path::new(a).cmp(Path::new(b)));
+    files
 }
 
 /// `target`, with `.body` added when `insert start|end` targets a syntax
@@ -5414,6 +5485,156 @@ fn main() {}
             },
             notes: run.notes,
         }
+    }
+
+    /// Runs `script` with `disk` written to a temporary directory and `buffers`
+    /// overlaid on it, on `initial` (paths under the directory) or, with `None`,
+    /// the directory as the workspace; the directory is removed from every path.
+    fn overlaid(
+        disk: &[(&str, &str)],
+        buffers: &[(&str, &str)],
+        initial: Option<&[&str]>,
+        script: &str,
+    ) -> Outcome {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for (name, text) in disk {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        let overlay: Overlay = buffers
+            .iter()
+            .map(|(name, text)| (root.join(name), text.to_string()))
+            .collect();
+        let prefix = format!("{}/", root.display());
+        let paths: Vec<String> = initial
+            .unwrap_or_default()
+            .iter()
+            .map(|name| format!("{prefix}{name}"))
+            .collect();
+        let initial = match initial {
+            Some(_) => Initial::Files(&paths),
+            None => Initial::Workspace(root.clone()),
+        };
+        let options = Options {
+            overlay: Some(&overlay),
+            ..Options::default()
+        };
+        let src = script.replace("{dir}/", &prefix);
+        let run = run(&parse(&src).unwrap(), &src, initial, &options, None);
+        let strip = |s: &str| s.replace(&prefix, "");
+        Outcome {
+            output: strip(&run.output),
+            result: match run.result {
+                Ok(changes) => Ok(changes
+                    .into_iter()
+                    .map(|c| Change {
+                        path: strip(&c.path),
+                        ..c
+                    })
+                    .collect()),
+                Err(err) => Err(strip(&err.render(&src))),
+            },
+            notes: run.notes,
+        }
+    }
+
+    #[test]
+    fn an_overlaid_file_is_read_from_its_buffer() {
+        let out = overlaid(
+            &[("a.rs", "fn a() {}\n")],
+            &[("a.rs", "fn b() {}\n")],
+            Some(&["a.rs"]),
+            "replace fn:b.name with \"c\"",
+        );
+        let changes = out.result.unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(
+            (changes[0].old.as_str(), changes[0].new.as_str()),
+            ("fn b() {}\n", "fn c() {}\n")
+        );
+        assert!(!changes[0].created);
+    }
+
+    #[test]
+    fn an_unwritten_file_can_be_a_file_argument() {
+        let out = overlaid(
+            &[],
+            &[("new.rs", "fn n() {}\n")],
+            Some(&["new.rs"]),
+            "show fn:n",
+        );
+        assert_eq!(out.output, "new.rs:1\n1:fn n() {}\n");
+        assert_eq!(out.result, Ok(vec![]));
+    }
+
+    #[test]
+    fn file_can_name_an_unwritten_file() {
+        let out = overlaid(
+            &[("a.rs", "fn a() {}\n")],
+            &[("new.rs", "fn n() {}\n")],
+            Some(&["a.rs"]),
+            "file {dir}/new.rs\nshow fn:n",
+        );
+        assert_eq!(out.output, "new.rs:1\n1:fn n() {}\n");
+    }
+
+    #[test]
+    fn create_refuses_an_unwritten_file() {
+        let out = overlaid(
+            &[("a.rs", "fn a() {}\n")],
+            &[("new.rs", "fn n() {}\n")],
+            Some(&["a.rs"]),
+            "create {dir}/new.rs \"fn m() {}\"",
+        );
+        assert!(
+            out.error().contains("new.rs already exists"),
+            "{}",
+            out.error()
+        );
+    }
+
+    #[test]
+    fn globs_match_unwritten_files() {
+        let out = overlaid(
+            &[("a.rs", "fn a() {}\n"), ("c.rs", "fn c() {}\n")],
+            &[("b.rs", "fn b() {}\n"), ("b.py", "def b(): pass\n")],
+            Some(&["*.rs"]),
+            "show all /fn /",
+        );
+        assert_eq!(
+            out.output,
+            "a.rs:1\n1:fn a() {}\nb.rs:1\n1:fn b() {}\nc.rs:1\n1:fn c() {}\n"
+        );
+    }
+
+    #[test]
+    fn globs_match_unwritten_files_by_any_path() {
+        for glob in ["./*.rs", "sub/../*.rs"] {
+            let out = overlaid(
+                &[("a.rs", "fn a() {}\n"), ("sub/x.txt", "")],
+                &[("b.rs", "fn b() {}\n")],
+                Some(&[glob]),
+                "show all /fn /",
+            );
+            let dir = glob.trim_end_matches("*.rs");
+            assert_eq!(
+                out.output,
+                format!("{dir}a.rs:1\n1:fn a() {{}}\n{dir}b.rs:1\n1:fn b() {{}}\n")
+            );
+        }
+    }
+
+    #[test]
+    fn a_workspace_set_holds_unwritten_files() {
+        let out = overlaid(
+            &[("a.rs", "fn a() {}\n")],
+            &[("sub/b.rs", "fn b() {}\n")],
+            None,
+            "show all /fn /",
+        );
+        assert_eq!(out.output, "a.rs:1\n1:fn a() {}\nsub/b.rs:1\n1:fn b() {}\n");
     }
 
     fn workspace_tree() -> tempfile::TempDir {

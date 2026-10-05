@@ -330,6 +330,7 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf, prior: &[(u64, FileChang
         lang: cli.lang,
         force: cli.force,
         style: styles().0,
+        overlay: None,
     };
     let top = root.clone();
     // HEAD as the script starts, so a commit made while it runs is noticed.

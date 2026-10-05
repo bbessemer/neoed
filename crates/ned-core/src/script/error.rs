@@ -183,6 +183,15 @@ impl ParseError {
             None => header,
         }
     }
+
+    /// Whether the script ends inside a heredoc or a pattern, so more lines
+    /// could complete it (the REPL's continuation, §1.4).
+    pub fn incomplete(&self) -> bool {
+        matches!(
+            self.kind,
+            ParseErrorKind::UnterminatedHeredoc(_) | ParseErrorKind::UnterminatedPattern
+        )
+    }
 }
 
 /// The line of `src` holding byte `offset`, labelled `LINE:`, and a caret
@@ -270,5 +279,18 @@ mod tests {
     fn error_past_last_line_has_no_excerpt() {
         let e = err(ParseErrorKind::ZeroLine, 5..5);
         assert_eq!(e.render("show\n"), format!("error: script:2:1: {}", e.kind));
+    }
+
+    #[test]
+    fn a_script_ending_in_a_heredoc_or_pattern_is_incomplete() {
+        let incomplete = |src: &str| crate::script::parse(src).unwrap_err().incomplete();
+        assert!(incomplete("replace 1 with <<END\nfn a() {}"));
+        assert!(incomplete("insert after 1 <<'END'"));
+        assert!(incomplete("show `foo(@x"));
+        assert!(incomplete("show ``foo(`x`"));
+        assert!(!incomplete("show \"foo"));
+        assert!(!incomplete("show /foo"));
+        assert!(!incomplete("frobnicate 1"));
+        assert!(!incomplete("show 1 +"));
     }
 }
