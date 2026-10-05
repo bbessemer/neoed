@@ -1125,9 +1125,13 @@ impl Executor<'_> {
             let width = (last + 1).to_string().len();
             let region = |line| f.buffer.line_range(line).expect("line within the file");
             let spans = match (style, f.lang, f.tree()) {
-                (Style::Color, Some(lang), Some(tree)) => {
-                    highlight::spans(lang, tree, &f.text, region(first).start..region(last).end)
-                }
+                (Style::Color, Some(lang), Some(tree)) => highlight::spans(
+                    lang,
+                    tree,
+                    &f.text,
+                    region(first).start..region(last).end,
+                    style,
+                ),
                 _ => Vec::new(),
             };
             for line in first..=last {

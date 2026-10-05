@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::str::FromStr;
 
-use crate::highlight::Group;
+use crate::highlight::prefixes;
 
 /// When to colour a stream: the `--color` words.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -66,11 +66,68 @@ pub enum Role {
     Warning,
     Info,
     Note,
-    /// Highlighted code.
-    Code(Group),
+    /// Highlighted code, by its highlight capture name.
+    Code(&'static str),
+}
+
+/// What a highlight capture marks, which decides its colour with no theme. Captures
+/// without one, such as `@variable` and `@punctuation`, stay plain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Group {
+    Keyword,
+    String,
+    Comment,
+    Function,
+    Type,
+    /// Constants, numbers, escapes and attributes.
+    Constant,
+    /// A JSX tag.
+    Tag,
+    /// A Markdown heading.
+    Heading,
+    /// A Markdown link destination or reference.
+    Link,
+}
+
+/// The capture names, or dotted prefixes of them, that have a group.
+const GROUPS: &[(&str, Group)] = &[
+    ("keyword", Group::Keyword),
+    ("string", Group::String),
+    ("character", Group::String),
+    ("text.literal", Group::String),
+    ("comment", Group::Comment),
+    ("function", Group::Function),
+    ("constructor", Group::Type),
+    ("type", Group::Type),
+    ("constant", Group::Constant),
+    ("number", Group::Constant),
+    ("boolean", Group::Constant),
+    ("escape", Group::Constant),
+    ("string.escape", Group::Constant),
+    ("attribute", Group::Constant),
+    ("tag", Group::Tag),
+    ("text.title", Group::Heading),
+    ("text.uri", Group::Link),
+    ("text.reference", Group::Link),
+];
+
+/// The group of the capture `name`, by its longest dotted prefix that has
+/// one: `function.method` is a `Function`.
+pub(crate) fn group(name: &str) -> Option<Group> {
+    prefixes(name).find_map(|p| {
+        GROUPS
+            .iter()
+            .find(|(g, _)| *g == p)
+            .map(|(_, group)| *group)
+    })
 }
 
 impl Style {
+    /// Whether this style colours code highlighted as `capture`.
+    pub fn colours(self, capture: &str) -> bool {
+        self == Style::Color && group(capture).is_some()
+    }
+
     /// `text` painted as `role`; unchanged when plain.
     pub fn paint(self, role: Role, text: &str) -> Cow<'_, str> {
         let code = match role {
@@ -83,15 +140,16 @@ impl Style {
             Role::Warning => "1;33",
             Role::Info => "1;34",
             Role::Note => "1;36",
-            Role::Code(group) => match group {
-                Group::Keyword => "35",
-                Group::String => "32",
-                Group::Comment => "2",
-                Group::Function | Group::Tag => "34",
-                Group::Type => "33",
-                Group::Constant => "36",
-                Group::Heading => "1",
-                Group::Link => "4",
+            Role::Code(capture) => match group(capture) {
+                Some(Group::Keyword) => "35",
+                Some(Group::String) => "32",
+                Some(Group::Comment) => "2",
+                Some(Group::Function | Group::Tag) => "34",
+                Some(Group::Type) => "33",
+                Some(Group::Constant) => "36",
+                Some(Group::Heading) => "1",
+                Some(Group::Link) => "4",
+                None => return Cow::Borrowed(text),
             },
         };
         match self {
@@ -181,17 +239,59 @@ mod tests {
     }
 
     #[test]
-    fn code_takes_its_groups_colour() {
-        let painted = |group| shown(&Style::Color.paint(Role::Code(group), "x"));
-        assert_eq!(painted(Group::Keyword), r"\e[35mx\e[0m");
-        assert_eq!(painted(Group::String), r"\e[32mx\e[0m");
-        assert_eq!(painted(Group::Comment), r"\e[2mx\e[0m");
-        assert_eq!(painted(Group::Function), r"\e[34mx\e[0m");
-        assert_eq!(painted(Group::Type), r"\e[33mx\e[0m");
-        assert_eq!(painted(Group::Constant), r"\e[36mx\e[0m");
-        assert_eq!(painted(Group::Tag), r"\e[34mx\e[0m");
-        assert_eq!(painted(Group::Heading), r"\e[1mx\e[0m");
-        assert_eq!(painted(Group::Link), r"\e[4mx\e[0m");
+    fn captures_group_by_their_longest_dotted_prefix() {
+        let cases = [
+            ("keyword", Some(Group::Keyword)),
+            ("function.method", Some(Group::Function)),
+            ("function.macro", Some(Group::Function)),
+            ("string.special", Some(Group::String)),
+            ("string.escape", Some(Group::Constant)),
+            ("escape", Some(Group::Constant)),
+            ("comment.documentation", Some(Group::Comment)),
+            ("constant.builtin", Some(Group::Constant)),
+            ("number", Some(Group::Constant)),
+            ("attribute", Some(Group::Constant)),
+            ("constructor", Some(Group::Type)),
+            ("type.builtin", Some(Group::Type)),
+            ("variable.builtin", None),
+            ("tag", Some(Group::Tag)),
+            ("text.title", Some(Group::Heading)),
+            ("text.uri", Some(Group::Link)),
+            ("text.reference", Some(Group::Link)),
+            ("text.literal", Some(Group::String)),
+            ("variable", None),
+            ("variable.parameter", None),
+            ("property", None),
+            ("punctuation.bracket", None),
+            ("operator", None),
+            ("none", None),
+            ("keywords", None),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(group(name), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn code_takes_its_captures_groups_colour() {
+        let painted = |capture| shown(&Style::Color.paint(Role::Code(capture), "x"));
+        assert_eq!(painted("keyword"), r"\e[35mx\e[0m");
+        assert_eq!(painted("string"), r"\e[32mx\e[0m");
+        assert_eq!(painted("comment"), r"\e[2mx\e[0m");
+        assert_eq!(painted("function.method"), r"\e[34mx\e[0m");
+        assert_eq!(painted("type"), r"\e[33mx\e[0m");
+        assert_eq!(painted("constant"), r"\e[36mx\e[0m");
+        assert_eq!(painted("tag"), r"\e[34mx\e[0m");
+        assert_eq!(painted("text.title"), r"\e[1mx\e[0m");
+        assert_eq!(painted("text.uri"), r"\e[4mx\e[0m");
+        assert_eq!(painted("variable"), "x");
+    }
+
+    #[test]
+    fn only_colour_colours_captures_with_a_group() {
+        assert!(Style::Color.colours("function.method"));
+        assert!(!Style::Color.colours("variable"));
+        assert!(!Style::Plain.colours("function"));
     }
 
     #[test]
