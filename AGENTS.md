@@ -167,12 +167,12 @@ grammars' highlight queries; piped output is unchanged. Syntax selectors cover
 Rust, Python, Go, JavaScript, TypeScript/TSX and Markdown; `conflict` hides
 merge-conflict markers from every parse and finds the conflicts (`conflict:N`,
 `.ours`/`.theirs`/`.base`), which `resolve` resolves. Syntax patterns (spec
-§3.10) select code by writing it: `ned-scheme` reads the Scheme dialect
-(tree-sitter query syntax plus Scheme data) that builders and, later, plugins
-are written in; `template` lexes `@` placeholders, `fragment` parses a pattern
-alone or inside `queries/<lang>/builders.scm`, and `pattern` matches it against
-the tree; `replace` substitutes its captures. MIT-licensed; README has install
-and usage; CI (`.github/workflows/`) gates PRs.
+§3.10) select code by writing it: `template` lexes `@` placeholders, `fragment`
+parses a pattern in place of the code its previous step selected (or alone, for
+a whole file), and `pattern` matches it against the tree; `replace` substitutes
+its captures. `ned-scheme`, a reader for the Scheme dialect (tree-sitter query
+syntax plus Scheme data) that plugins will be written in, is unused for now.
+MIT-licensed; README has install and usage; CI (`.github/workflows/`) gates PRs.
 
 ## Key Documentation
 
@@ -207,7 +207,7 @@ Cargo.toml         workspace; shared version, edition, lints
 crates/ned-core/   library: buffer, script parser, selectors, languages, exec, formatting
 crates/ned-cli/    `ned` binary: args, I/O, output rendering, help texts, daemon client glue
 crates/ned-daemon/ per-workspace daemon (Unix socket), its sync client, language servers
-crates/ned-scheme/ reader for the Scheme dialect of query files, builders and plugins
+crates/ned-scheme/ reader for the Scheme dialect of query files and (later) plugins
 queries/<lang>/    tree-sitter selector queries (.scm), one dir per language
 docs/              specs, agent guide, Claude Code skill; web/ is the project website
 bench/             token-cost (cases/ back spec §8's table) and --commit git-process benchmarks (uv project)

@@ -301,14 +301,20 @@ it too.
 - **Keep output small** on big edits with `-q` (summaries only) or
   `--context 0`.
 - **`@` in a pattern is a placeholder.** Double it for a real one, as in a
-  decorator: `` `@@app.route(@path)` ``. A pattern holding backquotes opens and
-  closes with a longer run of them, as in Markdown: ``` `` `${x}` `` ```. A Rust
-  macro's arguments are tokens, so match one with a run: `` `dbg!(@x...)` ``.
+  decorator, which matches with what it decorates:
+  `` `@@Component(@o) class @c { @_... }` ``. A match arm, `case` or dict entry
+  isn't a pattern alone yet: write its `match` or `switch` too. A pattern
+  holding backquotes opens and closes with a longer run of them, as in Markdown:
+  ``` `` `${x}` `` ```. A Rust macro's arguments are tokens, so match one with a
+  run: `` `dbg!(@x...)` ``.
 - **Patterns match strictly.** Only separators the pattern leaves out (`,`, `;`,
   line breaks) and comments are skipped; every other token and node must match,
   so `` `fn f(self) {}` `` doesn't match `fn f(&self) {}`, nor
   `` `fn @f() {}` `` `pub fn f() {}`. Put `@_` or `@_...` where code may vary.
   Captures keep the comments at their ends.
+- **A pattern parses where it searches**: in the body of the item before it, in
+  a part, or alone at the top of a file. Give code that only parses inside
+  something its context: `` struct:Foo>`x: u32` ``, `` fn:f.params>`x: u32` ``.
 - **Partial matches get verbatim text.** `insert after /re/ "x"` inserts right
   after the match, even mid-line, and `insert start|end /re/` does the same at
   the span's start or end. A heredoc `insert before|after` goes on lines of its

@@ -550,7 +550,6 @@ dependencies = [
  "ignore",
  "insta",
  "libc",
- "ned-scheme",
  "regex",
  "ropey",
  "serde",

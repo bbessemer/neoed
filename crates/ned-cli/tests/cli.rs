@@ -1115,7 +1115,33 @@ fn invalid_pattern_exits_2() {
     exit: 2
     --- stdout
     --- stderr
-    error: script:1:6: `fn (@a` doesn't parse as rust at `@a`; add the code around it, or use query{}
+    error: script:1:6: `fn (@a` doesn't parse as rust where it's searched, at `@a`; select the code it goes in first (struct:S>`x: u8`), or write the code around it too (a match arm's whole `match`)
+    ");
+}
+
+#[test]
+fn a_pattern_that_does_not_parse_suggests_a_fix_in_its_language() {
+    let dir = dir_with(&[("app.py", APP), ("a.go", "package a\n"), ("a.js", "f();\n")]);
+    let out = ned(dir.path(), &["app.py", "-e", "show `@@app.route(@p)`"], "");
+    assert_snapshot!(out, @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:6: `@@app.route(@p)` doesn't parse as python where it's searched, at `@@app.route(@p)`; select the code it goes in first (class:C>`x: int = 1`), or write the code around it too (a decorator's whole `def`)
+    ");
+    let out = ned(dir.path(), &["a.go", "-e", "show `case 1: @_...`"], "");
+    assert_snapshot!(out, @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:6: `case 1: @_...` doesn't parse as go where it's searched, at `@_...`; select the code it goes in first (struct:S>`X int`), or write the code around it too (a case's whole `switch`)
+    ");
+    let out = ned(dir.path(), &["a.js", "-e", "show `case 1: @_...`"], "");
+    assert_snapshot!(out, @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:6: `case 1: @_...` doesn't parse as javascript where it's searched, at `: @_...`; select the code it goes in first (class:C>`x = 1`), or write the code around it too (a case's whole `switch`)
     ");
 }
 

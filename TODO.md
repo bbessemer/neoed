@@ -196,3 +196,7 @@ change is a minor, because it lifts a documented error.
       and lock files (a new language, so a minor)
 - [ ] Relative range ends: `/re/..+70` is the match and the 70 lines after it (a
       minor)
+- [ ] Patterns for code that parses only inside a construct no step selects
+      alone: match arms, `case` clauses, dict and object entries, a decorator
+      without its definition (lost with `builders.scm`). A minor, since §3.10
+      changes

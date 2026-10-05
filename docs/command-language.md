@@ -842,8 +842,9 @@ common to the pattern's lines is ignored.
 - A placeholder must stand for a whole node. One inside a string or comment is
   literal text: `` `log("user@host")` ``. Anywhere else, as part of a keyword or
   operator, it's a script error (exit 2).
-- Python and TypeScript decorators start with `@`, so double it to match one:
-  `` `@@app.route(@path)` ``.
+- Python and TypeScript decorators start with `@`, so double it to match one,
+  with the definition it decorates:
+  `` `@@Component(@opts) class @c { @_... }` ``.
 - `@name...` matches as few siblings as it can while the rest of the pattern
   still matches: in `` `foo(@first, @rest...)` ``, `@first` is the first
   argument and `@rest` the others.
@@ -858,19 +859,29 @@ common to the pattern's lines is ignored.
   `` `let n = items[i] @rest...;` `` matches `let n = items[i].iter().count();`,
   and `@rest` captures `.iter().count()`.
 
-**Parsing.** Many fragments only parse inside some other code: a method inside
-an `impl` or a class, a match arm inside a `match`, a field inside a struct.
-`ned` parses the pattern alone, then inside each such construct its language
-defines, and keeps every reading that parses without errors. The pattern matches
-any of them: `` `x: u32` `` matches a struct field or a parameter.
+**Parsing.** A pattern is parsed where its step searches: in place of the code
+the step before it selected. After a syntax item, that's the item's body, so
+`` struct:Foo>`x: i64` `` parses a field and
+`` impl:Foo>`fn new() -> Self {}` `` a method. After a part, such as `.params`,
+or any other span, it's that span; an item without a body is replaced whole, so
+the pattern is read as its sibling. With no step before it, or after `file:`,
+the pattern is parsed alone, as a file, so `` file:a.rs>`x: i64` `` is a script
+error: give the field its struct.
 
-- A file whose language can't parse the pattern is skipped, and so are text and
-  Markdown files. If no searched file's language parses the pattern, it's a
-  script error (exit 2) that shows where parsing failed.
+- A pattern that doesn't parse there is read once more with a statement
+  terminator after it (`;` in Rust), so `` `foo(@a, 1)` `` parses alone too.
+- Some code parses only inside a construct that no step selects alone: a match
+  arm, a `case` clause, a dictionary or object entry, a decorator without its
+  definition. Such a pattern isn't supported yet, so write the construct around
+  it too: `` `match @e { @_...? E::B => @v, @_...? }` ``.
+- A span where the pattern doesn't parse is skipped, and so are text and
+  Markdown files. If it parses in none of the searched spans, it's a script
+  error (exit 2) that shows where parsing failed.
 - The pattern's root is the deepest node spanning all of its code, so
   `` `foo(@a)` `` is a call and matches calls in expressions as well as in
-  statements. A pattern of several statements or items matches any run of
-  consecutive siblings.
+  statements. It matches at any depth inside the span: `` `x = 1` `` in a Python
+  file also finds the statement inside a function. A pattern of several
+  statements or items matches any run of consecutive siblings.
 
 **Matching.** Two nodes match when they have the same kind and their children
 match in order; leaves (names, numbers, string contents) must have the same

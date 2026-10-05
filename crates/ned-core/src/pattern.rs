@@ -9,15 +9,15 @@ use std::cmp::Reverse;
 
 use tree_sitter::{Node, Tree};
 
-use crate::fragment::{self, Fragment, FragmentError, children_of};
+use crate::fragment::{self, Context, Fragment, FragmentError, children_of};
 use crate::lang::Language;
 use crate::template::Template;
 use crate::text::strip_indent;
 
-/// A pattern compiled for one language: each of its readings.
+/// A pattern compiled for one context.
 #[derive(Debug)]
 pub struct Pattern {
-    readings: Vec<Reading>,
+    reading: Reading,
 }
 
 #[derive(Debug)]
@@ -40,7 +40,9 @@ pub struct PatternMatch {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PatternError {
-    #[error("doesn't parse as {lang} at `{at}`; add the code around it, or use query{{}}")]
+    #[error(
+        "doesn't parse as {lang} where it's searched, at `{at}`; {}", no_parse_fix(.lang)
+    )]
     NoParse { lang: Language, at: String },
     #[error("has `{placeholder}` where a whole node must be; write `@@` for a literal `@`")]
     Fused { placeholder: String },
@@ -48,17 +50,41 @@ pub enum PatternError {
     Empty,
 }
 
+/// How to make a pattern parse in `lang`. A match arm, a case or a decorator
+/// alone parses nowhere a step can search, so their fix is the code around them.
+fn no_parse_fix(lang: &Language) -> &'static str {
+    match lang {
+        Language::Rust => {
+            "select the code it goes in first (struct:S>`x: u8`), or write the code around it too (a match arm's whole `match`)"
+        }
+        Language::Python => {
+            "select the code it goes in first (class:C>`x: int = 1`), or write the code around it too (a decorator's whole `def`)"
+        }
+        Language::Go => {
+            "select the code it goes in first (struct:S>`X int`), or write the code around it too (a case's whole `switch`)"
+        }
+        Language::JavaScript | Language::TypeScript | Language::Tsx => {
+            "select the code it goes in first (class:C>`x = 1`), or write the code around it too (a case's whole `switch`)"
+        }
+        Language::Markdown => "add the code around it",
+    }
+}
+
 impl Pattern {
-    /// Compiles the pattern `src` for `lang`, ignoring the common indentation
-    /// of its lines.
-    pub fn compile(lang: Language, src: &str) -> Result<Pattern, PatternError> {
+    /// Compiles the pattern `src` for `lang` in `context`, or alone, ignoring
+    /// the common indentation of its lines.
+    pub fn compile(
+        lang: Language,
+        src: &str,
+        context: Option<&Context>,
+    ) -> Result<Pattern, PatternError> {
         let code = strip_indent(src).join("\n");
         if code.trim().is_empty() {
             return Err(PatternError::Empty);
         }
 
         let template = Template::parse(&code);
-        let fragments = fragment::parse(lang, &template).map_err(|e| match e {
+        let fragment = fragment::parse(lang, &template, context).map_err(|e| match e {
             FragmentError::NoParse { lang, at } => PatternError::NoParse {
                 lang,
                 at: excerpt(&code, at),
@@ -67,39 +93,33 @@ impl Pattern {
                 placeholder: code[span].to_string(),
             },
         })?;
-        let readings = fragments
-            .into_iter()
-            .map(|fragment| {
-                let holes = template
-                    .holes()
-                    .enumerate()
-                    .filter_map(|(i, h)| Some((fragment.hole(i)?.id(), (h.name.clone(), h.many))))
-                    .collect();
-                let mut gaps: HashMap<usize, Vec<(usize, Option<String>)>> = HashMap::new();
-                for (i, h) in template.holes().enumerate() {
-                    if let Some((node, before)) = fragment.gap(i) {
-                        gaps.entry(node.id())
-                            .or_default()
-                            .push((before, h.name.clone()));
-                    }
-                }
-                Reading {
-                    fragment,
-                    holes,
-                    gaps,
-                }
-            })
+        let holes = template
+            .holes()
+            .enumerate()
+            .filter_map(|(i, h)| Some((fragment.hole(i)?.id(), (h.name.clone(), h.many))))
             .collect();
-        Ok(Pattern { readings })
+        let mut gaps: HashMap<usize, Vec<(usize, Option<String>)>> = HashMap::new();
+        for (i, h) in template.holes().enumerate() {
+            if let Some((node, before)) = fragment.gap(i) {
+                gaps.entry(node.id())
+                    .or_default()
+                    .push((before, h.name.clone()));
+            }
+        }
+        Ok(Pattern {
+            reading: Reading {
+                fragment,
+                holes,
+                gaps,
+            },
+        })
     }
 
     /// The matches in `tree`, the tree of `text`, that lie within `range`, in
     /// source order. A match inside an earlier one is skipped.
     pub fn find(&self, tree: &Tree, text: &str, range: Range<usize>) -> Vec<PatternMatch> {
         let mut all = Vec::new();
-        for reading in &self.readings {
-            reading.find(tree.root_node(), text, &range, &mut all);
-        }
+        self.reading.find(tree.root_node(), text, &range, &mut all);
         all.sort_by_key(|m| (m.range.start, Reverse(m.range.end)));
         let mut out: Vec<PatternMatch> = Vec::new();
         for m in all {
@@ -443,7 +463,7 @@ mod tests {
     use super::*;
 
     fn matches(lang: Language, pattern: &str, text: &str) -> Vec<PatternMatch> {
-        let p = Pattern::compile(lang, pattern).unwrap_or_else(|e| panic!("{pattern}: {e}"));
+        let p = Pattern::compile(lang, pattern, None).unwrap_or_else(|e| panic!("{pattern}: {e}"));
         p.find(&lang.parse(text), text, 0..text.len())
     }
 
@@ -454,6 +474,20 @@ mod tests {
 
     fn found_in(lang: Language, pattern: &str, text: &str) -> Vec<String> {
         matches(lang, pattern, text)
+            .iter()
+            .map(|m| text[m.range.clone()].to_string())
+            .collect()
+    }
+
+    /// The text of each match of `pattern`, parsed in place of the first
+    /// `site` in Rust `text`.
+    fn found_within(pattern: &str, text: &str, site: &str) -> Vec<String> {
+        let tree = Language::Rust.parse(text);
+        let start = text.find(site).expect("the site is in the text");
+        let context = Context::new(text, &tree, start..start + site.len(), None);
+        let p = Pattern::compile(Language::Rust, pattern, Some(&context))
+            .unwrap_or_else(|e| panic!("{pattern}: {e}"));
+        p.find(&tree, text, 0..text.len())
             .iter()
             .map(|m| text[m.range.clone()].to_string())
             .collect()
@@ -535,7 +569,11 @@ mod tests {
             .is_empty()
         );
         assert_eq!(
-            found("Some(@x) => @y", "fn main() { match a { Some(b) => c, } }"),
+            found_within(
+                "Some(@x) => @y",
+                "fn main() { match a { Some(b) => c, } }",
+                "Some(b) => c,"
+            ),
             ["Some(b) => c,"]
         );
     }
@@ -612,9 +650,10 @@ mod tests {
             ]
         );
         assert_eq!(
-            found(
+            found_within(
                 "Kind::A(_) => x @_...,",
-                "fn main() { match k { Kind::A(_) => x.foo().bar(), Kind::A(_) => y.foo(), } }"
+                "fn main() { match k { Kind::A(_) => x.foo().bar(), Kind::A(_) => y.foo(), } }",
+                "Kind::A(_) => x.foo().bar(), Kind::A(_) => y.foo(),"
             ),
             ["Kind::A(_) => x.foo().bar(),"]
         );
@@ -657,7 +696,7 @@ mod tests {
     #[test]
     fn matches_lie_within_the_range() {
         let text = "fn a() { foo(1); }\nfn b() { foo(2); }\n";
-        let p = Pattern::compile(Language::Rust, "foo(@x)").unwrap();
+        let p = Pattern::compile(Language::Rust, "foo(@x)", None).unwrap();
         let start = text.find("fn b").unwrap();
         let found = p.find(&Language::Rust.parse(text), text, start..text.len());
         assert_eq!(found.len(), 1);
@@ -709,11 +748,32 @@ mod tests {
     }
 
     #[test]
-    fn a_pattern_matches_any_of_its_readings() {
+    fn a_pattern_matches_at_any_depth() {
         assert_eq!(
-            found("@a: u32", "struct S { a: u32 }\nfn f(b: u32) {}\n"),
-            ["a: u32", "b: u32"]
+            found_in(
+                Language::Python,
+                "x = 1",
+                "x = 1\ndef f():\n    if ok:\n        x = 1\n"
+            ),
+            ["x = 1", "x = 1"]
         );
+    }
+
+    #[test]
+    fn a_pattern_parses_in_its_context() {
+        let text = "struct S {\n    b: u8,\n}\nfn f(c: u32) {}\n";
+        let tree = Language::Rust.parse(text);
+        let body = text.find("b: u8,").unwrap()..text.find("\n}").unwrap();
+        let context = Context::new(text, &tree, body, None);
+        let p = Pattern::compile(Language::Rust, "@a: u32", Some(&context)).unwrap();
+        assert!(p.find(&tree, text, 0..text.len()).is_empty());
+        let p = Pattern::compile(Language::Rust, "@a: u8", Some(&context)).unwrap();
+        let found: Vec<_> = p
+            .find(&tree, text, 0..text.len())
+            .iter()
+            .map(|m| &text[m.range.clone()])
+            .collect();
+        assert_eq!(found, ["b: u8"]);
     }
 
     #[test]
@@ -782,19 +842,27 @@ mod tests {
 
     #[test]
     fn compile_errors() {
-        let Err(PatternError::NoParse { lang, at }) = Pattern::compile(Language::Rust, "fn (@a")
+        let Err(PatternError::NoParse { lang, at }) =
+            Pattern::compile(Language::Rust, "fn (@a", None)
         else {
             panic!("compiled");
         };
         assert_eq!(lang, Language::Rust);
         assert_eq!(at, "@a");
-        let Err(PatternError::NoParse { at, .. }) = Pattern::compile(Language::Go, "x := := 1")
+        let Err(PatternError::NoParse { at, .. }) =
+            Pattern::compile(Language::Go, "x := := 1", None)
         else {
             panic!("compiled");
         };
         assert_eq!(at, ":= 1");
+        let Err(PatternError::NoParse { at, .. }) =
+            Pattern::compile(Language::Rust, "x: i64", None)
+        else {
+            panic!("compiled");
+        };
+        assert_eq!(at, "i64");
         assert_eq!(
-            Pattern::compile(Language::Rust, "foo@bar(1)").unwrap_err(),
+            Pattern::compile(Language::Rust, "foo@bar(1)", None).unwrap_err(),
             PatternError::Fused {
                 placeholder: "@bar".into()
             }
@@ -812,11 +880,11 @@ mod tests {
     #[test]
     fn a_pattern_needs_code() {
         assert_eq!(
-            Pattern::compile(Language::Rust, "  ").unwrap_err(),
+            Pattern::compile(Language::Rust, "  ", None).unwrap_err(),
             PatternError::Empty
         );
         let Err(PatternError::NoParse { at, .. }) =
-            Pattern::compile(Language::Rust, "// only a comment")
+            Pattern::compile(Language::Rust, "// only a comment", None)
         else {
             panic!("compiled");
         };

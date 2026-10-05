@@ -13,6 +13,7 @@ use tree_sitter::{Node, Query, QueryCursor, QueryError, QueryErrorKind, Streamin
 use crate::buffer::{Buffer, LineEnding};
 use crate::conflict::{self, Conflict};
 use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
+use crate::fragment::Context;
 use crate::lang::Language;
 use crate::pattern;
 use crate::script::ast::{
@@ -212,11 +213,13 @@ pub fn resolve_within(
         }
         named.extend(names.into_iter().map(String::from));
     }
+    let mut scopes = vec![None; start.len()];
     let mut matches = start;
     let mut parents = Vec::new();
     let mut found = Vec::new();
     for (i, step) in target.selector.steps.iter().enumerate() {
-        found = resolve_step(step, files, &matches).map_err(error)?;
+        found = resolve_step(step, files, &matches, &scopes).map_err(error)?;
+        scopes = found.iter().map(|f| f.scope.clone()).collect();
         let next = found.iter().map(|f| f.m.clone()).collect();
         parents = std::mem::replace(&mut matches, next);
         if matches.is_empty() {
@@ -290,9 +293,46 @@ struct Found {
     parent: usize,
     /// Whether it's one of the lines `.lines` split a multi-line span into.
     line: bool,
+    scope: Option<Scope>,
 }
 
-fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result<Vec<Found>, E> {
+/// Where a pattern parses in a match that isn't plain text (§3.10): in place
+/// of `splice`, inside the node spanning `container`, if it's known.
+#[derive(Debug, Clone)]
+struct Scope {
+    splice: Range<usize>,
+    container: Option<Range<usize>>,
+}
+
+/// Where a pattern parses in `item`, or in the span `parts` of it select.
+fn item_scope(item: &Item, parts: &[Part], text: &str) -> Option<Scope> {
+    let (splice, container) = match (parts, &item.body) {
+        ([], Some(body)) => (syntax::part(item, Part::Body, text)?, body),
+        ([], None) => {
+            return Some(Scope {
+                splice: item.node.clone(),
+                container: None,
+            });
+        }
+        ([Part::Body], Some(body)) => (syntax::part(item, Part::Body, text)?, body),
+        ([Part::Params], _) => (
+            syntax::part(item, Part::Params, text)?,
+            item.params.as_ref()?,
+        ),
+        _ => return None,
+    };
+    Some(Scope {
+        splice,
+        container: Some(container.clone()),
+    })
+}
+
+fn resolve_step(
+    step: &Step,
+    files: &[&SourceFile],
+    parents: &[Match],
+    scopes: &[Option<Scope>],
+) -> Result<Vec<Found>, E> {
     // Only a syntax item has parts other than `.lines`, and a conflict its
     // sides; a part's span is neither.
     let mut primary = Some(&step.primary);
@@ -315,11 +355,11 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
         }
         primary = None;
     }
-    let matcher = Matcher::new(&step.primary, files, parents)?;
+    let matcher = Matcher::new(&step.primary, files, parents, scopes)?;
     let mut out: Vec<Found> = Vec::new();
     for (p, parent) in parents.iter().enumerate() {
         let f = &files[parent.file];
-        for (range, captured) in matcher.find(f, parent.range.clone()) {
+        for (range, captured) in matcher.find(f, p, parent.range.clone()) {
             let mut captures = parent.captures.clone();
             captures.extend(captured);
             let core = range.clone();
@@ -334,6 +374,10 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
                     .conflict_at(&range)
                     .map_or(Of::Plain, |(n, c)| Of::Conflict(n, c)),
                 _ => Of::Plain,
+            };
+            let scope = match &of {
+                Of::Item(item) => item_scope(item, &step.parts, &f.text),
+                _ => None,
             };
             let mut spans = vec![Span { range, of }];
             for part in &step.parts {
@@ -359,6 +403,7 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
                         core: core.clone(),
                         parent: p,
                         line,
+                        scope: scope.clone(),
                     });
                 }
             }
@@ -387,13 +432,22 @@ enum Matcher<'a> {
     },
     /// The query compiled for each searched language.
     Query(Vec<(Language, Query)>),
-    /// The pattern compiled for each searched language it parses in.
-    Code(Vec<(Language, pattern::Pattern)>),
+    /// The pattern compiled where it parses, and which of them each parent
+    /// match is searched with.
+    Code {
+        patterns: Vec<pattern::Pattern>,
+        of: Vec<Option<usize>>,
+    },
     Range(Box<Matcher<'a>>, Box<Matcher<'a>>),
 }
 
 impl<'a> Matcher<'a> {
-    fn new(primary: &'a Primary, files: &[&SourceFile], parents: &[Match]) -> Result<Self, E> {
+    fn new(
+        primary: &'a Primary,
+        files: &[&SourceFile],
+        parents: &[Match],
+        scopes: &[Option<Scope>],
+    ) -> Result<Self, E> {
         Ok(match primary {
             Primary::Lines { start, end } => {
                 let end = end.unwrap_or(*start);
@@ -429,35 +483,38 @@ impl<'a> Matcher<'a> {
                 Matcher::Syntax { kind, name }
             }
             Primary::Query(source) => Matcher::Query(compile_query(source, files, parents)?),
-            Primary::Code(code) => Matcher::Code(compile_pattern(code, files, parents)?),
+            Primary::Code(code) => compile_pattern(code, files, parents, scopes)?,
             Primary::Range { from, to } => Matcher::Range(
-                Box::new(Matcher::new(from, files, parents)?),
-                Box::new(Matcher::new(to, files, parents)?),
+                Box::new(Matcher::new(from, files, parents, scopes)?),
+                Box::new(Matcher::new(to, files, parents, scopes)?),
             ),
         })
     }
 
-    /// The step's matches in `parent`, with what its patterns captured.
-    fn find(&self, f: &SourceFile, parent: Range<usize>) -> Vec<(Range<usize>, Captures)> {
+    /// The step's matches in `parent`, parent match `p`, with what its
+    /// patterns captured.
+    fn find(
+        &self,
+        f: &SourceFile,
+        p: usize,
+        parent: Range<usize>,
+    ) -> Vec<(Range<usize>, Captures)> {
         match self {
-            Matcher::Code(patterns) => {
-                let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
+            Matcher::Code { patterns, of } => {
+                let (Some(tree), Some(i)) = (f.tree(), of[p]) else {
                     return Vec::new();
                 };
-                let Some((_, pattern)) = patterns.iter().find(|(l, _)| *l == lang) else {
-                    return Vec::new();
-                };
-                pattern
+                patterns[i]
                     .find(tree, &f.text, parent)
                     .into_iter()
                     .map(|m| (m.range, m.captures))
                     .collect()
             }
             Matcher::Range(from, to) => {
-                let ends = to.find(f, parent.clone());
+                let ends = to.find(f, p, parent.clone());
                 let mut out = Vec::new();
                 let mut searched_to = parent.start;
-                for (start, captures) in from.find(f, parent.clone()) {
+                for (start, captures) in from.find(f, p, parent.clone()) {
                     if start.start < searched_to {
                         continue;
                     }
@@ -472,14 +529,14 @@ impl<'a> Matcher<'a> {
                 out
             }
             _ => self
-                .ranges(f, parent)
+                .ranges(f, p, parent)
                 .into_iter()
                 .map(|r| (r, Vec::new()))
                 .collect(),
         }
     }
 
-    fn ranges(&self, f: &SourceFile, parent: Range<usize>) -> Vec<Range<usize>> {
+    fn ranges(&self, f: &SourceFile, p: usize, parent: Range<usize>) -> Vec<Range<usize>> {
         let within = |r: &Range<usize>| parent.start <= r.start && r.end <= parent.end;
         let scope = scope(&f.text, &parent);
         let in_scope = |r: &Range<usize>| scope.start <= r.start && r.end <= scope.end;
@@ -589,9 +646,11 @@ impl<'a> Matcher<'a> {
                 out.dedup();
                 out
             }
-            Matcher::Code(_) | Matcher::Range(..) => {
-                self.find(f, parent).into_iter().map(|(r, _)| r).collect()
-            }
+            Matcher::Code { .. } | Matcher::Range(..) => self
+                .find(f, p, parent)
+                .into_iter()
+                .map(|(r, _)| r)
+                .collect(),
             Matcher::Syntax { kind, name } => f
                 .items()
                 .unwrap_or_default()
@@ -708,47 +767,72 @@ fn compile_query(
     Ok(queries)
 }
 
-/// The pattern `code` compiled for each code language among the searched
-/// files that it parses in.
-fn compile_pattern(
+/// The pattern `code` compiled where each parent match searches it (§3.10).
+/// A whole file parses it alone, so those share one compilation per
+/// language.
+fn compile_pattern<'a>(
     code: &str,
     files: &[&SourceFile],
     parents: &[Match],
-) -> Result<Vec<(Language, pattern::Pattern)>, E> {
-    let mut searched: Vec<usize> = parents.iter().map(|m| m.file).collect();
-    searched.dedup();
-    let mut patterns: Vec<(Language, pattern::Pattern)> = Vec::new();
-    let mut failed: Vec<(Language, pattern::PatternError)> = Vec::new();
-    for &i in &searched {
-        let Some(lang) = files[i].lang.filter(|l| *l != Language::Markdown) else {
+    scopes: &[Option<Scope>],
+) -> Result<Matcher<'a>, E> {
+    let mut patterns = Vec::new();
+    let mut of = Vec::with_capacity(parents.len());
+    let mut alone: Vec<(Language, Option<usize>)> = Vec::new();
+    let mut failed = None;
+    for (parent, scope) in parents.iter().zip(scopes) {
+        let f = files[parent.file];
+        let (Some(lang), Some(tree)) = (f.lang.filter(|l| *l != Language::Markdown), f.tree())
+        else {
+            of.push(None);
             continue;
         };
-        if patterns.iter().any(|(l, _)| *l == lang) || failed.iter().any(|(l, _)| *l == lang) {
+        let text = f.masked();
+        let (splice, container) = match scope {
+            Some(s) => (s.splice.clone(), s.container.clone()),
+            None => (parent.range.clone(), None),
+        };
+        let whole = splice == (0..text.len());
+        if whole && let Some((_, i)) = alone.iter().find(|(l, _)| *l == lang) {
+            of.push(*i);
             continue;
         }
-        match pattern::Pattern::compile(lang, code) {
-            Ok(p) => patterns.push((lang, p)),
-            Err(e) => failed.push((lang, e)),
+        let context = (!whole).then(|| Context::new(text, tree, splice, container));
+        let i = match pattern::Pattern::compile(lang, code, context.as_ref()) {
+            Ok(p) => {
+                patterns.push(p);
+                Some(patterns.len() - 1)
+            }
+            Err(e) => {
+                failed = failed.or(Some(e));
+                None
+            }
+        };
+        if whole {
+            alone.push((lang, i));
         }
+        of.push(i);
     }
     let selector = fenced(code);
-    if !patterns.is_empty() || searched.is_empty() {
-        return Ok(patterns);
+    if !patterns.is_empty() || parents.is_empty() {
+        return Ok(Matcher::Code { patterns, of });
     }
-    match failed.into_iter().next() {
-        Some((_, e)) => Err(E::InvalidPattern {
+    match failed {
+        Some(e) => Err(E::InvalidPattern {
             selector,
             message: e.to_string(),
         }),
-        None => Err(E::NoCodeLanguage {
-            selector,
-            files: file_list(
-                &searched
-                    .iter()
-                    .map(|&i| files[i].path.as_str())
-                    .collect::<Vec<_>>(),
-            ),
-        }),
+        None => {
+            let mut searched: Vec<&str> = parents
+                .iter()
+                .map(|m| files[m.file].path.as_str())
+                .collect();
+            searched.dedup();
+            Err(E::NoCodeLanguage {
+                selector,
+                files: file_list(&searched),
+            })
+        }
     }
 }
 
@@ -2097,6 +2181,31 @@ mod tests {
         assert_eq!(
             select("delete all `foo(@x)`.lines", text),
             ["    foo(1);\n", "    foo(2);\n"]
+        );
+    }
+
+    #[test]
+    fn patterns_parse_where_their_step_searches() {
+        let text = "struct S {\n    a: u8,\n    b: i64,\n}\n\nfn f(c: i64) {\n    g();\n}\n";
+        assert_eq!(select("delete struct:S>`@x: i64`", text), ["b: i64"]);
+        assert_eq!(select("delete fn:f.params>`@x: i64`", text), ["c: i64"]);
+        assert_eq!(select("delete struct:S.body>`a: @t`", text), ["a: u8"]);
+        let err = error("delete `x: i64`", &[("a.rs", text)]);
+        assert!(err.contains("doesn't parse as rust"), "{err}");
+        let err = error("delete file:a.rs>`x: i64`", &[("a.rs", text)]);
+        assert!(err.contains("doesn't parse as rust"), "{err}");
+    }
+
+    #[test]
+    fn patterns_parse_in_a_python_body() {
+        let text = "class A:\n    def f(self):\n        a = 1\n        b = 2\n\n    def g(self):\n        pass\n";
+        assert_eq!(
+            select_in("delete fn:f>`a = 1\nb = 2`", "a.py", text),
+            ["a = 1\n        b = 2"]
+        );
+        assert_eq!(
+            select_in("delete class:A>`def g(self):\n    pass`", "a.py", text),
+            ["def g(self):\n        pass"]
         );
     }
 
