@@ -1,4 +1,4 @@
-//! Atomic writes of edited files, and private state directories.
+//! Reads and atomic writes of edited files, and private state directories.
 
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -6,6 +6,15 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use thiserror::Error;
+
+/// The text of the file at `path`, `None` if it's missing.
+pub fn read(path: &Path) -> io::Result<Option<String>> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
+}
 
 /// `path`, absolute, with each part that exists resolved as the system
 /// resolves it (symlinks, `.` and `..`), and the rest normalized as text: one

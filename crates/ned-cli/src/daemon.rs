@@ -140,14 +140,11 @@ pub fn workspace(_root: PathBuf) -> Workspace {
 }
 
 #[cfg(not(unix))]
-impl Workspace {
-    pub fn running(&mut self) -> bool {
+impl ned_core::lsp::Lsp for Workspace {
+    fn running(&mut self) -> bool {
         false
     }
-}
 
-#[cfg(not(unix))]
-impl ned_core::lsp::Lsp for Workspace {
     fn diagnose(&mut self, _: &[Document], _: bool) -> Result<Diagnosis, LspFailure> {
         Err(unix_only())
     }

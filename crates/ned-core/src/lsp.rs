@@ -148,6 +148,12 @@ pub enum Formatting {
 
 /// What `ned` asks of the workspace's language servers.
 pub trait Lsp {
+    /// Whether the servers are up already, so edits can be checked and
+    /// formatted through them without starting any (spec §1.1).
+    fn running(&mut self) -> bool {
+        true
+    }
+
     /// Diagnostics for each of `documents`, as their text stands. `saved`
     /// says the documents' files hold their texts, so servers may also run,
     /// and are waited for, the checks they run when a file is saved.

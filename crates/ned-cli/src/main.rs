@@ -22,26 +22,21 @@ macro_rules! errln {
 }
 
 mod daemon;
-mod help;
 mod repl;
 mod session;
 
 use std::ffi::OsString;
 use std::io::{self, IsTerminal, Read};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::OnceLock;
 
-use clap::builder::NonEmptyStringValueParser;
+use clap::builder::{NonEmptyStringValueParser, PossibleValuesParser};
 use clap::{Parser, Subcommand};
-use ned_core::apply::{self, Committed, Finished, Render, Settings};
-use ned_core::exec::{self, Change, Initial, Options};
-use ned_core::git::Repo;
+use ned_core::invoke::{self, Failure, Invocation, Output};
 use ned_core::lang::{self, Language};
-use ned_core::lsp::Lsp;
-use ned_core::session::{Entry, FileChange};
 use ned_core::style::{Style, When};
-use ned_core::{fs, script, workspace};
+use ned_core::{help, script, workspace};
 
 /// A `--lang` value, `None` for text. Clap would read `Option<Option<_>>` as a
 /// flag whose value is optional.
@@ -110,7 +105,10 @@ enum Command {
     /// Edit interactively, in memory until written (`ned help repl`).
     Repl(repl::ReplArgs),
     /// Print a summary of the command language, or details of one topic.
-    Help { topic: Option<help::Topic> },
+    Help {
+        #[arg(value_parser = PossibleValuesParser::new(help::TOPICS.iter().map(|(name, _)| name)))]
+        topic: Option<String>,
+    },
     /// Manage the language-server daemon for the workspace containing DIR.
     Daemon {
         #[command(subcommand)]
@@ -176,7 +174,7 @@ fn color_arg(args: impl Iterator<Item = OsString>) -> When {
 
 fn main() -> ExitCode {
     let no_color = std::env::var_os("NO_COLOR");
-    let mut cli = match Cli::try_parse() {
+    let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => {
             let terminal = match err.use_stderr() {
@@ -204,7 +202,10 @@ fn main() -> ExitCode {
     match cli.command {
         Some(Command::Repl(args)) => return repl::run(args),
         Some(Command::Help { topic }) => {
-            out!("{}", help::text(topic));
+            out!(
+                "{}",
+                help::text(topic.as_deref()).expect("clap checks the topic")
+            );
             return ExitCode::SUCCESS;
         }
         Some(Command::Daemon { action }) => return daemon::run(action),
@@ -234,7 +235,7 @@ fn main() -> ExitCode {
         errln!("error: {err}");
         return ExitCode::from(2);
     }
-    let mut src = if cli.scripts.is_empty() {
+    let src = if cli.scripts.is_empty() {
         let mut src = String::new();
         if let Err(err) = io::stdin().read_to_string(&mut src) {
             errln!("error: cannot read the script from stdin: {err}");
@@ -245,7 +246,7 @@ fn main() -> ExitCode {
         cli.scripts.join("\n")
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut root = match &cli.workspace {
+    let root = match &cli.workspace {
         Some(Some(dir)) => match dir.canonicalize() {
             Ok(dir) => dir,
             Err(err) => {
@@ -255,258 +256,53 @@ fn main() -> ExitCode {
         },
         _ => workspace::root(&cwd).unwrap_or(cwd.clone()),
     };
-    let session = match session::name(cli.session.clone()) {
+    let session = match invoke::session_name(cli.session.clone()) {
         None => None,
-        Some(name) => match session::open(&name, &root) {
+        Some(name) => match invoke::open(&name, &root) {
             Ok(session) => Some(session),
-            Err((error, code)) => {
-                errln!("{error}");
-                return ExitCode::from(code);
-            }
-        },
-    };
-    src = match session::repeat(
-        session.as_ref(),
-        src,
-        &cwd,
-        &mut cli.files,
-        &mut cli.workspace,
-        &mut root,
-        cli.dry_run,
-    ) {
-        Ok(src) => src,
-        Err(failure) => return finish(Err(failure)),
-    };
-
-    let prior = match (&cli.commit, &session) {
-        (Some(_), Some(session)) => match session::uncommitted(session) {
-            Ok(prior) => prior,
             Err(failure) => return finish(Err(failure)),
         },
-        _ => Vec::new(),
     };
-    let ran = run(&cli, &src, &cwd, root.clone(), &prior);
-    if let Some(session) = &session {
-        session::record(
-            session,
-            Entry {
-                id: 0,
-                time: ned_core::session::now(),
-                cwd,
-                files: cli.files.clone(),
-                workspace: cli.workspace.is_some().then_some(root),
-                script: Some(src),
-                undoes: None,
-                write: false,
-                dry_run: cli.dry_run,
-                exit: ran.exit,
-                error: ran.error,
-                changes: ran.changes,
-                commit: ran.commit,
-            },
-        );
-    }
-    ExitCode::from(ran.exit)
-}
-
-/// The outcome of running a script, as a session records it.
-struct Ran {
-    exit: u8,
-    error: Option<String>,
-    changes: Vec<FileChange>,
-    /// The commit `--commit` made.
-    commit: Option<String>,
-}
-
-impl Ran {
-    /// Prints `error` and fails with `exit`.
-    fn failed(exit: u8, error: String) -> Ran {
-        let error = error.trim_end().to_string();
-        errln!("{error}");
-        Ran {
-            exit,
-            error: Some(error),
-            changes: Vec::new(),
-            commit: None,
-        }
-    }
-}
-
-/// A script's edits, made and finished (formatted and checked), but not
-/// written.
-struct Edited {
-    changes: Vec<Change>,
-    finished: Finished,
-}
-
-/// Parses and runs `src` on `initial`, printing its reads and notes, and
-/// finishes its edits (spec §6.4, §6.5).
-fn execute(
-    src: &str,
-    initial: Initial,
-    options: &Options,
-    settings: Settings,
-    workspace: &mut daemon::Workspace,
-) -> Result<Edited, Ran> {
-    let parsed = script::parse(src).map_err(|err| Ran::failed(2, err.render(src)))?;
-    let run = exec::run(&parsed, src, initial, options, Some(&mut *workspace));
-    out!("{}", run.output);
-    for note in &run.notes {
-        errln!("note: {note}");
-    }
-    let changes = run
-        .result
-        .map_err(|err| Ran::failed(err.kind.exit_code(), err.render(src)))?;
-    let lsp: Option<&mut dyn Lsp> = workspace.running().then_some(workspace);
-    let mut messages = Vec::new();
-    let finished = apply::finish(&changes, run.allow, settings, lsp, &mut messages);
-    for message in messages {
-        errln!("{message}");
-    }
-    let finished = finished.map_err(|rejected| Ran::failed(rejected.exit, rejected.message))?;
-    Ok(Edited { changes, finished })
-}
-
-/// Runs the script `src`: prints its output and writes its edits, and with
-/// `--commit` commits them after the session's `prior` changes.
-fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf, prior: &[(u64, FileChange)]) -> Ran {
-    let top = root.clone();
-    // HEAD as the script starts, so a commit made while it runs is noticed.
-    let before = cli.commit.as_ref().and_then(|_| Repo::discover(&top).ok());
-    let initial = match cli.workspace {
-        Some(_) => Initial::Workspace(root.clone()),
-        None => Initial::Files(&cli.files),
-    };
-    let options = Options {
-        lang: cli.lang,
-        force: cli.force,
-        style: styles().0,
-        overlay: None,
-    };
-    let settings = Settings {
-        format: !cli.no_fmt,
-        check: !cli.no_check,
-        force: cli.force,
-    };
-    let mut workspace = daemon::workspace(root);
-    let Edited { changes, finished } =
-        match execute(src, initial, &options, settings, &mut workspace) {
-            Ok(edited) => edited,
-            Err(ran) => return ran,
-        };
-    let mut lsp: Option<&mut dyn Lsp> = workspace.running().then_some(&mut workspace);
-    let mut messages = Vec::new();
-    let finals = finished.finals(&changes);
-
-    let committed = match &cli.commit {
-        Some(message) => {
-            // A script that changes nothing has nothing to commit, whatever
-            // the session's earlier edits (spec §1.3).
-            let prior = if changes.is_empty() { &[][..] } else { prior };
-            let commit = apply::commit(
-                &top,
-                before,
-                cwd,
-                prior,
-                &changes,
-                &finals,
-                message,
-                &mut messages,
-            );
-            match commit {
-                Ok(committed) => Some(committed),
-                Err(err) => {
-                    if let Some(lsp) = lsp.as_deref_mut() {
-                        apply::restore(lsp, &changes, &mut messages);
-                    }
-                    for message in messages {
-                        errln!("{message}");
-                    }
-                    return Ran::failed(err.exit_code(), apply::commit_error(&err, prior));
-                }
-            }
-        }
-        None => None,
-    };
-
-    let before_save = match (cli.dry_run || cli.no_check, lsp.as_deref_mut()) {
-        (false, Some(lsp)) => apply::before_save(lsp, &changes, &mut messages),
-        _ => None,
-    };
-    for message in messages.drain(..) {
-        errln!("{message}");
-    }
-    if !cli.dry_run {
-        let writes: Vec<(PathBuf, String)> = changes
-            .iter()
-            .zip(&finals)
-            .map(|(change, text)| (PathBuf::from(&change.path), text.to_string()))
-            .collect();
-        if let Err(err) = fs::write_atomic(&writes, &[]) {
-            if let Some(Committed { repo, prepared }) = &committed
-                && let Err(git) = repo.retreat(prepared)
-            {
-                errln!("error: {git}");
-            }
-            let error = format!("error: cannot write files: {err}; no file was changed");
-            return Ran::failed(3, error);
-        }
-    }
-    let recorded = match cli.dry_run {
-        true => Vec::new(),
-        false => changes
-            .iter()
-            .zip(&finals)
-            .map(|(change, text)| {
-                let path = cwd.join(&change.path);
-                FileChange {
-                    path: std::fs::canonicalize(&path).unwrap_or(path),
-                    before: (!change.created).then(|| change.old.clone()),
-                    after: Some(text.to_string()),
-                }
-            })
-            .collect(),
-    };
-    let how = Render {
-        context: cli.context,
-        quiet: cli.quiet,
+    let invocation = Invocation {
+        cwd,
+        files: cli.files,
+        workspace: cli.workspace.is_some(),
+        root,
         dry_run: cli.dry_run,
+        quiet: cli.quiet,
+        force: cli.force,
+        no_fmt: cli.no_fmt,
+        no_check: cli.no_check,
+        lang: cli.lang,
+        context: cli.context,
+        commit: cli.commit,
         style: styles().0,
     };
-    out!("{}", apply::render(&changes, &finished, how));
-    if let (Some(before), Some(lsp)) = (before_save, lsp.as_deref_mut()) {
-        let style = styles().0;
-        let found = apply::after_save(lsp, before, &changes, &finished, style, &mut messages);
-        out!("{found}");
-        for message in messages.drain(..) {
-            errln!("{message}");
-        }
+    let exit = invoke::invoke(
+        invocation,
+        src,
+        session.as_ref(),
+        daemon::workspace,
+        &mut Terminal,
+    );
+    ExitCode::from(exit)
+}
+
+/// Prints an invocation's output to stdout, and its messages to stderr.
+struct Terminal;
+
+impl Output for Terminal {
+    fn out(&mut self, text: &str) {
+        out!("{text}");
     }
-    if let Some(committed) = &committed {
-        outln!(
-            "{}",
-            committed.line(cli.commit.as_deref().unwrap_or_default())
-        );
-    }
-    if finished.checked.is_some()
-        && cli.dry_run
-        && let Some(lsp) = lsp
-    {
-        apply::restore(lsp, &changes, &mut messages);
-        for message in messages {
-            errln!("{message}");
-        }
-    }
-    Ran {
-        exit: 0,
-        error: None,
-        changes: recorded,
-        commit: committed.map(|c| c.prepared.commit),
+
+    fn message(&mut self, message: &str) {
+        errln!("{message}");
     }
 }
 
 /// The exit code of a subcommand, printing its error if it failed.
-fn finish(result: Result<(), session::Failure>) -> ExitCode {
+fn finish(result: Result<(), Failure>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err((error, code)) => {

@@ -9,22 +9,23 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
-use clap::{Args, ValueEnum};
+use clap::Args;
 use ned_core::apply::{self, Committed, Finished, Render, Settings};
 use ned_core::buffers::{Buffers, BuffersError};
 use ned_core::diff::{self, DiffStat};
 use ned_core::exec::{Change, Initial, Options};
 use ned_core::format::Outcome;
 use ned_core::git::{GitError, Repo};
+use ned_core::invoke::{self, Edited, Ran};
 use ned_core::lang::{self, Language};
 use ned_core::lsp::{Document, Lsp};
 use ned_core::session::{self, Entry, FileChange, Follower, Session};
 use ned_core::style::Role;
-use ned_core::{fs, script, workspace};
+use ned_core::{fs, help, script, workspace};
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, ExternalPrinter};
 
-use crate::{Cli, Edited, LangFlag, Ran, daemon, help, session as sessions, styles};
+use crate::{Cli, LangFlag, Terminal, daemon, styles};
 
 /// The REPL's arguments: the file set and the flags it shares with scripts.
 #[derive(Args, Debug, Default)]
@@ -251,7 +252,7 @@ struct Repl {
 }
 
 impl Repl {
-    fn new(args: ReplArgs) -> Result<Repl, sessions::Failure> {
+    fn new(args: ReplArgs) -> Result<Repl, invoke::Failure> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let root = match &args.workspace {
             Some(Some(dir)) => dir
@@ -259,11 +260,11 @@ impl Repl {
                 .map_err(|err| (format!("error: cannot read {}: {err}", dir.display()), 3))?,
             _ => workspace::root(&cwd).unwrap_or(cwd.clone()),
         };
-        let session = match sessions::name(args.session.clone()) {
-            Some(name) => sessions::open(&name, &root)?,
+        let session = match invoke::session_name(args.session.clone()) {
+            Some(name) => invoke::open(&name, &root)?,
             None => session::state_dir()
                 .and_then(|dir| session::next_free(&dir, &root, "repl"))
-                .map_err(sessions::failure)?,
+                .map_err(invoke::failure)?,
         };
         Ok(Repl {
             session,
@@ -330,11 +331,11 @@ impl Repl {
     fn script(&mut self, src: &str) {
         // A repeat runs on its script's file set (spec §1.2).
         let (mut files, mut workspace) = match session::is_repeat(src) {
-            true => (Vec::new(), None),
-            false => (self.files.clone(), self.workspace.then_some(None)),
+            true => (Vec::new(), false),
+            false => (self.files.clone(), self.workspace),
         };
         let mut root = self.root.clone();
-        let repeated = sessions::repeat(
+        let repeated = invoke::repeat(
             Some(self.recording()),
             src.to_string(),
             &self.cwd,
@@ -342,17 +343,18 @@ impl Repl {
             &mut workspace,
             &mut root,
             true,
+            &mut Terminal,
         );
         let src = match repeated {
             Ok(src) => src,
-            Err((error, _)) => {
-                errln!("{error}");
+            Err(failure) => {
+                invoke::fail(failure, &mut Terminal);
                 return;
             }
         };
         let initial = match workspace {
-            Some(_) => Initial::Workspace(root.clone()),
-            None => Initial::Files(&files),
+            true => Initial::Workspace(root.clone()),
+            false => Initial::Files(&files),
         };
         let ran = self.run_script(&src, initial);
         let entry = Entry {
@@ -360,7 +362,7 @@ impl Repl {
             time: session::now(),
             cwd: self.cwd.clone(),
             files,
-            workspace: workspace.is_some().then_some(root),
+            workspace: workspace.then_some(root),
             script: Some(src),
             undoes: None,
             write: false,
@@ -388,11 +390,17 @@ impl Repl {
             check: !self.args.no_check,
             force: self.args.force,
         };
-        let Edited { changes, finished } =
-            match crate::execute(src, initial, &options, settings, &mut self.daemon) {
-                Ok(edited) => edited,
-                Err(ran) => return ran,
-            };
+        let Edited { changes, finished } = match invoke::execute(
+            src,
+            initial,
+            &options,
+            settings,
+            &mut self.daemon,
+            &mut Terminal,
+        ) {
+            Ok(edited) => edited,
+            Err(ran) => return ran,
+        };
         buffers.apply(&self.cwd, &changes, &finished.finals(&changes));
         drop(buffers);
         let how = Render {
@@ -418,7 +426,7 @@ impl Repl {
         let paths = self.paths(args);
         let writes = self
             .buffers()
-            .plan_write(paths.as_deref(), sessions::read, force)
+            .plan_write(paths.as_deref(), fs::read, force)
             .map_err(|err| format!("error: {err}"))?;
         if writes.is_empty() && message.is_none() {
             outln!("no unwritten edits");
@@ -521,7 +529,7 @@ impl Repl {
         message: &str,
         messages: &mut Vec<String>,
     ) -> Result<Committed, String> {
-        let prior = sessions::uncommitted(self.recording()).map_err(|(error, _)| error)?;
+        let prior = invoke::uncommitted(self.recording()).map_err(|(error, _)| error)?;
         let head = Repo::discover(&self.root).ok();
         let finals: Vec<&str> = changes.iter().map(|c| c.new.as_str()).collect();
         let commit = apply::commit(
@@ -551,7 +559,7 @@ impl Repl {
                 "error: the workspace has no session {name}; {known}"
             ));
         }
-        let attached = sessions::open(name, &self.root).map_err(|(error, _)| error)?;
+        let attached = invoke::open(name, &self.root).map_err(|(error, _)| error)?;
         let (entries, follower) = attached
             .lock()
             .and_then(|log| log.follow())
@@ -592,7 +600,7 @@ impl Repl {
     /// the entry before it's known as the REPL's.
     fn record(&mut self, entry: Entry) {
         let mut follow = self.follow.lock().unwrap();
-        let id = sessions::record(self.recording(), entry);
+        let id = invoke::record(self.recording(), entry, &mut Terminal);
         if let (Some(follow), Some(id)) = (follow.as_mut(), id) {
             follow.own.insert(id);
         }
@@ -628,7 +636,7 @@ impl Repl {
     fn undo(&mut self) -> Result<(), String> {
         let changes = self
             .buffers()
-            .undo(sessions::read)
+            .undo(fs::read)
             .map_err(|err| format!("error: {err}"))?;
         let style = styles().0;
         out!(
@@ -652,18 +660,18 @@ impl Repl {
         let mut changes = Vec::new();
         for path in paths {
             let one = std::slice::from_ref(&path);
-            let writes = match buffers.plan_write(Some(one), sessions::read, false) {
+            let writes = match buffers.plan_write(Some(one), fs::read, false) {
                 Err(BuffersError::Overlap { path, line }) => {
                     errln!(
                         "note: {}:{line}: the edit overlaps a change made to the file since, so this is what `:write!` writes",
                         self.shown(&path)
                     );
-                    buffers.plan_write(Some(one), sessions::read, true)
+                    buffers.plan_write(Some(one), fs::read, true)
                 }
                 Err(err @ (BuffersError::Exists { .. } | BuffersError::Removed { .. })) => {
                     let prefix = format!("{}/", self.cwd.display());
                     errln!("note: {}", err.to_string().replace(&prefix, ""));
-                    buffers.plan_write(Some(one), sessions::read, true)
+                    buffers.plan_write(Some(one), fs::read, true)
                 }
                 writes => writes,
             };
@@ -782,7 +790,7 @@ impl Repl {
             .filter_map(|path| {
                 let text = match self.buffers().overlay().get(path) {
                     Some(text) => text.clone(),
-                    None => sessions::read(path).ok()??,
+                    None => fs::read(path).ok()??,
                 };
                 let lang = Language::detect(&path.to_string_lossy(), &text)?;
                 Some(Document {
@@ -818,23 +826,7 @@ impl Repl {
 
 /// `:help [TOPIC]`.
 fn help(args: &[&str]) -> Result<(), String> {
-    let topic = match args.first() {
-        None => None,
-        Some(name) => match help::Topic::from_str(name, true) {
-            Ok(topic) => Some(topic),
-            Err(_) => {
-                let names: Vec<String> = help::Topic::value_variants()
-                    .iter()
-                    .filter_map(|t| Some(t.to_possible_value()?.get_name().to_string()))
-                    .collect();
-                return Err(format!(
-                    "error: unknown topic `{name}`; topics are {}",
-                    names.join(" ")
-                ));
-            }
-        },
-    };
-    out!("{}", help::text(topic));
+    out!("{}", help::text(args.first().copied())?);
     Ok(())
 }
 
