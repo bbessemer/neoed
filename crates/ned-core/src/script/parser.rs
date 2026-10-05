@@ -1528,6 +1528,10 @@ mod tests {
             message("show /a/-/b/"),
             "unexpected character `-`; ranges between selectors are written SEL..SEL, e.g. /a/../b/"
         );
+        assert_eq!(
+            message("show import:react-router"),
+            r#"unexpected character `-`; quote the name: import:"react-router""#
+        );
     }
 
     #[test]

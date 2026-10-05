@@ -361,7 +361,9 @@ impl<'a> Lexer<'a> {
                 }
                 if !quoted
                     && word != "file"
-                    && let Some(err) = self.dotted_name(word, &name)
+                    && let Some(err) = self
+                        .dotted_name(word, &name)
+                        .or_else(|| self.dashed_name(word, &name))
                 {
                     return Err(err);
                 }
@@ -424,6 +426,24 @@ impl<'a> Lexer<'a> {
             }
         };
         Some(ParseError::new(error, span))
+    }
+
+    /// For an unquoted `kind:name` directly followed by `-` and more of the name,
+    /// such as `import:react-router`, an error suggesting the quoted name. A `-`
+    /// before another selector, as in `fn:a-fn:b`, is a malformed range instead.
+    fn dashed_name(&self, kind: &str, name: &str) -> Option<ParseError> {
+        let rest = self.src[self.pos..].strip_prefix('-')?;
+        let end = rest
+            .find(|c| !(is_ident_char(c) || c == '-'))
+            .unwrap_or(rest.len());
+        if end == 0 || rest[end..].starts_with(':') {
+            return None;
+        }
+        let selector = syntax::selector(kind, &format!("{name}-{}", &rest[..end]));
+        Some(ParseError::new(
+            E::DashedName(selector),
+            self.pos..self.pos + 1,
+        ))
     }
 
     fn query(&mut self, start: usize) -> Result<TokenKind, ParseError> {
@@ -892,6 +912,24 @@ mod tests {
             kinds("fn:a..fn:b"),
             [syntax("fn", "a"), T::DotDot, syntax("fn", "b")]
         );
+    }
+
+    #[test]
+    fn dashed_names_suggest_quoting() {
+        let kind = |src| error(src).kind;
+        let e = error("show import:react-router");
+        assert_eq!(e.kind, E::DashedName(r#"import:"react-router""#.into()));
+        assert_eq!(e.span, 17..18);
+        assert_eq!(
+            kind("import:react-router-dom.name"),
+            E::DashedName(r#"import:"react-router-dom""#.into())
+        );
+        assert_eq!(kind("fn:a-b"), E::DashedName(r#"fn:"a-b""#.into()));
+        // Not a name: a malformed range, or a `-` after a quoted name or a space.
+        assert_eq!(kind("fn:a-fn:b"), E::UnexpectedChar('-'));
+        assert_eq!(kind("fn:a-/b/"), E::UnexpectedChar('-'));
+        assert_eq!(kind(r#"import:"a"-b"#), E::UnexpectedChar('-'));
+        assert_eq!(kind("fn:a -b"), E::UnexpectedChar('-'));
     }
 
     #[test]

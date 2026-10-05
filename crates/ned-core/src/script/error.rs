@@ -58,6 +58,10 @@ pub enum ParseErrorKind {
     /// `selector` is the whole dotted name, quoted.
     #[error("unknown part `.{part}`; quote a name that has dots: {selector}")]
     DottedName { selector: String, part: String },
+    /// An unquoted name followed by `-`, as in `import:react-router`; the
+    /// selector is the whole name, quoted.
+    #[error("unexpected character `-`; quote the name: {0}")]
+    DashedName(String),
     /// `selector` nests the dotted name's segments under a placeholder `KIND`;
     /// `method` is the quoted Go method name, for `fn:Recv.Name`.
     #[error(

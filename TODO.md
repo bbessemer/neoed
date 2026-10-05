@@ -162,7 +162,7 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [ ] An item whose last line falls inside a conflict's last side stops before
       the conflict's `>>>>>>>` line, so `fn:f>conflict` matches nothing; the
       error lists the file's conflicts without saying they lie outside `fn:f`
-- [ ] An unquoted name with a `-` (`import:react-router`) is reported as a
+- [x] An unquoted name with a `-` (`import:react-router`) is reported as a
       malformed range (`ranges between selectors are written SEL..SEL`) instead
       of suggesting quotes (`import:"react-router"`)
 - [ ] `item:"[ ] text*"` matches nothing without suggesting the name without its
