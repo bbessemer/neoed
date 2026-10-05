@@ -3,7 +3,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/bbessemer/neoed/main/install.sh | sh
 #
 # Environment:
-#   NED_VERSION      release tag to install, e.g. v0.7.0 (default: latest)
+#   NED_VERSION      release tag to install, e.g. v0.8.0-dev (default: latest)
 #   NED_INSTALL_DIR  where to put the binary (default: ~/.local/bin)
 set -eu
 

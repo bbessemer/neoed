@@ -73,7 +73,7 @@ curl -fsSL https://raw.githubusercontent.com/bbessemer/neoed/main/install.sh | s
 The script downloads the binary for your platform from
 [GitHub Releases](https://github.com/bbessemer/neoed/releases/latest), checks
 its SHA-256, and puts `ned` in `~/.local/bin`. Set `NED_INSTALL_DIR` to install
-elsewhere, or `NED_VERSION` (e.g. `v0.7.0`) to pin a release.
+elsewhere, or `NED_VERSION` (e.g. `v0.8.0-dev`) to pin a release.
 
 To build from source instead, you need Rust 1.90 or later and a C compiler,
 because the tree-sitter grammars are compiled in:
