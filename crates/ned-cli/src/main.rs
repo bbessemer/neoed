@@ -33,18 +33,14 @@ use std::sync::OnceLock;
 
 use clap::builder::NonEmptyStringValueParser;
 use clap::{Parser, Subcommand};
-use ned_core::buffer::Buffer;
-use ned_core::config::{self, Config};
-use ned_core::diff::{self, DiffStat};
-use ned_core::exec::{self, ExecErrorKind, Initial, Options};
-use ned_core::format::{self, Outcome};
-use ned_core::git::{FileEdit, GitError, Prepared, Repo};
+use ned_core::apply::{self, Committed, Render, Settings};
+use ned_core::exec::{self, Initial, Options};
+use ned_core::git::Repo;
 use ned_core::lang::{self, Language};
-use ned_core::lsp;
 #[cfg(unix)]
 use ned_core::lsp::Lsp;
 use ned_core::session::{Entry, FileChange};
-use ned_core::style::{Role, Style, When};
+use ned_core::style::{Style, When};
 use ned_core::{fs, script, workspace};
 
 /// A `--lang` value, `None` for text. Clap would read `Option<Option<_>>` as a
@@ -355,58 +351,60 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf, prior: &[(u64, FileChang
     }
     let changes = match run.result {
         Ok(changes) => changes,
-        Err(err) => return Ran::failed(exit_code(&err.kind), err.render(src)),
-    };
-
-    #[cfg_attr(not(unix), allow(unused_mut))]
-    let mut outcomes = if cli.no_fmt {
-        vec![Outcome::Unchanged; changes.len()]
-    } else {
-        let formatted = Config::new(config::user_config().as_deref())
-            .and_then(|mut config| format::run(&changes, &mut config));
-        match formatted {
-            Ok(outcomes) => outcomes,
-            Err(err) => return Ran::failed(2, format!("error: {err}")),
-        }
+        Err(err) => return Ran::failed(err.kind.exit_code(), err.render(src)),
     };
 
     #[cfg(unix)]
-    if workspace.running() {
-        format::fallback(&changes, &mut outcomes, &mut workspace);
-    }
-
-    let finals: Vec<&str> = changes
-        .iter()
-        .zip(&outcomes)
-        .map(|(change, outcome)| match outcome {
-            Outcome::Formatted { text, .. } => text.as_str(),
-            _ => change.new.as_str(),
-        })
-        .collect();
-    #[cfg(unix)]
-    let checked = match cli.no_check {
-        true => None,
-        false => daemon::check(&mut workspace, &changes, &finals, run.allow, cli.force),
-    };
+    let mut lsp: Option<&mut dyn Lsp> = workspace.running().then_some(&mut workspace);
     #[cfg(not(unix))]
-    let checked: Option<ned_core::lsp::Checked> = None;
-    if let Some(checked) = &checked
-        && !checked.blocking.is_empty()
-    {
-        #[cfg(unix)]
-        daemon::restore(&mut workspace, &changes);
-        return Ran::failed(1, daemon::blocked(&changes, &finals, checked));
+    let mut lsp: Option<&mut dyn ned_core::lsp::Lsp> = None;
+    let settings = Settings {
+        format: !cli.no_fmt,
+        check: !cli.no_check,
+        force: cli.force,
+    };
+    let mut messages = Vec::new();
+    let finished = apply::finish(
+        &changes,
+        run.allow,
+        settings,
+        lsp.as_deref_mut(),
+        &mut messages,
+    );
+    for message in messages.drain(..) {
+        errln!("{message}");
     }
+    let finished = match finished {
+        Ok(finished) => finished,
+        Err(rejected) => return Ran::failed(rejected.exit, rejected.message),
+    };
+    let finals = finished.finals(&changes);
 
     let committed = match &cli.commit {
-        Some(message) => match commit(&top, before, cwd, prior, &changes, &finals, message) {
-            Ok(committed) => Some(committed),
-            Err(err) => {
-                #[cfg(unix)]
-                daemon::restore(&mut workspace, &changes);
-                return Ran::failed(git_exit_code(&err), commit_error(&err, prior));
+        Some(message) => {
+            let commit = apply::commit(
+                &top,
+                before,
+                cwd,
+                prior,
+                &changes,
+                &finals,
+                message,
+                &mut messages,
+            );
+            match commit {
+                Ok(committed) => Some(committed),
+                Err(err) => {
+                    if let Some(lsp) = lsp.as_deref_mut() {
+                        apply::restore(lsp, &changes, &mut messages);
+                    }
+                    for message in messages {
+                        errln!("{message}");
+                    }
+                    return Ran::failed(err.exit_code(), apply::commit_error(&err, prior));
+                }
             }
-        },
+        }
         None => None,
     };
 
@@ -417,7 +415,7 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf, prior: &[(u64, FileChang
             .map(|(change, text)| (PathBuf::from(&change.path), text.to_string()))
             .collect();
         if let Err(err) = fs::write_atomic(&writes, &[]) {
-            if let Some((repo, prepared)) = &committed
+            if let Some(Committed { repo, prepared }) = &committed
                 && let Err(git) = repo.retreat(prepared)
             {
                 errln!("error: {git}");
@@ -441,134 +439,33 @@ fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf, prior: &[(u64, FileChang
             })
             .collect(),
     };
-    let style = styles().0;
-    for (i, (change, outcome)) in changes.iter().zip(&outcomes).enumerate() {
-        let stat = DiffStat::between(&change.old, &change.new);
-        let summary = if change.created {
-            diff::created_summary(&change.path, stat, cli.dry_run)
-        } else {
-            diff::summary(&change.path, change.edits, stat, cli.dry_run)
-        };
-        outln!("{}", style.paint(Role::Header, &summary));
-        let new = diff::Side::new(&change.new, change.lang);
-        if !cli.quiet {
-            let old = diff::Side::new(&change.old, change.lang);
-            out!("{}", diff::hunks(&old, &new, cli.context, style));
-        }
-        match outcome {
-            Outcome::Formatted { name, text } => {
-                let header = format!("fmt {name}: {}", DiffStat::between(&change.new, text));
-                outln!("{}", style.paint(Role::Header, &header));
-                if !cli.quiet {
-                    let text = diff::Side::new(text, change.lang);
-                    out!("{}", diff::hunks(&new, &text, cli.context, style));
-                }
-            }
-            Outcome::NotFound(note) | Outcome::Failed(note) => errln!("note: {note}"),
-            Outcome::Unchanged => {}
-        }
-        if let Some(checked) = &checked {
-            let buffer = Buffer::new(finals[i]);
-            for d in &checked.files[i] {
-                out!("{}", lsp::render(&change.path, &buffer, d, style));
-            }
-        }
+    let how = Render {
+        context: cli.context,
+        quiet: cli.quiet,
+        dry_run: cli.dry_run,
+        style: styles().0,
+    };
+    out!("{}", apply::render(&changes, &finished, how));
+    if let Some(committed) = &committed {
+        outln!(
+            "{}",
+            committed.line(cli.commit.as_deref().unwrap_or_default())
+        );
     }
-    if let Some((repo, prepared)) = &committed {
-        let subject = cli
-            .commit
-            .as_deref()
-            .unwrap_or_default()
-            .lines()
-            .next()
-            .unwrap_or_default();
-        let name = repo
-            .short(&prepared.commit)
-            .unwrap_or_else(|_| prepared.commit.clone());
-        outln!("commit {name}: {subject}");
-    }
-    #[cfg(unix)]
-    if checked.is_some() && cli.dry_run {
-        daemon::restore(&mut workspace, &changes);
+    if finished.checked.is_some()
+        && cli.dry_run
+        && let Some(lsp) = lsp
+    {
+        apply::restore(lsp, &changes, &mut messages);
+        for message in messages {
+            errln!("{message}");
+        }
     }
     Ran {
         exit: 0,
         error: None,
         changes: recorded,
-        commit: committed.map(|(_, prepared)| prepared.commit),
-    }
-}
-
-/// Makes the commit of the run's edits and moves `HEAD` to it (§1.3), if
-/// `HEAD` hasn't moved since `before`, the repository found as the run
-/// started, was found.
-fn commit(
-    top: &Path,
-    before: Option<Repo>,
-    cwd: &Path,
-    prior: &[(u64, FileChange)],
-    changes: &[exec::Change],
-    finals: &[&str],
-    message: &str,
-) -> Result<(Repo, Prepared), GitError> {
-    let paths: Vec<PathBuf> = changes.iter().map(|c| cwd.join(&c.path)).collect();
-    let earlier = prior.iter().map(|(_, change)| FileEdit {
-        path: &change.path,
-        before: change.before.as_deref(),
-        after: change.after.as_deref(),
-    });
-    let edits: Vec<FileEdit> = earlier
-        .chain(
-            changes
-                .iter()
-                .zip(finals)
-                .zip(&paths)
-                .map(|((change, after), path)| FileEdit {
-                    path,
-                    before: (!change.created).then_some(change.old.as_str()),
-                    after: Some(after),
-                }),
-        )
-        .collect();
-    let found = Repo::discover(paths.first().map_or(top, PathBuf::as_path))?;
-    let repo = before.filter(|b| b.top == found.top).unwrap_or(found);
-    if changes.is_empty() {
-        return Err(GitError::NothingToCommit);
-    }
-    let mut prepared = repo.prepare(&edits, message)?;
-    repo.advance(&prepared)?;
-    if let Err(err) = repo.stage(&mut prepared) {
-        if let Err(git) = repo.retreat(&prepared) {
-            errln!("error: {git}");
-        }
-        return Err(err);
-    }
-    Ok((repo, prepared))
-}
-
-/// The message for `err`, naming the session entry whose edit it concerns,
-/// if `prior` (§1.3) holds that edit.
-fn commit_error(err: &GitError, prior: &[(u64, FileChange)]) -> String {
-    let (problem, edit) = match err {
-        GitError::Ignored { path, edit } => (format!("{path} is ignored by git"), edit),
-        GitError::Outside { path, top, edit } => {
-            (format!("{path} isn't in the repository at {top}"), edit)
-        }
-        _ => return format!("error: {err}"),
-    };
-    match prior.get(*edit) {
-        Some((id, _)) => format!(
-            "error: {problem}, and session entry {id} edited it, so the session's edits can't be committed; start a new session (-s NAME) to commit only the edits from then on"
-        ),
-        None => format!("error: {err}"),
-    }
-}
-
-fn git_exit_code(err: &GitError) -> u8 {
-    match err {
-        GitError::NoGit | GitError::NotARepo(_) => 2,
-        GitError::Failed { .. } | GitError::IndexLocked(_) => 3,
-        _ => 1,
+        commit: committed.map(|c| c.prepared.commit),
     }
 }
 
@@ -608,37 +505,4 @@ fn usage_error(cli: &Cli) -> Option<String> {
     }
     (cli.scripts.is_empty() && io::stdin().is_terminal())
         .then(|| "no script: give one with -e SCRIPT or on stdin, e.g. ned FILE -e outline".into())
-}
-
-/// The exit code for an error that rejected a script (spec §7).
-fn exit_code(kind: &ExecErrorKind) -> u8 {
-    match kind {
-        ExecErrorKind::NoMatch { .. }
-        | ExecErrorKind::Ambiguous { .. }
-        | ExecErrorKind::LineOutOfRange { .. }
-        | ExecErrorKind::NotInFileSet { .. }
-        | ExecErrorKind::Overlap { .. }
-        | ExecErrorKind::SyntaxError { .. }
-        | ExecErrorKind::NoLanguage { .. }
-        | ExecErrorKind::NoCodeLanguage { .. }
-        | ExecErrorKind::ParsingDisabled { .. }
-        | ExecErrorKind::UnknownKind { .. }
-        | ExecErrorKind::MissingPart { .. }
-        | ExecErrorKind::PartNeedsItem { .. }
-        | ExecErrorKind::PartNeedsConflict { .. }
-        | ExecErrorKind::NotAConflict { .. }
-        | ExecErrorKind::MoveIntoSource { .. }
-        | ExecErrorKind::FileExists { .. }
-        | ExecErrorKind::RenameRefused { .. }
-        | ExecErrorKind::Outside { .. }
-        | ExecErrorKind::AmbiguousLocated { .. } => 1,
-        ExecErrorKind::NoFiles
-        | ExecErrorKind::InvalidQuery { .. }
-        | ExecErrorKind::InvalidPattern { .. }
-        | ExecErrorKind::DuplicateCapture { .. }
-        | ExecErrorKind::UnknownCapture { .. }
-        | ExecErrorKind::WildcardInText
-        | ExecErrorKind::NoServer { .. } => 2,
-        ExecErrorKind::Io { .. } | ExecErrorKind::NoGlobMatch { .. } | ExecErrorKind::Lsp(_) => 3,
-    }
 }

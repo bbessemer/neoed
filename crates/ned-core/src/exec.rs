@@ -2467,6 +2467,43 @@ impl fmt::Display for Candidates {
     }
 }
 
+impl ExecErrorKind {
+    /// The exit code for an error that rejected a script (spec §7).
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            ExecErrorKind::NoMatch { .. }
+            | ExecErrorKind::Ambiguous { .. }
+            | ExecErrorKind::LineOutOfRange { .. }
+            | ExecErrorKind::NotInFileSet { .. }
+            | ExecErrorKind::Overlap { .. }
+            | ExecErrorKind::SyntaxError { .. }
+            | ExecErrorKind::NoLanguage { .. }
+            | ExecErrorKind::NoCodeLanguage { .. }
+            | ExecErrorKind::ParsingDisabled { .. }
+            | ExecErrorKind::UnknownKind { .. }
+            | ExecErrorKind::MissingPart { .. }
+            | ExecErrorKind::PartNeedsItem { .. }
+            | ExecErrorKind::PartNeedsConflict { .. }
+            | ExecErrorKind::NotAConflict { .. }
+            | ExecErrorKind::MoveIntoSource { .. }
+            | ExecErrorKind::FileExists { .. }
+            | ExecErrorKind::RenameRefused { .. }
+            | ExecErrorKind::Outside { .. }
+            | ExecErrorKind::AmbiguousLocated { .. } => 1,
+            ExecErrorKind::NoFiles
+            | ExecErrorKind::InvalidQuery { .. }
+            | ExecErrorKind::InvalidPattern { .. }
+            | ExecErrorKind::DuplicateCapture { .. }
+            | ExecErrorKind::UnknownCapture { .. }
+            | ExecErrorKind::WildcardInText
+            | ExecErrorKind::NoServer { .. } => 2,
+            ExecErrorKind::Io { .. }
+            | ExecErrorKind::NoGlobMatch { .. }
+            | ExecErrorKind::Lsp(_) => 3,
+        }
+    }
+}
+
 impl ExecError {
     pub fn new(kind: ExecErrorKind, span: Option<Range<usize>>) -> Self {
         ExecError { kind, span }

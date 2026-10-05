@@ -1,5 +1,6 @@
 //! Editing engine behind the `ned` CLI.
 
+pub mod apply;
 pub mod ast;
 pub mod buffer;
 pub mod config;

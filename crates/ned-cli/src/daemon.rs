@@ -4,12 +4,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Subcommand;
-use ned_core::buffer::Buffer;
-use ned_core::exec::Change;
-#[cfg(unix)]
-use ned_core::lsp::LspFailure;
-use ned_core::lsp::{self, Checked, Severity};
-use ned_core::style::Style;
 
 /// This build of `ned`, which a daemon must match.
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -125,80 +119,6 @@ fn daemon(_: Action) -> anyhow::Result<()> {
 pub fn workspace(root: PathBuf) -> ned_daemon::client::Workspace {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ned"));
     ned_daemon::client::Workspace::new(exe, root, VERSION)
-}
-
-/// Checks the edit, if a daemon is running for the workspace (spec §6.5).
-/// `None` if none is, or if checking failed, which gets a note.
-#[cfg(unix)]
-pub fn check(
-    workspace: &mut ned_daemon::client::Workspace,
-    changes: &[Change],
-    finals: &[&str],
-    allow: Option<Severity>,
-    force: bool,
-) -> Option<Checked> {
-    if changes.is_empty() || !workspace.running() {
-        return None;
-    }
-    match lsp::check_changes(workspace, changes, finals, allow, force) {
-        Ok(checked) => Some(checked),
-        Err(LspFailure(message)) => {
-            let paths: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
-            errln!("note: {message}; skipped checking {}", paths.join(", "));
-            None
-        }
-    }
-}
-
-/// Sends the servers the original texts back, after an edit that wasn't
-/// written.
-#[cfg(unix)]
-pub fn restore(workspace: &mut ned_daemon::client::Workspace, changes: &[Change]) {
-    if let Err(LspFailure(message)) = lsp::restore(workspace, changes) {
-        errln!("note: {message}");
-    }
-}
-
-/// The error for an edit rejected by the diagnostics it introduces.
-pub fn blocked(changes: &[Change], finals: &[&str], checked: &Checked) -> String {
-    let count = |severity| {
-        checked
-            .blocking
-            .iter()
-            .filter(|(_, d)| d.severity == severity)
-            .count()
-    };
-    let counts: Vec<String> = Severity::ALL
-        .into_iter()
-        .filter(|&s| count(s) > 0)
-        .map(|s| match count(s) {
-            1 => format!("1 {s}"),
-            n => format!("{n} {s}s"),
-        })
-        .collect();
-    let them = if checked.blocking.len() == 1 {
-        "it"
-    } else {
-        "them"
-    };
-    let allow = if count(Severity::Error) > 0 {
-        "errors"
-    } else {
-        "warnings"
-    };
-    let mut text = format!(
-        "error: edit introduces {}; fix {them}, or add `allow {allow}` to the script to apply it anyway\n",
-        counts.join(" and ")
-    );
-    for (i, d) in &checked.blocking {
-        text.push_str(&lsp::render(
-            &changes[*i].path,
-            &Buffer::new(finals[*i]),
-            d,
-            Style::Plain,
-        ));
-    }
-    text
 }
 
 /// A status line for the daemon, then one per server.

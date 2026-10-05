@@ -117,6 +117,17 @@ pub enum GitError {
     Failed { command: String, message: String },
 }
 
+impl GitError {
+    /// The exit code for a refused commit (spec §1.3).
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            GitError::NoGit | GitError::NotARepo(_) => 2,
+            GitError::Failed { .. } | GitError::IndexLocked(_) => 3,
+            _ => 1,
+        }
+    }
+}
+
 impl Repo {
     /// The repository whose working tree holds `path`, a file or directory that
     /// may not exist yet.
