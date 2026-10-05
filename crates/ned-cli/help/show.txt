@@ -6,6 +6,8 @@ and after each span. Nearby regions merge. Output shows the text as of the
 start of its stage: the original, unless the script has a `|` before it.
 `show all /re/` is a search: no match prints `no matches for /re/ in N files`
 instead of failing.
+A line range alone that ends past a file's last line shows up to it, with a
+note.
 
 Examples:
     show fn:parse

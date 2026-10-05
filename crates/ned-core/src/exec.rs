@@ -17,8 +17,8 @@ use crate::lsp::{self, Document, Locate, Located, Lsp, LspFailure, Renamed, Seve
 use crate::outline;
 use crate::script::Script;
 use crate::script::ast::{
-    Command, CommandKind, Keep, Part, Pattern, Position, Primary, Selector, Step, Target, Text,
-    TextKind,
+    Command, CommandKind, Keep, LineNo, Part, Pattern, Position, Primary, Selector, Step, Target,
+    Text, TextKind,
 };
 use crate::script::error::{excerpt, location};
 use crate::select::{self, FileScope, Match, SourceFile, line_numbers, same_path};
@@ -479,7 +479,7 @@ impl Executor<'_> {
                     .steps
                     .iter()
                     .any(|s| !s.primary.patterns().is_empty());
-                for m in self.resolve(target)? {
+                for m in self.resolve(target, false)? {
                     let f = &self.files[m.file].file;
                     let filled;
                     let text = match patterns {
@@ -521,7 +521,7 @@ impl Executor<'_> {
                 target,
                 text,
             } => {
-                for m in self.resolve(&implied_body(target, *position))? {
+                for m in self.resolve(&implied_body(target, *position), false)? {
                     let f = &self.files[m.file].file;
                     let range = heredoc_lines(f, target, *position, text, m.range);
                     let text = separated(f, target, *position, &range, text);
@@ -530,7 +530,7 @@ impl Executor<'_> {
                 }
             }
             CommandKind::Delete(target) => {
-                for m in self.resolve(target)? {
+                for m in self.resolve(target, false)? {
                     let f = &self.files[m.file].file;
                     if let Some(side) = empty_side(f, &m.range) {
                         let line = line_numbers(&f.buffer, &m.range);
@@ -549,7 +549,7 @@ impl Executor<'_> {
                     Keep::Base => &[Side::Base],
                     Keep::Both => &[Side::Ours, Side::Theirs],
                 };
-                for m in self.resolve(target)? {
+                for m in self.resolve(target, false)? {
                     let f = &self.files[m.file].file;
                     let Some((n, conflict)) =
                         f.conflict_at(&m.range).filter(|(_, c)| c.span() == m.range)
@@ -602,8 +602,8 @@ impl Executor<'_> {
 
     /// Resolves `target` in the current file set, returning matches whose
     /// `file` indexes `self.files`. A leading `file:` step reads only its
-    /// file.
-    fn resolve(&mut self, target: &Target) -> Result<Vec<Match>, ExecError> {
+    /// file. `cut` is `select::resolve`'s.
+    fn resolve(&mut self, target: &Target, cut: bool) -> Result<Vec<Match>, ExecError> {
         let located = |s: &Step| s.parts.iter().any(|p| matches!(p, Part::Refs | Part::Def));
         if target.selector.steps.iter().any(located) {
             return self.resolve_located(target);
@@ -621,7 +621,7 @@ impl Executor<'_> {
         };
         let indices = self.read(|p| only.as_ref().is_none_or(|only| only.matches(p)))?;
         let set: Vec<&SourceFile> = indices.iter().map(|&i| &self.files[i].file).collect();
-        let matches = select::resolve(target, &set, self.src)?;
+        let matches = select::resolve(target, &set, self.src, cut)?;
         Ok(matches
             .into_iter()
             .map(|m| Match {
@@ -670,10 +670,10 @@ impl Executor<'_> {
                 },
             };
             let mut found = match matches {
-                None => self.resolve(&segment)?,
+                None => self.resolve(&segment, false)?,
                 Some(start) => {
                     let files: Vec<&SourceFile> = self.files.iter().map(|l| &l.file).collect();
-                    select::resolve_within(&segment, &files, start, self.src)?
+                    select::resolve_within(&segment, &files, start, self.src, false)?
                 }
             };
             for part in parts {
@@ -976,8 +976,10 @@ impl Executor<'_> {
             all: false,
             selector: dest.clone(),
         };
-        let to = self.resolve(&implied_body(&dest, position))?.remove(0);
-        for from in self.resolve(target)? {
+        let to = self
+            .resolve(&implied_body(&dest, position), false)?
+            .remove(0);
+        for from in self.resolve(target, false)? {
             let source = &self.files[from.file].file;
             let removal = removal(source, from.range.clone());
             let (mut moved, separated) = moved_text(source, &from.range);
@@ -1025,7 +1027,22 @@ impl Executor<'_> {
                 }
             }
             Some(target) => {
-                let found = match self.resolve(target) {
+                // A line range alone is cut at each file's end (§6.1).
+                let cut = match target.selector.steps.as_slice() {
+                    [
+                        Step {
+                            primary:
+                                Primary::Lines {
+                                    end: Some(LineNo::Number(end)),
+                                    ..
+                                },
+                            parts,
+                            ..
+                        },
+                    ] if parts.is_empty() => Some(*end),
+                    _ => None,
+                };
+                let found = match self.resolve(target, cut.is_some()) {
                     // `show all` is a search, and finding nothing is an answer.
                     Err(err) if target.all => match &err.kind {
                         ExecErrorKind::NoMatch {
@@ -1052,6 +1069,19 @@ impl Executor<'_> {
                     } else {
                         line(m.range.end - 1)
                     };
+                    let count = buffer.line_count();
+                    if cut.is_some_and(|end| end > count) {
+                        let unit = if count == 1 { "line" } else { "lines" };
+                        let showed = if first == last {
+                            format!("{}", first + 1)
+                        } else {
+                            format!("{}-{}", first + 1, last + 1)
+                        };
+                        let path = &self.files[m.file].file.path;
+                        self.notes.push(format!(
+                            "{path} has {count} {unit}, so showed {showed}; use `$` for the last line"
+                        ));
+                    }
                     let empty = empty_side(&self.files[m.file].file, &m.range);
                     let context = if empty.is_some() { 0 } else { context };
                     spans.push((
@@ -1124,7 +1154,7 @@ impl Executor<'_> {
                 .map(|i| (i, None))
                 .collect(),
             Some(target) => self
-                .resolve(target)?
+                .resolve(target, false)?
                 .into_iter()
                 .map(|m| (m.file, Some(m.range)))
                 .collect(),
@@ -1174,7 +1204,7 @@ impl Executor<'_> {
                 .map(|i| (i, None))
                 .collect(),
             Some(target) => self
-                .resolve(target)?
+                .resolve(target, false)?
                 .into_iter()
                 .map(|m| (m.file, Some(m.range)))
                 .collect(),
@@ -1279,7 +1309,7 @@ impl Executor<'_> {
                 span: selector.span.clone(),
             },
         };
-        let m = self.resolve(&target)?.remove(0);
+        let m = self.resolve(&target, false)?.remove(0);
         let (document, position) = self.symbol(&m, "rename", span)?;
         let file = &self.files[m.file].file;
         let line_start = file
@@ -1367,7 +1397,7 @@ impl Executor<'_> {
         let scopes: Vec<Match> = match scope {
             // A scope's whole lines, as a nested step searches them (§3.4).
             Some(target) => self
-                .resolve(target)?
+                .resolve(target, false)?
                 .into_iter()
                 .map(|m| Match {
                     range: select::scope(&self.files[m.file].file.text, &m.range),
@@ -2845,6 +2875,61 @@ mod tests {
             exec(TEXT, "show \"2;\\n}\"").output,
             "a.rs:3-4\n3:    let y = 2;\n4:}\n"
         );
+    }
+
+    #[test]
+    fn show_cuts_a_line_range_at_the_end_of_the_file() {
+        let out = exec(TEXT, "show 7-60");
+        assert_eq!(out.output, "a.rs:7-8\n7:    let x = 3;\n8:}\n");
+        assert_eq!(out.result, Ok(vec![]));
+        assert_eq!(
+            out.notes,
+            ["a.rs has 8 lines, so showed 7-8; use `$` for the last line"]
+        );
+        let out = exec("fn a() {}\n", "show all 1-60 +2");
+        assert_eq!(out.output, "a.rs:1\n1:fn a() {}\n");
+        assert_eq!(
+            out.notes,
+            ["a.rs has 1 line, so showed 1; use `$` for the last line"]
+        );
+        assert!(exec(TEXT, "show 7-8").notes.is_empty());
+    }
+
+    #[test]
+    fn show_cuts_a_line_range_at_each_files_end() {
+        let set = [("a.rs", TEXT), ("b.rs", "x\n"), ("c.rs", "x\ny\n")];
+        let out = exec_with(&set, 3, "show all 2-9");
+        assert_eq!(
+            out.output,
+            "a.rs:2-8\n2:    let x = 1;\n3:    let y = 2;\n4:}\n5:\n6:fn b() {\n7:    let x = 3;\n8:}\nc.rs:2\n2:y\n"
+        );
+        assert_eq!(
+            out.notes,
+            [
+                "a.rs has 8 lines, so showed 2-8; use `$` for the last line",
+                "c.rs has 2 lines, so showed 2; use `$` for the last line",
+            ]
+        );
+    }
+
+    #[test]
+    fn only_shows_top_level_line_range_end_is_cut() {
+        for (script, error) in [
+            (
+                "show 9-60",
+                "error: script:1:6: line 9 is past the end of a.rs (8 lines); use `$` for the last line",
+            ),
+            (
+                "show fn:b>7-60",
+                "error: script:1:6: line 60 is past the end of a.rs (8 lines); use `$` for the last line",
+            ),
+            (
+                "delete 7-60",
+                "error: script:1:8: line 60 is past the end of a.rs (8 lines); use `$` for the last line",
+            ),
+        ] {
+            assert_eq!(exec(TEXT, script).error(), error, "{script}");
+        }
     }
 
     #[test]

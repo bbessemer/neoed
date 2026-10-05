@@ -122,7 +122,7 @@ Version: minor when a first plugin can load; the spike releases nothing.
 Hints and relaxed errors: each is a patch, and they batch into the next release
 of either kind.
 
-- [ ] `show` with a line range past the end of the file shows up to the last
+- [x] `show` with a line range past the end of the file shows up to the last
       line, with a note, instead of an error (`show 1-60` on a 57-line file);
       edits keep the error
 - [ ] `-e` plus a script on stdin runs both: the `-e` scripts first, then stdin,

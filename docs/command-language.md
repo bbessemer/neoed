@@ -490,9 +490,10 @@ A selector resolves to a set of **spans** (byte ranges) in one or more files.
 
 Line numbers are 1-based. A line selector covers whole lines, including their
 line endings. A range whose start is after its end, or a line past the end of
-the file, is an error. Numbers count from the top of the file even in a nested
-step, but there `$` is the last line of the enclosing span: `fn:parse>$` is the
-function's closing line.
+the file, is an error, except at the end of the range `show` selects (§6.1).
+Numbers count from the top of the file even in a nested step, but there `$` is
+the last line of the enclosing span: `fn:parse>$` is the function's closing
+line.
 
 ### 3.2 Regex and literal
 
@@ -1177,6 +1178,14 @@ each other, they merge.
 `.refs`) matches nothing where the earlier steps matched, it prints
 `no matches for SEL in N files` and the script goes on, exiting 0 if nothing
 else fails. `show` without `all`, and every edit, still fail on no match.
+
+When `show`'s selector is a line range alone (`show 1-60`, with or without `all`
+or `+N`), an end past the end of a file shows up to its last line, with a note
+on stderr:
+``note: a.rs has 57 lines, so showed 1-57; use `$` for the last line``. In a
+file set, each file is cut at its own last line, and a file the range starts
+past is skipped, as for every line selector (§3.1). A start past the end of
+every file, a range in a nested step (`fn:f>1-60`) and every edit still fail.
 
 ```
 src/parser.rs:14-17

@@ -174,8 +174,15 @@ pub struct Match {
 pub type Captures = Vec<(String, Range<usize>)>;
 
 /// Resolves `target` against every file in `files`, enforcing the ambiguity
-/// rules of §3.5. `src` is the script, for error messages.
-pub fn resolve(target: &Target, files: &[&SourceFile], src: &str) -> Result<Vec<Match>, ExecError> {
+/// rules of §3.5. `src` is the script, for error messages. With `cut`, a line
+/// range in the first step that ends past a file's end selects up to its last
+/// line (§6.1).
+pub fn resolve(
+    target: &Target,
+    files: &[&SourceFile],
+    src: &str,
+    cut: bool,
+) -> Result<Vec<Match>, ExecError> {
     let whole = files
         .iter()
         .enumerate()
@@ -185,7 +192,7 @@ pub fn resolve(target: &Target, files: &[&SourceFile], src: &str) -> Result<Vec<
             captures: Vec::new(),
         })
         .collect();
-    resolve_within(target, files, whole, src)
+    resolve_within(target, files, whole, src, cut)
 }
 
 /// `resolve`, with the first step searching `start` instead of whole files.
@@ -195,6 +202,7 @@ pub fn resolve_within(
     files: &[&SourceFile],
     start: Vec<Match>,
     src: &str,
+    cut: bool,
 ) -> Result<Vec<Match>, ExecError> {
     let span = &target.selector.span;
     let error = |kind| ExecError::new(kind, Some(span.clone()));
@@ -219,7 +227,7 @@ pub fn resolve_within(
     let mut parents = Vec::new();
     let mut found = Vec::new();
     for (i, step) in target.selector.steps.iter().enumerate() {
-        found = resolve_step(step, files, &matches).map_err(error)?;
+        found = resolve_step(step, files, &matches, cut && i == 0).map_err(error)?;
         let next = found.iter().map(|f| f.m.clone()).collect();
         parents = std::mem::replace(&mut matches, next);
         if matches.is_empty() {
@@ -295,7 +303,12 @@ struct Found {
     line: bool,
 }
 
-fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result<Vec<Found>, E> {
+fn resolve_step(
+    step: &Step,
+    files: &[&SourceFile],
+    parents: &[Match],
+    cut: bool,
+) -> Result<Vec<Found>, E> {
     // Only a syntax item has parts other than `.lines`, and a conflict its
     // sides; a part's span is neither.
     let mut primary = Some(&step.primary);
@@ -318,7 +331,7 @@ fn resolve_step(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Result
         }
         primary = None;
     }
-    let matcher = Matcher::new(&step.primary, files, parents)?;
+    let matcher = Matcher::new(&step.primary, files, parents, cut)?;
     let mut out: Vec<Found> = Vec::new();
     for (p, parent) in parents.iter().enumerate() {
         let f = &files[parent.file];
@@ -374,6 +387,8 @@ enum Matcher<'a> {
     Lines {
         start: LineNo,
         end: LineNo,
+        /// Whether an end past the file's end is its last line.
+        cut: bool,
     },
     Regex(&'a Regex),
     Str(&'a str),
@@ -396,12 +411,21 @@ enum Matcher<'a> {
 }
 
 impl<'a> Matcher<'a> {
-    fn new(primary: &'a Primary, files: &[&SourceFile], parents: &[Match]) -> Result<Self, E> {
+    fn new(
+        primary: &'a Primary,
+        files: &[&SourceFile],
+        parents: &[Match],
+        cut: bool,
+    ) -> Result<Self, E> {
         Ok(match primary {
             Primary::Lines { start, end } => {
                 let end = end.unwrap_or(*start);
-                check_lines(*start, end, files, parents)?;
-                Matcher::Lines { start: *start, end }
+                check_lines(*start, if cut { *start } else { end }, files, parents)?;
+                Matcher::Lines {
+                    start: *start,
+                    end,
+                    cut,
+                }
             }
             Primary::Regex(pattern) => Matcher::Regex(pattern.regex()),
             Primary::Literal(text) => match text.kind {
@@ -429,8 +453,8 @@ impl<'a> Matcher<'a> {
             Primary::Query(source) => Matcher::Query(compile_query(source, files, parents)?),
             Primary::Code(code) => Matcher::Code(compile_pattern(code, files, parents)?),
             Primary::Range { from, to } => Matcher::Range(
-                Box::new(Matcher::new(from, files, parents)?),
-                Box::new(Matcher::new(to, files, parents)?),
+                Box::new(Matcher::new(from, files, parents, false)?),
+                Box::new(Matcher::new(to, files, parents, false)?),
             ),
         })
     }
@@ -482,7 +506,7 @@ impl<'a> Matcher<'a> {
         let scope = scope(&f.text, &parent);
         let in_scope = |r: &Range<usize>| scope.start <= r.start && r.end <= scope.end;
         match self {
-            Matcher::Lines { start, end } => {
+            Matcher::Lines { start, end, cut } => {
                 let count = f.buffer.line_count();
                 // `$` is the parent's last line, which is the file's at the top level.
                 let last = f
@@ -491,7 +515,7 @@ impl<'a> Matcher<'a> {
                     .expect("parent within the buffer");
                 let (Some(first), Some(last)) = (
                     line_index(*start, count, last),
-                    line_index(*end, count, last),
+                    line_index(*end, count, last).or(cut.then_some(last)),
                 ) else {
                     return Vec::new();
                 };
@@ -1648,7 +1672,7 @@ mod tests {
         let CommandKind::Delete(target) = &parsed.commands[0].kind else {
             panic!("expected delete: {script}");
         };
-        resolve(target, &files.iter().collect::<Vec<_>>(), script)
+        resolve(target, &files.iter().collect::<Vec<_>>(), script, false)
     }
 
     /// The text of each span `script` selects in a single file `a.rs`.
