@@ -250,7 +250,7 @@ letters, digits, `_`, `:` and `*` must be quoted: `import:"os.path"`,
 | `mod`       | modules and namespaces                                     |
 | `import`    | imports, named by the path as written                      |
 | `section`   | Markdown sections, named by their heading                  |
-| `item`      | Markdown list items, named by their first line             |
+| `item`      | Markdown list items, named by first line, minus checkbox   |
 | `table`     | Markdown tables, named by their first header cell          |
 | `code`      | Markdown code blocks, named by their language tag, or `""` |
 
@@ -520,6 +520,10 @@ show [SEL [+N]]
 Prints the lines that contain each selected span, numbered, with `N` lines of
 context around them. Without a selector, it prints every file in the file set.
 Regions that touch or overlap are merged.
+
+When the selector is a line range on its own, an end past a file's last line
+shows up to that line, with a note, instead of failing: `show 1-200` prints a
+short file whole.
 
 `show all` works as a search: if nothing matches, it prints
 `no matches for SEL in N files` and the script continues. Every other command,
