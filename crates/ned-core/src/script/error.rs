@@ -90,6 +90,9 @@ pub enum ParseErrorKind {
     MinusContext(String),
     #[error("line range {start}-{end} is reversed; write {end}-{start}")]
     ReversedLines { start: usize, end: usize },
+    /// `N,M`, sed's line range; the fix is the `N-M` range it means.
+    #[error("line ranges are written N-M, not sed's N,M; write {0}")]
+    SedRange(String),
     #[error("line number is too large; use `$` for the last line")]
     LineOverflow,
     #[error("expected a tag after `<<`, e.g. <<END")]
@@ -137,6 +140,9 @@ pub enum ParseErrorKind {
     /// `all` after a target's selector; the fix puts it before.
     #[error("`all` goes before the selector; write {0}")]
     AllAfterSelector(String),
+    /// A regex, string or pattern glued to a selector; the fix nests it with `>`.
+    #[error("a search in a step goes after `>`; write {0}")]
+    GluedStep(String),
     /// A `$` reference in `sub` TEXT to a group the regex doesn't have; `fix`
     /// splits off the group it starts with, or lists the groups.
     #[error("`{reference}` names group `{name}`, which the regex doesn't have; {fix}")]

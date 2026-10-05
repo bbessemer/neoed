@@ -4,6 +4,22 @@ Every tagged release of `ned`. Before 0.6.1, every PR to `main` bumped the
 version, so versions merged in quick succession (0.2.0, 0.3.0) were never tagged
 or released on their own; their changes are listed under the next tag.
 
+## 0.7.2 (2026-10-05)
+
+### Fixed
+
+- A Rust `use` that spans lines is named in the one-line form rustfmt would
+  print, without its comments, so `use c::{` then `d,` and `e,` on lines of
+  their own is `import:"c::{d, e}"`.
+- A regex, literal or pattern glued to a selector (`show fn:a/re/`) is an error
+  suggesting `>` (`show fn:a>/re/`), in any command.
+- A sed-style line range (`show 10,20`) is an error suggesting `10-20`.
+- A subcommand after a flag (`ned -s x undo`) is an error suggesting it first,
+  with the flags it takes (`ned undo -s x`), instead of reading it as a file.
+- A match ending in a multibyte character (`show all "ï"`) ends on its own line:
+  `show` no longer prints through the end of the file, and listing ambiguous
+  candidates or `$` inside such a match no longer panics.
+
 ## 0.7.1 (2026-10-05)
 
 ### Added

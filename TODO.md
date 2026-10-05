@@ -157,6 +157,14 @@ of either kind.
 - [x] A literal under a `kind>` step that spans two items of the kind
       (`import>"use a;\nuse b;"`) suggests a line range, `A..B` or dropping the
       step, instead of only "matches nothing"
+- [x] A flag before a subcommand (`ned -s NAME undo`) reads the subcommand as a
+      file ("cannot read undo"); it should say the subcommand goes first
+      (`ned undo -s NAME`)
+- [x] A regex glued to a step without `>` (`impl:X>fn:y/z/`) suggests splitting
+      it into two commands (`show impl:X>fn:y; show /z/`); it should suggest the
+      nested step, `impl:X>fn:y>/z/`
+- [x] A sed-style line range (`sub 1,2 /a/ with "b"`, `show 10,20`) suggests
+      `1-2`, not quoting literal text
 
 ## Bugs
 
@@ -184,6 +192,9 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [x] `move impl:A>fn:f start impl:B` puts `fn:f` directly above `impl:B`'s
       first item, with no blank line between them, though the items around it
       are separated by one
+- [x] A Rust `use` split over several lines is named after its first line only
+      (`use c::{\n    d,\n};` is `import:"c::{"`); name it by the whole path
+      with its whitespace collapsed (`import:"c::{d}"`; form to decide)
 
 ## Future improvements
 

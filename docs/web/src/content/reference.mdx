@@ -64,8 +64,9 @@ same either way.
   `DIR`, or the current directory.
 - **`ned history`** and **`ned undo`** work with [sessions](#sessions).
 
-A subcommand must be the first argument. To edit a file that happens to be
-called `help`, write it as `./help`.
+A subcommand must be the first argument: `ned -s x undo` is an error suggesting
+`ned undo -s x`. To edit a file that happens to be called `help`, write it as
+`./help`.
 
 ### Languages
 
@@ -248,7 +249,7 @@ letters, digits, `_`, `:` and `*` must be quoted: `import:"os.path"`,
 | `var`       | variables                                                  |
 | `field`     | fields of structs and classes                              |
 | `mod`       | modules and namespaces                                     |
-| `import`    | imports, named by the path as written                      |
+| `import`    | imports, named by the path on one line                     |
 | `section`   | Markdown sections, named by their heading                  |
 | `item`      | Markdown list items, named by first line, minus checkbox   |
 | `table`     | Markdown tables, named by their first header cell          |

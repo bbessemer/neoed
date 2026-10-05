@@ -32,7 +32,7 @@ use std::process::ExitCode;
 use std::sync::OnceLock;
 
 use clap::builder::NonEmptyStringValueParser;
-use clap::{Parser, Subcommand};
+use clap::{Arg, CommandFactory, Parser, Subcommand};
 use ned_core::buffer::Buffer;
 use ned_core::config::{self, Config};
 use ned_core::diff::{self, DiffStat};
@@ -176,6 +176,16 @@ fn main() -> ExitCode {
     let mut cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => {
+            let args: Vec<_> = std::env::args_os()
+                .skip(1)
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            if err.use_stderr()
+                && let Some(err) = misplaced_subcommand(&args)
+            {
+                errln!("error: {err}");
+                return ExitCode::from(2);
+            }
             let terminal = match err.use_stderr() {
                 true => io::stderr().is_terminal(),
                 false => io::stdout().is_terminal(),
@@ -577,9 +587,130 @@ fn finish(result: Result<(), session::Failure>) -> ExitCode {
     }
 }
 
-/// A usage error found before the script is read (spec §1): a command's name
-/// given as a FILE, or no script with stdin a terminal.
+/// A usage error for a subcommand after a flag in `args` (spec §1), with the
+/// arguments it takes moved after it.
+fn misplaced_subcommand(args: &[String]) -> Option<String> {
+    let mut ned = Cli::command();
+    ned.build();
+    let is_subcommand =
+        |arg: &str| ned.find_subcommand(arg).is_some() && !std::path::Path::new(arg).exists();
+    if args
+        .first()
+        .is_none_or(|arg| ned.find_subcommand(arg).is_some())
+    {
+        return None;
+    }
+    let flag = |found: &dyn Fn(&Arg) -> bool| ned.get_arguments().find(|arg| found(arg));
+    // The arguments before the subcommand: each flag with its value (`None` for
+    // a FILE), and whether a value was given.
+    let mut given: Vec<(Option<&Arg>, Vec<String>, bool)> = Vec::new();
+    let mut i = 0;
+    let name = loop {
+        let arg = args.get(i)?.as_str();
+        i += 1;
+        if arg == "--" {
+            return None;
+        }
+        if is_subcommand(arg) {
+            break arg;
+        }
+        let mut words = vec![arg.to_owned()];
+        let (found, attached) = if let Some(long) = arg.strip_prefix("--") {
+            let (long, attached) = match long.split_once('=') {
+                Some((long, _)) => (long, true),
+                None => (long, false),
+            };
+            (flag(&|a| a.get_long() == Some(long)), attached)
+        } else if let Some(shorts) = arg.strip_prefix('-').filter(|s| !s.is_empty()) {
+            // A cluster: each short flag up to one that takes a value, which is
+            // the rest of the cluster, if any.
+            let mut found = None;
+            for (at, c) in shorts.char_indices() {
+                let Some(short) = flag(&|a| a.get_short() == Some(c)) else {
+                    break;
+                };
+                if !short.get_action().takes_values() {
+                    given.push((Some(short), vec![format!("-{c}")], false));
+                    continue;
+                }
+                words = vec![format!("-{c}")];
+                let rest = &shorts[at + c.len_utf8()..];
+                if !rest.is_empty() {
+                    words.push(rest.to_owned());
+                }
+                found = Some(short);
+                break;
+            }
+            match found {
+                Some(short) => (Some(short), words.len() > 1),
+                None => continue,
+            }
+        } else {
+            given.push((None, words, false));
+            continue;
+        };
+        let Some(found) = found else { continue };
+        let mut value = attached;
+        if found.get_action().takes_values() && !attached {
+            let optional = found.get_num_args().is_some_and(|n| n.min_values() == 0);
+            if let Some(next) = args.get(i)
+                && !(optional && (next.starts_with('-') || is_subcommand(next)))
+            {
+                words.push(next.clone());
+                value = true;
+                i += 1;
+            }
+        }
+        given.push((Some(found), words, value));
+    };
+    if !args[..i - 1]
+        .iter()
+        .any(|arg| arg.len() > 1 && arg.starts_with('-'))
+    {
+        return None;
+    }
+    let sub = ned.find_subcommand(name)?;
+    let takes_files = sub
+        .get_positionals()
+        .any(|arg| arg.get_num_args().is_some_and(|n| n.max_values() > 1));
+    let mut line = vec!["ned", name];
+    for (found, words, value) in &given {
+        let own = found.and_then(|found| {
+            sub.get_arguments().find(|own| {
+                !own.is_positional()
+                    && ((own.get_long().is_some() && own.get_long() == found.get_long())
+                        || (own.get_short().is_some() && own.get_short() == found.get_short()))
+            })
+        });
+        let keep = match (found, own) {
+            (None, _) => takes_files,
+            (Some(_), None) => false,
+            (Some(_), Some(own)) => {
+                *value || own.get_num_args().is_none_or(|n| n.min_values() == 0)
+            }
+        };
+        if keep {
+            line.extend(words.iter().map(String::as_str));
+        }
+    }
+    line.extend(args[i..].iter().map(String::as_str));
+    Some(format!(
+        "`{name}` is a subcommand, not a file; give it first: {}",
+        line.join(" ")
+    ))
+}
+
+/// A usage error found before the script is read (spec §1): a subcommand after
+/// a flag, a command's name given as a FILE, or no script with stdin a
+/// terminal.
 fn usage_error(cli: &Cli) -> Option<String> {
+    let args: Vec<_> = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    if let Some(err) = misplaced_subcommand(&args) {
+        return Some(err);
+    }
     let exists = |arg: &str| std::path::Path::new(arg).exists();
     let is_command = |arg: &str| script::error::COMMANDS.split(' ').any(|c| c == arg);
     if cli.workspace.is_none()

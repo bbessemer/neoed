@@ -9,14 +9,7 @@ use crate::lsp::Severity;
 use crate::syntax;
 
 pub fn parse(src: &str) -> Result<Script, ParseError> {
-    let mut parser = Parser {
-        src,
-        lexer: Lexer::new(src),
-        peeked: None,
-        last_end: 0,
-        command_start: 0,
-        last_heredoc: None,
-    };
+    let mut parser = Parser::new(src);
     let mut commands: Vec<Command> = Vec::new();
     let mut stages: Vec<usize> = Vec::new();
     let mut pipe = 0..0;
@@ -53,7 +46,10 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
                     next.kind,
                     TokenKind::Newline | TokenKind::Semicolon | TokenKind::Pipe | TokenKind::Eof
                 ) {
-                    if let Some(err) = parser.trailing_all(&command, &next) {
+                    if let Some(err) = parser
+                        .trailing_all(&command, &next)
+                        .or_else(|| parser.glued_step(&next.span))
+                    {
                         return Err(err);
                     }
                     let mut err = expected("end of command", &next);
@@ -110,9 +106,24 @@ struct Parser<'a> {
     command_start: usize,
     /// Span of the last heredoc opener consumed.
     last_heredoc: Option<Range<usize>>,
+    /// Span of the last regex, string or pattern that directly followed a
+    /// selector, with no space between them.
+    glued: Option<Range<usize>>,
 }
 
 impl Parser<'_> {
+    fn new(src: &str) -> Parser<'_> {
+        Parser {
+            src,
+            lexer: Lexer::new(src),
+            peeked: None,
+            last_end: 0,
+            command_start: 0,
+            last_heredoc: None,
+            glued: None,
+        }
+    }
+
     fn peek(&mut self) -> Result<&Token, ParseError> {
         match &mut self.peeked {
             Some(token) => Ok(token),
@@ -147,6 +158,9 @@ impl Parser<'_> {
             return Err(err);
         };
         let kind = self.command_kind(&verb, word).map_err(|mut err| {
+            if let Some(glued) = self.glued_step(&err.span) {
+                return glued;
+            }
             if let E::Expected { hint, .. } = &mut err.kind
                 && hint.is_empty()
                 && let Some(usage) = usage(word)
@@ -455,6 +469,23 @@ impl Parser<'_> {
         ))
     }
 
+    /// The error for a search at `span` glued to the selector before it, which
+    /// `>` nests in the selector's last step; `None` if there's none there, or
+    /// if the command doesn't parse with the `>`.
+    fn glued_step(&self, span: &Range<usize>) -> Option<ParseError> {
+        if self.glued.as_ref() != Some(span) {
+            return None;
+        }
+        let fixed = format!(
+            "{}>{}",
+            &self.src[self.command_start..span.start],
+            &self.src[span.start..]
+        );
+        let command = Parser::new(&fixed).command().ok()?;
+        let written = fixed[command.span].lines().next()?;
+        Some(ParseError::new(E::GluedStep(written.into()), span.clone()))
+    }
+
     /// `command`, a `show`, `outline` or `delete`, and the selector after it as
     /// two commands: `show fn:a; show fn:b`.
     fn one_selector_each(&mut self, command: &Command) -> Option<String> {
@@ -539,6 +570,12 @@ impl Parser<'_> {
                         filters: Vec::new(),
                         span: step_start..self.last_end,
                     });
+                }
+                TokenKind::Regex { .. } | TokenKind::Str(_) | TokenKind::Code(_)
+                    if !next.space_before =>
+                {
+                    self.glued = Some(next.span.clone());
+                    break;
                 }
                 _ => break,
             }
@@ -2091,6 +2128,22 @@ mod tests {
     }
 
     #[test]
+    fn sed_style_line_ranges_suggest_a_dash() {
+        for (src, fix) in [
+            ("show 10,20", "10-20"),
+            (r#"sub 1,2 /a/ with "b""#, "1-2"),
+            ("show 3,$", "3-$"),
+        ] {
+            assert_eq!(error(src).kind, E::SedRange(fix.into()), "{src:?}");
+        }
+        let e = error("show 10,20");
+        assert_eq!(
+            e.kind.to_string(),
+            "line ranges are written N-M, not sed's N,M; write 10-20"
+        );
+    }
+
+    #[test]
     fn sub_references_name_groups_the_regex_has() {
         for src in [
             r#"sub /(a)/ with "$0 $1 ${1}x ${0}""#,
@@ -2296,6 +2349,56 @@ mod tests {
             message(r#"replace 3 with "x" fn:a"#),
             "expected end of command, found `fn:a`"
         );
+    }
+
+    #[test]
+    fn a_search_glued_to_a_step_suggests_nesting_it() {
+        for (src, nested) in [
+            ("show impl:X>fn:y/z/", "show impl:X>fn:y>/z/"),
+            (r#"delete fn:y"x""#, r#"delete fn:y>"x""#),
+            ("outline impl:P`fn @f() {}`", "outline impl:P>`fn @f() {}`"),
+            ("show all fn:y.body/z/i", "show all fn:y.body>/z/i"),
+            ("show fn:y/z/.body +2", "show fn:y>/z/.body +2"),
+            (
+                r#"replace fn:y/z/ with "a""#,
+                r#"replace fn:y>/z/ with "a""#,
+            ),
+            (
+                "replace fn:y`f()` with <<END\nx\nEND\n",
+                "replace fn:y>`f()` with <<END",
+            ),
+            (
+                r#"insert after fn:y/z/ "x""#,
+                r#"insert after fn:y>/z/ "x""#,
+            ),
+            ("move fn:y/z/ after fn:a", "move fn:y>/z/ after fn:a"),
+            ("move fn:a after fn:y/z/", "move fn:a after fn:y>/z/"),
+            (
+                r#"sub fn:y"x" /a/ with "b""#,
+                r#"sub fn:y>"x" /a/ with "b""#,
+            ),
+        ] {
+            assert_eq!(
+                message(src),
+                format!("a search in a step goes after `>`; write {nested}"),
+                "{src:?}"
+            );
+        }
+        assert_eq!(error("replace fn:y/z/ with \"a\"").span, 12..15);
+        for src in ["show fn:y /z/", r#"show fn:y +3"x""#] {
+            assert!(
+                message(src).contains("one selector per command"),
+                "{src:?}: {}",
+                message(src)
+            );
+        }
+    }
+
+    #[test]
+    fn text_or_a_regex_glued_to_a_selector_may_be_the_command_s() {
+        for src in [r#"insert after fn:y"x""#, r#"sub fn:y/re/ with "x""#] {
+            assert!(parse(src).is_ok(), "{src:?}");
+        }
     }
 
     #[test]

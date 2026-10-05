@@ -18,6 +18,9 @@
 //! each `{CAPTURE}` replaced by that capture's text, when every capture it
 //! names matched (`"{trait_name} for {name}"`). The item's selector then also
 //! matches the `@name` text alone. Other captures only fill templates.
+//!
+//! A capture's text is its first line, or with `(#set! one-line)` in the
+//! pattern, all of it in the one-line form rustfmt prints (a Rust `use`).
 
 use std::cmp::Reverse;
 use std::ops::Range;
@@ -179,14 +182,15 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                 }
             }
         }
+        let settings = query.property_settings(m.pattern_index);
+        let one_line = settings.iter().any(|s| &*s.key == "one-line");
         let captured = |wanted: &str| {
             m.captures()
                 .iter()
                 .find(|c| names[c.index as usize] == wanted)
-                .map(|c| first_line(text, c.node))
+                .map(|c| name_text(text, c.node, one_line))
         };
-        let templated = query
-            .property_settings(m.pattern_index)
+        let templated = settings
             .iter()
             .find(|s| &*s.key == "name")
             .and_then(|s| fill(s.value.as_deref()?, captured));
@@ -208,6 +212,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                 body,
                 params,
                 templated,
+                one_line,
                 head,
                 ret,
                 ty,
@@ -263,8 +268,6 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
         same
     });
 
-    let name_text = |name: Option<Node>| name.map_or(String::new(), |n| first_line(text, n));
-
     let mut items: Vec<Item> = found
         .into_iter()
         .map(
@@ -275,7 +278,7 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                  body,
                  params,
                  templated,
-
+                 one_line,
                  head,
                  ret,
                  ty,
@@ -339,8 +342,10 @@ pub fn items(query: &Query, tree: &Tree, text: &str) -> Vec<Item> {
                     kind,
                     base_name: name
                         .filter(|_| templated.is_some())
-                        .map(|n| first_line(text, n)),
-                    name: templated.unwrap_or_else(|| name_text(name)),
+                        .map(|n| name_text(text, n, one_line)),
+                    name: templated.unwrap_or_else(|| {
+                        name.map_or(String::new(), |n| name_text(text, n, one_line))
+                    }),
                     range,
                     trailing_comma: comma.is_some(),
                     node: item_node,
@@ -398,6 +403,8 @@ struct Found<'t> {
     params: Option<Range<usize>>,
     /// The name from the pattern's template.
     templated: Option<String>,
+    /// Whether names are the capture's whole text on one line.
+    one_line: bool,
     head: Option<Range<usize>>,
     block: Option<Node<'t>>,
     /// A `@doc` inside the item (a docstring).
@@ -432,10 +439,57 @@ fn colon_before(node: Node, block: Node) -> usize {
         .map_or(block.start_byte(), |c| c.start_byte())
 }
 
-/// The first line of `node`'s text, trimmed.
-fn first_line(text: &str, node: Node) -> String {
-    let text = &text[node.byte_range()];
-    text.lines().next().unwrap_or_default().trim().to_string()
+/// The text of `node`: its first line, trimmed, or with `one_line`, all its
+/// lines joined as rustfmt would print them on one, without comments.
+fn name_text(text: &str, node: Node, one_line: bool) -> String {
+    if one_line && text[node.byte_range()].trim().contains('\n') {
+        let mut code = String::new();
+        let end = without_comments(text, node, node.start_byte(), &mut code);
+        code.push_str(&text[end..node.end_byte()]);
+        join_lines(code.trim())
+    } else {
+        let text = text[node.byte_range()].trim();
+        text.lines().next().unwrap_or_default().trim().to_string()
+    }
+}
+
+/// Appends `text` from `from` to `out`, up to the end of `node`'s last
+/// comment, with each comment in `node` as a space; returns where it stopped.
+fn without_comments(text: &str, node: Node, mut from: usize, out: &mut String) -> usize {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.is_extra() {
+            out.push_str(&text[from..child.start_byte()]);
+            out.push(' ');
+            from = child.end_byte();
+        } else {
+            from = without_comments(text, child, from, out);
+        }
+    }
+    from
+}
+
+/// `text` on one line: whitespace runs collapsed, none just inside braces or
+/// before a comma, `, ` between items and no comma before a `}`.
+fn join_lines(text: &str) -> String {
+    let mut out = String::new();
+    for word in text.split_whitespace() {
+        for c in word.chars() {
+            match c {
+                '}' => {
+                    let kept = out.trim_end_matches([' ', ',']).len();
+                    out.truncate(kept);
+                }
+                ',' => {}
+                _ if out.ends_with(',') => out.push(' '),
+                _ => {}
+            }
+            out.push(c);
+        }
+        out.push(' ');
+    }
+    // Spaces after a word fall away before what can't follow one.
+    out.trim_end().replace("{ ", "{").replace(" ,", ",")
 }
 
 /// `template` with each `{CAPTURE}` replaced by `captured(CAPTURE)`; `None`
@@ -744,6 +798,23 @@ mod tests {}
         let expected: Vec<(&str, String)> =
             expected.iter().map(|(k, n)| (*k, n.to_string())).collect();
         assert_eq!(names(Rust, RUST), expected);
+    }
+
+    #[test]
+    fn a_use_over_several_lines_is_named_on_one_line() {
+        let uses = "use a::{b,c};\nuse c::{\n    d,\n};\nuse e::{\n    f,\n    g::{h, i},\n};\nuse j::{\n    self,\n    k as l,\n    m::*,\n};\nuse n::{ o, p };\nuse q::{\n    r, s,\n    t\n};\nuse u::{\n    v, // why\n    w,\n};\nuse x::{\n    /* a */ y /* b */,\n    z,\n};\n";
+        let expected = [
+            "a::{b,c}",
+            "c::{d}",
+            "e::{f, g::{h, i}}",
+            "j::{self, k as l, m::*}",
+            "n::{ o, p }",
+            "q::{r, s, t}",
+            "u::{v, w}",
+            "x::{y, z}",
+        ];
+        let found: Vec<String> = items_in(Rust, uses).into_iter().map(|i| i.name).collect();
+        assert_eq!(found, expected);
     }
 
     #[test]

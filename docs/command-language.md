@@ -20,6 +20,8 @@ ned undo [-s NAME] [-w DIR] [--force]
 `selectors`, `text`, `config` or `session`. An unknown topic is a usage error
 that lists the topics. A subcommand (`help`, `daemon`, `history`, `undo`) must
 be the first argument; write a file with one of those names as `./help`, say.
+One after a flag (`ned -s x undo`) is a usage error suggesting it first, with
+the flags it takes (`ned undo -s x`).
 
 - `-e SCRIPT` may be repeated; the scripts are joined with newlines, in order.
 - Without `-e`, the script is read from stdin. If stdin is a terminal, that's a
@@ -549,7 +551,7 @@ Core kinds. Each language maps a subset of these through
 | `var`       | module-level variables and `let`/`var` bindings                    |
 | `field`     | struct and class fields                                            |
 | `mod`       | modules and namespaces                                             |
-| `import`    | imports (name = the path as written, e.g. `import:std::fmt`)       |
+| `import`    | imports (name = the path on one line, e.g. `import:std::fmt`)      |
 | `section`   | Markdown sections: a `#` heading and its content (name = its text) |
 | `item`      | Markdown list items (name = first line, minus any `[ ]` checkbox)  |
 | `table`     | Markdown tables (name = the first header cell)                     |
@@ -559,7 +561,10 @@ The kinds each language supports, and the items they cover there:
 
 - **Rust**: `fn` (also trait method declarations), `struct`, `field`, `enum`,
   `variant`, `trait`, `impl`, `type` (also associated types), `const` (also
-  `static`), `var` (`let` bindings), `mod`, `import` (`use`).
+  `static`), `var` (`let` bindings), `mod`, `import` (`use`; a path that spans
+  lines is named in the one-line form rustfmt would print, without its comments,
+  so `use c::{` then `d,` and `e,` on lines of their own is
+  `import:"c::{d, e}"`).
 - **Markdown**: `section`, `item`, `table`, `code`.
 - **Python**: `fn` (functions and methods, `async` too), `class`, `field`
   (assignments and annotations directly in a class body), `const` (module-level
@@ -1419,10 +1424,13 @@ The fix each error suggests:
   `show SEL +M` for `+N..+M`, and `show SEL +N` for `-N` (or the line range
   `show N-M`, after a line number); `all` before the selector, not after it,
   e.g. `show all /re/`; `;` or a new line between commands for a second
-  selector, e.g. `show fn:a; show fn:b`; the rest of the command on a heredoc
-  selector's line, before its body, e.g. `replace <<END with TEXT`;
-  `sub /re/ with TEXT` for sed's `sub /re/text/`; otherwise the command's usage,
-  e.g. `usage: replace [all] SEL with TEXT`
+  selector, e.g. `show fn:a; show fn:b`; `>` before a regex, literal or pattern
+  glued to a selector in any command, e.g. `show fn:a>/re/` for `show fn:a/re/`
+  (but not before `insert`'s text or `sub`'s regex, which may follow the
+  selector directly); the rest of the command on a heredoc selector's line,
+  before its body, e.g. `replace <<END with TEXT`; `sub /re/ with TEXT` for
+  sed's `sub /re/text/`; the line range `N-M` for sed's `N,M`; otherwise the
+  command's usage, e.g. `usage: replace [all] SEL with TEXT`
 - `check`, `rename`, `.refs` or `.def` after a `|`: Running it before the first
   `|`, or in a separate `ned` call
 - `all` in `sub` (`sub all /re/ with TEXT`, or after its regex or TEXT):
@@ -1446,6 +1454,8 @@ The fix each error suggests:
   their lines and `show conflict:N`
   (`conflict:1 (lines 2-7) is not inside fn:f.body (lines 2-5); show it with show conflict:1`)
 - Command's name given as a `FILE`: The `-e` form of the arguments
+- Subcommand after a flag: The arguments with the subcommand first, keeping the
+  flags it takes
 - Ambiguous selector: Candidate selectors (§3.5), or longer text for matches
   that share a line
 - Missing part, part on a non-syntax step: The parts the item has, or an example
@@ -1528,9 +1538,10 @@ Exit codes:
   `.refs`/`.def` result, nothing to undo, undo of a file changed or removed
   since, undo merge overlap, a refused `--commit` (§1.3)
 - `2`: Usage error (bad flags or arguments, a command's name given as a `FILE`,
-  no script on a terminal, no files to edit, a bad session name, no session, a
-  bad `!!`, `--commit` with `-n` or outside a git repository), script syntax
-  error, invalid query, pattern or config, or no language server
+  a subcommand after a flag, no script on a terminal, no files to edit, a bad
+  session name, no session, a bad `!!`, `--commit` with `-n` or outside a git
+  repository), script syntax error, invalid query, pattern or config, or no
+  language server
 - `3`: I/O error: unreadable or non-UTF-8 file, glob matched nothing, write
   failure, language server failure, an unsafe or unknown-version session store,
   or a failing git command
