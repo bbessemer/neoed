@@ -146,8 +146,26 @@ impl Template {
             let start = out.len();
             let span = match piece {
                 Piece::Text { text: t, span } => {
-                    out.push_str(t);
-                    span
+                    // Separators don't count (§3.10), so a run left out
+                    // takes the one after it along, unless it's the rest of
+                    // the node before it, which the separator ends.
+                    let alone = out
+                        .trim_end()
+                        .chars()
+                        .last()
+                        .is_none_or(|c| "([{,;".contains(c));
+                    let gone = match holes.last() {
+                        Some(h) if *h == (start..start) && alone => {
+                            let ws = t.len() - t.trim_start().len();
+                            match t[ws..].starts_with([',', ';']) {
+                                true => ws + 1,
+                                false => 0,
+                            }
+                        }
+                        _ => 0,
+                    };
+                    out.push_str(&t[gone..]);
+                    &(span.start + gone..span.end)
                 }
                 Piece::Hole(hole) => {
                     match text(holes.len()) {
@@ -343,6 +361,21 @@ mod tests {
         });
         assert_eq!(s.text, "impl __ned_t {  }");
         assert_eq!(s.holes, [5..12, 15..15]);
+    }
+
+    #[test]
+    fn empty_holes_take_their_separator_with_them() {
+        let t = Template::parse("match @e { @_..., B => 1 }");
+        let s = t.source(|i| {
+            if i == 1 {
+                HoleText::Empty
+            } else {
+                HoleText::Placeholder
+            }
+        });
+        assert_eq!(s.text, "match __ned_e {  B => 1 }");
+        assert_eq!(s.holes, [6..13, 16..16]);
+        assert_eq!(s.to_template(17), 18);
     }
 
     #[test]

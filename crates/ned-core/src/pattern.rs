@@ -605,6 +605,15 @@ mod tests {
     }
 
     #[test]
+    fn a_run_left_out_of_the_text_leaves_out_its_separator() {
+        let text = "fn main() { match e { E::A => 1, E::B => 2 }; }";
+        assert_eq!(
+            found("match @e { @_..., E::B => @x }", text),
+            ["match e { E::A => 1, E::B => 2 }"]
+        );
+    }
+
+    #[test]
     fn a_run_after_a_node_matches_the_rest_of_a_longer_node() {
         assert_eq!(
             found(
