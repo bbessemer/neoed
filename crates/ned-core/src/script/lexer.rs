@@ -71,6 +71,8 @@ pub struct Lexer<'a> {
     pos: usize,
     /// Where the next heredoc body on the current line starts.
     heredoc_cursor: Option<usize>,
+    /// The last regex lexed, from its opening `/` to after its closing one.
+    pub(super) last_regex: Option<Range<usize>>,
 }
 
 impl<'a> Lexer<'a> {
@@ -79,6 +81,7 @@ impl<'a> Lexer<'a> {
             src,
             pos: 0,
             heredoc_cursor: None,
+            last_regex: None,
         }
     }
 
@@ -254,6 +257,7 @@ impl<'a> Lexer<'a> {
                 c => pattern.push(c),
             }
         }
+        self.last_regex = Some(start..self.pos);
         let mut flags = RegexFlags::default();
         while let Some(c) = self.peek().filter(char::is_ascii_alphabetic) {
             match c {

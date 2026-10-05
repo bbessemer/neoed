@@ -199,7 +199,7 @@ impl Parser<'_> {
                 }
             }
             "delete" => CommandKind::Delete(self.target()?),
-            "sub" => self.sub()?,
+            "sub" => self.sub().map_err(|e| self.sed_sub(e))?,
             "move" => CommandKind::Move {
                 target: self.target()?,
                 position: self.position()?,
@@ -632,6 +632,34 @@ impl Parser<'_> {
         })
     }
 
+    /// `error`, or, if it falls in sed's `text/flags` after the command's last
+    /// regex, the error that names the `sub` `/re/text/flags` means.
+    fn sed_sub(&self, error: ParseError) -> ParseError {
+        let Some(regex) = (self.lexer.last_regex.clone()).filter(|r| r.start >= self.command_start)
+        else {
+            return error;
+        };
+        let Some((text, flags, len)) = sed_tail(&self.src[regex.end..]) else {
+            return error;
+        };
+        let end = regex.end + len;
+        if !(regex.end..end).contains(&error.span.start) {
+            return error;
+        }
+        let lead = self.src[self.command_start..regex.start].trim_end();
+        let flags: String = ['i', 's']
+            .into_iter()
+            // GNU sed writes `i` as `I` too.
+            .filter(|&f| flags.contains(f) || (f == 'i' && flags.contains('I')))
+            .collect();
+        let fix = format!(
+            "{lead} {}{flags} with \"{}\"",
+            &self.src[regex.clone()],
+            sed_text(text)
+        );
+        ParseError::new(E::SedSub(fix), regex.start..end)
+    }
+
     /// Checks that each `$` reference in `text`, read from the token at `at`,
     /// names a group of `pattern`.
     fn validate_groups(
@@ -801,6 +829,58 @@ fn group_refs(text: &str) -> Vec<(Range<usize>, &str)> {
         }
     }
     refs
+}
+
+/// Splits `rest`, what follows a regex, into sed's `text/flags`, with the
+/// length they span; `None` unless they end the command.
+fn sed_tail(rest: &str) -> Option<(&str, &str, usize)> {
+    let mut chars = rest.char_indices();
+    let slash = loop {
+        match chars.next()? {
+            (_, '\n') => return None,
+            (i, '/') => break i,
+            (_, '\\') if chars.next()?.1 == '\n' => return None,
+            _ => {}
+        }
+    };
+    let flags = &rest[slash + 1..];
+    let flags = &flags[..flags
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(flags.len())];
+    let end = slash + 1 + flags.len();
+    (end == rest.len() || rest[end..].starts_with([' ', '\t', '\r', '\n', ';', '|'])).then_some((
+        &rest[..slash],
+        flags,
+        end,
+    ))
+}
+
+/// sed's replacement `text` as the inside of a string for `sub`.
+fn sed_text(text: &str) -> String {
+    fn escaped(out: &mut String, c: char) {
+        match c {
+            '$' => out.push_str("$$"),
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c => out.push(c),
+        }
+    }
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '&' => out.push_str("${0}"),
+            '\\' => match chars.next() {
+                Some(d @ '0'..='9') => out.extend(['$', '{', d, '}']),
+                Some('n') => out.push_str("\\n"),
+                Some('t') => out.push_str("\\t"),
+                Some(c) => escaped(&mut out, c),
+                None => escaped(&mut out, '\\'),
+            },
+            c => escaped(&mut out, c),
+        }
+    }
+    out
 }
 
 /// The script offset of byte `offset` of the value of the string token at
@@ -1826,6 +1906,41 @@ mod tests {
             r"`sub` already replaces every match; drop `all`: sub /x\/y/i with ..."
         );
         assert_eq!(e.span, 4..7);
+    }
+
+    #[test]
+    fn sed_style_sub_suggests_with() {
+        for (src, fix) in [
+            ("sub 1 /a/b/", r#"sub 1 /a/ with "b""#),
+            ("sub /a/b/", r#"sub /a/ with "b""#),
+            ("sub /a/b/g", r#"sub /a/ with "b""#),
+            ("sub 3-5 /a/b c/gi", r#"sub 3-5 /a/i with "b c""#),
+            ("sub 1 /a/b/I", r#"sub 1 /a/i with "b""#),
+            (r"sub 1 /a/b\tc/", r#"sub 1 /a/ with "b\tc""#),
+            ("sub 1 /a/-b/", r#"sub 1 /a/ with "-b""#),
+            (r"sub /x\/y/i/", r#"sub /x\/y/ with "i""#),
+            ("sub /a/i/", r#"sub /a/ with "i""#),
+            ("sub 1 /a// ; show 1", r#"sub 1 /a/ with """#),
+            (
+                r#"sub /(a)b/\1&$\/"\n/"#,
+                r#"sub /(a)b/ with "${1}${0}$$/\"\n""#,
+            ),
+        ] {
+            assert_eq!(error(src).kind, E::SedSub(fix.into()), "{src:?}");
+        }
+        let e = error("show /x/ ; sub 1 /a/b/");
+        assert_eq!(
+            e.kind.to_string(),
+            r#"`sub` takes /re/ with TEXT, not sed's /re/text/; write sub 1 /a/ with "b""#
+        );
+        assert_eq!(e.span, 17..22);
+    }
+
+    #[test]
+    fn sed_style_regexes_elsewhere_keep_their_errors() {
+        assert_eq!(error("show /a/b/").kind, E::UnknownRegexFlag('b'));
+        assert_eq!(error("sub 1 /a/b c").kind, E::UnknownRegexFlag('b'));
+        assert_eq!(error("sub 1 /a/b/c/").kind, E::UnknownRegexFlag('b'));
     }
 
     #[test]

@@ -125,6 +125,9 @@ pub enum ParseErrorKind {
     /// `sub all /re/ with`, holding the regex as written.
     #[error("`sub` already replaces every match; drop `all`: sub {0} with ...")]
     SubAll(String),
+    /// `sub SEL /re/text/`, sed's form; the fix is the `sub` it means.
+    #[error("`sub` takes /re/ with TEXT, not sed's /re/text/; write {0}")]
+    SedSub(String),
     /// `all` after a target's selector; the fix puts it before.
     #[error("`all` goes before the selector; write {0}")]
     AllAfterSelector(String),

@@ -135,7 +135,7 @@ of either kind.
       decide: `item:NAME`, `*:NAME` or a bare name). A minor
 - [ ] `show --raw` prints the selected lines without `N:` prefixes, for copying
       text verbatim. A minor
-- [ ] A sed-style `sub SEL /a/b/` says "`sub` takes `/re/ with TEXT`", instead
+- [x] A sed-style `sub SEL /a/b/` says "`sub` takes `/re/ with TEXT`", instead
       of "unknown regex flag" or a hint about `SEL..SEL` ranges
 - [ ] `sub` with a literal before `with` (`sub 3 "- [ ]" with "- [x]"`) suggests
       `replace 3>"- [ ]" with "- [x]"`, since `sub` takes only a regex
