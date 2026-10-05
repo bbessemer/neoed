@@ -894,6 +894,38 @@ fn insert_import_after_import() {
 }
 
 #[test]
+fn a_use_over_several_lines_is_named_on_one_line() {
+    let uses = "use a::b;\nuse c::{\n    d,\n    e,\n};\n";
+    let dir = dir_with(&[("uses.rs", uses)]);
+    let out = ned(
+        dir.path(),
+        &["uses.rs", "-e", r#"show import:"c::{d, e}""#],
+        "",
+    );
+    assert_snapshot!(out, @r#"
+    exit: 0
+    --- stdout
+    uses.rs:2-5
+    2:use c::{
+    3:    d,
+    4:    e,
+    5:};
+    --- stderr
+    "#);
+    let out = ned(
+        dir.path(),
+        &["uses.rs", "-e", r#"show import:"c::{d, f}""#],
+        "",
+    );
+    assert_snapshot!(out, @r#"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: script:1:6: import:"c::{d, f}" matches nothing in uses.rs; did you mean import:"c::{d, e}" (2-5)?
+    "#);
+}
+
+#[test]
 fn missing_part_exits_1() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
     let out = ned(dir.path(), &["parser.rs", "-e", "show fn:new.doc"], "");

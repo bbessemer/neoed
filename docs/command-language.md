@@ -551,7 +551,7 @@ Core kinds. Each language maps a subset of these through
 | `var`       | module-level variables and `let`/`var` bindings                    |
 | `field`     | struct and class fields                                            |
 | `mod`       | modules and namespaces                                             |
-| `import`    | imports (name = the path as written, e.g. `import:std::fmt`)       |
+| `import`    | imports (name = the path on one line, e.g. `import:std::fmt`)      |
 | `section`   | Markdown sections: a `#` heading and its content (name = its text) |
 | `item`      | Markdown list items (name = first line, minus any `[ ]` checkbox)  |
 | `table`     | Markdown tables (name = the first header cell)                     |
@@ -561,7 +561,10 @@ The kinds each language supports, and the items they cover there:
 
 - **Rust**: `fn` (also trait method declarations), `struct`, `field`, `enum`,
   `variant`, `trait`, `impl`, `type` (also associated types), `const` (also
-  `static`), `var` (`let` bindings), `mod`, `import` (`use`).
+  `static`), `var` (`let` bindings), `mod`, `import` (`use`; a path that spans
+  lines is named in the one-line form rustfmt would print, without its comments,
+  so `use c::{` then `d,` and `e,` on lines of their own is
+  `import:"c::{d, e}"`).
 - **Markdown**: `section`, `item`, `table`, `code`.
 - **Python**: `fn` (functions and methods, `async` too), `class`, `field`
   (assignments and annotations directly in a class body), `const` (module-level

@@ -192,6 +192,9 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [x] `move impl:A>fn:f start impl:B` puts `fn:f` directly above `impl:B`'s
       first item, with no blank line between them, though the items around it
       are separated by one
+- [x] A Rust `use` split over several lines is named after its first line only
+      (`use c::{\n    d,\n};` is `import:"c::{"`); name it by the whole path
+      with its whitespace collapsed (`import:"c::{d}"`; form to decide)
 
 ## Future improvements
 

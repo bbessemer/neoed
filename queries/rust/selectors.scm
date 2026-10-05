@@ -53,7 +53,7 @@
 
 (mod_item name: (identifier) @name body: (declaration_list)? @body) @mod
 
-(use_declaration argument: (_) @name) @import
+(use_declaration argument: (_) @name (#set! one-line)) @import
 
 (line_comment outer: (outer_doc_comment_marker)) @doc
 (block_comment outer: (outer_doc_comment_marker)) @doc
