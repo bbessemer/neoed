@@ -5,7 +5,7 @@ too large for one PR: they carry a checklist of coarse chunks to plan with the
 engineer before starting each one; a single-PR item has none, and moves to Done
 when it lands.
 
-Versions follow semver at 0.x (currently 0.8.0-dev): a change to the command
+Versions follow semver at 0.x (currently 0.8.0): a change to the command
 language or any new user-visible feature bumps the minor version, and a release
 that only fixes bugs or adds hints bumps the patch version. Each item below says
 which it is. When to release 1.0 is TBD.
@@ -41,53 +41,42 @@ which it is. When to release 1.0 is TBD.
   `.whole`; bare kinds (`fn` = `fn:*`); `.lines` splitting into lines;
   whole-line ranges; span types; `[...]` filters with `&&`, `||` and
   parentheses.
-- **Syntax patterns** (0.5.0): select code by writing it, with `@` placeholders
-  matched against the syntax tree; fragments parse inside per-language builders
-  (`queries/<lang>/builders.scm`, read by `ned-scheme`); `replace` substitutes
-  captures.
+- **Syntax patterns** (0.5.0; reworked in 0.8.0): select code by writing it,
+  with `@` placeholders; a pattern parses in place of the code its previous step
+  selected and matches as an abstract syntax tree, skipping separators and
+  comments; `replace` substitutes captures.
 - **Sessions** (0.6.0): `-s NAME`/`NED_SESSION` record each invocation in a
   versioned, locked per-workspace log; `ned history`, `ned undo` (`--force`
-  merges into later changes) and `!!:s/OLD/NEW/` repeats.
+  merges into later changes) and `!!:s/OLD/NEW/` repeats; `ned session list` and
+  `delete` (0.8.0).
 - **Text language** (0.6.2): `--lang text` reads every file without parsing;
   files with unknown extensions are read as text, with one note naming the
   extensions.
 - **Terminal output** (0.7.0): `--color auto|always|never` and `NO_COLOR`; on a
   terminal, `show` and diff hunks are highlighted from the grammars' highlight
   queries, line numbers are right-aligned, and `outline`, `check` and messages
-  are coloured. Piped output is unchanged.
+  are coloured. Piped output is unchanged. Themes (0.8.0) colour captures and
+  tint changed lines on truecolor and 256-colour terminals.
 - **Commit from ned** (0.7.0): `--commit MSG` commits exactly the invocation's
   edits (with `-s`, the session's since its last commit) through git's plumbing,
   leaving other staged and unstaged changes alone.
 - **Merge conflicts** (0.7.0): conflict markers are hidden from every parse;
   `conflict:N` with `.ours`, `.theirs` and `.base`; `resolve` keeps a side.
-- **REPL**: `ned repl` (and bare `ned` on a terminal) runs scripts on in-memory
-  buffers with `:write` (merging into files changed since), `:undo`, `:diff` and
-  `:commit`; records into a session; `:attach` follows an agent's session and
-  records corrections into it. Written edits, in the CLI too, report what checks
-  run on save (`cargo check`) find they introduced.
+- **REPL** (0.8.0): `ned repl` (and bare `ned` on a terminal) runs scripts on
+  in-memory buffers with `:write` (merging into files changed since), `:undo`,
+  `:diff` and `:commit`; records into a session; `:attach` follows an agent's
+  session and records corrections into it. Written edits, in the CLI too, report
+  what checks run on save (`cargo check`) find they introduced.
+- **MCP server** (0.8.0): `ned mcp` serves the `ned`, `outline`, `show`, `help`,
+  `history`, `undo` and `cd` tools over JSON-RPC on stdio, recording into a
+  session; its protocol lives in `ned-mcp`, on `ned-core`'s shared `invoke`
+  pipeline.
+- **Agent ergonomics, phase 2** (0.7.x–0.8.0): `*:NAME`, `.lines:N`, `show raw`,
+  `-e -`, `!!` passing over reads, and hints for sed-style and misplaced syntax.
 
 ## Phase 2
 
-The MCP server reads sessions, which are done. User-supplied grammars and
-plugins close the phase and may slip.
-
-### MCP server _(split)_
-
-`ned mcp` (spec §1.5): an MCP server exposes script execution, `outline`,
-`show`, `history`, `undo` and `help` as tools, so agent frameworks call `ned`
-without a shell. Its protocol lives in the `ned-mcp` crate, a thin client of
-`ned-core` and the session store with no logic of its own, and it records into a
-session automatically.
-
-- [x] Spec
-- [x] Move the one-shot pipeline, session glue, `undo`/`history` and help texts
-      from `ned-cli` into `ned-core`
-- [x] `ned-mcp` protocol (initialize, ping, tools/list) and `ned mcp`
-- [x] `ned`, `outline`, `show` and `help` tools
-- [x] `history` and `undo` tools
-- [x] README, agent guide and skill
-
-Version: minor; a new subcommand.
+User-supplied grammars and plugins close the phase and may slip.
 
 ### User-supplied grammars _(split)_
 
@@ -126,90 +115,13 @@ Version: minor when a first plugin can load; the spike releases nothing.
 Hints and relaxed errors: each is a patch, and they batch into the next release
 of either kind.
 
-- [x] `show` with a line range past the end of the file shows up to the last
-      line, with a note, instead of an error (`show 1-60` on a 57-line file);
-      edits keep the error
-- [x] `-e` plus a script on stdin runs both, where `-e -` names stdin, joined
-      with newlines as several `-e`s are (today stdin is ignored silently, so
-      `ned -e 'file X' <<'EOF' ... EOF` drops the heredoc). A minor, since §1
-      changes. Decide how not to wait on an open pipe that never closes, which
-      `-e` alone doesn't read today
-- [x] An any-kind selector matches a name whatever its kind, when that is
-      unique, so a long script needn't guess `const:` versus `var:` (syntax to
-      decide: `item:NAME`, `*:NAME` or a bare name). A minor
-- [x] `show --raw` prints the selected lines without `N:` prefixes, for copying
-      text verbatim. A minor
-- [x] A sed-style `sub SEL /a/b/` says "`sub` takes `/re/ with TEXT`", instead
-      of "unknown regex flag" or a hint about `SEL..SEL` ranges
-- [x] `sub` with a literal before `with` (`sub 3 "- [ ]" with "- [x]"`) suggests
-      `replace 3>"- [ ]" with "- [x]"`, since `sub` takes only a regex
-- [x] Context written `-N` (`show all "x" -3`) says context is `+N`, not a hint
-      about `SEL..SEL` ranges
-- [x] A file path as a selector step (`a.rs>fn:x`) suggests `file:a.rs>fn:x`
-      rather than quoting `a` as a literal
-- [x] A name with `{` (`import:a::b::{A, B}`) suggests the quoted name `outline`
-      prints (`import:"a::b::{A, B}"`), not "unexpected character `{`"
-- [x] A part or filter picks the Nth line of a multi-line match, since `.lines`
-      splits a match into every line and there is no `.lines.first` (syntax to
-      decide). A minor
-- [x] `!!` repeats the last script that edited or failed, not a read-only call
-      in between: after a failed edit, an `outline` to look around makes `!!`
-      refer to the `outline`. A minor, since §1.2 changes
-- [x] A range whose start also matches inside it (skipped, §3.7) prints a note
-      naming that line: `/^    for x/../^    }/` spanned two identical loops
-      when its end matched once, and the edit replaced both
-- [x] A literal under a `kind>` step that spans two items of the kind
-      (`import>"use a;\nuse b;"`) suggests a line range, `A..B` or dropping the
-      step, instead of only "matches nothing"
-- [x] A flag before a subcommand (`ned -s NAME undo`) reads the subcommand as a
-      file ("cannot read undo"); it should say the subcommand goes first
-      (`ned undo -s NAME`)
-- [x] A regex glued to a step without `>` (`impl:X>fn:y/z/`) suggests splitting
-      it into two commands (`show impl:X>fn:y; show /z/`); it should suggest the
-      nested step, `impl:X>fn:y>/z/`
-- [x] A part with a line number (`fn:a.lines:2`) says "unexpected character
-      `:`"; it should say a line is picked by its number, `fn:a>12` (absolute)
-      or `fn:a>$`
-- [x] A sed-style line range (`sub 1,2 /a/ with "b"`, `show 10,20`) suggests
-      `1-2`, not quoting literal text
+None open.
 
 ## Bugs
 
 Each fix is a patch; a fix that changes documented behaviour is a minor.
 
-- [x] `.lines` on a multi-line literal that matches once
-      (`insert after "- a b\n  c d".lines "x"`) says "matches 2 items" and lists
-      identical candidates
-- [x] An item whose last line falls inside a conflict's last side stops before
-      the conflict's `>>>>>>>` line, so `fn:f>conflict` matches nothing; the
-      error lists the file's conflicts without saying they lie outside `fn:f`
-- [x] An unquoted name with a `-` (`import:react-router`) is reported as a
-      malformed range (`ranges between selectors are written SEL..SEL`) instead
-      of suggesting quotes (`import:"react-router"`)
-- [x] `item:"[ ] text*"` matches nothing without suggesting the name without its
-      task-list checkbox (`item:"text*"`), which is how items are named
-- [x] A heredoc as `replace`'s selector, with `with` on a later line
-      (`replace <<END` / body / `END` / `with <<END`), says "expected `with`,
-      found end of line" without showing where `with` goes for a heredoc
-      selector
-- [x] A daemon socket path longer than the platform allows (a long
-      `XDG_RUNTIME_DIR`) fails as "the daemon didn't start; see its log", and
-      the log says only "path must be shorter than SUN_LEN"; the error should
-      say so, with a fix (a shorter `XDG_RUNTIME_DIR`)
-- [x] `move impl:A>fn:f start impl:B` puts `fn:f` directly above `impl:B`'s
-      first item, with no blank line between them, though the items around it
-      are separated by one
-- [x] The syntax guard misses Rust that tree-sitter accepts but rustc doesn't:
-      `insert end fn:f <<END` with a whole `fn g() {}` puts it after the body's
-      last expression (`todo!()` then `fn g() {}`, no `;`), the file is written,
-      and the only sign is a `note: rustfmt failed: expected ;`. A formatter's
-      parse error on an edit the guard passed should at least be an error-level
-      message naming the edit
-- [x] Moving the first top-level Python function (`move fn:f after fn:g`, `f`
-      first in the file) leaves a blank line at the top of the file
-- [x] A Rust `use` split over several lines is named after its first line only
-      (`use c::{\n    d,\n};` is `import:"c::{"`); name it by the whole path
-      with its whitespace collapsed (`import:"c::{d}"`; form to decide)
+None open.
 
 ## Future improvements
 
