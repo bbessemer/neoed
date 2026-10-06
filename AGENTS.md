@@ -11,11 +11,11 @@ aggressively. Do not change the overall structure.
 Not suggestions; exceptions are stated explicitly. Do not add or remove anything
 in this section unless explicitly told to.
 
-1. **Git is the engineer's call.** Never commit, push, merge, or delete files
-   without explicit permission. Even when asked to commit: work on a feature
-   branch, never the default branch (`main` / `release` / etc.); never rewrite
-   history (amend, squash, reorder, rebase, force-push) — use a fixup commit to
-   correct committed work.
+1. **Git is the engineer's call.** Never commit to a branch you didn't create,
+   merge, rewrite history (amend, squash, reorder, rebase, force-push), push, or
+   open pull requests without explicit permission; use a fixup commit to correct
+   committed work. **This repository is public:** take special care with pushes,
+   pull requests, and every other GitHub interaction.
 
 2. **Verify before reporting done.** Tests and linters must pass after every
    change.
@@ -29,8 +29,9 @@ in this section unless explicitly told to.
    reading files or env vars containing secrets at all; ask the engineer if you
    need to verify something secret-related.
 
-4. **Keep tasks small and focused.** Target PRs under 800 lines. Documentation
-   counts at a steep discount, since it's much cheaper to review.
+4. **Keep tasks small and focused.** Target review units (what the engineer
+   reviews at once, not GitHub PRs) under 800 lines. Documentation counts at a
+   steep discount, since it's much cheaper to review.
    - When the assigned task is complete, **stop** — even if the next step is
      obvious or a TODO file exists.
    - If a task is obviously too large, plan it, split it into sub-tasks, and
@@ -86,10 +87,32 @@ make an edit, makes it wrongly, or gives an unhelpful error, fall back for that
 edit only and report the gap to the engineer. After changing `ned`, reinstall
 it: `cargo install --path crates/ned-cli`.
 
+**Branches.** Only `release/X.Y` (major or minor) and `patch/X.Y.Z` branches
+merge into `main`. Each such PR raises `[workspace.package] version` (which part
+per TODO.md) and updates CHANGELOG.md, and its description mirrors the changelog
+entry. The engineer usually reviews locally, without a GitHub PR. Size work by
+review units (rule 4):
+
+- **Small** (no TDD cycle): edit the `release/` or `patch/` branch directly;
+  commit only with approval.
+- **Medium** (one TDD cycle, one review unit): commit each step on a feature
+  branch without asking; once approved, it is squashed into one commit on the
+  release or patch branch.
+- **Large** (several review units): stacked scratch branches, one per unit, each
+  committed step by step as above. Each scratch branch becomes one squashed
+  commit on a longer-lived feature branch, which the engineer re-reviews when
+  complete and merges into a release branch.
+- **Extra-large** (initiatives that may span several releases): as large, but
+  the feature branch may outlive release branches. Its commits are cherry-picked
+  onto a release branch, and `main` is merged back into it after every release.
+
+For medium and larger work, use a git worktree in your scratchpad (never under
+the home directory) and leave the default checkout alone, so other agents can
+work in parallel.
+
 Non-trivial implementation work follows a strict TDD cycle in small chunks. Each
 chunk is one cohesive unit (a module, a protocol message, a service behaviour).
-Finish each step before the next. Each step ends at a commit point: per rule 1,
-pause and ask for approval, then commit when permitted.
+Finish each step before the next. Each step ends at a commit point.
 
 1. **Skeleton** — minimum scaffolding for the next unit: module files, exported
    types, signatures with empty/`not implemented` bodies. Must build cleanly.
@@ -282,11 +305,10 @@ All logic lives in `ned-core` so frontends stay thin.
 
 ## Deployment Notes
 
-CI tests and checks formatting on PRs to `main` and `release/*`. Every PR to
-`main` that changes Rust code or `queries/` must update CHANGELOG.md and raise
-`[workspace.package] version` (which part per TODO.md). Merging such a PR tags
-`vX.Y.Z` and publishes Linux (musl) and macOS binaries (`release.yml`, built
-with `NED_RELEASE` set for a metadata-free version). Install a release:
+CI tests and checks formatting on PRs to `main` and `release/*`. Merging a PR
+that changes Rust code or `queries/` into `main` tags `vX.Y.Z` and publishes
+Linux (musl) and macOS binaries (`release.yml`, built with `NED_RELEASE` set for
+a metadata-free version). Install a release:
 `curl -fsSL https://raw.githubusercontent.com/bbessemer/neoed/main/install.sh | sh`;
 from source:
 `cargo install --locked --git https://github.com/bbessemer/neoed ned-cli`; from
