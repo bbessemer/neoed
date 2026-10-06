@@ -959,9 +959,9 @@ The kinds each language supports, and the items they cover there:
   start of the step's `.name` (for a syntax item) or of its span, so they work
   on any step: `fn:parse.refs`, `fn:main>"helper(".def`. Their spans may be in
   other files: in the file set, or with `-w` in any workspace file, which then
-  joins it; any other file is an error. Only `.lines` may follow them in the
-  same step, and later steps search inside their spans. They spawn the daemon if
-  need be.
+  joins it; any other file, such as a library's source, can be shown but not
+  edited. Only `.lines` may follow them in the same step, and later steps search
+  inside their spans. They spawn the daemon if need be.
 - A part the item doesn't have (e.g. `.body` on a Rust `const`) is an error.
   Parts other than `.lines` need a syntax item, and `.ours`, `.theirs` and
   `.base` a conflict (§3.8): `/x/.body` is an error, and so is a part after
@@ -1874,8 +1874,9 @@ The fix each error suggests:
 - Language server failure: Installing the server or fixing its `[lsp]` setting,
   or rerunning once it has indexed
 - Server can't rename there: Selecting the name itself
-- Rename, `.refs` or `.def` reaching a file outside the set: `-w`; outside the
-  workspace, a regex (`sub`, for a rename)
+- Rename reaching a file outside the set: `-w`; outside the workspace, `sub`
+- Editing a file `.refs` or `.def` found outside the set: `-w`; outside the
+  workspace, `file` with its path
 - Ambiguous `.refs` or `.def` result: `all`, with the matches' locations
 - File not in the set, or a `file:GLOB` that matches none of it: The `file`
   command that adds it; correcting a glob no file on disk matches
@@ -1923,9 +1924,10 @@ Exit codes:
 - `1`: Edit rejected: no match, ambiguous match, overlap, missing part, unknown
   kind, text file, line past the end, file not in the set, `create` of an
   existing file, parse-error guard, introduced diagnostics, an introduced
-  formatter failure, move into its own source, rename refused, reaching outside
-  the file set, ambiguous `.refs`/`.def` result, nothing to undo, undo of a file
-  changed or removed since, undo merge overlap, a refused `--commit` (§1.3)
+  formatter failure, move into its own source, rename refused, reaching or
+  editing outside the file set, ambiguous `.refs`/`.def` result, nothing to
+  undo, undo of a file changed or removed since, undo merge overlap, a refused
+  `--commit` (§1.3)
 - `2`: Usage error (bad flags or arguments, a command's name given as a `FILE`,
   a subcommand after a flag, no script on a terminal, no files to edit, a bad
   session name, no session, a bad `!!`, `--commit` with `-n` or outside a git

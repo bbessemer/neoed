@@ -140,6 +140,9 @@ struct Loaded {
     sig_end: Option<char>,
     /// Made by `create`: its original text is what `create` gave it.
     created: bool,
+    /// Outside the file set and the workspace, found by `.refs` or `.def`: shown,
+    /// but not edited (§3.4).
+    outside: bool,
     /// The text before the first `|` changed it (§2.3), and the edits
     /// applied at each `|` since.
     original: Option<String>,
@@ -338,6 +341,7 @@ impl Executor<'_> {
             original: None,
             applied: 0,
             created: true,
+            outside: false,
         });
         self.named.push(path.into());
         self.set.push(Member {
@@ -465,6 +469,7 @@ impl Executor<'_> {
             original: None,
             applied: 0,
             created: false,
+            outside: false,
         });
         self.files.len() - 1
     }
@@ -487,6 +492,9 @@ impl Executor<'_> {
             }
             CommandKind::File(paths) => {
                 self.set = self.open(paths, Some(span))?;
+                for file in self.set.iter().filter_map(|m| m.file) {
+                    self.files[file].outside = false;
+                }
                 for member in &self.set {
                     if !self.named.iter().any(|n| same_path(n, &member.path)) {
                         self.named.push(member.path.clone());
@@ -838,7 +846,7 @@ impl Executor<'_> {
             }
         }
         let paths: Vec<&Path> = locations.iter().map(|l| l.path.as_path()).collect();
-        let files = self.reach(&paths, what, span)?;
+        let files = self.reach(&paths, false, span)?;
         let mut found: Vec<Match> = locations
             .iter()
             .zip(files)
@@ -901,19 +909,21 @@ impl Executor<'_> {
     }
 
     /// Loads the files a server named, each by the path the script knows it
-    /// by, which must be in the file set or, under `-w`, the workspace (§3.4);
-    /// `what` names the feature, for errors.
+    /// by if it's in the file set or, under `-w`, the workspace (§3.4). Any
+    /// other file is loaded read-only, unless the caller `edits` it (`rename`),
+    /// which is an error.
     fn reach(
         &mut self,
         paths: &[&Path],
-        what: &str,
+        edits: bool,
         span: &Range<usize>,
     ) -> Result<Vec<usize>, ExecError> {
         let mut reached = Vec::new();
         let mut outside = Vec::new();
         for path in paths {
             match self.reachable(path) {
-                Ok(path) => reached.push(path),
+                Ok(path) => reached.push((path, false)),
+                Err(shown) if !edits => reached.push((shown, true)),
                 Err(shown) => outside.push(shown),
             }
         }
@@ -922,7 +932,6 @@ impl Executor<'_> {
             let shown: Vec<&str> = outside.iter().map(String::as_str).collect();
             return Err(ExecError::new(
                 ExecErrorKind::Outside {
-                    what: what.into(),
                     files: select::file_list(&shown),
                     workspace: self.workspace.is_some(),
                 },
@@ -930,8 +939,10 @@ impl Executor<'_> {
             ));
         }
         let mut files = Vec::new();
-        for path in reached {
-            files.push(self.load(&path, Some(span.clone()))?);
+        for (path, outside) in reached {
+            let file = self.load(&path, Some(span.clone()))?;
+            self.files[file].outside = outside;
+            files.push(file);
             if !self.named.iter().any(|n| same_path(n, &path)) {
                 self.named.push(path);
             }
@@ -947,7 +958,15 @@ impl Executor<'_> {
         range: Range<usize>,
         text: String,
     ) -> Result<(), ExecError> {
+        let workspace = self.workspace.is_some();
         let loaded = &mut self.files[file];
+        if loaded.outside {
+            let path = loaded.file.path.clone();
+            return Err(ExecError::new(
+                ExecErrorKind::ReadOnly { path, workspace },
+                Some(span.clone()),
+            ));
+        }
         let edit = Edit {
             range,
             text,
@@ -1415,7 +1434,7 @@ impl Executor<'_> {
             Err(LspFailure(message)) => return Err(error(ExecErrorKind::Lsp(message))),
         };
         let paths: Vec<&Path> = files.iter().map(|f| f.path.as_path()).collect();
-        let reached = self.reach(&paths, "rename", span)?;
+        let reached = self.reach(&paths, true, span)?;
         for (file, f) in reached.into_iter().zip(files) {
             for edit in f.edits {
                 let buffer = &self.files[file].file.buffer;
@@ -2650,18 +2669,19 @@ pub enum ExecErrorKind {
     /// `message` ends with a fix.
     #[error("cannot rename at {location}: {message}")]
     RenameRefused { location: String, message: String },
-    /// `what` is `rename` or a selector; `workspace`: under `-w`, where the
-    /// boundary is the workspace.
+    /// `rename`'s; `workspace`: under `-w`, where the boundary is the workspace.
     #[error(
-        "{what} reaches files outside the {}: {files}; {}",
+        "rename reaches files outside the {}: {files}; {}",
         if *workspace { "workspace" } else { "file set" },
         if *workspace { "these are ignored or outside the root; use a regex there instead" } else { "add them to the file set, or use -w" }
     )]
-    Outside {
-        what: String,
-        files: String,
-        workspace: bool,
-    },
+    Outside { files: String, workspace: bool },
+    /// `workspace`: under `-w`, where the boundary is the workspace.
+    #[error(
+        "cannot edit {path}: it is {}",
+        if *workspace { "ignored or outside the workspace root; name it in a `file` command" } else { "outside the file set; add it to the file set, or use -w" }
+    )]
+    ReadOnly { path: String, workspace: bool },
     /// `locations` lists where the matches are.
     #[error("{selector} matches {total} spans, at {locations}; add `all` to take every one")]
     AmbiguousLocated {
@@ -2731,6 +2751,7 @@ impl ExecErrorKind {
             | ExecErrorKind::FileExists { .. }
             | ExecErrorKind::RenameRefused { .. }
             | ExecErrorKind::Outside { .. }
+            | ExecErrorKind::ReadOnly { .. }
             | ExecErrorKind::AmbiguousLocated { .. } => 1,
             ExecErrorKind::NoFiles
             | ExecErrorKind::InvalidQuery { .. }
@@ -6779,7 +6800,7 @@ fn main() {}
     }
 
     #[test]
-    fn refs_reach_only_the_file_set_or_workspace() {
+    fn refs_show_files_outside_the_file_set_but_do_not_edit_them() {
         let out = served(
             &FOO_FILES,
             Some(1),
@@ -6787,14 +6808,46 @@ fn main() {}
             &mut foo_server(),
         );
         assert_eq!(
-            out.error(),
-            "error: script:1:10: fn:foo.refs reaches files outside the file set: b.rs; add them to the file set, or use -w"
-        );
-        let script = "file {dir}/a.rs\nshow all fn:foo.refs";
-        let out = served(&FOO_FILES, None, script, &mut foo_server());
-        assert_eq!(
             out.output,
             "a.rs:3\n3:    foo();\nb.rs:2\n2:    crate::foo();\n"
+        );
+        let out = served(
+            &FOO_FILES,
+            Some(1),
+            "insert after 1 \"// x\"\nreplace all fn:foo.refs with \"bar\"",
+            &mut foo_server(),
+        );
+        assert_eq!(
+            out.error(),
+            "error: script:2:1: cannot edit b.rs: it is outside the file set; add it to the file set, or use -w"
+        );
+        let script = "file {dir}/a.rs\nreplace all fn:foo.refs with \"bar\"";
+        let out = served(&FOO_FILES, None, script, &mut foo_server());
+        assert_eq!(paths(&out), ["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn naming_a_file_refs_found_outside_the_set_makes_it_editable() {
+        let script = "show all fn:foo.refs\nfile {dir}/a.rs {dir}/b.rs\nreplace all fn:foo.refs with \"bar\"";
+        let out = served(&FOO_FILES, Some(1), script, &mut foo_server());
+        assert_eq!(paths(&out), ["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn with_w_def_shows_ignored_files_but_does_not_edit_them() {
+        let files = [
+            ("a.rs", "fn main() {\n    foo();\n}\n"),
+            (".gitignore", "gen.rs\n"),
+            ("gen.rs", "fn foo() {}\n"),
+        ];
+        let mut lsp = ServerLsp::new(vec![]);
+        lsp.def = vec![("gen.rs", edit(0, 3, 6, ""))];
+        let out = served(&files, None, "show fn:main>\"foo\".def", &mut lsp);
+        assert_eq!(out.output, "gen.rs:1\n1:fn foo() {}\n");
+        let out = served(&files, None, "delete fn:main>\"foo\".def", &mut lsp);
+        assert_eq!(
+            out.error(),
+            "error: script:1:1: cannot edit gen.rs: it is ignored or outside the workspace root; name it in a `file` command"
         );
     }
 

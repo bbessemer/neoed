@@ -175,7 +175,8 @@ rename impl:Parser>fn:new to create
 ```
 
 Find a symbol's uses, or read its definition, with the `.refs` and `.def` parts.
-They work on any step, and reach every workspace file with `-w`:
+They work on any step and show any file they find, but edit only files in the
+set, or the workspace with `-w`:
 
 ```ned
 show all fn:parse.refs
