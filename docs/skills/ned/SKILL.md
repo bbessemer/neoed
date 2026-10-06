@@ -24,9 +24,10 @@ decorators come with the item, and `.doc` is the docstring), Go
 (`fn:"Server.Run"` for a method), JavaScript and TypeScript
 (`class:App>fn:render`, `interface:Shape`; an item includes its `export`) and
 Markdown (`section:"Install"`, `item:`, `table:`, `code:`);
-`insert end section:X` appends to a section. Other files are read as text, with
-a note naming their extensions: use lines, regexes and literals, or give the
-file a language with `--lang LANG` (its formatter then runs on the file too);
+`insert end section:X` appends to a section; `*:NAME` is an item of any kind
+(`*:LIMIT`, whether `const` or `var`). Other files are read as text, with a note
+naming their extensions: use lines, regexes and literals, or give the file a
+language with `--lang LANG` (its formatter then runs on the file too);
 `--lang text` turns parsing off. Run `ned help` for the whole language in one
 screen, and `ned help TOPIC` for one verb.
 
@@ -45,6 +46,14 @@ Short scripts with no `'` in them can use `-e`:
 script: `ned`'s heredocs read no escapes, so a `\x27` in one goes in as written.
 Add `-n` to preview without writing.
 
+With ned's MCP server connected (`ned mcp`), call its `ned` tool instead of the
+shell: `script` is the script, `files` the files (or `workspace: true` for
+`-w`), and `dry_run`, `commit` and the other flags are arguments; `comment` says
+what the call is for, for a human following the session. Its `outline`, `show`,
+`history`, `undo` and `help` tools do what those commands do, and `cd` moves the
+server to another directory (a git worktree, say) for the rest of the session,
+so `files` can be relative to it.
+
 Search with `show all` instead of grep. It prints each match's line with its
 number, under the file's name, across a glob or the whole workspace (`-w`, which
 skips ignored files), or `no matches for ...` if there are none; add `+N` for
@@ -59,14 +68,16 @@ ned is for files of code and docs. To search or filter a command's output (test
 results, logs), pipe it to grep as usual.
 
 Read with `outline` and `show SEL` instead of cat (`show all 1-$` for several
-whole files), and make new files with `create` (see `ned help create`).
+whole files; `show raw SEL` drops the line numbers, to copy text verbatim), and
+make new files with `create` (see `ned help create`).
 
 If `NED_SESSION` is set (or with `-s NAME`), each call is recorded. Fix a failed
 call by repeating it with a correction instead of resending the script: `!!` is
-the last script, `:s/OLD/NEW/` replaces the first `OLD` in it and `:gs/OLD/NEW/`
-every one, and the repeat runs on the same files, but without the flags (after
-`-n`, resend the script to apply it). `ned undo` reverts the last edit
-(`--force` if the file changed since), and `ned history` lists the calls:
+the last script that edited or failed (skipping any `show` or `outline` since),
+`:s/OLD/NEW/` replaces the first `OLD` in it and `:gs/OLD/NEW/` every one, and
+the repeat runs on the same files, but without the flags (after `-n`, resend the
+script to apply it). `ned undo` reverts the last edit (`--force` if the file
+changed since), and `ned history` lists the calls:
 
 ```sh
 ned src/parser.rs -e 'replace fn:prase>"end" with "end of input"'
@@ -93,8 +104,8 @@ In a session, the commit holds every edit since the session's last commit.
 3. Edit in one script, then read the diff that ned prints.
 4. `check` (or `check SEL`, `check SEL hint`) to see the language server's
    errors and warnings, instead of running the build. Edits are checked as they
-   apply while a daemon runs, but only `check` includes `cargo check`'s errors
-   (unresolved names, borrow errors), so run it after a Rust edit.
+   apply while a daemon runs, and once written, the checks run on save
+   (`cargo check`: unresolved names, borrow errors) report what they introduced.
 
 ```ned
 outline
@@ -190,12 +201,12 @@ show /^## Usage/../^## License/
 
 Select code by writing it: a backquoted pattern matches whatever the spacing,
 line breaks and comments. `@name` stands for one node (an expression, a
-statement, a name), `@name...` for a run of them, `@_` for either without a
-name:
+statement, a name), `@name...` for a run of one or more (`@name...?` zero or
+more), `@_` for any of them without a name:
 
 ```ned
 show all `dbg!(@x...)`
-delete all fn:main>`println!(@_...);`
+delete all fn:main>`println!(@_...?);`
 show `impl Display for @t { @_... }`>fn:fmt
 ```
 
@@ -220,6 +231,7 @@ Select by a property instead of a name with a filter: `.text`, `.len`
 show all fn[.doc == ""]
 delete all impl:Parser>fn[.name ~= /^old_/ || .body.len == 0]
 show all fn:parse.lines[.len > 100]
+show all fn[.lines:1 ~= /async/]
 ```
 
 Add a statement at the start of a Python method, after its docstring; ned
@@ -270,6 +282,10 @@ it too.
 - **A `<<TAG` stands in for its text**, so the command stays on one line:
   `replace <<OLD with <<NEW`, then OLD's body, then NEW's.
 - **`$`** is literal in `replace`. Only `sub` expands `$1`, `${name}` and `$0`.
+- **A literal's quotes aren't in what it selects.** To edit a string in code,
+  select it with its quotes escaped (`"\"old\""`) and give `TEXT` its quotes
+  too; select only `"old"` and `TEXT` replaces just the contents, so quotes
+  written into `TEXT` double up.
 - **Errors end with a fix**: a selector to paste, a closer name, a missing flag.
   Apply it and rerun; nothing was written.
 - **Syntax guard.** An edit that introduces a parse error is rejected. Fix the
@@ -277,6 +293,8 @@ it too.
 - **`.sig` stops before the body**: `show` prints its whole lines, but leave out
   the `{` (or Python's `:`): replace it with `fn f(x: u8) -> u8`, not
   `fn f(x: u8) -> u8 {`.
+- **`.body` is inside the braces**: TEXT that replaces it leaves out the `{` and
+  `}`; with them, the new block nests inside the old braces.
 - **Introduced errors block edits** while a daemon runs (`ned daemon start`;
   `status` and `stop` too; Unix only): the error lists what the edit broke. Fix
   the text, or add `allow errors` to the script when the code is knowingly
@@ -284,7 +302,8 @@ it too.
 - **Formatting.** A configured formatter (rustfmt, gofmt, ruff or black,
   prettier) runs after the edit, and its changes are shown under `fmt NAME`; if
   none is installed and a daemon runs, the language server formats instead
-  (`fmt rust-analyzer`). `--no-fmt` skips it.
+  (`fmt rust-analyzer`). An edit that makes the formatter fail is rejected
+  (`--force` applies it anyway). `--no-fmt` skips it.
 - **Replacing an item keeps its doc comments and attributes** (`///`, `#[test]`,
   decorators) unless TEXT starts with its own; select `ITEM.whole` to replace
   them too. A field or variant keeps its trailing `,`: TEXT without one gets it
@@ -301,23 +320,31 @@ it too.
 - **Keep output small** on big edits with `-q` (summaries only) or
   `--context 0`.
 - **`@` in a pattern is a placeholder.** Double it for a real one, as in a
-  decorator: `` `@@app.route(@path)` ``. A pattern holding backquotes opens and
-  closes with a longer run of them, as in Markdown: ``` `` `${x}` `` ```. A Rust
-  macro's arguments are tokens, so match one with a run: `` `dbg!(@x...)` ``.
-- **Patterns match strictly.** Only separators the pattern leaves out (`,`, `;`,
-  line breaks) and comments are skipped; every other token and node must match,
-  so `` `fn f(self) {}` `` doesn't match `fn f(&self) {}`, nor
-  `` `fn @f() {}` `` `pub fn f() {}`. Put `@_` or `@_...` where code may vary.
-  Captures keep the comments at their ends.
+  decorator, which matches with what it decorates:
+  `` `@@Component(@o) class @c { @_... }` ``. A match arm, `case` or dict entry
+  isn't a pattern alone yet: write its `match` or `switch` too. A pattern
+  holding backquotes opens and closes with a longer run of them, as in Markdown:
+  ``` `` `${x}` `` ```. A Rust macro's arguments are tokens, so match one with a
+  run: `` `dbg!(@x...)` ``.
+- **Patterns match strictly.** Only separators (`,`, `;`, line breaks) and
+  comments are skipped, in the pattern and the file; every other token and node
+  must match, so `` `fn f(self) {}` `` doesn't match `fn f(&self) {}`, nor
+  `` `fn @f() {}` `` `pub fn f() {}`. Put `@_` or `@_...` where code may vary,
+  `@_...?` where it may be absent. Captures keep the comments at their ends.
+- **A pattern parses where it searches**: in the body of the item before it, in
+  a part, or alone at the top of a file. Give code that only parses inside
+  something its context: `` struct:Foo>`x: u32` ``, `` fn:f.params>`x: u32` ``.
 - **Partial matches get verbatim text.** `insert after /re/ "x"` inserts right
   after the match, even mid-line, and `insert start|end /re/` does the same at
   the span's start or end. A heredoc `insert before|after` goes on lines of its
   own beside the match's lines instead (but in place beside `.body` and other
   item parts). `replace /re/` replaces only the match, so add `.lines` to
   replace its line; a note says so when TEXT repeats the rest of the line. On a
-  span of several lines, `.lines` selects each line: use `all`, or a range for
-  one span. TEXT for a partial span keeps its first line as written and indents
-  the rest by the first line's indentation, so leave that indentation off.
+  span of several lines, `.lines` selects each line: use `all`, or `.lines:N`
+  for its Nth line (`.lines:$` the last, `fn:f.body.lines:1` the first of the
+  body; a shorter span is skipped, with a note). TEXT for a partial span keeps
+  its first line as written and indents the rest by the first line's
+  indentation, so leave that indentation off.
 - **Re-basing follows the target line.** `<<END` text takes the indentation of
   the target's first line (after a literal or regex, its last line), or, for
   `insert start|end`, of the first line inside it; `insert after` the last line
@@ -335,7 +362,7 @@ it too.
   newline, whether or not the string does.
 - **Always give a script.** Without `-e` or a heredoc, `ned` reads the script
   from stdin: on a terminal that's an error, but an open pipe that never closes
-  makes it wait.
+  makes it wait. With `-e`, `-e -` adds the heredoc's script in its place.
 - **Ranges inside a scope.** `..` binds tighter than `>`, so scope a range once:
   `fn:f>/start/../end/`, not `fn:f>/start/..fn:f>/end/`. A `+N` after a selector
   is `show`'s context, not a line offset.

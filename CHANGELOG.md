@@ -4,6 +4,68 @@ Every tagged release of `ned`. Before 0.6.1, every PR to `main` bumped the
 version, so versions merged in quick succession (0.2.0, 0.3.0) were never tagged
 or released on their own; their changes are listed under the next tag.
 
+## 0.8.0 (2026-10-06)
+
+### Added
+
+- `ned repl`, and bare `ned` on a terminal: a human REPL that runs scripts on
+  in-memory buffers with the CLI's output. `:write` merges into files changed
+  since, and `:undo`, `:diff`, `:reload`, `:files`, `:history` and `:commit`
+  work on the buffers; any unambiguous prefix of a command works. It records
+  into a session, and `:attach` follows another session's log (an agent's),
+  printing each entry with its diff, merging it into unwritten buffers and
+  recording corrections into that session. `ned help repl`.
+- `ned mcp`: an MCP server (JSON-RPC on stdio) whose `ned`, `outline`, `show`,
+  `help`, `history`, `undo` and `cd` tools run as the invocations they stand
+  for, so agents call `ned` without a shell. Calls are recorded in a session
+  (`-s`, `NED_SESSION` or the next free `mcp-N`); the `ned` tool's optional
+  `comment` is shown to an attached REPL. `ned help mcp`.
+- `ned session list [--all]` and `ned session delete NAME...`.
+- Themes: on truecolor and 256-colour terminals, a theme colours each highlight
+  capture and output role and tints changed lines in diffs. `theme = "NAME"` or
+  a `[theme]` table (optionally `from` another theme) in the user config, or
+  `NED_THEME`, picks one; built-ins are `default-dark` (the default) and
+  `default-light`.
+- `*:NAME` selects an item of any kind (`show *:LIMIT`); when the name matches
+  several kinds, each candidate names its kind.
+- `.lines:N` and `.lines:$` pick a span's Nth or last line, skipping spans too
+  short with a note, and work in filters (`all fn[.lines:1 ~= /async/]`).
+- `show raw` prints the selected text without line numbers, for copying it.
+- `-e -` reads a script from stdin in that place among the `-e` scripts, so
+  `ned -e 'file a.rs' -e - <<'EOF'` runs both.
+- Written edits report what checks run on save (`cargo check`, with a daemon
+  running) find they introduced, without blocking.
+
+### Changed
+
+- `!!` passes over read-only scripts that succeeded, repeating the last one that
+  edited or failed.
+- Syntax patterns are matched as abstract syntax trees, so separators and
+  comments are skipped on both sides, while children still match in the same
+  role (`[0; 4]` differs from `[0, 4]`). A pattern is parsed in place of the
+  code its previous step selected, or alone for a whole file, replacing the
+  per-language builders (`queries/<lang>/builders.scm`); a pattern for code that
+  parses only inside a construct no step selects alone (a match arm, a `case`
+  clause, a dict entry) no longer matches.
+- A run (`@name...`) needs at least one sibling; `@name...?` and `@_...?` match
+  zero or more.
+- An edit that makes a formatter fail where it passed before is rejected unless
+  `--force`, instead of being written with a note.
+
+### Fixed
+
+- The parse-error guard rejects a Rust `(…)` or `[…]` macro statement with no
+  `;` before another statement, which tree-sitter accepts but rustc doesn't.
+- Deleting and moving items keep the file's own blank-line spacing; moving the
+  first top-level Python function no longer leaves a blank line at the top.
+- Syntax patterns:
+  - A placeholder alone in a block or list stands for its element, not the list.
+  - A name repeated in a declaration and a use matches, through nodes that only
+    wrap it.
+  - A run left out of a pattern's text leaves out the separator after it.
+  - A pattern ending in a comment takes its statement terminator before the
+    comment.
+
 ## 0.7.2 (2026-10-05)
 
 ### Fixed

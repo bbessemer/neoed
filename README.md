@@ -73,7 +73,7 @@ curl -fsSL https://raw.githubusercontent.com/bbessemer/neoed/main/install.sh | s
 The script downloads the binary for your platform from
 [GitHub Releases](https://github.com/bbessemer/neoed/releases/latest), checks
 its SHA-256, and puts `ned` in `~/.local/bin`. Set `NED_INSTALL_DIR` to install
-elsewhere, or `NED_VERSION` (e.g. `v0.7.0`) to pin a release.
+elsewhere, or `NED_VERSION` (e.g. `v0.8.0`) to pin a release.
 
 To build from source instead, you need Rust 1.90 or later and a C compiler,
 because the tree-sitter grammars are compiled in:
@@ -108,6 +108,15 @@ cp -r neoed/docs/skills/ned ~/.claude/skills/
 
 Claude then uses ned when it reads, searches or edits files.
 
+**MCP:** `ned mcp` serves the same scripts as tools (`ned`, `outline`, `show`,
+`history`, `undo`, `help`, and `cd` to move it) over the Model Context Protocol,
+for agents without a shell. It records every call in a session, so `undo` and
+`!!` work there too:
+
+```sh
+claude mcp add ned -- ned mcp
+```
+
 To let each conversation undo its own edits and repeat a failed command with a
 fix, give it a session with a `SessionStart` hook; the
 [agent guide](docs/agent-guide.md#setup) has the snippet.
@@ -119,17 +128,18 @@ for the rest.
 ## Usage
 
 ```
-ned [FLAGS] [FILE... | -w [DIR]] -e SCRIPT   (or the script on stdin)
+ned [FLAGS] [FILE... | -w [DIR]] -e SCRIPT   (or on stdin; -e - too)
 ned help [TOPIC]
 ned daemon start|status|stop [DIR]
 ned history|undo [-s NAME] [-w DIR]
+ned session list [--all] | delete NAME... [-w DIR]
 ```
 
 A script is a list of commands, one per line or separated by `;`:
 
 | Command                                     | What it does                                        |
 | ------------------------------------------- | --------------------------------------------------- |
-| `show [SEL [+N]]`                           | print lines, numbered; `show all /re/` searches     |
+| `show [raw] [SEL [+N]]`                     | print lines, numbered; `show all /re/` searches     |
 | `outline [SEL]`                             | list syntax items as selectors you can paste back   |
 | `replace SEL with TEXT`                     | replace a span                                      |
 | `insert before\|after\|start\|end SEL TEXT` | insert beside or inside a span                      |
@@ -176,7 +186,11 @@ respecting `.gitignore`. `ned help` prints the whole language on one screen;
 
 On a terminal, output is coloured: shown code and diffs are syntax-highlighted,
 with aligned line numbers. A non-empty `NO_COLOR` turns it off, and
-`--color always` or `--color never` overrides both.
+`--color always` or `--color never` overrides both. On a truecolor or 256-colour
+terminal, a theme colours each kind of token its own way, and tints changed
+lines red or green. It's `default-dark` unless the user config sets another
+(`theme = "default-light"`, or your own; see `ned help config`) or `NED_THEME`
+names one.
 
 With `-s NAME`, or `NED_SESSION=NAME` in the environment, `ned` records each
 invocation in a session: `ned history` lists them, `ned undo` reverts the last
@@ -186,6 +200,12 @@ edit, and `ned -e '!!:s/prase/parse/'` repeats the last script with a fix.
 nothing else: other changes in the working tree and index, staged or not, stay
 uncommitted. In a session, it commits every edit since the session's last
 commit.
+
+`ned repl` (or plain `ned` on a terminal) is an editor for humans: each line is
+a script, but its edits stay in memory until `:write`, so they can be read and
+undone first (`:undo`, `:diff`). `:commit MSG` writes and commits.
+`:attach NAME` follows an agent's session, printing each edit it makes, and
+records your corrections into that session. `ned help repl` lists the commands.
 
 ## Languages
 
@@ -234,9 +254,6 @@ to develop ned itself, but the language may still change before 1.0.
 
 In order, with details in [`TODO.md`](TODO.md):
 
-- `ned-repl`: an interactive session for humans, which can also follow an
-  agent's session
-- `ned-mcp`: an MCP server that exposes scripts, `outline` and `show` as tools
 - User-supplied tree-sitter grammars and query files, without rebuilding `ned`
 - Later, plugins: a Scheme over tree-sitter queries for new languages, custom
   commands and syntax-aware code generation

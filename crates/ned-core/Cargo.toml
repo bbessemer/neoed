@@ -12,7 +12,6 @@ workspace = true
 [dependencies]
 glob = "0.3.4"
 ignore = "0.4.33"
-ned-scheme = { version = "0.7.0", path = "../ned-scheme" }
 regex = "1.13.1"
 ropey = { version = "1.6.1", default-features = false, features = ["simd"] }
 serde = { version = "1.0.229", features = ["derive"] }

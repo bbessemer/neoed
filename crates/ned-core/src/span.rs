@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use crate::conflict::{Conflict, Side};
 use crate::exec::ExecErrorKind as E;
-use crate::script::ast::{Filter, Op, Part, Value};
+use crate::script::ast::{Filter, LineNo, Op, Part, Value};
 use crate::select::part_name;
 use crate::syntax::{self, Item};
 use crate::text::full_lines;
@@ -38,6 +38,18 @@ impl<'a> Span<'a> {
         match (part, self.of) {
             (Part::Lines, Of::Side) if self.range.is_empty() => Ok(Vec::new()),
             (Part::Lines, _) => Ok(lines(text, self.range.clone()).map(plain).collect()),
+            (Part::Line(n), _) => {
+                let mut lines = self.part(Part::Lines, text)?;
+                let index = match n {
+                    LineNo::Number(n) => n - 1,
+                    LineNo::Last => lines.len().wrapping_sub(1),
+                };
+                // A span too short for the line is skipped (§3.4).
+                Ok(match index < lines.len() {
+                    true => vec![lines.swap_remove(index)],
+                    false => Vec::new(),
+                })
+            }
             (Part::Refs | Part::Def, _) => unreachable!("resolved by the executor"),
             (Part::Ours | Part::Theirs | Part::Base, Of::Conflict(n, conflict)) => {
                 let side = match part {
@@ -238,6 +250,35 @@ mod tests {
         assert_eq!(lines(13..15), ["    x();\n"]);
         assert_eq!(lines(0..9), ["fn a() {\n"]);
         assert_eq!(lines(21..23), ["last"]);
+    }
+
+    fn line(range: Range<usize>, n: LineNo) -> Result<Vec<&'static str>, E> {
+        Ok(Span {
+            range,
+            of: Of::Plain,
+        }
+        .part(Part::Line(n), TEXT)?
+        .into_iter()
+        .map(|s| &TEXT[s.range])
+        .collect())
+    }
+
+    #[test]
+    fn line_picks_one_line() {
+        assert_eq!(line(0..20, LineNo::Number(1)), Ok(vec!["fn a() {\n"]));
+        assert_eq!(line(0..20, LineNo::Number(2)), Ok(vec!["    x();\n"]));
+        assert_eq!(line(0..20, LineNo::Last), Ok(vec!["}\n"]));
+        assert_eq!(line(13..15, LineNo::Last), Ok(vec!["    x();\n"]));
+        assert_eq!(line(0..20, LineNo::Number(4)), Ok(vec![]));
+    }
+
+    #[test]
+    fn an_empty_side_has_no_line() {
+        let side = Span {
+            range: 9..9,
+            of: Of::Side,
+        };
+        assert_eq!(side.part(Part::Line(LineNo::Last), TEXT), Ok(vec![]));
     }
 
     #[test]

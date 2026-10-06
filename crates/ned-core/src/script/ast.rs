@@ -21,10 +21,11 @@ pub struct Command {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandKind {
-    /// `show [SEL [+CONTEXT]]`
+    /// `show [raw] [SEL [+CONTEXT]]`
     Show {
         target: Option<Target>,
         context: usize,
+        raw: bool,
     },
     Outline(Option<Target>),
     Replace {
@@ -272,6 +273,8 @@ pub enum Part {
     Value,
     Whole,
     Lines,
+    /// `.lines:N`: one of the lines `.lines` selects, counting from 1.
+    Line(LineNo),
     Refs,
     Def,
     Ours,

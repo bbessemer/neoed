@@ -13,6 +13,7 @@ use tree_sitter::{Node, Query, QueryCursor, QueryError, QueryErrorKind, Streamin
 use crate::buffer::{Buffer, LineEnding};
 use crate::conflict::{self, Conflict};
 use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
+use crate::fragment::Context;
 use crate::lang::Language;
 use crate::pattern;
 use crate::script::ast::{
@@ -225,19 +226,46 @@ pub fn resolve_within(
         }
         named.extend(names.into_iter().map(String::from));
     }
+    let mut scopes = vec![None; start.len()];
     let mut matches = start.clone();
     let mut parents = Vec::new();
     let mut found = Vec::new();
     let mut skipped = Vec::new();
+    let selector = &src[span.clone()];
     for (i, step) in target.selector.steps.iter().enumerate() {
-        found = resolve_step(step, files, &matches, cut && i == 0, &mut skipped).map_err(error)?;
+        let mut short = Vec::new();
+        found = resolve_step(
+            step,
+            files,
+            &matches,
+            &scopes,
+            cut && i == 0,
+            &mut skipped,
+            &mut short,
+        )
+        .map_err(error)?;
+        scopes = found.iter().map(|f| f.scope.clone()).collect();
         let next = found.iter().map(|f| f.m.clone()).collect();
         parents = std::mem::replace(&mut matches, next);
+        let short = too_short(&short);
         if matches.is_empty() {
-            return Err(error(no_match(target, i, files, &parents, &start, src)));
+            let mut kind = no_match(target, i, files, &parents, &start, src);
+            if let (E::NoMatch { hint, .. }, Some((n, count))) = (&mut kind, short.first()) {
+                let fix = match min_lines(*n) {
+                    1 if *count == 1 => format!("drop {} to select the span", line_part(*n)),
+                    1 => format!("drop {} to select the spans", line_part(*n)),
+                    _ => "use .lines:$ for the last line".into(),
+                };
+                *hint = format!("; it {}; {fix}", skipped_spans(*n, *count));
+            }
+            return Err(error(kind));
         }
+        notes.extend(
+            short
+                .into_iter()
+                .map(|(n, count)| format!("{selector}: {}", skipped_spans(n, count))),
+        );
     }
-    let selector = &src[span.clone()];
     for (file, at, from) in skipped {
         let f = files[file];
         let line = |offset| line_numbers(&f.buffer, &(offset..offset));
@@ -255,6 +283,44 @@ pub fn resolve_within(
             selector: selector.into(),
             candidates: candidates(&found, &parents, files, &target.selector, src),
         })),
+    }
+}
+
+/// Each line of `short`, the lines too short a span had for, and how many
+/// spans were.
+fn too_short(short: &[LineNo]) -> Vec<(LineNo, usize)> {
+    let mut counts: Vec<(LineNo, usize)> = Vec::new();
+    for &n in short {
+        match counts.iter_mut().find(|(m, _)| *m == n) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((n, 1)),
+        }
+    }
+    counts
+}
+
+/// The fewest lines a span has for `.lines:N` to pick one.
+fn min_lines(n: LineNo) -> usize {
+    match n {
+        LineNo::Number(n) => n,
+        LineNo::Last => 1,
+    }
+}
+
+fn line_part(n: LineNo) -> String {
+    match n {
+        LineNo::Number(n) => format!(".lines:{n}"),
+        LineNo::Last => ".lines:$".into(),
+    }
+}
+
+/// `skipped 2 spans with fewer than 4 lines`, for `count` spans too short for
+/// `.lines:N`.
+pub(crate) fn skipped_spans(n: LineNo, count: usize) -> String {
+    let spans = if count == 1 { "span" } else { "spans" };
+    match min_lines(n) {
+        1 => format!("skipped {count} {spans} with no lines"),
+        m => format!("skipped {count} {spans} with fewer than {m} lines"),
     }
 }
 
@@ -316,7 +382,8 @@ fn spanning(
         return None;
     }
     let parent = &selector.steps[failed.checked_sub(1)?];
-    let matcher = Matcher::new(&step.primary, files, parents, false).ok()?;
+    // A regex or literal has no pattern scopes, and finds the same in any parent.
+    let matcher = Matcher::new(&step.primary, files, parents, &[], false).ok()?;
     let scopes: Vec<(usize, Range<usize>)> = parents
         .iter()
         .map(|p| (p.file, scope(&files[p.file].text, &p.range)))
@@ -331,7 +398,7 @@ fn spanning(
     let (file, m, first, last) = searched.iter().find_map(|&file| {
         let f = files[file];
         matcher
-            .find(f, 0..f.text.len(), &mut Vec::new())
+            .find(f, 0, 0..f.text.len(), &mut Vec::new())
             .into_iter()
             .find_map(|(m, _)| {
                 let first = within(file, m.start)?;
@@ -405,16 +472,50 @@ struct Found {
     parent: usize,
     /// Whether it's one of the lines `.lines` split a multi-line span into.
     line: bool,
+    scope: Option<Scope>,
 }
 
+/// Where a pattern parses in a match that isn't plain text (§3.10): in place
+/// of `splice`, inside the node spanning `container`, if it's known.
+#[derive(Debug, Clone)]
+struct Scope {
+    splice: Range<usize>,
+    container: Option<Range<usize>>,
+}
+
+/// Where a pattern parses in `item`, or in the span `parts` of it select.
+fn item_scope(item: &Item, parts: &[Part], text: &str) -> Option<Scope> {
+    let (splice, container) = match (parts, &item.body) {
+        ([], Some(body)) => (syntax::part(item, Part::Body, text)?, body),
+        ([], None) => {
+            return Some(Scope {
+                splice: item.node.clone(),
+                container: None,
+            });
+        }
+        ([Part::Body], Some(body)) => (syntax::part(item, Part::Body, text)?, body),
+        ([Part::Params], _) => (
+            syntax::part(item, Part::Params, text)?,
+            item.params.as_ref()?,
+        ),
+        _ => return None,
+    };
+    Some(Scope {
+        splice,
+        container: Some(container.clone()),
+    })
+}
 /// The matches of `step` in `parents`. `skipped` gets each range start the
-/// step skips, as the file, its offset and the offset of its range's start.
+/// step skips, as the file, its offset and the offset of its range's start,
+/// and `short` the line of each span too short for its `.lines:N`.
 fn resolve_step(
     step: &Step,
     files: &[&SourceFile],
     parents: &[Match],
+    scopes: &[Option<Scope>],
     cut: bool,
     skipped: &mut Vec<(usize, usize, usize)>,
+    short: &mut Vec<LineNo>,
 ) -> Result<Vec<Found>, E> {
     // Only a syntax item has parts other than `.lines`, and a conflict its
     // sides; a part's span is neither.
@@ -422,7 +523,7 @@ fn resolve_step(
     for &part in &step.parts {
         let side = matches!(part, Part::Ours | Part::Theirs | Part::Base);
         match primary {
-            _ if part == Part::Lines => {}
+            _ if matches!(part, Part::Lines | Part::Line(_)) => {}
             Some(Primary::Conflict(_)) if side => {}
             Some(Primary::Syntax { .. }) if !side => {}
             _ if side => {
@@ -438,36 +539,47 @@ fn resolve_step(
         }
         primary = None;
     }
-    let matcher = Matcher::new(&step.primary, files, parents, cut)?;
+    let matcher = Matcher::new(&step.primary, files, parents, scopes, cut)?;
     let mut out: Vec<Found> = Vec::new();
     for (p, parent) in parents.iter().enumerate() {
         let f = &files[parent.file];
         let mut starts = Vec::new();
-        let found = matcher.find(f, parent.range.clone(), &mut starts);
+        let found = matcher.find(f, p, parent.range.clone(), &mut starts);
         skipped.extend(starts.into_iter().map(|(at, from)| (parent.file, at, from)));
         for (range, captured) in found {
             let mut captures = parent.captures.clone();
             captures.extend(captured);
             let core = range.clone();
             let of = match &step.primary {
-                Primary::Syntax { kind, .. } => f
-                    .items()
-                    .unwrap_or_default()
-                    .iter()
-                    .find(|i| i.kind == kind && i.range == range)
-                    .map_or(Of::Plain, Of::Item),
+                Primary::Syntax { kind, .. } => {
+                    let items = f.items().unwrap_or_default();
+                    items
+                        .iter()
+                        .find(|i| selects(kind, i, items) && i.range == range)
+                        .map_or(Of::Plain, Of::Item)
+                }
                 Primary::Conflict(_) => f
                     .conflict_at(&range)
                     .map_or(Of::Plain, |(n, c)| Of::Conflict(n, c)),
                 _ => Of::Plain,
             };
+            let scope = match &of {
+                Of::Item(item) => item_scope(item, &step.parts, &f.text),
+                _ => None,
+            };
             let mut spans = vec![Span { range, of }];
-            for part in &step.parts {
-                spans = spans
-                    .iter()
-                    .map(|s| s.part(*part, &f.text))
-                    .collect::<Result<Vec<_>, _>>()?
-                    .concat();
+            for &part in &step.parts {
+                let mut picked = Vec::new();
+                for s in &spans {
+                    let parts = s.part(part, &f.text)?;
+                    if let Part::Line(n) = part
+                        && parts.is_empty()
+                    {
+                        short.push(n);
+                    }
+                    picked.extend(parts);
+                }
+                spans = picked;
             }
             let line = spans.len() > 1;
             for span in spans {
@@ -485,6 +597,7 @@ fn resolve_step(
                         core: core.clone(),
                         parent: p,
                         line,
+                        scope: scope.clone(),
                     });
                 }
             }
@@ -515,8 +628,12 @@ enum Matcher<'a> {
     },
     /// The query compiled for each searched language.
     Query(Vec<(Language, Query)>),
-    /// The pattern compiled for each searched language it parses in.
-    Code(Vec<(Language, pattern::Pattern)>),
+    /// The pattern compiled where it parses, and which of them each parent
+    /// match is searched with.
+    Code {
+        patterns: Vec<pattern::Pattern>,
+        of: Vec<Option<usize>>,
+    },
     Range(Box<Matcher<'a>>, Box<Matcher<'a>>),
 }
 
@@ -525,6 +642,7 @@ impl<'a> Matcher<'a> {
         primary: &'a Primary,
         files: &[&SourceFile],
         parents: &[Match],
+        scopes: &[Option<Scope>],
         cut: bool,
     ) -> Result<Self, E> {
         Ok(match primary {
@@ -561,42 +679,40 @@ impl<'a> Matcher<'a> {
                 Matcher::Syntax { kind, name }
             }
             Primary::Query(source) => Matcher::Query(compile_query(source, files, parents)?),
-            Primary::Code(code) => Matcher::Code(compile_pattern(code, files, parents)?),
+            Primary::Code(code) => compile_pattern(code, files, parents, scopes)?,
             Primary::Range { from, to } => Matcher::Range(
-                Box::new(Matcher::new(from, files, parents, false)?),
-                Box::new(Matcher::new(to, files, parents, false)?),
+                Box::new(Matcher::new(from, files, parents, scopes, false)?),
+                Box::new(Matcher::new(to, files, parents, scopes, false)?),
             ),
         })
     }
 
-    /// The step's matches in `parent`, with what its patterns captured. A
-    /// range adds to `skipped` each start it skips before the end of the
-    /// range it lies in, with that range's start.
+    /// The step's matches in `parent`, parent match `p`, with what its
+    /// patterns captured. A range adds to `skipped` each start it skips before
+    /// the end of the range it lies in, with that range's start.
     fn find(
         &self,
         f: &SourceFile,
+        p: usize,
         parent: Range<usize>,
         skipped: &mut Vec<(usize, usize)>,
     ) -> Vec<(Range<usize>, Captures)> {
         match self {
-            Matcher::Code(patterns) => {
-                let (Some(lang), Some(tree)) = (f.lang, f.tree()) else {
+            Matcher::Code { patterns, of } => {
+                let (Some(tree), Some(i)) = (f.tree(), of[p]) else {
                     return Vec::new();
                 };
-                let Some((_, pattern)) = patterns.iter().find(|(l, _)| *l == lang) else {
-                    return Vec::new();
-                };
-                pattern
+                patterns[i]
                     .find(tree, &f.text, parent)
                     .into_iter()
                     .map(|m| (m.range, m.captures))
                     .collect()
             }
             Matcher::Range(from, to) => {
-                let ends = to.find(f, parent.clone(), skipped);
+                let ends = to.find(f, p, parent.clone(), skipped);
                 let mut out = Vec::new();
                 let (mut searched_to, mut end_start, mut range_start) = (parent.start, 0, 0);
-                for (start, captures) in from.find(f, parent.clone(), skipped) {
+                for (start, captures) in from.find(f, p, parent.clone(), skipped) {
                     if start.start < searched_to {
                         // On the range's first line or after its end, which is on the
                         // end's line, a start makes the same span, as §3.7 means.
@@ -618,14 +734,14 @@ impl<'a> Matcher<'a> {
                 out
             }
             _ => self
-                .ranges(f, parent)
+                .ranges(f, p, parent)
                 .into_iter()
                 .map(|r| (r, Vec::new()))
                 .collect(),
         }
     }
 
-    fn ranges(&self, f: &SourceFile, parent: Range<usize>) -> Vec<Range<usize>> {
+    fn ranges(&self, f: &SourceFile, p: usize, parent: Range<usize>) -> Vec<Range<usize>> {
         let within = |r: &Range<usize>| parent.start <= r.start && r.end <= parent.end;
         let scope = scope(&f.text, &parent);
         let in_scope = |r: &Range<usize>| scope.start <= r.start && r.end <= scope.end;
@@ -735,18 +851,19 @@ impl<'a> Matcher<'a> {
                 out.dedup();
                 out
             }
-            Matcher::Code(_) | Matcher::Range(..) => {
-                let find = self.find(f, parent, &mut Vec::new());
+            Matcher::Code { .. } | Matcher::Range(..) => {
+                let find = self.find(f, p, parent, &mut Vec::new());
                 find.into_iter().map(|(r, _)| r).collect()
             }
-            Matcher::Syntax { kind, name } => f
-                .items()
-                .unwrap_or_default()
-                .iter()
-                .filter(|i| i.kind == *kind && syntax::item_matches(name, i))
-                .map(|i| i.range.clone())
-                .filter(within)
-                .collect(),
+            Matcher::Syntax { kind, name } => {
+                let items = f.items().unwrap_or_default();
+                items
+                    .iter()
+                    .filter(|i| selects(kind, i, items) && syntax::item_matches(name, i))
+                    .map(|i| i.range.clone())
+                    .filter(within)
+                    .collect()
+            }
         }
     }
 }
@@ -788,7 +905,8 @@ fn check_lines(
     Err(E::LineOutOfRange { line, files })
 }
 
-/// Fails unless some searched file's language has selector items of `kind`;
+/// Fails unless some searched file's language has selector items of `kind`
+/// (of any kind, for `*`);
 /// files whose language lacks them are skipped. The error is the first such
 /// file's, or `NoLanguage` if no searched file has a language.
 fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]) -> Result<(), E> {
@@ -798,7 +916,7 @@ fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]
     for &i in &searched {
         let Some(lang) = files[i].lang else { continue };
         let kinds = syntax::kinds(lang.selectors());
-        if kinds.contains(&kind) {
+        if kinds.contains(&kind) || kind == "*" && !kinds.is_empty() {
             return Ok(());
         }
         first_error.get_or_insert(E::UnknownKind {
@@ -819,6 +937,17 @@ fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]
                     .collect::<Vec<_>>(),
             ),
         }),
+    }
+}
+
+/// Whether a syntax step of `kind` selects `item`, one of `items`. `*`
+/// selects each node once, as the first of its kinds in `KINDS`.
+fn selects(kind: &str, item: &Item, items: &[Item]) -> bool {
+    match kind {
+        "*" => !items
+            .iter()
+            .any(|o| o.node == item.node && syntax::rank(o.kind) < syntax::rank(item.kind)),
+        _ => item.kind == kind,
     }
 }
 
@@ -855,47 +984,72 @@ fn compile_query(
     Ok(queries)
 }
 
-/// The pattern `code` compiled for each code language among the searched
-/// files that it parses in.
-fn compile_pattern(
+/// The pattern `code` compiled where each parent match searches it (§3.10).
+/// A whole file parses it alone, so those share one compilation per
+/// language.
+fn compile_pattern<'a>(
     code: &str,
     files: &[&SourceFile],
     parents: &[Match],
-) -> Result<Vec<(Language, pattern::Pattern)>, E> {
-    let mut searched: Vec<usize> = parents.iter().map(|m| m.file).collect();
-    searched.dedup();
-    let mut patterns: Vec<(Language, pattern::Pattern)> = Vec::new();
-    let mut failed: Vec<(Language, pattern::PatternError)> = Vec::new();
-    for &i in &searched {
-        let Some(lang) = files[i].lang.filter(|l| *l != Language::Markdown) else {
+    scopes: &[Option<Scope>],
+) -> Result<Matcher<'a>, E> {
+    let mut patterns = Vec::new();
+    let mut of = Vec::with_capacity(parents.len());
+    let mut alone: Vec<(Language, Option<usize>)> = Vec::new();
+    let mut failed = None;
+    for (parent, scope) in parents.iter().zip(scopes) {
+        let f = files[parent.file];
+        let (Some(lang), Some(tree)) = (f.lang.filter(|l| *l != Language::Markdown), f.tree())
+        else {
+            of.push(None);
             continue;
         };
-        if patterns.iter().any(|(l, _)| *l == lang) || failed.iter().any(|(l, _)| *l == lang) {
+        let text = f.masked();
+        let (splice, container) = match scope {
+            Some(s) => (s.splice.clone(), s.container.clone()),
+            None => (parent.range.clone(), None),
+        };
+        let whole = splice == (0..text.len());
+        if whole && let Some((_, i)) = alone.iter().find(|(l, _)| *l == lang) {
+            of.push(*i);
             continue;
         }
-        match pattern::Pattern::compile(lang, code) {
-            Ok(p) => patterns.push((lang, p)),
-            Err(e) => failed.push((lang, e)),
+        let context = (!whole).then(|| Context::new(text, tree, splice, container));
+        let i = match pattern::Pattern::compile(lang, code, context.as_ref()) {
+            Ok(p) => {
+                patterns.push(p);
+                Some(patterns.len() - 1)
+            }
+            Err(e) => {
+                failed = failed.or(Some(e));
+                None
+            }
+        };
+        if whole {
+            alone.push((lang, i));
         }
+        of.push(i);
     }
     let selector = fenced(code);
-    if !patterns.is_empty() || searched.is_empty() {
-        return Ok(patterns);
+    if !patterns.is_empty() || parents.is_empty() {
+        return Ok(Matcher::Code { patterns, of });
     }
-    match failed.into_iter().next() {
-        Some((_, e)) => Err(E::InvalidPattern {
+    match failed {
+        Some(e) => Err(E::InvalidPattern {
             selector,
             message: e.to_string(),
         }),
-        None => Err(E::NoCodeLanguage {
-            selector,
-            files: file_list(
-                &searched
-                    .iter()
-                    .map(|&i| files[i].path.as_str())
-                    .collect::<Vec<_>>(),
-            ),
-        }),
+        None => {
+            let mut searched: Vec<&str> = parents
+                .iter()
+                .map(|m| files[m.file].path.as_str())
+                .collect();
+            searched.dedup();
+            Err(E::NoCodeLanguage {
+                selector,
+                files: file_list(&searched),
+            })
+        }
     }
 }
 
@@ -1242,7 +1396,7 @@ fn close_name(
                 .unwrap_or_default()
                 .iter()
                 .filter(|i| p.range.start <= i.range.start && i.range.end <= p.range.end)
-                .find(|i| i.kind == kind && syntax::item_matches(unchecked, i))
+                .find(|i| (kind == "*" || i.kind == kind) && syntax::item_matches(unchecked, i))
                 .map(|i| (p.file, i))
         })
     {
@@ -1268,7 +1422,7 @@ fn close_name(
                 .items()
                 .unwrap_or_default()
                 .iter()
-                .filter(|i| i.kind == kind && p.range.start <= i.range.start)
+                .filter(|i| (kind == "*" || i.kind == kind) && p.range.start <= i.range.start)
                 .filter(|i| i.range.end <= p.range.end)
                 .map(|i| {
                     // A trait impl is also named by its self type.
@@ -1328,6 +1482,10 @@ fn other_kind(
     let Primary::Syntax { kind, name } = &step.primary else {
         return None;
     };
+    // A `*:` step matched items of every kind already.
+    if kind == "*" {
+        return None;
+    }
     let (file, item) = parents
         .iter()
         .flat_map(|p| {
@@ -1507,7 +1665,7 @@ pub(crate) fn part_name(part: Part) -> &'static str {
         Part::Type => "type",
         Part::Value => "value",
         Part::Whole => "whole",
-        Part::Lines => "lines",
+        Part::Lines | Part::Line(_) => "lines",
         Part::Refs => "refs",
         Part::Def => "def",
         Part::Ours => "ours",
@@ -1569,7 +1727,10 @@ fn candidates(
             let parts = |step: &Step| -> String {
                 step.parts
                     .iter()
-                    .map(|&p| format!(".{}", part_name(p)))
+                    .map(|&p| match p {
+                        Part::Line(n) => line_part(n),
+                        p => format!(".{}", part_name(p)),
+                    })
                     .collect()
             };
             let text = match (chosen, last) {
@@ -1617,7 +1778,9 @@ fn candidates(
             // The matches this candidate's last step also selects.
             let mut peers: Vec<usize> = (0..found.len())
                 .filter(|&j| match (&chosen[i], &chosen[j]) {
-                    (Some((name, ..)), Some((_, item, _))) => syntax::item_matches(name, item),
+                    (Some((name, of, _)), Some((_, item, _))) => {
+                        of.kind == item.kind && syntax::item_matches(name, item)
+                    }
                     _ => named[j] == *last,
                 })
                 .collect();
@@ -1690,7 +1853,8 @@ fn candidates(
 
 /// The name that `last`, a syntax step, selects `range`'s item by in a
 /// candidate, the item, and whether the name replaces the step's: it does
-/// for a wildcard, and for a trait impl found by its self type.
+/// for a wildcard, for a `*:` step, which names the item's kind, and for a
+/// trait impl found by its self type.
 fn named<'f>(
     last: &Step,
     f: &'f SourceFile,
@@ -1699,12 +1863,12 @@ fn named<'f>(
     let Primary::Syntax { kind, name } = &last.primary else {
         return None;
     };
-    let item = f
-        .items()?
+    let items = f.items()?;
+    let item = items
         .iter()
-        .find(|i| i.kind == kind && i.range == *range)?;
+        .find(|i| selects(kind, i, items) && i.range == *range)?;
     Some(
-        if name.contains('*') || !syntax::name_matches(name, &item.name) {
+        if kind == "*" || name.contains('*') || !syntax::name_matches(name, &item.name) {
             (item.name.clone(), item, true)
         } else {
             (name.clone(), item, false)
@@ -1912,25 +2076,27 @@ mod tests {
         assert_eq!(select("delete all /a/../b/", "a a b\nb\n"), ["a a b\n"]);
     }
 
+    /// The notes resolving the target of `script`, a `delete`, adds.
+    fn notes(script: &str, text: &str) -> Vec<String> {
+        let parsed = parse(script).unwrap();
+        let CommandKind::Delete(target) = &parsed.commands[0].kind else {
+            panic!("expected delete: {script}");
+        };
+        let mut notes = Vec::new();
+        let files = files(&[("a.rs", text)]);
+        resolve(
+            target,
+            &files.iter().collect::<Vec<_>>(),
+            script,
+            false,
+            &mut notes,
+        )
+        .unwrap();
+        notes
+    }
+
     #[test]
     fn ranges_note_starts_skipped_before_their_end() {
-        let notes = |script: &str, text: &str| {
-            let parsed = parse(script).unwrap();
-            let CommandKind::Delete(target) = &parsed.commands[0].kind else {
-                panic!("expected delete: {script}");
-            };
-            let mut notes = Vec::new();
-            let files = files(&[("a.rs", text)]);
-            resolve(
-                target,
-                &files.iter().collect::<Vec<_>>(),
-                script,
-                false,
-                &mut notes,
-            )
-            .unwrap();
-            notes
-        };
         let text = "fn f() {\n    for x in a {\n        g();\n    } // x\n    for x in a {\n        g();\n    }\n}\n";
         assert_eq!(
             notes("delete /^    for x/../^    }$/", text),
@@ -2077,6 +2243,102 @@ mod tests {
         );
         assert_eq!(select("delete \"- a b\\n  c d\">1", LIST), ["- a b\n"]);
         assert_eq!(select("delete \"- a b\\n  c d\">2", LIST), ["  c d\n"]);
+    }
+
+    #[test]
+    fn lines_n_picks_one_line_of_each_span() {
+        assert_eq!(select("delete fn:b.lines:1", TEXT), ["fn b() {\n"]);
+        assert_eq!(select("delete fn:b.lines:$", TEXT), ["}\n"]);
+        assert_eq!(select("delete fn:a.lines:2", TEXT), ["    let x = 1;\n"]);
+        assert_eq!(
+            select("delete all fn.body.lines:1", TEXT),
+            ["    let x = 1;\n", "    let x = 3;\n"]
+        );
+        assert_eq!(
+            select("delete all fn.body.lines:$", TEXT),
+            ["    let y = 2;\n", "    let x = 3;\n"]
+        );
+        assert_eq!(
+            select("delete \"x = 3\".lines:1", TEXT),
+            ["    let x = 3;\n"]
+        );
+        assert_eq!(select("delete fn:a.lines:3>\"y\"", TEXT), ["y"]);
+    }
+
+    #[test]
+    fn lines_n_filters_test_the_picked_line() {
+        assert_eq!(
+            select("delete all fn.lines:2[.text ~= /x/]", TEXT),
+            ["    let x = 1;\n", "    let x = 3;\n"]
+        );
+        assert_eq!(
+            select("delete fn.lines:3[.text ~= /y/]", TEXT),
+            ["    let y = 2;\n"]
+        );
+        let e = error("delete fn:a.lines:3[.text ~= /x/]", &[("a.rs", TEXT)]);
+        assert!(e.contains("matches nothing"), "{e}");
+    }
+
+    #[test]
+    fn lines_n_is_a_filter_property() {
+        let a = "fn a() {\n    let x = 1;\n    let y = 2;\n}";
+        let b = "fn b() {\n    let x = 3;\n}";
+        assert_eq!(select("delete fn[.lines:4 ~= /}/]", TEXT), [a]);
+        assert_eq!(select("delete fn[.lines:$ ~= /}/][.len == 3]", TEXT), [b]);
+        // A span too short for the line has "" there.
+        assert_eq!(select("delete fn[.lines:4 == \"\"]", TEXT), [b]);
+        assert_eq!(select("delete fn[.lines:3.len > 1]", TEXT), [a]);
+        assert!(notes("delete fn[.lines:4 == \"\"]", TEXT).is_empty());
+    }
+
+    #[test]
+    fn lines_n_skips_spans_too_short() {
+        // fn:a has 4 lines, fn:b 3.
+        assert_eq!(select("delete fn.lines:4", TEXT), ["}\n"]);
+        assert_eq!(
+            notes("delete fn.lines:4", TEXT),
+            ["fn.lines:4: skipped 1 span with fewer than 4 lines"]
+        );
+        assert_eq!(
+            notes("delete all fn.body.lines:2>/let/", TEXT),
+            ["fn.body.lines:2>/let/: skipped 1 span with fewer than 2 lines"]
+        );
+        assert!(notes("delete all fn.lines:$", TEXT).is_empty());
+        assert_eq!(
+            error("delete fn:b.lines:4", &[("a.rs", TEXT)]),
+            "error: script:1:8: fn:b.lines:4 matches nothing in a.rs; it skipped 1 span with \
+             fewer than 4 lines; use .lines:$ for the last line"
+        );
+        assert_eq!(
+            error("delete all fn.lines:5", &[("a.rs", TEXT)]),
+            "error: script:1:12: fn.lines:5 matches nothing in a.rs; it skipped 2 spans with \
+             fewer than 5 lines; use .lines:$ for the last line"
+        );
+    }
+
+    #[test]
+    fn lines_n_skips_empty_sides() {
+        let text = "<<<<<<< HEAD\n=======\nb\n>>>>>>> x\n";
+        assert_eq!(
+            error("delete conflict:1.ours.lines:$", &[("a.rs", text)]),
+            "error: script:1:8: conflict:1.ours.lines:$ matches nothing in a.rs; it skipped \
+             1 span with no lines; drop .lines:$ to select the span"
+        );
+        let two = format!("{text}x\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> x\n");
+        assert_eq!(
+            notes("delete all conflict.ours.lines:$", &two),
+            ["conflict.ours.lines:$: skipped 1 span with no lines"]
+        );
+    }
+
+    #[test]
+    fn lines_n_candidates_keep_the_line() {
+        assert_eq!(
+            error("delete fn.body.lines:1", &[("a.rs", TEXT)]),
+            "error: script:1:8: fn.body.lines:1 matches 2 items; add `all` or use one of:\n  \
+             fn:a.body.lines:1   a.rs:2\n  \
+             fn:b.body.lines:1   a.rs:7"
+        );
     }
 
     #[test]
@@ -2519,6 +2781,31 @@ mod tests {
         assert_eq!(
             select("delete all `foo(@x)`.lines", text),
             ["    foo(1);\n", "    foo(2);\n"]
+        );
+    }
+
+    #[test]
+    fn patterns_parse_where_their_step_searches() {
+        let text = "struct S {\n    a: u8,\n    b: i64,\n}\n\nfn f(c: i64) {\n    g();\n}\n";
+        assert_eq!(select("delete struct:S>`@x: i64`", text), ["b: i64"]);
+        assert_eq!(select("delete fn:f.params>`@x: i64`", text), ["c: i64"]);
+        assert_eq!(select("delete struct:S.body>`a: @t`", text), ["a: u8"]);
+        let err = error("delete `x: i64`", &[("a.rs", text)]);
+        assert!(err.contains("doesn't parse as rust"), "{err}");
+        let err = error("delete file:a.rs>`x: i64`", &[("a.rs", text)]);
+        assert!(err.contains("doesn't parse as rust"), "{err}");
+    }
+
+    #[test]
+    fn patterns_parse_in_a_python_body() {
+        let text = "class A:\n    def f(self):\n        a = 1\n        b = 2\n\n    def g(self):\n        pass\n";
+        assert_eq!(
+            select_in("delete fn:f>`a = 1\nb = 2`", "a.py", text),
+            ["a = 1\n        b = 2"]
+        );
+        assert_eq!(
+            select_in("delete class:A>`def g(self):\n    pass`", "a.py", text),
+            ["def g(self):\n        pass"]
         );
     }
 
@@ -3189,5 +3476,94 @@ fn main() {
             resolve_in("delete fn:main", &files(&[("a.txt", RUST), ("b.rs", RUST)])).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].file, 1);
+    }
+
+    const MIXED: &str = "\
+const LIMIT: u32 = 3;
+
+struct Parser;
+
+impl Parser {
+    fn new() -> Self {
+        Parser
+    }
+}
+
+fn test_a() {}
+
+static test_b: u8 = 1;
+";
+
+    #[test]
+    fn any_kind_selects_a_unique_item_whatever_its_kind() {
+        assert_eq!(select("delete *:LIMIT", MIXED), ["const LIMIT: u32 = 3;"]);
+        assert_eq!(
+            select_in("delete *:limit", "a.py", "limit = 3\n"),
+            ["limit = 3"]
+        );
+        assert_eq!(
+            select("delete *:Parser>fn:new", MIXED),
+            ["fn new() -> Self {\n        Parser\n    }"]
+        );
+        assert_eq!(select("delete *:new.body", MIXED), ["        Parser\n"]);
+        assert_eq!(select("delete *:main.body", RUST), ["    let x = 1;\n"]);
+    }
+
+    #[test]
+    fn any_kind_names_take_wildcards() {
+        assert_eq!(
+            select("delete all *:test_*", MIXED),
+            ["fn test_a() {}", "static test_b: u8 = 1;"]
+        );
+        assert_eq!(
+            select("delete all *:*", "fn a() {}\n\nstruct B;\n").len(),
+            2
+        );
+    }
+
+    #[test]
+    fn any_kind_selects_an_item_of_several_kinds_once() {
+        let text = "const f = () => {\n  return 1;\n};\n";
+        assert_eq!(
+            select_in("delete *:f", "a.js", text),
+            ["const f = () => {\n  return 1;\n};"]
+        );
+        assert_eq!(
+            select_in("delete *:f.body", "a.ts", text),
+            ["  return 1;\n"]
+        );
+        assert_eq!(select_in("delete all *:*", "a.js", text).len(), 1);
+    }
+
+    #[test]
+    fn any_kind_candidates_name_their_kind() {
+        assert_eq!(
+            error("delete *:Parser", &[("a.rs", MIXED)]),
+            "error: script:1:8: *:Parser matches 2 items; add `all` or use one of:\n  \
+             struct:Parser   a.rs:3\n  \
+             impl:Parser     a.rs:5-9"
+        );
+        assert_eq!(
+            error("delete *:test_*.name", &[("a.rs", MIXED)]),
+            "error: script:1:8: *:test_*.name matches 2 items; add `all` or use one of:\n  \
+             fn:test_a.name      a.rs:11\n  \
+             const:test_b.name   a.rs:13"
+        );
+    }
+
+    #[test]
+    fn any_kind_matching_nothing_suggests_a_close_name() {
+        assert_eq!(
+            error("delete *:LIMT", &[("a.rs", MIXED)]),
+            "error: script:1:8: *:LIMT matches nothing in a.rs; did you mean *:LIMIT (1)?"
+        );
+        assert_eq!(
+            error("delete *:nothing_like_it", &[("a.rs", MIXED)]),
+            "error: script:1:8: *:nothing_like_it matches nothing in a.rs; `outline` lists the items"
+        );
+        assert_eq!(
+            error("delete *:main", &[("a.txt", RUST)]),
+            "error: script:1:8: *:main needs a language, but a.txt has none; use --lang"
+        );
     }
 }

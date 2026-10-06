@@ -1,0 +1,127 @@
+# Using ned with AI agents
+
+ned was built for coding agents. Its commands are short, its edits apply all
+together or not at all, it prints a diff so the agent doesn't need to read the
+file back, and every error ends with a fix. This page covers how to give an
+agent access to it. The best way is ned's MCP server; for agents that can't use
+one, there's a Claude Code skill and a short system-prompt snippet.
+
+First, [install ned](/tutorial#installing) where the agent runs. It needs
+nothing else, but if a language server such as `rust-analyzer`, `pyright` or
+`gopls` is installed, the agent can also check diagnostics, find references and
+rename symbols without a build.
+
+## MCP server
+
+`ned mcp` runs ned as a
+[Model Context Protocol](https://modelcontextprotocol.io) server. The agent
+calls ned as a tool instead of through a shell, so its scripts need no quoting
+or heredocs, the tool descriptions teach it ned without a skill or prompt
+snippet, and every call is recorded in a session without any setup. To add it to
+Claude Code:
+
+```sh
+claude mcp add ned -- ned mcp
+```
+
+Other MCP clients take the same command in their configuration, usually like
+this:
+
+```json
+{
+  "mcpServers": {
+    "ned": { "command": "ned", "args": ["mcp"] }
+  }
+}
+```
+
+The `ned` tool takes a script, with the files (or `workspace`, for the whole
+workspace) and ned's flags as arguments. `outline`, `show`, `history`, `undo`
+and `help` are tools too, and `cd` moves the server to another directory. Each
+result is exactly what ned would print in a terminal.
+
+A `ned` call can carry a `comment` saying what it's for. The server records
+every call in a session (named by `-s NAME` or `NED_SESSION`, or a new `mcp-N`),
+so `undo` and `!!` work as they do in the shell, and you can watch the agent
+work from a REPL with `ned repl --attach NAME`, which prints each comment with
+its edits.
+
+## Claude Code skill
+
+If you'd rather Claude ran ned from its shell, install the skill instead. It
+teaches Claude how to read, search and edit files with ned, and Claude loads it
+whenever one of those comes up. Copy it into your skills directory:
+
+```sh
+git clone https://github.com/bbessemer/neoed
+cp -r neoed/docs/skills/ned ~/.claude/skills/
+```
+
+That makes it available in every project. To use it in one project only, copy it
+to that project's `.claude/skills/` instead.
+
+## Other agents
+
+For any other agent that can't use MCP but has a shell, add this to its system
+prompt. It's shorter than the skill, and it points the agent at `ned help` for
+the rest.
+
+```text
+To read, search or edit files, use `ned` rather than cat, grep, sed, inline
+Python or whole-file rewrites. Pass the script on stdin with a quoted heredoc
+(always when text holds a ', never shell escapes):
+
+  ned FILE... <<'EOF'
+  replace fn:parse>"old text" with "new text"
+  EOF
+
+Selectors: line ranges (12-20), /regex/, "literal", and in Rust, Python, Go,
+JS/TS and Markdown, syntax items (fn:parse, impl:Parser>fn:new,
+fn:parse.body). A selector must match exactly one span unless prefixed with
+`all`. Run `outline` to list items and `show SEL` to read part of a file;
+search with `ned -w -e 'show all /re/'`; make files with `create PATH <<END`.
+Write inserted code at column 0 in a `<<END` heredoc; ned re-indents it
+(`<<'END'` inside the script keeps text verbatim). ned prints a diff, so don't
+re-read the file to check the edit. Errors end with a fix; apply it and rerun.
+Add `--commit MSG` to commit just that edit; other changes stay uncommitted.
+With a language server: `check` for diagnostics, `rename SEL to NAME`,
+`SEL.refs` and `SEL.def`; after `ned daemon start`, edits that introduce
+errors are rejected. With NED_SESSION set, `ned undo` reverts your last edit
+and `ned -e '!!:s/old/new/'` reruns your last command corrected. Merge
+conflicts don't stop parsing; `resolve conflict:N ours|theirs|both` keeps
+sides of one. `ned help` and `ned help TOPIC` document the rest.
+```
+
+## Sessions
+
+The MCP server always records into a session. When the agent runs ned from a
+shell instead, set `NED_SESSION` in its environment, and ned records each
+command the agent runs. The agent can then undo its last edit, or repeat a
+failed command with a fix, and you can follow its work with `ned history`. Give
+each conversation its own session, so that one agent's `undo` never reverts
+another's edit. A subagent can pass `-s NAME` to get a session of its own.
+
+In Claude Code, a `SessionStart` hook names the session after the conversation.
+Add it to `~/.claude/settings.json`, or to a project's `.claude/settings.json`
+for that project only. It needs `jq`.
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"export NED_SESSION=claude-$(jq -r .session_id)\" >> \"$CLAUDE_ENV_FILE\""
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+A resumed conversation keeps its session, and `/clear` starts a new one.
+`ned session list` lists the sessions in a workspace, and `ned history -s NAME`
+shows what one of them did.

@@ -1,34 +1,26 @@
 //! Matching syntax patterns against syntax trees (command-language spec,
-//! §3.10): node by node, skipping comments on both sides and separators the
-//! pattern leaves out.
-
-use std::collections::HashMap;
-use std::ops::Range;
+//! §3.10): the pattern and the file are both lowered to abstract syntax trees
+//! (`crate::ast`), which match node by node.
 
 use std::cmp::Reverse;
+use std::ops::Range;
 
-use tree_sitter::{Node, Tree};
+use tree_sitter::Tree;
 
-use crate::fragment::{self, Fragment, FragmentError, children_of};
+use crate::ast::{Ast, Body};
+use crate::fragment::{self, Context, FragmentError, Slot};
 use crate::lang::Language;
-use crate::template::Template;
+use crate::template::{Count, Template};
 use crate::text::strip_indent;
 
-/// A pattern compiled for one language: each of its readings.
+/// A pattern compiled for one context.
 #[derive(Debug)]
 pub struct Pattern {
-    readings: Vec<Reading>,
-}
-
-#[derive(Debug)]
-struct Reading {
-    fragment: Fragment,
-    /// The holes' nodes, by node id: the hole's name (`None` for `@_`), and
-    /// whether it's a run.
-    holes: HashMap<usize, (Option<String>, bool)>,
-    /// The runs left out of the text, by the id of the node whose children
-    /// they lie among: how many children come before each, and its name.
-    gaps: HashMap<usize, Vec<(usize, Option<String>)>>,
+    lang: Language,
+    /// Its root node, or its run of sibling root nodes, with a hole for each
+    /// placeholder. A run left out of the text, where no node parsed, is a
+    /// hole without a kind.
+    roots: Vec<Ast>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,7 +32,9 @@ pub struct PatternMatch {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PatternError {
-    #[error("doesn't parse as {lang} at `{at}`; add the code around it, or use query{{}}")]
+    #[error(
+        "doesn't parse as {lang} where it's searched, at `{at}`; {}", no_parse_fix(.lang)
+    )]
     NoParse { lang: Language, at: String },
     #[error("has `{placeholder}` where a whole node must be; write `@@` for a literal `@`")]
     Fused { placeholder: String },
@@ -48,17 +42,41 @@ pub enum PatternError {
     Empty,
 }
 
+/// How to make a pattern parse in `lang`. A match arm, a case or a decorator
+/// alone parses nowhere a step can search, so their fix is the code around them.
+fn no_parse_fix(lang: &Language) -> &'static str {
+    match lang {
+        Language::Rust => {
+            "select the code it goes in first (struct:S>`x: u8`), or write the code around it too (a match arm's whole `match`)"
+        }
+        Language::Python => {
+            "select the code it goes in first (class:C>`x: int = 1`), or write the code around it too (a decorator's whole `def`)"
+        }
+        Language::Go => {
+            "select the code it goes in first (struct:S>`X int`), or write the code around it too (a case's whole `switch`)"
+        }
+        Language::JavaScript | Language::TypeScript | Language::Tsx => {
+            "select the code it goes in first (class:C>`x = 1`), or write the code around it too (a case's whole `switch`)"
+        }
+        Language::Markdown => "add the code around it",
+    }
+}
+
 impl Pattern {
-    /// Compiles the pattern `src` for `lang`, ignoring the common indentation
-    /// of its lines.
-    pub fn compile(lang: Language, src: &str) -> Result<Pattern, PatternError> {
+    /// Compiles the pattern `src` for `lang` in `context`, or alone, ignoring
+    /// the common indentation of its lines.
+    pub fn compile(
+        lang: Language,
+        src: &str,
+        context: Option<&Context>,
+    ) -> Result<Pattern, PatternError> {
         let code = strip_indent(src).join("\n");
         if code.trim().is_empty() {
             return Err(PatternError::Empty);
         }
 
         let template = Template::parse(&code);
-        let fragments = fragment::parse(lang, &template).map_err(|e| match e {
+        let fragment = fragment::parse(lang, &template, context).map_err(|e| match e {
             FragmentError::NoParse { lang, at } => PatternError::NoParse {
                 lang,
                 at: excerpt(&code, at),
@@ -67,38 +85,31 @@ impl Pattern {
                 placeholder: code[span].to_string(),
             },
         })?;
-        let readings = fragments
+        let mut roots: Vec<Ast> = fragment
+            .roots()
             .into_iter()
-            .map(|fragment| {
-                let holes = template
-                    .holes()
-                    .enumerate()
-                    .filter_map(|(i, h)| Some((fragment.hole(i)?.id(), (h.name.clone(), h.many))))
-                    .collect();
-                let mut gaps: HashMap<usize, Vec<(usize, Option<String>)>> = HashMap::new();
-                for (i, h) in template.holes().enumerate() {
-                    if let Some((node, before)) = fragment.gap(i) {
-                        gaps.entry(node.id())
-                            .or_default()
-                            .push((before, h.name.clone()));
-                    }
-                }
-                Reading {
-                    fragment,
-                    holes,
-                    gaps,
-                }
-            })
+            .filter_map(|r| Ast::lower(lang, r, &fragment.text, r.byte_range()))
             .collect();
-        Ok(Pattern { readings })
+        for (h, slot) in template.holes().zip(&fragment.holes) {
+            let hole = Body::Hole {
+                name: h.name.clone(),
+                count: h.count,
+            };
+            match slot {
+                Slot::Node(r) => hole_at(&mut roots, r, hole),
+                Slot::Gap(at) => gap_at(&mut roots, *at, hole),
+                Slot::Literal => {}
+            }
+        }
+        Ok(Pattern { lang, roots })
     }
 
     /// The matches in `tree`, the tree of `text`, that lie within `range`, in
     /// source order. A match inside an earlier one is skipped.
     pub fn find(&self, tree: &Tree, text: &str, range: Range<usize>) -> Vec<PatternMatch> {
         let mut all = Vec::new();
-        for reading in &self.readings {
-            reading.find(tree.root_node(), text, &range, &mut all);
+        if let Some(file) = Ast::lower(self.lang, tree.root_node(), text, range.clone()) {
+            self.walk(&file, true, text, &range, &mut all);
         }
         all.sort_by_key(|m| (m.range.start, Reverse(m.range.end)));
         let mut out: Vec<PatternMatch> = Vec::new();
@@ -111,6 +122,51 @@ impl Pattern {
             }
         }
         out
+    }
+
+    /// Pushes the matches in `node`'s subtree that lie within `range`. The
+    /// `top` node is the whole file, not code to match.
+    fn walk(
+        &self,
+        node: &Ast,
+        top: bool,
+        text: &str,
+        range: &Range<usize>,
+        out: &mut Vec<PatternMatch>,
+    ) {
+        let inside = |r: &Range<usize>| range.start <= r.start && r.end <= range.end;
+        let children = match &node.body {
+            Body::Node(children) => children.as_slice(),
+            _ => &[],
+        };
+        if let [root] = self.roots.as_slice() {
+            let candidate = !top
+                && node.named
+                && (matches!(root.body, Body::Hole { .. }) || root.kind == node.kind);
+            if candidate && inside(&node.range) {
+                let mut m = Matcher::new(text);
+                if m.node(root, node) {
+                    out.push(m.matched(node.range.clone()));
+                }
+            }
+        } else {
+            for (i, start) in children.iter().enumerate() {
+                if !start.named || !inside(&start.range) {
+                    continue;
+                }
+                let mut m = Matcher::new(text);
+                // A run of roots may match no siblings, which is no match.
+                if let Some(end) = m.seq(&self.roots, &children[i..], false).filter(|&n| n > 0) {
+                    let r = start.range.start..children[i + end - 1].range.end;
+                    if inside(&r) {
+                        out.push(m.matched(r));
+                    }
+                }
+            }
+        }
+        for child in children {
+            self.walk(child, false, text, range, out);
+        }
     }
 }
 
@@ -125,269 +181,161 @@ fn excerpt(code: &str, at: usize) -> String {
     line.chars().take(30).collect()
 }
 
-impl Reading {
-    /// Pushes the matches in `root`'s subtree that lie within `range`.
-    fn find<'t>(
-        &self,
-        root: Node<'t>,
-        text: &'t str,
-        range: &Range<usize>,
-        out: &mut Vec<PatternMatch>,
-    ) {
-        let roots: Vec<Elem> = self.fragment.roots().into_iter().map(Elem::Node).collect();
-        self.walk(&roots, root, text, range, out);
-    }
-
-    fn walk<'p, 't>(
-        &'p self,
-        roots: &[Elem<'p>],
-        node: Node<'t>,
-        text: &'t str,
-        range: &Range<usize>,
-        out: &mut Vec<PatternMatch>,
-    ) {
-        if node.end_byte() <= range.start || node.start_byte() >= range.end {
+/// Makes the outermost node among `asts` whose source is `r`, a
+/// placeholder's, a hole, short of a list it's the only element of.
+fn hole_at(asts: &mut [Ast], r: &Range<usize>, hole: Body) {
+    for a in asts {
+        if a.range == *r && !a.list {
+            a.body = hole;
             return;
         }
-        let inside = |r: &Range<usize>| range.start <= r.start && r.end <= range.end;
-        let children = children_of(node);
-        if let [Elem::Node(root)] = roots {
-            // The grammar's top node is the whole file, not code to match.
-            let candidate = node.is_named()
-                && !node.is_extra()
-                && node.parent().is_some()
-                && (self.holes.contains_key(&root.id()) || root.kind_id() == node.kind_id());
-            if candidate && inside(&node.byte_range()) {
-                let mut m = Matcher::new(self, text);
-                if m.node(*root, node) {
-                    out.push(m.matched(node.byte_range()));
-                }
-            }
-        } else {
-            for (i, start) in children.iter().enumerate() {
-                if !start.is_named() || !inside(&start.byte_range()) {
-                    continue;
-                }
-                let mut m = Matcher::new(self, text);
-                // A run of roots may match no siblings, which is no match.
-                if let Some(end) = m.seq(roots, &children[i..], false).filter(|&n| n > 0) {
-                    let r = start.start_byte()..children[i + end - 1].end_byte();
-                    if inside(&r) {
-                        out.push(m.matched(r));
-                    }
-                }
-            }
-        }
-        for child in children {
-            self.walk(roots, child, text, range, out);
+        if a.range.start <= r.start
+            && r.end <= a.range.end
+            && let Body::Node(children) = &mut a.body
+        {
+            return hole_at(children, r, hole);
         }
     }
 }
 
-/// An element of a pattern node's children: a node, or a run left out of
-/// the text (a gap).
-#[derive(Clone, Copy)]
-enum Elem<'p> {
-    Node(Node<'p>),
-    Run(&'p Option<String>),
-}
-
-/// `range` without the whitespace at its ends: Go ends a statement node with
-/// its newline.
-fn trim(text: &str, range: Range<usize>) -> Range<usize> {
-    let s = &text[range.clone()];
-    let start = range.start + (s.len() - s.trim_start().len());
-    start..(start + s.trim().len())
-}
-
-/// The range from `first` to `last`, siblings, with the comments between
-/// them and their neighbours, which a capture keeps.
-fn with_comments(first: Node<'_>, last: Node<'_>) -> Range<usize> {
-    let mut start = first;
-    while let Some(p) = start.prev_sibling().filter(|p| p.is_extra()) {
-        start = p;
+/// Puts a hole for a run left out of the text at `at` among the children of
+/// the deepest node in `asts` that holds it, or among `asts` themselves.
+fn gap_at(asts: &mut Vec<Ast>, at: usize, hole: Body) {
+    let holder = asts
+        .iter_mut()
+        .find(|a| a.range.start < at && at < a.range.end && matches!(a.body, Body::Node(_)));
+    if let Some(Ast {
+        body: Body::Node(children),
+        ..
+    }) = holder
+    {
+        return gap_at(children, at, hole);
     }
-    let mut end = last;
-    while let Some(n) = end.next_sibling().filter(|n| n.is_extra()) {
-        end = n;
-    }
-    start.start_byte()..end.end_byte()
+    let i = asts.iter().filter(|a| a.range.end <= at).count();
+    asts.insert(
+        i,
+        Ast {
+            kind: String::new(),
+            named: false,
+            field: None,
+            list: false,
+            body: hole,
+            range: at..at,
+            outer: at..at,
+        },
+    );
 }
 
-/// A match of one reading in progress: what its placeholders have bound.
-struct Matcher<'p, 't> {
-    reading: &'p Reading,
+/// A match in progress: what its placeholders have bound.
+struct Matcher<'t> {
     text: &'t str,
     binds: Vec<Bind<'t>>,
 }
 
 struct Bind<'t> {
     name: String,
-    nodes: Vec<Node<'t>>,
+    nodes: Vec<&'t Ast>,
     range: Range<usize>,
 }
 
-impl<'p, 't> Matcher<'p, 't> {
-    fn new(reading: &'p Reading, text: &'t str) -> Self {
+impl<'t> Matcher<'t> {
+    fn new(text: &'t str) -> Self {
         Matcher {
-            reading,
             text,
             binds: Vec::new(),
         }
     }
 
     fn matched(self, range: Range<usize>) -> PatternMatch {
-        let text = self.text;
         PatternMatch {
-            range: trim(text, range),
-            captures: self
-                .binds
-                .into_iter()
-                .map(|b| (b.name, trim(text, b.range)))
-                .collect(),
+            range,
+            captures: self.binds.into_iter().map(|b| (b.name, b.range)).collect(),
         }
-    }
-
-    fn hole(&self, p: Node<'_>) -> Option<&'p (Option<String>, bool)> {
-        self.reading.holes.get(&p.id())
-    }
-
-    fn pattern_text(&self, p: Node<'_>) -> &'p str {
-        &self.reading.fragment.text[p.byte_range()]
-    }
-
-    /// Whether target node `t` is a separator: `,`, `;`, or a line break.
-    fn separator(&self, t: Node<'t>) -> bool {
-        let text = &self.text[t.byte_range()];
-        !t.is_named() && (text == "," || text == ";" || text.trim().is_empty())
-    }
-
-    /// The elements of pattern node `p`'s children: its children, with its gaps
-    /// among them.
-    fn elems(&self, p: Node<'p>) -> Vec<Elem<'p>> {
-        let mut elems: Vec<Elem<'p>> = children_of(p).into_iter().map(Elem::Node).collect();
-        for (k, (before, name)) in self
-            .reading
-            .gaps
-            .get(&p.id())
-            .into_iter()
-            .flatten()
-            .enumerate()
-        {
-            elems.insert(before + k, Elem::Run(name));
-        }
-        elems
     }
 
     /// Whether pattern node `p` matches target node `t`.
-    fn node(&mut self, p: Node<'p>, t: Node<'t>) -> bool {
-        if let Some((name, _)) = self.hole(p) {
-            return self.bind(name, vec![t], with_comments(t, t));
+    fn node(&mut self, p: &Ast, t: &'t Ast) -> bool {
+        match (&p.body, &t.body) {
+            (Body::Hole { name, .. }, _) => t.named && self.bind(name, vec![t], t.outer.clone()),
+            _ if p.kind != t.kind || p.named != t.named => false,
+            (Body::Leaf(a), Body::Leaf(b)) => a == b,
+            (Body::Node(pc), Body::Node(tc)) => self.seq(pc, tc, true).is_some(),
+            _ => false,
         }
-        if p.kind_id() != t.kind_id() {
-            return false;
-        }
-        let (pc, tc) = (self.elems(p), children_of(t));
-        if pc.is_empty() && tc.is_empty() {
-            return !p.is_named() || self.pattern_text(p) == &self.text[t.byte_range()];
-        }
-        self.seq(&pc, &tc, true).is_some()
     }
 
     /// Matches the pattern nodes `ps` against a prefix of the target nodes
-    /// `ts`, or all of them if `all`, skipping target separators the pattern
-    /// leaves out. The number of target nodes matched, if they match.
-    fn seq(&mut self, ps: &[Elem<'p>], ts: &[Node<'t>], all: bool) -> Option<usize> {
-        let Some((&p, rest)) = ps.split_first() else {
-            return (!all || ts.iter().all(|t| self.separator(*t))).then_some(0);
+    /// `ts`, or all of them if `all`, when they're a node's children, each in
+    /// the same field. The number of target nodes matched, if they match.
+    fn seq(&mut self, ps: &[Ast], ts: &'t [Ast], all: bool) -> Option<usize> {
+        let Some((p, rest)) = ps.split_first() else {
+            return (!all || ts.is_empty()).then_some(0);
         };
         let saved = self.binds.len();
-        let run = match p {
-            Elem::Run(name) => Some(name),
-            Elem::Node(n) => match self.hole(n) {
-                Some((name, true)) => Some(name),
-                _ => None,
-            },
-        };
-        if let Some(name) = run {
+        if let Body::Hole { name, count } = &p.body
+            && *count != Count::One
+        {
             // A run takes as few siblings as it can.
-            let mut end = 0;
-            loop {
-                let run: Vec<Node<'t>> =
-                    ts[..end].iter().copied().filter(|n| n.is_named()).collect();
+            for end in usize::from(*count == Count::OneOrMore)..=ts.len() {
+                let run = &ts[..end];
                 let range = match (run.first(), run.last()) {
-                    (Some(first), Some(last)) => with_comments(*first, *last),
+                    (Some(first), Some(last)) => first.outer.start..last.outer.end,
                     _ => {
-                        let at = ts.get(end).map_or(0, |t| t.start_byte());
+                        let at = ts.get(end).map_or(0, |t| t.range.start);
                         at..at
                     }
                 };
-                if self.bind(name, run, range)
+                if self.bind(name, run.iter().collect(), range)
                     && let Some(n) = self.seq(rest, &ts[end..], all)
                 {
                     return Some(end + n);
                 }
                 self.binds.truncate(saved);
-                end += ts[end..].iter().position(|n| n.is_named())? + 1;
             }
+            return None;
         }
-        let Elem::Node(p) = p else {
-            unreachable!("a gap is a run");
-        };
-        for (i, &t) in ts.iter().enumerate() {
-            let matched = if p.is_named() || self.hole(p).is_some() {
-                t.is_named() && self.node(p, t)
-            } else {
-                !t.is_named() && p.kind_id() == t.kind_id()
-            };
-            if matched {
-                let n = self.seq(rest, &ts[i + 1..], all);
-                if n.is_none() {
-                    self.binds.truncate(saved);
-                }
-                return n.map(|n| i + 1 + n);
-            }
-            self.binds.truncate(saved);
-            if let Some(n) = self.rest_of(p, t, rest, &ts[i + 1..], all) {
-                return Some(i + 1 + n);
-            }
-            // Only a separator the pattern leaves out can be skipped: any other
-            // token, such as `async` or `&`, changes what the code means.
-            if !self.separator(t) {
-                return None;
-            }
+        let t = ts.first()?;
+        if all && p.field != t.field {
+            return None;
         }
-        None
+        if self.node(p, t)
+            && let Some(n) = self.seq(rest, &ts[1..], all)
+        {
+            return Some(1 + n);
+        }
+        self.binds.truncate(saved);
+        self.rest_of(p, t, rest, &ts[1..], all).map(|n| 1 + n)
     }
 
-    /// Matches pattern node `p`, then the run `rest[0]`, against target `t`, a
-    /// node that starts with a match of `p` (the run takes the rest of `t`, as
-    /// the tail of a method chain), then `rest[1..]` against `ts`. The number
-    /// of `ts` matched, if they match.
+    /// Matches pattern node `p`, then the run left out of the text `rest[0]`,
+    /// against target `t`, a node that starts with a match of `p` (the run
+    /// takes the rest of `t`, as the tail of a method chain), then `rest[1..]`
+    /// against `ts`. The number of `ts` matched, if they match.
     fn rest_of(
         &mut self,
-        p: Node<'p>,
-        t: Node<'t>,
-        rest: &[Elem<'p>],
-        ts: &[Node<'t>],
+        p: &Ast,
+        t: &'t Ast,
+        rest: &[Ast],
+        ts: &'t [Ast],
         all: bool,
     ) -> Option<usize> {
-        let (Elem::Run(name), rest) = rest.split_first()? else {
+        let (run, rest) = rest.split_first()?;
+        let Body::Hole { name, count } = &run.body else {
             return None;
         };
-        if !p.is_named() || !t.is_named() {
+        if *count == Count::One || !run.kind.is_empty() || !p.named || !t.named {
             return None;
         }
         let saved = self.binds.len();
         let mut start = t;
-        while let Some(first) = children_of(start)
-            .into_iter()
-            .next()
-            .filter(|c| c.is_named())
+        while let Body::Node(children) = &start.body
+            && let Some(first) = children.first().filter(|c| c.named)
         {
             start = first;
+            let tail = &self.text[start.range.end..t.range.end];
+            let from = t.range.end - tail.trim_start().len();
             if self.node(p, start)
-                && self.bind(name, Vec::new(), start.end_byte()..t.end_byte())
+                && self.bind(name, Vec::new(), from..t.range.end)
                 && let Some(n) = self.seq(rest, ts, all)
             {
                 return Some(n);
@@ -398,7 +346,7 @@ impl<'p, 't> Matcher<'p, 't> {
     }
 
     /// Binds `name` to `nodes`, or checks them against its earlier binding.
-    fn bind(&mut self, name: &Option<String>, nodes: Vec<Node<'t>>, range: Range<usize>) -> bool {
+    fn bind(&mut self, name: &Option<String>, nodes: Vec<&'t Ast>, range: Range<usize>) -> bool {
         let Some(name) = name else {
             return true;
         };
@@ -414,7 +362,7 @@ impl<'p, 't> Matcher<'p, 't> {
                     .nodes
                     .iter()
                     .zip(&nodes)
-                    .all(|(a, b)| self.equal(*a, *b));
+                    .all(|(a, b)| a.unwrapped().same_code(b.unwrapped()));
         }
         self.binds.push(Bind {
             name: name.clone(),
@@ -423,19 +371,6 @@ impl<'p, 't> Matcher<'p, 't> {
         });
         true
     }
-
-    /// Whether two target nodes are the same code, ignoring whitespace and
-    /// comments.
-    fn equal(&self, a: Node<'t>, b: Node<'t>) -> bool {
-        let (ac, bc) = (children_of(a), children_of(b));
-        a.kind_id() == b.kind_id()
-            && ac.len() == bc.len()
-            && if ac.is_empty() {
-                self.text[a.byte_range()] == self.text[b.byte_range()]
-            } else {
-                ac.iter().zip(&bc).all(|(x, y)| self.equal(*x, *y))
-            }
-    }
 }
 
 #[cfg(test)]
@@ -443,7 +378,7 @@ mod tests {
     use super::*;
 
     fn matches(lang: Language, pattern: &str, text: &str) -> Vec<PatternMatch> {
-        let p = Pattern::compile(lang, pattern).unwrap_or_else(|e| panic!("{pattern}: {e}"));
+        let p = Pattern::compile(lang, pattern, None).unwrap_or_else(|e| panic!("{pattern}: {e}"));
         p.find(&lang.parse(text), text, 0..text.len())
     }
 
@@ -454,6 +389,20 @@ mod tests {
 
     fn found_in(lang: Language, pattern: &str, text: &str) -> Vec<String> {
         matches(lang, pattern, text)
+            .iter()
+            .map(|m| text[m.range.clone()].to_string())
+            .collect()
+    }
+
+    /// The text of each match of `pattern`, parsed in place of the first
+    /// `site` in Rust `text`.
+    fn found_within(pattern: &str, text: &str, site: &str) -> Vec<String> {
+        let tree = Language::Rust.parse(text);
+        let start = text.find(site).expect("the site is in the text");
+        let context = Context::new(text, &tree, start..start + site.len(), None);
+        let p = Pattern::compile(Language::Rust, pattern, Some(&context))
+            .unwrap_or_else(|e| panic!("{pattern}: {e}"));
+        p.find(&tree, text, 0..text.len())
             .iter()
             .map(|m| text[m.range.clone()].to_string())
             .collect()
@@ -515,7 +464,34 @@ mod tests {
     }
 
     #[test]
-    fn only_separators_the_pattern_leaves_out_are_skipped() {
+    fn separators_are_skipped_on_both_sides() {
+        let text = "fn main() { foo(x, y,); foo(x, y); }";
+        assert_eq!(found("foo(@a, @b)", text), ["foo(x, y,)", "foo(x, y)"]);
+        assert_eq!(found("foo(@a, @b,)", text), ["foo(x, y,)", "foo(x, y)"]);
+        assert_eq!(
+            found_in(Language::Python, "foo(@a,)", "foo(x)\nfoo(x,)\n"),
+            ["foo(x)", "foo(x,)"]
+        );
+    }
+
+    #[test]
+    fn children_match_in_the_same_role() {
+        assert_eq!(
+            found("[@v; @n]", "fn main() { let a = [0, 4]; let b = [0; 4]; }"),
+            ["[0; 4]"]
+        );
+    }
+
+    #[test]
+    fn text_between_nodes_must_match() {
+        assert_eq!(
+            found_in(Language::Python, "'a\\nb'", "x = 'a\\nb'\ny = 'c\\nd'\n"),
+            ["'a\\nb'"]
+        );
+    }
+
+    #[test]
+    fn tokens_other_than_separators_must_match() {
         assert!(found("fn f(self) {}", "fn f(&self) {}\n").is_empty());
         assert!(found("|x| x", "fn main() { let f = move |x| x; }").is_empty());
         assert!(
@@ -535,7 +511,11 @@ mod tests {
             .is_empty()
         );
         assert_eq!(
-            found("Some(@x) => @y", "fn main() { match a { Some(b) => c, } }"),
+            found_within(
+                "Some(@x) => @y",
+                "fn main() { match a { Some(b) => c, } }",
+                "Some(b) => c,"
+            ),
             ["Some(b) => c,"]
         );
     }
@@ -583,14 +563,11 @@ mod tests {
     #[test]
     fn runs_take_as_few_siblings_as_they_can() {
         assert_eq!(
-            captured(
-                "foo(@first, @rest...)",
-                "fn main() { foo(a, b, c); foo(d); }"
-            ),
+            captured("foo(@first, @rest...)", "fn main() { foo(a, b, c); }"),
             [pairs(&[("first", "a"), ("rest", "b, c")])]
         );
         assert_eq!(
-            captured("foo(@args...)", "fn main() { foo(); foo(a, b); }"),
+            captured("foo(@args...?)", "fn main() { foo(); foo(a, b); }"),
             [pairs(&[("args", "")]), pairs(&[("args", "a, b")])]
         );
         assert_eq!(
@@ -600,10 +577,54 @@ mod tests {
     }
 
     #[test]
+    fn a_run_is_one_or_more_siblings_unless_it_may_be_empty() {
+        let text = "fn main() { foo(a, b, c); foo(d); foo(); }";
+        assert_eq!(found("foo(@first, @rest...)", text), ["foo(a, b, c)"]);
+        assert_eq!(
+            captured("foo(@first, @rest...?)", text),
+            [
+                pairs(&[("first", "a"), ("rest", "b, c")]),
+                pairs(&[("first", "d"), ("rest", "")])
+            ]
+        );
+        assert_eq!(found("foo(@_...)", text), ["foo(a, b, c)", "foo(d)"]);
+        assert_eq!(
+            found("foo(@_...?)", text),
+            ["foo(a, b, c)", "foo(d)", "foo()"]
+        );
+    }
+
+    #[test]
+    fn a_run_left_out_of_the_text_may_be_empty_too() {
+        let text = "struct A;\nimpl Display for A {}\nimpl Debug for A { fn fmt() {} }\n";
+        assert_eq!(
+            found("impl @_ for A { @_... }", text),
+            ["impl Debug for A { fn fmt() {} }"]
+        );
+        assert_eq!(found("impl @_ for A { @_...? }", text).len(), 2);
+    }
+
+    #[test]
+    fn a_run_left_out_of_the_text_leaves_out_its_separator() {
+        let text = "fn main() { match e { E::A => 1, E::B => 2 }; }";
+        assert_eq!(
+            found("match @e { @_..., E::B => @x }", text),
+            ["match e { E::A => 1, E::B => 2 }"]
+        );
+    }
+
+    #[test]
     fn a_run_after_a_node_matches_the_rest_of_a_longer_node() {
         assert_eq!(
-            captured(
+            found(
                 "let n = items[i] @rest...;",
+                "fn main() { let n = items[i].iter().count(); let n = items[i]; }"
+            ),
+            ["let n = items[i].iter().count();"]
+        );
+        assert_eq!(
+            captured(
+                "let n = items[i] @rest...?;",
                 "fn main() { let n = items[i].iter().count(); let n = items[i]; let n = other[i].len(); }"
             ),
             [
@@ -612,9 +633,10 @@ mod tests {
             ]
         );
         assert_eq!(
-            found(
+            found_within(
                 "Kind::A(_) => x @_...,",
-                "fn main() { match k { Kind::A(_) => x.foo().bar(), Kind::A(_) => y.foo(), } }"
+                "fn main() { match k { Kind::A(_) => x.foo().bar(), Kind::A(_) => y.foo(), } }",
+                "Kind::A(_) => x.foo().bar(), Kind::A(_) => y.foo(),"
             ),
             ["Kind::A(_) => x.foo().bar(),"]
         );
@@ -631,7 +653,7 @@ mod tests {
     fn a_repeated_name_matches_equal_rests() {
         assert_eq!(
             found(
-                "foo(a @t..., b @t...)",
+                "foo(a @t...?, b @t...?)",
                 "fn main() { foo(a.x(), b.x()); foo(a.x(), b.y()); foo(a, b); }"
             ),
             ["foo(a.x(), b.x())", "foo(a, b)"]
@@ -647,6 +669,30 @@ mod tests {
     }
 
     #[test]
+    fn a_repeated_name_matches_a_declaration_and_a_use() {
+        let ts = "function f(x) { return x; }\nfunction g(x: number) { return x; }\n";
+        assert_eq!(
+            found_in(Language::TypeScript, "function @f(@x) { return @x; }", ts),
+            ["function f(x) { return x; }"]
+        );
+        assert_eq!(
+            found(
+                "fn @f<@T>(x: @T) -> @T { x }",
+                "fn f<T>(x: T) -> T { x }\nfn g<T>(x: U) -> T { x }\n"
+            ),
+            ["fn f<T>(x: T) -> T { x }"]
+        );
+    }
+
+    #[test]
+    fn a_pattern_may_end_in_a_comment() {
+        assert_eq!(
+            found("foo(1, @x) // c", "fn main() { foo(1, x); }"),
+            ["foo(1, x)"]
+        );
+    }
+
+    #[test]
     fn matches_do_not_overlap() {
         assert_eq!(
             found("foo(@a)", "fn main() { foo(foo(1)); }"),
@@ -657,7 +703,7 @@ mod tests {
     #[test]
     fn matches_lie_within_the_range() {
         let text = "fn a() { foo(1); }\nfn b() { foo(2); }\n";
-        let p = Pattern::compile(Language::Rust, "foo(@x)").unwrap();
+        let p = Pattern::compile(Language::Rust, "foo(@x)", None).unwrap();
         let start = text.find("fn b").unwrap();
         let found = p.find(&Language::Rust.parse(text), text, start..text.len());
         assert_eq!(found.len(), 1);
@@ -705,15 +751,36 @@ mod tests {
 
     #[test]
     fn a_pattern_of_runs_matching_nothing_is_no_match() {
-        assert!(found_in(Language::Python, "@a...\n@b...", "x = 1\ny = 2\n").is_empty());
+        assert!(found_in(Language::Python, "@a...?\n@b...?", "x = 1\ny = 2\n").is_empty());
     }
 
     #[test]
-    fn a_pattern_matches_any_of_its_readings() {
+    fn a_pattern_matches_at_any_depth() {
         assert_eq!(
-            found("@a: u32", "struct S { a: u32 }\nfn f(b: u32) {}\n"),
-            ["a: u32", "b: u32"]
+            found_in(
+                Language::Python,
+                "x = 1",
+                "x = 1\ndef f():\n    if ok:\n        x = 1\n"
+            ),
+            ["x = 1", "x = 1"]
         );
+    }
+
+    #[test]
+    fn a_pattern_parses_in_its_context() {
+        let text = "struct S {\n    b: u8,\n}\nfn f(c: u32) {}\n";
+        let tree = Language::Rust.parse(text);
+        let body = text.find("b: u8,").unwrap()..text.find("\n}").unwrap();
+        let context = Context::new(text, &tree, body, None);
+        let p = Pattern::compile(Language::Rust, "@a: u32", Some(&context)).unwrap();
+        assert!(p.find(&tree, text, 0..text.len()).is_empty());
+        let p = Pattern::compile(Language::Rust, "@a: u8", Some(&context)).unwrap();
+        let found: Vec<_> = p
+            .find(&tree, text, 0..text.len())
+            .iter()
+            .map(|m| &text[m.range.clone()])
+            .collect();
+        assert_eq!(found, ["b: u8"]);
     }
 
     #[test]
@@ -772,6 +839,30 @@ mod tests {
     }
 
     #[test]
+    fn a_placeholder_alone_in_a_list_stands_for_its_element() {
+        let python =
+            "if ok:\n    run()\nelse:\n    stop()\n\ntry:\n    go()\nexcept E:\n    pass\n";
+        assert!(found_in(Language::Python, "if @c:\n    @body...", python).is_empty());
+        assert!(found_in(Language::Python, "try:\n    @body...", python).is_empty());
+        assert_eq!(
+            found_in(
+                Language::Python,
+                "if @c:\n    @body...\nelse:\n    @e...",
+                python
+            ),
+            ["if ok:\n    run()\nelse:\n    stop()"]
+        );
+        let go = "package p\n\nfunc f() {\n\tif x {\n\t\ta()\n\t\tb()\n\t}\n\tif y {\n\t\tc()\n\t}\n\treturn a, b\n}\n";
+        assert_eq!(
+            found_in(Language::Go, "if @c { @s }", go),
+            ["if y {\n\t\tc()\n\t}"]
+        );
+        assert_eq!(found_in(Language::Go, "if @c { @s... }", go).len(), 2);
+        assert!(found_in(Language::Go, "return @x", go).is_empty());
+        assert_eq!(found_in(Language::Go, "return @x...", go), ["return a, b"]);
+    }
+
+    #[test]
     fn go_captures_leave_out_the_statement_newline() {
         let text = "package main\n\nfunc main() {\n\tif c {\n\t\ta()\n\t\tb()\n\t}\n}\n";
         let m = &matches(Language::Go, "if @c { @body... }", text)[0];
@@ -782,19 +873,27 @@ mod tests {
 
     #[test]
     fn compile_errors() {
-        let Err(PatternError::NoParse { lang, at }) = Pattern::compile(Language::Rust, "fn (@a")
+        let Err(PatternError::NoParse { lang, at }) =
+            Pattern::compile(Language::Rust, "fn (@a", None)
         else {
             panic!("compiled");
         };
         assert_eq!(lang, Language::Rust);
         assert_eq!(at, "@a");
-        let Err(PatternError::NoParse { at, .. }) = Pattern::compile(Language::Go, "x := := 1")
+        let Err(PatternError::NoParse { at, .. }) =
+            Pattern::compile(Language::Go, "x := := 1", None)
         else {
             panic!("compiled");
         };
         assert_eq!(at, ":= 1");
+        let Err(PatternError::NoParse { at, .. }) =
+            Pattern::compile(Language::Rust, "x: i64", None)
+        else {
+            panic!("compiled");
+        };
+        assert_eq!(at, "i64");
         assert_eq!(
-            Pattern::compile(Language::Rust, "foo@bar(1)").unwrap_err(),
+            Pattern::compile(Language::Rust, "foo@bar(1)", None).unwrap_err(),
             PatternError::Fused {
                 placeholder: "@bar".into()
             }
@@ -812,11 +911,11 @@ mod tests {
     #[test]
     fn a_pattern_needs_code() {
         assert_eq!(
-            Pattern::compile(Language::Rust, "  ").unwrap_err(),
+            Pattern::compile(Language::Rust, "  ", None).unwrap_err(),
             PatternError::Empty
         );
         let Err(PatternError::NoParse { at, .. }) =
-            Pattern::compile(Language::Rust, "// only a comment")
+            Pattern::compile(Language::Rust, "// only a comment", None)
         else {
             panic!("compiled");
         };

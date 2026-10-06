@@ -11,11 +11,11 @@ aggressively. Do not change the overall structure.
 Not suggestions; exceptions are stated explicitly. Do not add or remove anything
 in this section unless explicitly told to.
 
-1. **Git is the engineer's call.** Never commit, push, merge, or delete files
-   without explicit permission. Even when asked to commit: work on a feature
-   branch, never the default branch (`main` / `release` / etc.); never rewrite
-   history (amend, squash, reorder, rebase, force-push) — use a fixup commit to
-   correct committed work.
+1. **Git is the engineer's call.** Never commit to a branch you didn't create,
+   merge, rewrite history (amend, squash, reorder, rebase, force-push), push, or
+   open pull requests without explicit permission; use a fixup commit to correct
+   committed work. **This repository is public:** take special care with pushes,
+   pull requests, and every other GitHub interaction.
 
 2. **Verify before reporting done.** Tests and linters must pass after every
    change.
@@ -29,8 +29,9 @@ in this section unless explicitly told to.
    reading files or env vars containing secrets at all; ask the engineer if you
    need to verify something secret-related.
 
-4. **Keep tasks small and focused.** Target PRs under 800 lines. Documentation
-   counts at a steep discount, since it's much cheaper to review.
+4. **Keep tasks small and focused.** Target review units (what the engineer
+   reviews at once, not GitHub PRs) under 800 lines. Documentation counts at a
+   steep discount, since it's much cheaper to review.
    - When the assigned task is complete, **stop** — even if the next step is
      obvious or a TODO file exists.
    - If a task is obviously too large, plan it, split it into sub-tasks, and
@@ -86,10 +87,32 @@ make an edit, makes it wrongly, or gives an unhelpful error, fall back for that
 edit only and report the gap to the engineer. After changing `ned`, reinstall
 it: `cargo install --path crates/ned-cli`.
 
+**Branches.** Only `release/X.Y` (major or minor) and `patch/X.Y.Z` branches
+merge into `main`. Each such PR raises `[workspace.package] version` (which part
+per TODO.md) and updates CHANGELOG.md, and its description mirrors the changelog
+entry. The engineer usually reviews locally, without a GitHub PR. Size work by
+review units (rule 4):
+
+- **Small** (no TDD cycle): edit the `release/` or `patch/` branch directly;
+  commit only with approval.
+- **Medium** (one TDD cycle, one review unit): commit each step on a feature
+  branch without asking; once approved, it is squashed into one commit on the
+  release or patch branch.
+- **Large** (several review units): stacked scratch branches, one per unit, each
+  committed step by step as above. Each scratch branch becomes one squashed
+  commit on a longer-lived feature branch, which the engineer re-reviews when
+  complete and merges into a release branch.
+- **Extra-large** (initiatives that may span several releases): as large, but
+  the feature branch may outlive release branches. Its commits are cherry-picked
+  onto a release branch, and `main` is merged back into it after every release.
+
+For medium and larger work, use a git worktree in your scratchpad (never under
+the home directory) and leave the default checkout alone, so other agents can
+work in parallel.
+
 Non-trivial implementation work follows a strict TDD cycle in small chunks. Each
 chunk is one cohesive unit (a module, a protocol message, a service behaviour).
-Finish each step before the next. Each step ends at a commit point: per rule 1,
-pause and ask for approval, then commit when permitted.
+Finish each step before the next. Each step ends at a commit point.
 
 1. **Skeleton** — minimum scaffolding for the next unit: module files, exported
    types, signatures with empty/`not implemented` bodies. Must build cleanly.
@@ -131,8 +154,8 @@ Neoed (`ned`) is a line editor for AI coding agents, replacing `sed`/ad-hoc
 Python. LLMs, like teletypes, work over an append-only text stream where every
 token costs, so `ned` offers a concise, word-based command language,
 syntax-aware addressing (tree-sitter, plus LSP through a per-workspace daemon),
-and automatic formatting. MVP is a one-shot CLI; a human REPL and an MCP server
-come later.
+and automatic formatting. It is a one-shot CLI, plus `ned repl`, a human REPL,
+and `ned mcp`, an MCP server.
 
 ## Status
 
@@ -154,25 +177,37 @@ edits checked while a daemon runs (introduced errors block unless
 `allow errors`), `rename`, and the `.refs`/`.def` parts (within the file set or
 `-w` workspace); the version names the build commit, and a daemon serves only
 its own build. With a daemon running, language servers format files whose
-formatters aren't installed, and `check` also waits for save-time checks
-(`cargo check`). §9 is done. Sessions (spec §1.2): `session` in `ned-core` keeps
-the per-workspace log, plans `undo` (`--force` merges with `diff::merge`) and
+formatters aren't installed, `check` also waits for save-time checks
+(`cargo check`), and written edits report what those checks find they
+introduced. §9 is done. Sessions (spec §1.2): `session` in `ned-core` keeps the
+per-workspace log, plans `undo` (`--force` merges with `diff::merge`) and
 expands `!!`; the CLI records every script run under `-s`/`NED_SESSION` and has
-`ned history` and `ned undo`. `--commit MSG` (`git` in `ned-core`) commits
-exactly an invocation's edits (in a session, every edit since its last commit)
-with git's plumbing, leaving other staged and unstaged changes alone. Terminal
-output (spec §6.6): `style` paints output under `--color`/`NO_COLOR`, and
-`highlight` colours `show` and diff hunks from the grammars' highlight queries;
-piped output is unchanged. Syntax selectors cover Rust, Python, Go, JavaScript,
-TypeScript/TSX and Markdown; `conflict` hides merge-conflict markers from every
-parse and finds the conflicts (`conflict:N`, `.ours`/`.theirs`/`.base`), which
-`resolve` resolves. Syntax patterns (spec §3.10) select code by writing it:
-`ned-scheme` reads the Scheme dialect (tree-sitter query syntax plus Scheme
-data) that builders and, later, plugins are written in; `template` lexes `@`
-placeholders, `fragment` parses a pattern alone or inside
-`queries/<lang>/builders.scm`, and `pattern` matches it against the tree;
-`replace` substitutes its captures. MIT-licensed; README has install and usage;
-CI (`.github/workflows/`) gates PRs.
+`ned history`, `ned undo` and `ned session list|delete`. `--commit MSG` (`git`
+in `ned-core`) commits exactly an invocation's edits (in a session, every edit
+since its last commit) with git's plumbing, leaving other staged and unstaged
+changes alone. Terminal output (spec §6.6): `style` paints output under
+`--color`/`NO_COLOR`, and `highlight` colours `show` and diff hunks from the
+grammars' highlight queries; piped output is unchanged. On truecolor and
+256-colour terminals, a `theme` from the user config (built-ins in
+`crates/ned-core/themes/`) colours each capture and tints changed lines
+(`color`). Syntax selectors cover Rust, Python, Go, JavaScript, TypeScript/TSX
+and Markdown; `conflict` hides merge-conflict markers from every parse and finds
+the conflicts (`conflict:N`, `.ours`/`.theirs`/`.base`), which `resolve`
+resolves. Syntax patterns (spec §3.10) select code by writing it: `template`
+lexes `@` placeholders, `fragment` parses a pattern in place of the code its
+previous step selected (or alone, for a whole file), `ast` lowers it and the
+file to abstract syntax trees (`queries/<lang>/ast.scm` names the tokens they
+leave out), and `pattern` matches them; `replace` substitutes its captures.
+`ned-scheme`, a reader for the Scheme dialect (tree-sitter query syntax plus
+Scheme data) that plugins will be written in, is unused for now. The REPL (spec
+§1.4, `ned-cli/src/repl.rs`) runs scripts on `buffers` (in-memory edits, undo,
+merging writes) through `exec`'s overlay and `apply`, the post-exec pipeline the
+CLI shares; it records into a session, and `:attach` follows another session's
+log (`Follower`). An invocation (`invoke`: `!!`, run, write, commit, record, and
+`history`/`undo`) prints through `invoke::Output`, so `ned-mcp` (spec §1.5;
+JSON-RPC on stdio, behind `ned mcp`) runs the CLI's pipeline as tools; help
+texts are `ned-core/help/`. MIT-licensed; README has install and usage; CI
+(`.github/workflows/`) gates PRs.
 
 ## Key Documentation
 
@@ -185,36 +220,36 @@ CI (`.github/workflows/`) gates PRs.
 
 ## Tech Stack / Dependencies
 
-| Technology                        | Role                                       |
-| --------------------------------- | ------------------------------------------ |
-| Rust (edition 2024)               | Language; single fast-starting binary      |
-| `tree-sitter` + grammar crates    | Parsing: Rust, Python, TS/JS, Go, Markdown |
-| `ropey`                           | Rope text buffer                           |
-| `regex`                           | Regex selectors and `sub`                  |
-| `glob`, `ignore`                  | File-set globs; `-w` workspace walk        |
-| `similar`                         | Diff output                                |
-| `serde` + `toml`                  | Config (`.ned.toml`)                       |
-| `thiserror` / `anyhow`            | Errors in core / CLI                       |
-| `clap` (derive)                   | CLI arguments                              |
-| `tokio`, `serde_json`, `libc`     | Daemon: event loop, protocol, `getuid`     |
-| `lsp-types`, `url`                | LSP messages and file URIs                 |
-| `insta`, `assert_cmd`, `tempfile` | Snapshot, CLI, and fs tests                |
+| Technology                        | Role                                        |
+| --------------------------------- | ------------------------------------------- |
+| Rust (edition 2024)               | Language; single fast-starting binary       |
+| `tree-sitter` + grammar crates    | Parsing: Rust, Python, TS/JS, Go, Markdown  |
+| `ropey`                           | Rope text buffer                            |
+| `regex`                           | Regex selectors and `sub`                   |
+| `glob`, `ignore`                  | File-set globs; `-w` workspace walk         |
+| `similar`                         | Diff output                                 |
+| `serde` + `toml`                  | Config (`.ned.toml`)                        |
+| `thiserror` / `anyhow`            | Errors in core / CLI                        |
+| `clap` (derive)                   | CLI arguments                               |
+| `tokio`, `serde_json`, `libc`     | Daemon, MCP: event loop, protocol, `getuid` |
+| `lsp-types`, `url`                | LSP messages and file URIs                  |
+| `insta`, `assert_cmd`, `tempfile` | Snapshot, CLI, and fs tests                 |
 
 ## Repository Structure
 
 ```
 Cargo.toml         workspace; shared version, edition, lints
 crates/ned-core/   library: buffer, script parser, selectors, languages, exec, formatting
-crates/ned-cli/    `ned` binary: args, I/O, output rendering, help texts, daemon client glue
+crates/ned-cli/    `ned` binary: args, I/O, the REPL, daemon client glue
+crates/ned-mcp/    MCP server (protocol and tools) behind `ned mcp`
 crates/ned-daemon/ per-workspace daemon (Unix socket), its sync client, language servers
-crates/ned-scheme/ reader for the Scheme dialect of query files, builders and plugins
+crates/ned-scheme/ reader for the Scheme dialect of query files and (later) plugins
 queries/<lang>/    tree-sitter selector queries (.scm), one dir per language
 docs/              specs, agent guide, Claude Code skill; web/ is the project website
 bench/             token-cost (cases/ back spec §8's table) and --commit git-process benchmarks (uv project)
 ```
 
-Planned crates: `ned-repl`, `ned-mcp`. All logic lives in `ned-core` so
-frontends stay thin.
+All logic lives in `ned-core` so frontends stay thin.
 
 ## Design Decisions
 
@@ -270,11 +305,10 @@ frontends stay thin.
 
 ## Deployment Notes
 
-CI tests and checks formatting on PRs to `main` and `release/*`. Every PR to
-`main` that changes Rust code or `queries/` must update CHANGELOG.md and raise
-`[workspace.package] version` (which part per TODO.md). Merging such a PR tags
-`vX.Y.Z` and publishes Linux (musl) and macOS binaries (`release.yml`, built
-with `NED_RELEASE` set for a metadata-free version). Install a release:
+CI tests and checks formatting on PRs to `main` and `release/*`. Merging a PR
+that changes Rust code or `queries/` into `main` tags `vX.Y.Z` and publishes
+Linux (musl) and macOS binaries (`release.yml`, built with `NED_RELEASE` set for
+a metadata-free version). Install a release:
 `curl -fsSL https://raw.githubusercontent.com/bbessemer/neoed/main/install.sh | sh`;
 from source:
 `cargo install --locked --git https://github.com/bbessemer/neoed ned-cli`; from

@@ -101,6 +101,10 @@ pub enum ParseErrorKind {
     UnterminatedHeredoc(String),
     #[error("expected a name after `{0}:`, e.g. {0}:foo or {0}:*")]
     MissingName(String),
+    #[error(
+        "`*` alone selects nothing; *:NAME is the item NAME of any kind, e.g. *:parse, and *:* is every item"
+    )]
+    BareStar,
     #[error("unknown command `{0}`; commands are {list}", list = COMMANDS)]
     UnknownCommand(String),
     #[error("`{0}:` is a part, not a kind; select the symbol and add .{0}, e.g. fn:NAME.{0}")]
@@ -109,6 +113,13 @@ pub enum ParseErrorKind {
         "`conflict:{0}` isn't a conflict's number; conflicts count from 1 in file order, as in conflict:1, and `conflict` is each of them"
     )]
     ConflictNumber(String),
+    #[error(
+        "`.lines:{0}` isn't a line's number; lines count from 1 within the span, as in .lines:1, and .lines:$ is the last"
+    )]
+    LineIndex(String),
+    /// `.PART:N` for a part other than `.lines`.
+    #[error("`.{part}` takes no number; pick a line of it with .{part}.lines:{number}")]
+    PartNumber { part: String, number: String },
     /// `hint` is empty, or `; ` and a fix.
     #[error("expected {expected}, found {found}{hint}")]
     Expected {
@@ -205,6 +216,15 @@ impl ParseError {
             None => header,
         }
     }
+
+    /// Whether the script ends inside a heredoc or a pattern, so more lines
+    /// could complete it (the REPL's continuation, §1.4).
+    pub fn incomplete(&self) -> bool {
+        matches!(
+            self.kind,
+            ParseErrorKind::UnterminatedHeredoc(_) | ParseErrorKind::UnterminatedPattern
+        )
+    }
 }
 
 /// The line of `src` holding byte `offset`, labelled `LINE:`, and a caret
@@ -292,5 +312,18 @@ mod tests {
     fn error_past_last_line_has_no_excerpt() {
         let e = err(ParseErrorKind::ZeroLine, 5..5);
         assert_eq!(e.render("show\n"), format!("error: script:2:1: {}", e.kind));
+    }
+
+    #[test]
+    fn a_script_ending_in_a_heredoc_or_pattern_is_incomplete() {
+        let incomplete = |src: &str| crate::script::parse(src).unwrap_err().incomplete();
+        assert!(incomplete("replace 1 with <<END\nfn a() {}"));
+        assert!(incomplete("insert after 1 <<'END'"));
+        assert!(incomplete("show `foo(@x"));
+        assert!(incomplete("show ``foo(`x`"));
+        assert!(!incomplete("show \"foo"));
+        assert!(!incomplete("show /foo"));
+        assert!(!incomplete("frobnicate 1"));
+        assert!(!incomplete("show 1 +"));
     }
 }

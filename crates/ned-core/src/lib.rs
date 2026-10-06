@@ -1,6 +1,10 @@
 //! Editing engine behind the `ned` CLI.
 
+pub mod apply;
+pub mod ast;
 pub mod buffer;
+pub mod buffers;
+pub mod color;
 pub mod config;
 pub mod conflict;
 pub mod diff;
@@ -10,7 +14,9 @@ pub mod format;
 pub mod fragment;
 pub mod fs;
 pub mod git;
+pub mod help;
 pub mod highlight;
+pub mod invoke;
 pub mod lang;
 pub mod lsp;
 pub mod outline;
@@ -23,4 +29,5 @@ pub mod style;
 pub mod syntax;
 pub mod template;
 pub mod text;
+pub mod theme;
 pub mod workspace;

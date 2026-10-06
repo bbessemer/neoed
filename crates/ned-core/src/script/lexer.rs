@@ -129,6 +129,11 @@ impl<'a> Lexer<'a> {
             '.' => TokenKind::Part(self.part()?),
             '[' => TokenKind::Filter(self.filter()?),
             '`' => self.code(start)?,
+            '*' if self.src[self.pos..].starts_with("*:") => {
+                self.pos += 1;
+                self.syntax(start, "*")?
+            }
+            '*' => return Err(ParseError::new(E::BareStar, start..start + 1)),
             c if c.is_ascii_alphabetic() || c == '_' => self.word()?,
             c => {
                 return Err(ParseError::new(
@@ -350,10 +355,32 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
         self.pos += 1;
         let name = self.take_while(is_ident_char);
-        match name {
-            "" => Err(ParseError::new(E::UnexpectedChar('.'), start..start + 1)),
+        let part = match name {
+            "" => return Err(ParseError::new(E::UnexpectedChar('.'), start..start + 1)),
             _ => part_named(name)
-                .ok_or_else(|| ParseError::new(E::UnknownPart(name.into()), start..self.pos)),
+                .ok_or_else(|| ParseError::new(E::UnknownPart(name.into()), start..self.pos))?,
+        };
+        if self.peek() != Some(':') {
+            return Ok(part);
+        }
+        self.pos += 1;
+        // Any number, so the error can say what a line's number is.
+        let number = self
+            .take_while(|c| !c.is_whitespace() && !matches!(c, '>' | ';' | '|' | '.' | '['))
+            .to_string();
+        let error = |kind| Err(ParseError::new(kind, start..self.pos));
+        match (part, number.as_str()) {
+            (Part::Lines, "$") => Ok(Part::Line(LineNo::Last)),
+            (Part::Lines, n) => match n.parse() {
+                Ok(n) if n > 0 && number.bytes().all(|b| b.is_ascii_digit()) => {
+                    Ok(Part::Line(LineNo::Number(n)))
+                }
+                _ => error(E::LineIndex(number)),
+            },
+            _ => error(E::PartNumber {
+                part: name.into(),
+                number,
+            }),
         }
     }
 
@@ -361,47 +388,49 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
         let word = self.take_while(is_ident_char);
         match self.peek() {
-            Some(':') => {
-                self.pos += 1;
-                let quoted = self.peek() == Some('"');
-                let name = match self.peek() {
-                    Some('"') => self.string()?,
-                    _ if word == "file" => self
-                        .take_while(|c| !matches!(c, ' ' | '\t' | '\r' | '\n' | '>' | ';' | '|'))
-                        .to_string(),
-                    // Any name, so the parser can say what a conflict's number is.
-                    _ if word == "conflict" => self
-                        .take_while(|c| {
-                            !c.is_whitespace() && !matches!(c, '>' | ';' | '|' | '.' | '[')
-                        })
-                        .to_string(),
-                    _ => self
-                        .take_while(|c| is_ident_char(c) || c == ':' || c == '*')
-                        .to_string(),
-                };
-                if name.is_empty() && word != "conflict" {
-                    return Err(ParseError::new(
-                        E::MissingName(word.into()),
-                        start..self.pos,
-                    ));
-                }
-                if !quoted
-                    && word != "file"
-                    && let Some(err) = self
-                        .dotted_name(word, &name)
-                        .or_else(|| self.dashed_name(word, &name))
-                        .or_else(|| self.braced_name(word, &name))
-                {
-                    return Err(err);
-                }
-                Ok(TokenKind::Syntax {
-                    kind: word.into(),
-                    name,
-                })
-            }
+            Some(':') => self.syntax(start, word),
             Some('{') if word == "query" => self.query(start),
             _ => Ok(TokenKind::Word(word.into())),
         }
+    }
+
+    /// The rest of a `kind:name` selector, from the `:` after `kind`, which
+    /// starts at byte `start`.
+    fn syntax(&mut self, start: usize, word: &'a str) -> Result<TokenKind, ParseError> {
+        self.pos += 1;
+        let quoted = self.peek() == Some('"');
+        let name = match self.peek() {
+            Some('"') => self.string()?,
+            _ if word == "file" => self
+                .take_while(|c| !matches!(c, ' ' | '\t' | '\r' | '\n' | '>' | ';' | '|'))
+                .to_string(),
+            // Any name, so the parser can say what a conflict's number is.
+            _ if word == "conflict" => self
+                .take_while(|c| !c.is_whitespace() && !matches!(c, '>' | ';' | '|' | '.' | '['))
+                .to_string(),
+            _ => self
+                .take_while(|c| is_ident_char(c) || c == ':' || c == '*')
+                .to_string(),
+        };
+        if name.is_empty() && word != "conflict" {
+            return Err(ParseError::new(
+                E::MissingName(word.into()),
+                start..self.pos,
+            ));
+        }
+        if !quoted
+            && word != "file"
+            && let Some(err) = self
+                .dotted_name(word, &name)
+                .or_else(|| self.dashed_name(word, &name))
+                .or_else(|| self.braced_name(word, &name))
+        {
+            return Err(err);
+        }
+        Ok(TokenKind::Syntax {
+            kind: word.into(),
+            name,
+        })
     }
 
     /// For an unquoted `kind:name` followed by `.SEGMENT`s that aren't parts,
@@ -773,6 +802,28 @@ mod tests {
     }
 
     #[test]
+    fn any_kind_selectors() {
+        assert_eq!(kinds("*:LIMIT"), [syntax("*", "LIMIT")]);
+        assert_eq!(kinds("*:test_*"), [syntax("*", "test_*")]);
+        assert_eq!(kinds("*:*"), [syntax("*", "*")]);
+        assert_eq!(kinds(r#"*:"os.path""#), [syntax("*", "os.path")]);
+        assert_eq!(
+            kinds("*:Parser>fn:new.body"),
+            [
+                syntax("*", "Parser"),
+                T::Gt,
+                syntax("fn", "new"),
+                T::Part(Part::Body)
+            ]
+        );
+        let e = error("show *");
+        assert_eq!(e.kind, E::BareStar);
+        assert_eq!(e.span, 5..6);
+        assert_eq!(error("show all *>fn:a").kind, E::BareStar);
+        assert_eq!(error("show *: x").kind, E::MissingName("*".into()));
+    }
+
+    #[test]
     fn line_selectors() {
         assert_eq!(kinds("12"), [lines(N(12), None)]);
         assert_eq!(kinds("12-20"), [lines(N(12), Some(N(20)))]);
@@ -836,6 +887,48 @@ mod tests {
         assert_eq!(e.span, 3..4);
         assert_eq!(error("/abc\n/").kind, E::UnterminatedRegex);
         assert_eq!(error(r"/abc\/").kind, E::UnterminatedRegex);
+    }
+
+    #[test]
+    fn line_of_a_span() {
+        assert_eq!(
+            kinds("fn:a.lines:2"),
+            [syntax("fn", "a"), T::Part(Part::Line(N(2)))]
+        );
+        assert_eq!(
+            kinds("fn:f.body.lines:$>/x/"),
+            [
+                syntax("fn", "f"),
+                T::Part(Part::Body),
+                T::Part(Part::Line(LineNo::Last)),
+                T::Gt,
+                regex("x", false, false)
+            ]
+        );
+        let filtered = kinds("/x/.lines:10[.len > 3]");
+        assert_eq!(filtered[1], T::Part(Part::Line(N(10))));
+        assert!(matches!(filtered[2], T::Filter(_)));
+    }
+
+    #[test]
+    fn bad_line_of_a_span() {
+        let e = error("fn:a.lines:0");
+        assert_eq!(e.kind, E::LineIndex("0".into()));
+        assert_eq!(e.span, 4..12);
+        assert_eq!(error("fn:a.lines:x").kind, E::LineIndex("x".into()));
+        assert_eq!(error("fn:a.lines:").kind, E::LineIndex(String::new()));
+        assert_eq!(error("fn:a.lines:2x>b").kind, E::LineIndex("2x".into()));
+        assert_eq!(
+            error("fn:a.lines:99999999999999999999999").kind,
+            E::LineIndex("99999999999999999999999".into())
+        );
+        assert_eq!(
+            error("fn:a.body:2").kind,
+            E::PartNumber {
+                part: "body".into(),
+                number: "2".into()
+            }
+        );
     }
 
     #[test]

@@ -144,30 +144,110 @@ pub fn blank_separated(text: &str, full: Range<usize>) -> bool {
     above || below
 }
 
-/// Widens a whole-line deletion by one adjacent blank line when deleting
-/// `range` would leave two blank lines in a row, a blank line right after an
-/// opening delimiter (or a line ending in `:`) or right before a closing one,
-/// or a blank line at the start or end of the file (§4.2).
+/// How many blank lines separate the whole lines `full` from their neighbour
+/// above and below: the nearest non-blank line, if it is indented at least as
+/// deeply as `full`'s first line and isn't an opening (above) or closing
+/// (below) delimiter line; `None` where there is no neighbour (§4.2).
+pub fn neighbour_gaps(text: &str, full: Range<usize>) -> (Option<usize>, Option<usize>) {
+    let indent = leading_whitespace(&text[full.clone()]).len();
+    let neighbour = |run: &BlankRun, delimiter: fn(&str) -> bool| {
+        run.beyond
+            .filter(|l| leading_whitespace(l).len() >= indent && !delimiter(l))
+            .map(|_| run.edges.len())
+    };
+    (
+        neighbour(&blank_above(text, full.start), opens),
+        neighbour(&blank_below(text, full.end), closes),
+    )
+}
+
+/// Widens a whole-line deletion over the blank lines beside it, so the gap
+/// left behind is the larger of the two around `range`, or no wider than the
+/// gap already beside an opening or closing delimiter, and empty at the start
+/// or end of the file (§4.2).
 pub fn tidy_delete(text: &str, range: Range<usize>) -> Range<usize> {
-    let blank = |line: &str| line.trim().is_empty();
-    // The lines around the span, with their other ends; `None` at the start
-    // or end of the file, which count as delimiters.
-    let prev = (range.start > 0).then(|| {
-        let start = line_start(text, range.start - 1);
-        (start, &text[start..range.start])
-    });
-    let next = (range.end < text.len()).then(|| {
-        let end = next_line(text, range.end);
-        (end, &text[range.end..end])
-    });
-    let after_opening =
-        prev.is_none_or(|(_, p)| blank(p) || p.trim_end().ends_with(['{', '(', '[', ':']));
-    let before_closing = next.is_none_or(|(_, n)| n.trim_start().starts_with(['}', ')', ']']));
-    match (prev, next) {
-        (_, Some((end, next))) if blank(next) && after_opening => range.start..end,
-        (Some((start, prev)), _) if blank(prev) && before_closing => start..range.end,
-        _ => range,
+    let (above, below) = (blank_above(text, range.start), blank_below(text, range.end));
+    let (gap_above, gap_below) = (above.edges.len(), below.edges.len());
+    let keep = match (above.beyond, below.beyond) {
+        (None, _) | (_, None) => 0,
+        (Some(prev), Some(next)) => match (opens(prev), closes(next)) {
+            (true, true) => gap_above.min(gap_below),
+            (true, false) => gap_above,
+            (false, true) => gap_below,
+            (false, false) => gap_above.max(gap_below),
+        },
+    };
+    // Blank lines below the span go first, so the gap above it survives.
+    let removed = gap_above + gap_below - keep;
+    let from_below = removed.min(gap_below);
+    let start = match removed - from_below {
+        0 => range.start,
+        n => above.edges[n - 1],
+    };
+    let end = match from_below {
+        0 => range.end,
+        n => below.edges[n - 1],
+    };
+    start..end
+}
+
+/// A run of blank lines beside a span: the far edge of each of its lines,
+/// nearest first, and the non-blank line beyond it, or `None` at the start or
+/// end of the file.
+struct BlankRun<'t> {
+    edges: Vec<usize>,
+    beyond: Option<&'t str>,
+}
+
+/// The blank lines directly above `start`, a line start.
+fn blank_above(text: &str, start: usize) -> BlankRun<'_> {
+    let (mut at, mut edges) = (start, Vec::new());
+    while at > 0 {
+        let line = line_start(text, at - 1);
+        if !text[line..at].trim().is_empty() {
+            return BlankRun {
+                edges,
+                beyond: Some(&text[line..at]),
+            };
+        }
+        edges.push(line);
+        at = line;
     }
+    BlankRun {
+        edges,
+        beyond: None,
+    }
+}
+
+/// The blank lines directly below `end`, a line end.
+fn blank_below(text: &str, end: usize) -> BlankRun<'_> {
+    let (mut at, mut edges) = (end, Vec::new());
+    while at < text.len() {
+        let line = next_line(text, at);
+        if !text[at..line].trim().is_empty() {
+            return BlankRun {
+                edges,
+                beyond: Some(&text[at..line]),
+            };
+        }
+        edges.push(line);
+        at = line;
+    }
+    BlankRun {
+        edges,
+        beyond: None,
+    }
+}
+
+/// Whether `line` opens a block: ends with an opening delimiter or, as in
+/// Python, a `:`.
+fn opens(line: &str) -> bool {
+    line.trim_end().ends_with(['{', '(', '[', ':'])
+}
+
+/// Whether `line` starts with a closing delimiter.
+fn closes(line: &str) -> bool {
+    line.trim_start().starts_with(['}', ')', ']'])
 }
 
 /// Splits `text` into lines, strips their common indentation, and empties
@@ -455,7 +535,8 @@ mod tests {
     fn tidy_removes_blank_at_start_of_file() {
         assert_eq!(delete("b\n\nc\n", "b\n"), "c\n");
         assert_eq!(delete("b\r\n\r\nc\r\n", "b\r\n"), "c\r\n");
-        assert_eq!(delete("b\n\n\nc\n", "b\n"), "\nc\n");
+        assert_eq!(delete("b\n\n\nc\n", "b\n"), "c\n");
+        assert_eq!(delete("\nb\nc\n", "b\n"), "c\n");
     }
 
     #[test]
@@ -463,5 +544,42 @@ mod tests {
         assert_eq!(delete("a\n\nb\n", "b\n"), "a\n");
         assert_eq!(delete("a\n\nb", "b"), "a\n");
         assert_eq!(delete("a\r\n\r\nb\r\n", "b\r\n"), "a\r\n");
+        assert_eq!(delete("a\n\n\nb\n\n", "b\n"), "a\n");
+    }
+
+    #[test]
+    fn tidy_keeps_the_larger_gap() {
+        assert_eq!(delete("a\n\n\nb\n\n\nc\n", "b\n"), "a\n\n\nc\n");
+        assert_eq!(delete("a\n\nb\n\n\nc\n", "b\n"), "a\n\n\nc\n");
+        assert_eq!(delete("a\n\n\nb\nc\n", "b\n"), "a\n\n\nc\n");
+    }
+
+    #[test]
+    fn tidy_keeps_blank_lines_already_beside_a_delimiter() {
+        assert_eq!(delete("{\n\n\nx\n\ny\n}\n", "x\n"), "{\n\n\ny\n}\n");
+        assert_eq!(delete("{\nx\n\n\ny\n\n}\n", "y\n"), "{\nx\n\n}\n");
+        assert_eq!(
+            delete("class A:\n\n    x\n\n\n    y\n", "    x\n"),
+            "class A:\n\n    y\n"
+        );
+    }
+
+    #[test]
+    fn neighbour_gaps_count_blank_lines_to_neighbours() {
+        let gaps = |text: &str, needle: &str| neighbour_gaps(text, span(text, needle));
+        let py = "def f():\n    pass\n\n\ndef g():\n    pass\n";
+        assert_eq!(gaps(py, "def f():\n    pass\n"), (None, Some(2)));
+        assert_eq!(gaps(py, "def g():\n    pass\n"), (Some(2), None));
+        let class = "class A:\n    def f(self):\n        pass\n\n    def g(self):\n        pass\n\n\nX = 1\n";
+        assert_eq!(
+            gaps(class, "    def f(self):\n        pass\n"),
+            (None, Some(1))
+        );
+        assert_eq!(
+            gaps(class, "    def g(self):\n        pass\n"),
+            (Some(1), None)
+        );
+        assert_eq!(gaps("{\n    a\n\n}\n", "    a\n"), (None, None));
+        assert_eq!(gaps("a\nb\nc\n", "b\n"), (Some(0), Some(0)));
     }
 }

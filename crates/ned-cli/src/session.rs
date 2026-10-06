@@ -1,182 +1,86 @@
-//! Sessions in the CLI: `-s`, `NED_SESSION`, `ned history` and `ned undo`
-//! (spec §1.2).
+//! `ned history`, `ned undo` and `ned session` (spec §1.2).
 
+use std::collections::HashSet;
 use std::env;
-use std::io;
 use std::path::{Path, PathBuf};
 
-use ned_core::diff::{self, DiffStat};
-use ned_core::fs;
-use ned_core::lang::Language;
-use ned_core::session::{
-    self, Entry, FileChange, Session, SessionError, UncommittedError, UndoError,
-};
-use ned_core::style::Role;
-use ned_core::workspace;
+use clap::Subcommand;
+use ned_core::invoke::{self, Failure};
+use ned_core::{session, workspace};
 
-/// The session `-s` (`flag`) or `NED_SESSION` names, if any.
-pub fn name(flag: Option<String>) -> Option<String> {
-    flag.or_else(|| env::var("NED_SESSION").ok())
-        .filter(|name| !name.is_empty())
+use crate::Terminal;
+
+#[derive(Subcommand)]
+pub enum Action {
+    /// List the workspace's sessions.
+    List {
+        /// List every workspace's sessions, under its path.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Delete sessions of the workspace.
+    Delete {
+        #[arg(required = true, value_name = "NAME")]
+        names: Vec<String>,
+        /// The workspace the sessions belong to, instead of the working
+        /// directory's.
+        #[arg(short, long, value_name = "DIR")]
+        workspace: Option<PathBuf>,
+    },
 }
 
-/// Session `name` of the workspace at `root`, or the error to print and the
-/// exit code.
-pub fn open(name: &str, root: &Path) -> Result<Session, Failure> {
-    Session::new(&session::state_dir().map_err(failure)?, root, name).map_err(failure)
-}
-
-/// Appends `entry` to `session`; a failure is only a note, since the
-/// invocation's files are already written.
-pub fn record(session: &Session, entry: Entry) {
-    if let Err(err) = session.lock().and_then(|mut log| log.append(entry)) {
-        errln!("note: not recorded in session {}: {err}", session.name());
+/// `ned session`.
+pub fn run(action: Action) -> Result<(), Failure> {
+    match action {
+        Action::List { all } => list(all),
+        Action::Delete { names, workspace } => delete(names, workspace),
     }
 }
 
-/// The changes `--commit` commits in `session` besides the invocation's own,
-/// each with its entry's id (spec §1.3).
-pub fn uncommitted(session: &Session) -> Result<Vec<(u64, FileChange)>, Failure> {
-    let entries = session.lock().and_then(|log| log.entries());
-    session::uncommitted(&entries.map_err(failure)?, read).map_err(|err| {
-        let code = match err {
-            UncommittedError::Io { .. } => 3,
-            UncommittedError::Changed { .. } => 1,
-        };
-        (format!("error: {err}"), code)
-    })
+fn list(all: bool) -> Result<(), Failure> {
+    let state_dir = session::state_dir().map_err(invoke::failure)?;
+    if all {
+        for (root, names) in session::workspaces(&state_dir).map_err(invoke::failure)? {
+            outln!("{}", root.display());
+            for name in names {
+                outln!("  {name}");
+            }
+        }
+    } else {
+        for name in session::sessions(&state_dir, &here(None)?.1).map_err(invoke::failure)? {
+            outln!("{name}");
+        }
+    }
+    Ok(())
 }
 
-/// An error to print, and the exit code.
-pub type Failure = (String, u8);
+fn delete(mut names: Vec<String>, dir: Option<PathBuf>) -> Result<(), Failure> {
+    let mut seen = HashSet::new();
+    names.retain(|name| seen.insert(name.clone()));
+    let root = here(dir)?.1;
+    let sessions = names
+        .into_iter()
+        .map(|name| existing(Some(name), &root))
+        .collect::<Result<Vec<_>, _>>()?;
+    for session in sessions {
+        let name = session.name().to_string();
+        session.delete().map_err(invoke::failure)?;
+        outln!("{name}: deleted");
+    }
+    Ok(())
+}
 
 /// `ned history`.
 pub fn history(flag: Option<String>, dir: Option<PathBuf>, all: bool) -> Result<(), Failure> {
     let session = existing(flag, &here(dir)?.1)?;
-    let entries = session.lock().and_then(|log| log.entries());
-    out!("{}", session::history(&entries.map_err(failure)?, all));
-    Ok(())
+    invoke::history(&session, all, &mut Terminal)
 }
 
-/// `ned undo`, holding the session's lock from reading the log to recording
-/// the undo, so no other invocation in the session comes between.
+/// `ned undo`.
 pub fn undo(flag: Option<String>, dir: Option<PathBuf>, force: bool) -> Result<(), Failure> {
     let (cwd, root) = here(dir)?;
     let session = existing(flag, &root)?;
-    let mut log = session.lock().map_err(failure)?;
-    let entries = log.entries().map_err(failure)?;
-    let undo = session::undo(&entries, read, force).map_err(|err| {
-        let code = match err {
-            UndoError::Io { .. } => 3,
-            _ => 1,
-        };
-        (format!("error: {}", err.relative_to(&cwd)), code)
-    })?;
-
-    let mut writes = Vec::new();
-    let mut removes = Vec::new();
-    for change in &undo.changes {
-        match &change.after {
-            Some(text) => writes.push((change.path.clone(), text.clone())),
-            None => removes.push(change.path.clone()),
-        }
-    }
-    if let Err(err) = fs::write_atomic(&writes, &removes) {
-        return Err((
-            format!("error: cannot write files: {err}; no file was changed"),
-            3,
-        ));
-    }
-
-    let script = undo.script.as_deref().map(session::script_summary);
-    outln!("undo {}: {}", undo.id, script.unwrap_or_default());
-    for change in &undo.changes {
-        let path = change.path.strip_prefix(&cwd).unwrap_or(&change.path);
-        let path = path.to_string_lossy();
-        let before = change.before.as_deref().unwrap_or_default();
-        let after = change.after.as_deref().unwrap_or_default();
-        let stat = DiffStat::between(before, after);
-        let style = crate::styles().0;
-        let summary = match (&change.before, &change.after) {
-            (None, _) => diff::created_summary(&path, stat, false),
-            (_, None) => diff::removed_summary(&path, stat),
-            _ => diff::summary(&path, diff::regions(before, after), stat, false),
-        };
-        outln!("{}", style.paint(Role::Header, &summary));
-        let lang = Language::detect(&path, after);
-        let (before, after) = (diff::Side::new(before, lang), diff::Side::new(after, lang));
-        out!("{}", diff::hunks(&before, &after, 1, style));
-    }
-
-    let entry = Entry {
-        id: 0,
-        time: session::now(),
-        cwd,
-        files: Vec::new(),
-        workspace: None,
-        script: None,
-        undoes: Some(undo.id),
-        dry_run: false,
-        exit: 0,
-        error: None,
-        changes: undo.changes,
-        commit: None,
-    };
-    if let Err(err) = log.append(entry) {
-        errln!("note: not recorded in session {}: {err}", session.name());
-    }
-    Ok(())
-}
-
-/// Expands a `!!` script from `session`'s log, printing a note of what it
-/// repeats; another script is returned as it is. Without FILE arguments or
-/// -w, the repeat takes the last script's, and with its -w, its `root`.
-pub fn repeat(
-    session: Option<&Session>,
-    src: String,
-    cwd: &Path,
-    files: &mut Vec<String>,
-    workspace: &mut Option<Option<PathBuf>>,
-    root: &mut PathBuf,
-    dry_run: bool,
-) -> Result<String, Failure> {
-    if !session::is_repeat(&src) {
-        return Ok(src);
-    }
-    let Some(session) = session else {
-        let error = "error: `!!` repeats a session's last script; give the session with -s NAME or NED_SESSION";
-        return Err((error.to_string(), 2));
-    };
-    let entries = session.lock().and_then(|log| log.entries());
-    let entries = entries.map_err(failure)?;
-    let (entry, script) = match session::repeat(&src, &entries, dry_run) {
-        None => return Ok(src),
-        Some(result) => result.map_err(|err| (format!("error: {err}"), 2))?,
-    };
-    errln!(
-        "note: repeating {}: {}",
-        entry.id,
-        session::script_summary(&script)
-    );
-    if files.is_empty() && workspace.is_none() {
-        match &entry.workspace {
-            Some(dir) => {
-                *workspace = Some(Some(dir.clone()));
-                *root = dir.clone();
-            }
-            None => {
-                *files = entry
-                    .files
-                    .iter()
-                    .map(|file| match entry.cwd == cwd {
-                        true => file.clone(),
-                        false => entry.cwd.join(file).to_string_lossy().into_owned(),
-                    })
-                    .collect();
-            }
-        }
-    }
-    Ok(script)
+    invoke::undo(&session, cwd, force, crate::styles().0, &mut Terminal)
 }
 
 /// The working directory, canonical so recorded paths can be shown relative
@@ -197,13 +101,17 @@ fn here(dir: Option<PathBuf>) -> Result<(PathBuf, PathBuf), Failure> {
 
 /// The session `flag` or `NED_SESSION` names, which must have a log in the
 /// workspace at `root`.
-fn existing(flag: Option<String>, root: &Path) -> Result<Session, Failure> {
-    let Some(name) = name(flag) else {
+fn existing(flag: Option<String>, root: &Path) -> Result<session::Session, Failure> {
+    let Some(name) = invoke::session_name(flag) else {
         let listed = listing(root);
         let error = format!("error: no session; give one with -s NAME or NED_SESSION ({listed})");
         return Err((error, 2));
     };
-    let session = open(&name, root)?;
+    let session = invoke::open(&name, root).map_err(|(error, code)| match code {
+        // An invalid name: the fix is one of the workspace's sessions.
+        2 => (format!("{error}; {}", listing(root)), code),
+        _ => (error, code),
+    })?;
     if !session.exists() {
         let listed = listing(root).replace(" in this workspace", " in it");
         let error = format!("error: no session `{name}` in this workspace; {listed}");
@@ -212,31 +120,11 @@ fn existing(flag: Option<String>, root: &Path) -> Result<Session, Failure> {
     Ok(session)
 }
 
-fn failure(err: SessionError) -> Failure {
-    (format!("error: {err}"), exit_code(&err))
-}
-
-/// The text of the file at `path`, `None` if it's missing.
-fn read(path: &Path) -> io::Result<Option<String>> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(Some(text)),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err),
-    }
-}
-
 /// The workspace's sessions, for an error's fix.
 fn listing(root: &Path) -> String {
     let names = session::state_dir().and_then(|dir| session::sessions(&dir, root));
     match names.unwrap_or_default() {
         names if names.is_empty() => "none recorded in this workspace yet".to_string(),
         names => format!("sessions in this workspace: {}", names.join(", ")),
-    }
-}
-
-fn exit_code(err: &SessionError) -> u8 {
-    match err {
-        SessionError::BadName(_) => 2,
-        _ => 3,
     }
 }

@@ -60,20 +60,32 @@ markdown = false
 /// Runs `ned ARGS` in `dir`, with `stdin` as its input, and reports the exit
 /// code, stdout, and stderr.
 fn ned(dir: &Path, args: &[&str], stdin: &str) -> String {
-    let config = tempfile::tempdir().unwrap();
-    fs::create_dir(config.path().join("ned")).unwrap();
-    fs::write(config.path().join("ned/config.toml"), NO_FORMATTERS).unwrap();
+    ned_with(dir, NO_FORMATTERS, &[], args, stdin)
+}
+
+/// `ned` as above, with `config` as the user config and `env` set.
+fn ned_with(dir: &Path, config: &str, env: &[(&str, &str)], args: &[&str], stdin: &str) -> String {
+    let home = tempfile::tempdir().unwrap();
+    fs::create_dir(home.path().join("ned")).unwrap();
+    fs::write(home.path().join("ned/config.toml"), config).unwrap();
     let output = cargo_bin_cmd!("ned")
         .current_dir(dir)
-        .env("XDG_CONFIG_HOME", config.path())
+        .env("XDG_CONFIG_HOME", home.path())
         .env_remove("NED_SESSION")
+        .env_remove("COLORTERM")
+        .env_remove("TERM")
+        .env_remove("NED_THEME")
+        .envs(env.iter().copied())
         .args(args)
         .write_stdin(stdin)
         .output()
         .unwrap();
-    // Messages name the working directory; keep snapshots independent of it.
+    // Messages name the working directory and the user config's; keep
+    // snapshots independent of them.
     let dir = fs::canonicalize(dir).unwrap();
-    report(&output).replace(dir.to_str().unwrap(), "{dir}")
+    report(&output)
+        .replace(dir.to_str().unwrap(), "{dir}")
+        .replace(home.path().to_str().unwrap(), "{config}")
 }
 
 fn report(output: &Output) -> String {
@@ -182,6 +194,168 @@ fn color_always_highlights_shown_code() {
     ");
 }
 
+/// `ned --color always ARGS` with the user config setting `theme`, its
+/// escapes shown as `\e[...m`.
+fn themed(dir: &Path, theme: &str, env: &[(&str, &str)], args: &[&str]) -> String {
+    let config = format!("{theme}\n{NO_FORMATTERS}");
+    let args = [&["--color", "always"], args].concat();
+    ned_with(dir, &config, env, &args, "").replace('\x1b', r"\e")
+}
+
+const TRUECOLOR: &[(&str, &str)] = &[("COLORTERM", "truecolor")];
+
+#[test]
+fn a_theme_paints_shown_code_in_truecolor() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let out = themed(
+        dir.path(),
+        "theme = \"default-dark\"",
+        TRUECOLOR,
+        &["parser.rs", "-e", "show fn:new"],
+    );
+    // default-dark's keyword and function colours.
+    assert!(out.contains(r"\e[38;2;198;120;221mpub\e[0m"), "{out}");
+    assert!(out.contains(r"\e[38;2;97;175;239mnew\e[0m"), "{out}");
+}
+
+#[test]
+fn ned_theme_sets_a_theme_without_a_config_file() {
+    let dir = dir_with(&[
+        ("parser.rs", PARSER),
+        (
+            "t.toml",
+            "from = \"default-dark\"\n[syntax]\nkeyword = \"#010203\"\n",
+        ),
+    ]);
+    let args = ["--color", "always", "parser.rs", "-e", "show fn:new"];
+    let run = |theme| {
+        let env = [("COLORTERM", "truecolor"), ("NED_THEME", theme)];
+        ned_with(dir.path(), NO_FORMATTERS, &env, &args, "").replace('\x1b', r"\e")
+    };
+    // default-light's keyword colour.
+    let light = run("default-light");
+    assert!(light.contains(r"\e[38;2;166;38;164mpub\e[0m"), "{light}");
+    let file = run("t.toml");
+    assert!(file.contains(r"\e[38;2;1;2;3mpub\e[0m"), "{file}");
+    assert_snapshot!(run("nope"), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    \e[1;31merror:\e[0m NED_THEME: invalid config: no theme `nope`: it isn't built in (default-dark, default-light) and there is no {config}/ned/themes/nope.toml; write it, or use a built-in
+    ");
+}
+
+#[test]
+fn without_a_theme_set_a_deep_terminal_gets_default_dark() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let args = ["--color", "always", "parser.rs", "-e", "show fn:new"];
+    let out = ned_with(dir.path(), NO_FORMATTERS, TRUECOLOR, &args, "").replace('\x1b', r"\e");
+    assert!(out.contains(r"\e[38;2;198;120;221mpub\e[0m"), "{out}");
+}
+
+#[test]
+fn a_theme_tints_changed_lines() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let script = r#"replace "unexpected end" with "unexpected end of input""#;
+    let theme = r##"
+[theme]
+from = "default-dark"
+added = "#00ff00"
+removed = "#ff0000"
+"##;
+    let out = themed(dir.path(), theme, TRUECOLOR, &["parser.rs", "-e", script]);
+    let lines: Vec<&str> = out.lines().collect();
+    let removed = lines
+        .iter()
+        .find(|l| l.contains("unexpected end\""))
+        .unwrap();
+    let added = lines.iter().find(|l| l.contains("end of input")).unwrap();
+    assert!(removed.starts_with(r"\e[38;2;255;0;0m-\e[0m"), "{out}");
+    assert!(added.starts_with(r"\e[38;2;0;255;0m+\e[0m"), "{out}");
+    // `let` on each side is tinted, so differs from the unchanged keyword colour.
+    let keyword = r"\e[38;2;198;120;221mlet\e[0m";
+    assert!(
+        !removed.contains(keyword) && !added.contains(keyword),
+        "{out}"
+    );
+    assert!(
+        removed.contains("mlet\\e[0m") && added.contains("mlet\\e[0m"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_theme_on_a_256_colour_terminal_uses_the_palette() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let env = [("TERM", "xterm-256color")];
+    let out = themed(
+        dir.path(),
+        "theme = \"default-dark\"",
+        &env,
+        &["parser.rs", "-e", "show fn:new"],
+    );
+    assert!(out.contains(r"\e[38;5;"), "{out}");
+    assert!(!out.contains(r"38;2;"), "{out}");
+}
+
+#[test]
+fn a_theme_on_a_16_colour_terminal_changes_nothing() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let args = ["parser.rs", "-e", "show fn:new; outline"];
+    let env = [("TERM", "xterm"), ("COLORTERM", "yes")];
+    let out = themed(dir.path(), "theme = \"default-dark\"", &env, &args);
+    assert_eq!(out, colored(dir.path(), &args));
+}
+
+#[test]
+fn a_bad_theme_is_an_error_only_where_output_is_coloured() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let args = ["parser.rs", "-e", "show fn:new"];
+    assert_snapshot!(themed(dir.path(), "theme = \"nope\"", TRUECOLOR, &args), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    \e[1;31merror:\e[0m {config}/ned/config.toml:1:9: invalid config: no theme `nope`: it isn't built in (default-dark, default-light) and there is no {config}/ned/themes/nope.toml; write it, or use a built-in
+    ");
+    let config = format!("theme = \"nope\"\n{NO_FORMATTERS}");
+    let never = ned_with(
+        dir.path(),
+        &config,
+        TRUECOLOR,
+        &["--color", "never", "parser.rs", "-e", "show fn:new"],
+        "",
+    );
+    assert!(never.starts_with("exit: 0"), "{never}");
+}
+
+#[test]
+fn bad_theme_keys_stop_no_uncoloured_edit() {
+    let dir = dir_with(&[("g.rs", "fn x() {}\n")]);
+    let config = format!("[theme]\nfrom = \"default-dark\"\ndark = \"yes\"\n{NO_FORMATTERS}");
+    let args = ["--color", "never", "g.rs", "-e", "replace \"x\" with \"y\""];
+    let out = ned_with(dir.path(), &config, TRUECOLOR, &args, "");
+    assert!(out.starts_with("exit: 0"), "{out}");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("g.rs")).unwrap(),
+        "fn y() {}\n"
+    );
+}
+
+#[test]
+fn a_theme_in_a_ned_toml_is_an_error() {
+    let dir = dir_with(&[
+        ("parser.rs", PARSER),
+        (".ned.toml", "theme = \"default-dark\"\n"),
+    ]);
+    let script = r#"replace "unexpected end" with "unexpected end of input""#;
+    assert_snapshot!(ned(dir.path(), &["parser.rs", "-e", script], ""), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: .ned.toml:1:9: invalid config: only the user config sets a theme; move it to ~/.config/ned/config.toml
+    ");
+}
+
 #[test]
 fn without_a_terminal_or_with_color_never_output_is_plain() {
     let dir = dir_with(&[("parser.rs", PARSER), ("a.toml", "x = 1\n")]);
@@ -221,9 +395,12 @@ fn color_always_paints_usage_errors() {
       \e[32mtip:\e[0m to pass '\e[33m--bogus\e[0m' as a value, use '\e[32m-- --bogus\e[0m'
 
     \e[1m\e[4mUsage:\e[0m ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...
+           ned repl [OPTIONS] [FILES... | -w [DIR]]    (edit interactively)
+           ned mcp [OPTIONS]    (serve agents over MCP)
            ned help [TOPIC]    (the command language)
            ned daemon start|status|stop [DIR]
            ned history|undo [-s NAME] [-w DIR]
+           ned session list|delete
 
     For more information, try '\e[1m--help\e[0m'.
     ");
@@ -243,6 +420,9 @@ fn color_always_overrides_no_color_set_or_empty() {
         let output = cargo_bin_cmd!("ned")
             .current_dir(dir.path())
             .env("NO_COLOR", no_color)
+            .env_remove("COLORTERM")
+            .env_remove("TERM")
+            .env_remove("NED_THEME")
             .args(["--color", "always", "parser.rs", "-e", "show 1"])
             .output()
             .unwrap();
@@ -336,6 +516,21 @@ fn show_prints_lines_and_writes_nothing() {
 }
 
 #[test]
+fn show_raw_prints_the_text_alone() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let out = ned(dir.path(), &["parser.rs", "-e", "show raw 14-17"], "");
+    assert_snapshot!(out, @r#"
+    exit: 0
+    --- stdout
+        pub fn parse(&mut self) -> Result<Ast, Error> {
+            let tok = self.next().expect("unexpected end");
+            self.parse_expr(tok)
+        }
+    --- stderr
+    "#);
+}
+
+#[test]
 fn repeated_scripts_are_joined() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
     let out = ned(
@@ -367,12 +562,114 @@ fn file_command_sets_files_without_arguments() {
     ");
 }
 
+/// Runs `ned ARGS` in `dir` with `stdin` and returns its stdout, checking it
+/// succeeded.
+fn ned_with_stdin(dir: &Path, args: &[&str], stdin: Stdio) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_ned"))
+        .current_dir(dir)
+        .env_remove("NED_SESSION")
+        .args(args)
+        .stdin(stdin)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", report(&out));
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn e_dash_runs_the_script_on_stdin_in_its_place() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let args = ["-e", "file parser.rs", "-e", "-", "-e", "show $"];
+    assert_snapshot!(ned(dir.path(), &args, "show 1\nshow 2\n"), @r"
+    exit: 0
+    --- stdout
+    parser.rs:1
+    1:use std::fmt;
+    parser.rs:2
+    2:
+    parser.rs:22
+    22:}
+    --- stderr
+    ");
+}
+
+#[test]
+fn e_leaves_stdin_unread_without_e_dash() {
+    let dir = dir_with(&[("parser.rs", PARSER), ("list", "b.rs\n")]);
+    let stdin = fs::File::open(dir.path().join("list")).unwrap();
+    let rest = stdin.try_clone().unwrap();
+    let out = ned_with_stdin(dir.path(), &["parser.rs", "-e", "show 1"], stdin.into());
+    assert_snapshot!(out, @r"
+    parser.rs:1
+    1:use std::fmt;
+    ");
+    assert_eq!(std::io::read_to_string(rest).unwrap(), "b.rs\n");
+}
+
+#[test]
+fn e_dash_reads_stdin_once() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let args = ["parser.rs", "-e", "-", "-e", "-"];
+    assert_snapshot!(ned(dir.path(), &args, "show 1"), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: stdin holds one script; give `-e -` once
+    ");
+}
+
+#[test]
+fn repeating_a_script_leaves_piped_stdin_alone() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let state = tempfile::tempdir().unwrap();
+    let env = [("XDG_STATE_HOME", state.path().to_str().unwrap())];
+    let run = |args: &[&str]| ned_with(dir.path(), NO_FORMATTERS, &env, args, "show 1\n");
+    run(&["-s", "two", "parser.rs", "-e", "show 2"]);
+    assert_snapshot!(run(&["-s", "two", "-e", "!!"]), @r"
+    exit: 0
+    --- stdout
+    parser.rs:2
+    2:
+    --- stderr
+    note: repeating 1: show 2
+    ");
+}
+
+#[test]
+fn e_does_not_wait_on_an_open_pipe() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ned"))
+        .current_dir(dir.path())
+        .env_remove("NED_SESSION")
+        .args(["parser.rs", "-e", "show 1"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = std::time::Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if start.elapsed() > std::time::Duration::from_secs(10) {
+            child.kill().unwrap();
+            panic!("ned waited on an open stdin");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let stdin = child.stdin.take();
+    let out = child.wait_with_output().unwrap();
+    drop(stdin);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "parser.rs:1\n1:use std::fmt;\n"
+    );
+}
+
 #[test]
 fn dry_run_prints_but_does_not_write() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
     let out = ned(
         dir.path(),
-        &["-n", "parser.rs", "-e", "replace 15 with \"todo!()\""],
+        &["-n", "parser.rs", "-e", "replace 15 with \"todo!();\""],
         "",
     );
     assert_snapshot!(out, @r#"
@@ -382,7 +679,7 @@ fn dry_run_prints_but_does_not_write() {
     @@ -14,3 +14,3 @@
          pub fn parse(&mut self) -> Result<Ast, Error> {
     -        let tok = self.next().expect("unexpected end");
-    +        todo!()
+    +        todo!();
              self.parse_expr(tok)
     --- stderr
     "#);
@@ -412,7 +709,7 @@ fn context_sets_hunk_context() {
             "0",
             "parser.rs",
             "-e",
-            "replace 15 with \"todo!()\"",
+            "replace 15 with \"todo!();\"",
         ],
         "",
     );
@@ -422,7 +719,7 @@ fn context_sets_hunk_context() {
     parser.rs: 1 edit, +1 -1
     @@ -15,1 +15,1 @@
     -        let tok = self.next().expect("unexpected end");
-    +        todo!()
+    +        todo!();
     --- stderr
     "#);
 }
@@ -457,6 +754,37 @@ fn ambiguous_selector_exits_1() {
       fn:parse>/pub fn/   parser.rs:14
     ");
     assert_eq!(read(&dir, "parser.rs"), PARSER);
+}
+
+#[test]
+fn any_kind_selects_an_item_whatever_its_kind() {
+    let text = "use std::fmt;\n\nstruct Parser;\n\nimpl Parser {}\n";
+    let dir = dir_with(&[("a.rs", text)]);
+    let out = ned(dir.path(), &["a.rs", "-e", "delete *:Parser"], "");
+    assert_snapshot!(out, @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: script:1:8: *:Parser matches 2 items; add `all` or use one of:
+      struct:Parser   a.rs:3
+      impl:Parser     a.rs:5
+    ");
+    // An import is still stacked with its neighbours.
+    let out = ned(
+        dir.path(),
+        &["a.rs", "-e", "insert after *:std::fmt \"use std::io;\""],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs: 1 edit, +1 -0
+    @@ -1,2 +1,3 @@
+     use std::fmt;
+    +use std::io;
+     
+    --- stderr
+    ");
 }
 
 #[test]
@@ -768,6 +1096,55 @@ fn lines_of_an_item_are_listed_by_line_number() {
       fn:a>1   a.rs:1
       fn:a>2   a.rs:2
       fn:a>3   a.rs:3
+    ");
+}
+
+#[test]
+fn lines_n_picks_a_line_of_each_span() {
+    let dir = dir_with(&[(
+        "a.rs",
+        "fn a() {\n    x();\n}\n\nfn b() {\n    y();\n    z();\n}\n",
+    )]);
+    let out = ned(
+        dir.path(),
+        &["a.rs", "-e", "show fn:a.lines:2; show all fn.body.lines:$"],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs:2
+    2:    x();
+    a.rs:2
+    2:    x();
+    a.rs:7
+    7:    z();
+    --- stderr
+    ");
+    let out = ned(dir.path(), &["a.rs", "-e", "show fn.lines:4"], "");
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs:8
+    8:}
+    --- stderr
+    note: fn.lines:4: skipped 1 span with fewer than 4 lines
+    ");
+    let out = ned(dir.path(), &["a.rs", "-e", "show fn:a.lines:4"], "");
+    assert_snapshot!(out, @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: script:1:6: fn:a.lines:4 matches nothing in a.rs; it skipped 1 span with fewer than 4 lines; use .lines:$ for the last line
+    ");
+    let out = ned(dir.path(), &["a.rs", "-e", "show fn:a.lines:0"], "");
+    assert_snapshot!(out, @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:10: `.lines:0` isn't a line's number; lines count from 1 within the span, as in .lines:1, and .lines:$ is the last
+    1:show fn:a.lines:0
+               ^
     ");
 }
 
@@ -1146,7 +1523,33 @@ fn invalid_pattern_exits_2() {
     exit: 2
     --- stdout
     --- stderr
-    error: script:1:6: `fn (@a` doesn't parse as rust at `@a`; add the code around it, or use query{}
+    error: script:1:6: `fn (@a` doesn't parse as rust where it's searched, at `@a`; select the code it goes in first (struct:S>`x: u8`), or write the code around it too (a match arm's whole `match`)
+    ");
+}
+
+#[test]
+fn a_pattern_that_does_not_parse_suggests_a_fix_in_its_language() {
+    let dir = dir_with(&[("app.py", APP), ("a.go", "package a\n"), ("a.js", "f();\n")]);
+    let out = ned(dir.path(), &["app.py", "-e", "show `@@app.route(@p)`"], "");
+    assert_snapshot!(out, @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:6: `@@app.route(@p)` doesn't parse as python where it's searched, at `@@app.route(@p)`; select the code it goes in first (class:C>`x: int = 1`), or write the code around it too (a decorator's whole `def`)
+    ");
+    let out = ned(dir.path(), &["a.go", "-e", "show `case 1: @_...`"], "");
+    assert_snapshot!(out, @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:6: `case 1: @_...` doesn't parse as go where it's searched, at `@_...`; select the code it goes in first (struct:S>`X int`), or write the code around it too (a case's whole `switch`)
+    ");
+    let out = ned(dir.path(), &["a.js", "-e", "show `case 1: @_...`"], "");
+    assert_snapshot!(out, @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:6: `case 1: @_...` doesn't parse as javascript where it's searched, at `: @_...`; select the code it goes in first (class:C>`x = 1`), or write the code around it too (a case's whole `switch`)
     ");
 }
 
@@ -1253,6 +1656,81 @@ fn missing_formatter_is_a_note() {
     note: ned-no-such-formatter not found; skipped formatting a.rs
     ");
     assert_eq!(read(&dir, "a.rs"), "fn f() {\n    b();;\n}\n");
+}
+
+/// A directory with `a.rs` holding `text`, and a fake Rust formatter that
+/// fails on text holding `bad` and passes the rest unchanged.
+fn dir_with_failing_formatter(text: &str) -> TempDir {
+    let dir = dir_with(&[
+        ("a.rs", text),
+        (".ned.toml", "[format]\nrust = [\"./fmt.sh\"]\n"),
+        (
+            "fmt.sh",
+            "#!/bin/sh\ninput=$(cat)\ncase $input in *bad*) echo 'expected `;`' >&2; exit 1;; esac\nprintf '%s\\n' \"$input\"\n",
+        ),
+    ]);
+    let script = dir.path().join("fmt.sh");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    dir
+}
+
+#[test]
+fn a_formatter_failure_the_edit_introduced_writes_nothing() {
+    let dir = dir_with_failing_formatter(FN_A);
+    let out = ned(
+        dir.path(),
+        &["a.rs", "-e", r#"replace "a();" with "bad();""#],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 1
+    --- stdout
+    --- stderr
+    error: a.rs: edit makes fmt.sh fail: expected `;`; fix it, or use --force to apply anyway
+    ");
+    assert_eq!(read(&dir, "a.rs"), FN_A);
+}
+
+#[test]
+fn force_writes_an_introduced_formatter_failure_with_a_note() {
+    let dir = dir_with_failing_formatter(FN_A);
+    let out = ned(
+        dir.path(),
+        &[
+            "--force",
+            "-q",
+            "a.rs",
+            "-e",
+            r#"replace "a();" with "bad();""#,
+        ],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs: 1 edit, +1 -1
+    --- stderr
+    note: fmt.sh failed: expected `;`; skipped formatting a.rs
+    ");
+    assert_eq!(read(&dir, "a.rs"), "fn f() {\n    bad();\n}\n");
+}
+
+#[test]
+fn a_formatter_failure_that_was_already_there_is_a_note() {
+    let dir = dir_with_failing_formatter("fn f() {\n    bad();\n}\n");
+    let out = ned(
+        dir.path(),
+        &["-q", "a.rs", "-e", r#"replace "bad();" with "bad(1);""#],
+        "",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    a.rs: 1 edit, +1 -1
+    --- stderr
+    note: fmt.sh failed: expected `;`; skipped formatting a.rs
+    ");
+    assert_eq!(read(&dir, "a.rs"), "fn f() {\n    bad(1);\n}\n");
 }
 
 #[test]

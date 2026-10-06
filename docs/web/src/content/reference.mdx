@@ -9,10 +9,13 @@ is a better place to start.
 
 ```text
 ned [OPTIONS] [FILE... | -w [DIR]] [-e SCRIPT]...
+ned repl [OPTIONS] [FILE... | -w [DIR]] [--attach NAME]
 ned help [TOPIC]
 ned daemon start|status|stop [DIR]
 ned history [-s NAME] [-w DIR] [--all]
 ned undo [-s NAME] [-w DIR] [--force]
+ned session list [--all]
+ned session delete NAME... [-w DIR]
 ```
 
 ned runs a **script** against a set of files. The script comes from `-e`, which
@@ -26,8 +29,8 @@ replace fn:parse>"unexpected end" with "unexpected end of input"
 EOF
 ```
 
-If no script is given and standard input is a terminal, ned stops with an error
-instead of waiting for input.
+If no script is given and standard input is a terminal, ned starts
+[the REPL](#the-repl) instead of waiting for input.
 
 ### Options
 
@@ -38,7 +41,7 @@ instead of waiting for input.
 | `-q`, `--quiet`           | Print only the summary line for each changed file.                                                                              |
 | `-w`, `--workspace [DIR]` | Start with every file in the workspace instead of a list of files. See [the file set](#the-file-set).                           |
 | `--lang LANG`             | Treat every file as `rust`, `python`, `go`, `javascript`, `typescript`, `tsx`, `markdown`, or `text` (which turns parsing off). |
-| `--force`                 | Apply edits even if they introduce syntax errors or new language-server errors.                                                 |
+| `--force`                 | Apply edits even if they introduce syntax errors, new language-server errors, or a formatter failure.                           |
 | `--no-fmt`                | Don't run formatters.                                                                                                           |
 | `--no-check`              | Don't check edits with language servers.                                                                                        |
 | `--context N`             | Show `N` lines of context around each diff hunk. The default is 1.                                                              |
@@ -52,17 +55,23 @@ With `--color auto`, ned colours its output when it's writing to a terminal and
 Colour never changes what the output says, so output read by a program is the
 same either way.
 
+On a terminal that shows more than 16 colours (`COLORTERM=truecolor`, or a
+`TERM` with `256color`), a [theme](#themes) colours each kind of token its own
+way, and tints the code on changed lines toward red or green.
+
 ### Subcommands
 
 - **`ned help [TOPIC]`** prints a one-screen summary of the command language.
   With a topic, it explains that topic in detail. The topics are the commands
   (`show`, `outline`, `check`, `allow`, `replace`, `insert`, `delete`, `sub`,
   `move`, `rename`, `resolve`, `file`, `create`) and `selectors`, `filters`,
-  `patterns`, `conflicts`, `text`, `config` and `session`.
+  `patterns`, `conflicts`, `text`, `config`, `session` and `repl`.
 - **`ned daemon start|status|stop [DIR]`** manages the
   [language-server daemon](#language-servers) for the workspace containing
   `DIR`, or the current directory.
-- **`ned history`** and **`ned undo`** work with [sessions](#sessions).
+- **`ned repl`** starts [the REPL](#the-repl), an interactive editor.
+- **`ned history`**, **`ned undo`** and **`ned session`** work with
+  [sessions](#sessions).
 
 A subcommand must be the first argument: `ned -s x undo` is an error suggesting
 `ned undo -s x`. To edit a file that happens to be called `help`, write it as
@@ -234,6 +243,12 @@ kind, so `fn` means the same as `fn:*`. Names containing characters other than
 letters, digits, `_`, `:` and `*` must be quoted: `import:"os.path"`,
 `impl:"Display for Parser"`.
 
+`*:name` selects items of any kind by name, for when you don't know whether
+`LIMIT` is a `const` or a `var`: `show *:LIMIT`. An item that is two kinds at
+once, like a JavaScript arrow function bound to a `const`, matches once. If the
+name matches items of several kinds, such as a Rust struct and its impl, the
+error lists each by its kind: `struct:Parser`, `impl:Parser`.
+
 | Kind        | Selects                                                    |
 | ----------- | ---------------------------------------------------------- |
 | `fn`        | functions and methods                                      |
@@ -336,6 +351,7 @@ selector with a dot: `fn:parse.body`, `struct:Config>field:port.type`.
 | `.value`                    | The value given to a constant, variable, field or variant, or the type that a type alias names.         |
 | `.whole`                    | The whole item, including doc comments, attributes and a trailing comma. `replace` replaces all of it.  |
 | `.lines`                    | Each whole line the span touches. This part works on any selector, not just items.                      |
+| `.lines:N`, `.lines:$`      | The span's Nth line, counting from 1, or its last line.                                                 |
 | `.refs`                     | Each reference to the symbol, found by the [language server](#language-servers).                        |
 | `.def`                      | The symbol's definition, found by the language server.                                                  |
 | `.ours`, `.theirs`, `.base` | The sides of a [merge conflict](#merge-conflicts).                                                      |
@@ -352,7 +368,12 @@ Some details:
 - A Markdown section's `.body` includes its subsections, so
   `insert end section:Usage` adds text after the last of them.
 - On a span that covers several lines, `.lines` produces one span per line. Use
-  `all`, or nest a line number (`fn:parse>12`), to act on them.
+  `all` to act on them, or pick one: `.lines:N` is the span's Nth line, counting
+  from 1 (`fn:parse.body.lines:1` is the first line of the body), and `.lines:$`
+  its last. A filter after it tests that line. A span with fewer lines is
+  skipped, with a note saying how many were, and if every span is skipped the
+  selector matches nothing. A nested line number (`fn:parse>12`) also picks a
+  line, but counts from the start of the file.
 - `.refs` and `.def` work on any selector. On an item, they look up the symbol
   at its name; otherwise, the symbol at the start of the span, as in
   `fn:main>"helper(".def`.
@@ -395,7 +416,9 @@ A condition compares a **property** of the match with a value:
   on a single line, or the number of lines on several.
 - A part, such as `.name` or `.doc`, is that part's text, and adding `.len` or
   `.text` after it (`.body.len`) gives its length or text. An item without the
-  part counts as empty.
+  part counts as empty. `.lines:N` is the match's Nth line, so
+  `all fn[.lines:1 ~= /async/]` is every function whose first line says `async`;
+  a match with fewer lines has `""` there.
 
 Lengths are compared with numbers using `==`, `!=`, `<`, `>`, `<=` or `>=`. Text
 is compared with a string using `==` or `!=`, or with a regular expression using
@@ -515,7 +538,7 @@ delete all query{(call_expression function: (identifier) @f (#eq? @f "dbg")) @se
 ### show
 
 ```text
-show [SEL [+N]]
+show [raw] [SEL [+N]]
 ```
 
 Prints the lines that contain each selected span, numbered, with `N` lines of
@@ -536,6 +559,15 @@ src/parser.rs:14-17
 15:        let tok = self.next().expect("unexpected end");
 16:        self.parse_expr(tok)
 17:    }
+```
+
+`show raw` prints the text alone, without line numbers, for copying it verbatim.
+A single region comes out exactly as it is in the file; several regions keep
+their `PATH:START-END` headers. A bare `raw` right after `show` always means
+this, so select a function named `raw` as `fn:raw`.
+
+```ned
+show raw fn:parse
 ```
 
 ### outline
@@ -596,9 +628,11 @@ element.
 delete [all] SEL
 ```
 
-Removes each span. Deleting whole lines also tidies up blank lines: ned removes
-one blank line if the deletion leaves two in a row, a blank line just inside an
-opening or closing bracket, or a blank line at the start or end of the file.
+Removes each span. Deleting whole lines also tidies up the blank lines next to
+them, so the file keeps its spacing: between two other lines, ned leaves only as
+many as the larger of the gaps above and below the deleted lines; just inside an
+opening or closing bracket, only those that were already next to it; and at the
+start or end of the file, none.
 
 ### sub
 
@@ -624,7 +658,9 @@ Deletes each span and inserts its text at `DEST`, which must match exactly one
 span and may be in a different file of the set. The moved text is re-indented to
 fit its new place. As with `insert`, `start` and `end` on an item mean its body.
 With `all`, the spans arrive in their original order. When a moved item had a
-blank line next to it, ned puts one between it and its new neighbour.
+blank line next to it, ned separates it from its new neighbour with as many
+blank lines as the destination already has next to it, or else as the item had
+where it came from.
 
 ### create
 
@@ -781,7 +817,9 @@ files apply.
 | JavaScript, TypeScript, Markdown | `prettier`                                        |
 
 If the formatter isn't installed or fails, ned prints a note, writes the file
-unformatted, and still succeeds. If no formatter is installed but the
+unformatted, and still succeeds, unless the formatter succeeds on the file as it
+was before the edit: then the edit made it fail, and ned rejects it (`--force`
+writes it anyway). If no formatter is installed but the
 [daemon](#language-servers) is running, the language server formats the file
 instead. Files that still contain merge conflicts aren't formatted.
 
@@ -824,6 +862,49 @@ file's absolute path and `{edition}` for the Rust edition in the nearest
 directories above the file, then on `PATH`. A path with a slash is relative to
 the configuration file.
 
+### Themes
+
+A theme is set only in the user config. Use a built-in one by name:
+
+```toml
+theme = "default-dark" # or "default-light"
+```
+
+Or write one, starting from another with `from`:
+
+```toml
+[theme]
+from = "default-dark"
+dark = true          # whether it's meant for a dark background
+added = "#98c379"    # added lines
+removed = "#e06c75"  # removed lines
+
+[theme.syntax]
+keyword = "#c678dd bold"
+"function.method" = "#61afef"
+
+[theme.ui]
+hunk-header = "#56b6c2"
+line-number = "dim"
+```
+
+- A colour is `#rrggbb`, followed by any of `bold`, `dim`, `italic` and
+  `underline`; a value may also be those words alone.
+- `[theme.syntax]` keys are highlight capture names; `function.method` falls
+  back to `function`. `[theme.ui]` keys are `header`, `line-number`, `kind`,
+  `dim`, `hunk-header`, `error`, `warning`, `info` and `note`.
+- `from` names a built-in theme, a file `themes/NAME.toml` beside the user
+  config, or a path ending in `.toml`. A theme file has the same keys, at its
+  top level.
+- On a changed line, each token's colour is multiplied by the line's colour. A
+  dark theme keeps the token's lightness, so the code stays readable.
+
+To try a theme without a config file, set `NED_THEME` to its name or path (a
+path relative to the working directory); it overrides the user config's.
+
+With no theme set, ned uses `default-dark`. On a 16-colour terminal, it uses the
+terminal's own colours.
+
 ## Language servers
 
 The language-server features (`check`, `rename`, `.refs`, `.def`, and checking
@@ -848,8 +929,9 @@ diagnostics at `[check] show` level or above are printed after the diff, and new
 errors (or whatever `[check] block` says) reject the script. `allow errors` in
 the script or `--force` lets the edit through, and `--no-check` skips checking.
 Edits never start the daemon by themselves. Checks that a server only runs when
-a file is saved, such as `cargo check`, can't run before the edit is written, so
-run `check` afterwards to see them.
+a file is saved, such as `cargo check`, can't run before the edit is written;
+once it is, they run, and what they find the edit introduced is printed too,
+without rejecting it.
 
 ## Sessions
 
@@ -859,17 +941,23 @@ text of every file it changed. Session names use letters, digits, `.`, `_` and
 `-`.
 
 - **`ned history`** lists the session's last ten runs, or all of them with
-  `--all`, with each run's number, outcome, the number of files it changed, and
-  the first line of its script.
+  `--all`, with each run's number, outcome (`ok`, `dry run`, `exit N`, `undo N`,
+  or `write` for a REPL write), the number of files it changed, and the first
+  line of its script.
 - **`ned undo`** reverts the session's most recent edit that hasn't been undone,
   and prints the diff. Repeat it to go further back. If a file has changed since
   the edit, `undo` refuses, and `--force` merges the reversal into the current
   text instead. A file the edit created is removed.
-- **`!!`** as a script repeats the session's last script. `:s/OLD/NEW/` after it
-  replaces the first `OLD` with `NEW`, and `:gs/OLD/NEW/` replaces every one, so
-  `ned -e '!!:s/prase/parse/'` reruns a command with a typo fixed. The repeat
-  runs on the same files, but without the original options. Repeating a dry run
-  without `-n` is an error, so that nothing is written by accident.
+- **`!!`** as a script repeats the session's last script that edited or failed,
+  skipping any successful `show`, `outline` or `check` since. `:s/OLD/NEW/`
+  after it replaces the first `OLD` with `NEW`, and `:gs/OLD/NEW/` replaces
+  every one, so `ned -e '!!:s/prase/parse/'` reruns a command with a typo fixed.
+  The repeat runs on the same files, but without the original options. Repeating
+  a dry run without `-n` is an error, so that nothing is written by accident.
+- **`ned session list`** names the workspace's sessions; with `--all`, every
+  workspace that has sessions, by path, with its sessions beneath it.
+- **`ned session delete NAME...`** deletes the named sessions of the workspace,
+  or of `-w DIR`.
 
 Sessions are stored under `~/.local/state/ned/sessions/` (or
 `$XDG_STATE_HOME/ned/sessions/`). Several programs can share a session safely,
@@ -892,6 +980,86 @@ so. ned prints `commit SHA: SUBJECT` after the diffs.
 or if there's nothing to commit. As always, a failure leaves the files, the
 index and `HEAD` exactly as they were.
 
+## The REPL
+
+```text
+ned repl [OPTIONS] [FILE... | -w [DIR]] [--attach NAME]
+```
+
+`ned repl`, or plain `ned` with no script on a terminal, is an editor for
+people. Each line you type is a script, run on the file set the REPL started
+with, and its output is what `ned` would print. The difference is that edits
+change in-memory **buffers** of the files rather than the files themselves, so
+they can be read, undone and reworked before anything is written. Scripts read
+the buffers in place of the files, and language servers see them too.
+
+```ned
+ned› replace fn:parse>"end" with "end of input"
+ned› :diff
+ned› :write
+```
+
+The prompt is `ned›` (`ned>` unless the locale is UTF-8). A script that ends
+inside a heredoc or a syntax pattern continues on the next line, so separate the
+commands of a one-line script with `;`. `!!` and `:s/OLD/NEW/` repeat the
+session's last script, as in [sessions](#sessions). It takes the options
+`--force`, `--no-check`, `--no-fmt`, `--lang`, `--context`, `--color`, `-s` and
+`--attach`; `-n`, `-q`, `--commit` and `-e` are for scripts only.
+
+Lines that start with `:` are the REPL's commands. Each can be shortened to any
+prefix that names only one, such as `:w` or `:u`, and `!` after a name forces
+it:
+
+| Command                  | Effect                                                                                 |
+| ------------------------ | -------------------------------------------------------------------------------------- |
+| `:write [FILE...]`       | Write every buffer with unwritten edits, or the named ones                             |
+| `:write! [FILE...]`      | Write them over the files as they are now, without merging                             |
+| `:commit MSG`            | Write, then commit the session's edits to git                                          |
+| `:undo`                  | Undo the last script's edits; repeat to go further back                                |
+| `:diff [FILE...]`        | Show unwritten edits against the files on disk                                         |
+| `:reload [FILE...]`      | Drop unwritten edits                                                                   |
+| `:files [FILE... \| -w]` | Print the file set and the files with unwritten edits; with arguments, replace the set |
+| `:history [--all]`       | Print the session's history                                                            |
+| `:attach NAME`           | Follow session `NAME` and record into it                                               |
+| `:detach`                | Stop following, and record into the REPL's own session again                           |
+| `:help [TOPIC]`          | Print `ned help TOPIC`                                                                 |
+| `:quit`, `:quit!`, `:wq` | Quit, refusing while edits are unwritten; quit discarding them; write, then quit       |
+
+**Writing.** `:write` writes all its files or none. If a file changed on disk
+since its buffer was read, your edits are merged into the new text, and an edit
+that overlaps the change is an error naming the line; a file created by `create`
+that now exists, or a file removed since, is an error too. `:write!` writes the
+buffers as they are. Each file gets a line, `PATH: written, +A -R` or
+`PATH: created, +N`. Formatting and checks ran when the edits were made, but the
+checks a language server runs on save, such as rust-analyzer's `cargo check`,
+run now, and print what the write introduced (see
+[language servers](#language-servers)).
+
+**Undoing.** `:undo` reverts the last script's edits, written or not, and prints
+what it changed; repeat it to walk further back. If a file changed since, the
+undo is merged into it. A file the script created is dropped if it hasn't been
+written; once it has, `ned undo` removes it. There is no redo.
+
+**Sessions.** The REPL records into a session: `-s NAME` or `NED_SESSION`, or
+else the first unused name of `repl-1`, `repl-2`, …. Each script is recorded,
+and each write as a `write` entry, so `ned history` shows the REPL's work and
+`ned undo` reverts a write. `:commit MSG` writes as `:write` does, then commits
+as [`--commit`](#committing) does in a session: every edit the session recorded
+since its last commit, and nothing else. A refused commit writes nothing.
+
+**Following an agent.** `:attach NAME` (or `--attach NAME`) prints session
+`NAME`'s last ten history lines, then each entry another program records in it,
+with its diff, as it's recorded. While attached, the REPL records into that
+session, so an agent's `ned history`, `ned undo` and `!!` see your corrections.
+If an entry changes a file you have unwritten edits to, the change is merged
+into your buffer as it arrives, with a note; if the two overlap, your buffer is
+left as it was, the note names the line, and `:write` refuses until you choose
+with `:write!` or `:reload`.
+
+**Leaving.** `:quit` refuses while there are unwritten edits; `:quit!` discards
+them. Ctrl-D is `:quit` and Ctrl-C clears the line. When the input isn't a
+terminal, its end discards unwritten edits with an error, and the REPL exits 1.
+
 ## Errors and exit codes
 
 Errors are printed to standard error as `error: LOCATION: message`, where the
@@ -906,12 +1074,12 @@ error: script:3:1: edit overlaps command 1 at src/parser.rs:14-17
 error: src/parser.rs:15:31: edit introduces a syntax error (use --force to apply anyway)
 ```
 
-| Code | Meaning                                                                                                                                       |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | Success, including dry runs and skipped formatters.                                                                                           |
-| 1    | The edit was rejected: no match, an ambiguous match, overlapping edits, a syntax error, new diagnostics, a refused undo or commit, and so on. |
-| 2    | A usage error, or an error in the script, a query, a pattern or the configuration, or no language server for the files.                       |
-| 3    | An I/O error: a file that can't be read or written, a glob that matches nothing, or a failing language server or git command.                 |
+| Code | Meaning                                                                                                                                                            |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0    | Success, including dry runs and skipped formatters.                                                                                                                |
+| 1    | The edit was rejected: no match, an ambiguous match, overlapping edits, a syntax error, new diagnostics, a formatter failure, a refused undo or commit, and so on. |
+| 2    | A usage error, or an error in the script, a query, a pattern or the configuration, or no language server for the files.                                            |
+| 3    | An I/O error: a file that can't be read or written, a glob that matches nothing, or a failing language server or git command.                                      |
 
 Whenever ned exits with a non-zero code, no file has been changed. Output from
 reads that ran before the failure is still printed.

@@ -8,7 +8,7 @@ use std::ops::Range;
 use similar::{ChangeTag, TextDiff};
 use tree_sitter::Tree;
 
-use crate::highlight::{self, Group};
+use crate::highlight;
 use crate::lang::Language;
 use crate::style::{Role, Style};
 
@@ -167,10 +167,14 @@ impl<'a> Side<'a> {
     }
 
     /// The highlighted spans of the text's `bytes`, if it has a language.
-    fn spans(&self, bytes: Range<usize>) -> Option<Vec<(Range<usize>, Group)>> {
+    fn spans(
+        &self,
+        bytes: Range<usize>,
+        style: Style,
+    ) -> Option<Vec<(Range<usize>, &'static str)>> {
         let lang = self.lang?;
         let tree = self.tree.get_or_init(|| lang.parse(self.text));
-        Some(highlight::spans(lang, tree, self.text, bytes))
+        Some(highlight::spans(lang, tree, self.text, bytes, style))
     }
 }
 
@@ -181,7 +185,7 @@ pub fn hunks(old: &Side, new: &Side, context: usize, style: Style) -> String {
     let split = [lines(old.text), lines(new.text)];
     let diff = TextDiff::from_slices(&split[0], &split[1]);
     let sides = [old, new];
-    let starts = (style == Style::Color).then(|| split.each_ref().map(|l| starts(l)));
+    let starts = (style != Style::Plain).then(|| split.each_ref().map(|l| starts(l)));
     let mut out = String::new();
     for hunk in diff.unified_diff().context_radius(context).iter_hunks() {
         let ops = hunk.ops();
@@ -195,9 +199,8 @@ pub fn hunks(old: &Side, new: &Side, context: usize, style: Style) -> String {
         let header = format!("@@ -{old_lines} +{new_lines} @@");
         let _ = writeln!(out, "{}", style.paint(Role::HunkHeader, &header));
         let spans = match &starts {
-            Some(starts) => {
-                [0, 1].map(|i| sides[i].spans(starts[i][lines[i].start]..starts[i][lines[i].end]))
-            }
+            Some(starts) => [0, 1]
+                .map(|i| sides[i].spans(starts[i][lines[i].start]..starts[i][lines[i].end], style)),
             None => [None, None],
         };
         for change in hunk.iter_changes() {

@@ -1,14 +1,15 @@
 ned: a line editor for coding agents. A script is one transaction: every edit
-applies, or none does. Output is a per-file summary plus diff hunks.
+applies, or none does.
 
-  ned [FLAGS] [FILE... | -w [DIR]] -e SCRIPT   (or the script on stdin)
+  ned [FLAGS] [FILE... | -w [DIR]] -e SCRIPT   (or on stdin; -e - too)
   ned help [TOPIC]
-  ned daemon start|status|stop [DIR]           (the language-server daemon)
-  ned history|undo [-s NAME] [-w DIR]          (a session's log; see `session`)
+  ned daemon start|status|stop [DIR]           (language servers)
+  ned history|undo|session ...                 (see `session`)
+  ned repl [FILE... | -w [DIR]]                (interactive; see `repl`)
 
 Commands, separated by newlines or `;`; `|` starts a new stage that sees the
 edits before it (it binds looser than `;`: `a; b | c` is a;b then c):
-  show [SEL [+N]]               print the lines of SEL, numbered, N around
+  show [raw] [SEL [+N]]         print the lines of SEL, numbered, N around
   outline [SEL]                 list syntax items as pasteable selectors
   check [SEL] [LEVEL]           language-server diagnostics; LEVEL error..hint
   allow errors|warnings         apply edits even if they introduce errors
@@ -28,12 +29,12 @@ Selectors (a selector must match exactly one span unless prefixed with `all`):
   fn:parse  impl:Parser  fn:test_*    syntax items, kind:name
   impl:Parser>fn:new            nest: search inside the previous step
   fn:parse.body                 parts: .body .sig .params .name .doc .whole
-  const:C.value                 .attrs .ret .type .value .lines (each line)
+  const:C.value                 .attrs .ret .type .value .lines (each) .lines:2
   all fn  impl:P>fn             a kind alone is kind:*
   fn[.doc == ""]  fn[.len > 50]   filter: spans where it holds
   all fn:parse.refs  "f(".def    uses and definition (language server)
-  file:src/a.rs>fn:new          scope to file or glob
-  query{(call_expression) @sel} raw tree-sitter query
+  file:src/a.rs>fn:new          scope to file/glob
+  query{(call_expression) @sel} tree-sitter query
   `foo(@a, @rest...)`           syntax pattern: code with placeholders
   /^## 6/../^## 7/  fn:a..fn:c  range: whole lines, a match to the next
   conflict:2.ours               a conflict's side
@@ -43,9 +44,9 @@ target; <<'END' is inserted verbatim. Selectors resolve against the text at
 the start of their stage, so line numbers from `show` stay valid until the
 next `|`. After a `|`, check, rename, .refs and .def are errors.
 
-Flags: -n dry run   -q summaries only   --force skip the guards (syntax, check)
+Flags: -n dry run   -q summaries only   --force skip guards (syntax, check, fmt)
        --no-fmt   --no-check   --lang LANG|text   --context N   --commit MSG
-       -w [DIR] every unignored file in the workspace
+       -w [DIR] every unignored workspace file
        -s NAME record the invocation in a session (or NED_SESSION=NAME)
 
 Examples:
@@ -57,4 +58,4 @@ Examples:
     END
 
 Topics: show outline check allow replace insert delete sub move rename resolve
-file create selectors filters patterns conflicts text config session
+file create selectors filters patterns conflicts text config session repl mcp

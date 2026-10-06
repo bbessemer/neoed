@@ -5,76 +5,50 @@ use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::ops::Range;
 
-use tree_sitter::{Node, QueryCursor, StreamingIterator, Tree};
+use tree_sitter::{Node, Query, QueryCursor, QueryError, StreamingIterator, Tree};
 
 use crate::lang::Language;
 use crate::style::{Role, Style};
 
-/// What a highlight capture marks, which decides its colour. Captures
-/// without one, such as `@variable` and `@punctuation`, stay plain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Group {
-    Keyword,
-    String,
-    Comment,
-    Function,
-    Type,
-    /// Constants, numbers, escapes and attributes.
-    Constant,
-    /// A JSX tag.
-    Tag,
-    /// A Markdown heading.
-    Heading,
-    /// A Markdown link destination or reference.
-    Link,
+/// A language's compiled highlight query, and how specific each of its
+/// patterns is.
+pub struct Highlights {
+    pub query: Query,
+    specificity: Vec<usize>,
 }
 
-/// The capture names, or dotted prefixes of them, that have a group.
-const GROUPS: &[(&str, Group)] = &[
-    ("keyword", Group::Keyword),
-    ("string", Group::String),
-    ("character", Group::String),
-    ("text.literal", Group::String),
-    ("comment", Group::Comment),
-    ("function", Group::Function),
-    ("constructor", Group::Type),
-    ("type", Group::Type),
-    ("constant", Group::Constant),
-    ("number", Group::Constant),
-    ("boolean", Group::Constant),
-    ("escape", Group::Constant),
-    ("string.escape", Group::Constant),
-    ("attribute", Group::Constant),
-    ("tag", Group::Tag),
-    ("text.title", Group::Heading),
-    ("text.uri", Group::Link),
-    ("text.reference", Group::Link),
-];
-
-/// The group of the capture `name`, by its longest dotted prefix that has
-/// one: `function.method` is a `Function`.
-pub fn group(name: &str) -> Option<Group> {
-    let mut prefix = name;
-    loop {
-        if let Some((_, group)) = GROUPS.iter().find(|(p, _)| *p == prefix) {
-            return Some(*group);
-        }
-        prefix = &prefix[..prefix.rfind('.')?];
+impl Highlights {
+    pub fn new(grammar: &tree_sitter::Language, source: &str) -> Result<Self, QueryError> {
+        let query = Query::new(grammar, source)?;
+        let specificity = (0..query.pattern_count())
+            .map(|i| {
+                specificity(&source[query.start_byte_for_pattern(i)..query.end_byte_for_pattern(i)])
+            })
+            .collect();
+        Ok(Highlights { query, specificity })
     }
 }
 
-/// The highlighted ranges of `text` within `range`, from `tree` and `lang`'s
-/// highlight query, in order and not overlapping. Where captures nest, the
-/// innermost wins; where they mark the same node, the latest pattern wins, as
-/// in tree-sitter's own highlighter. Unlike it, captures without a group are
-/// ignored, so Go's closing `(identifier) @variable` doesn't hide functions.
+/// `name` and each of its dotted prefixes, longest first: `function.method`,
+/// then `function`.
+pub fn prefixes(name: &str) -> impl Iterator<Item = &str> {
+    std::iter::successors(Some(name), |p| p.rfind('.').map(|i| &p[..i]))
+}
+
+/// The highlighted ranges of `text` within `range`, each with its capture
+/// name, from `tree` and `lang`'s highlight query, in order and not
+/// overlapping. Where captures nest, the innermost wins; where they mark the
+/// same node, the latest pattern wins, as in tree-sitter's own highlighter.
+/// Unlike it, captures `style` leaves plain are ignored, so Go's closing
+/// `(identifier) @variable` doesn't hide functions.
 pub fn spans(
     lang: Language,
     tree: &Tree,
     text: &str,
     range: Range<usize>,
-) -> Vec<(Range<usize>, Group)> {
-    let query = lang.highlights();
+    style: Style,
+) -> Vec<(Range<usize>, &'static str)> {
+    let Highlights { query, specificity } = lang.highlights();
     let names = query.capture_names();
     let mut cursor = QueryCursor::new();
     cursor.set_byte_range(range.clone());
@@ -82,23 +56,25 @@ pub fn spans(
     let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
     while let Some(m) = matches.next() {
         for c in m.captures() {
-            let group = match names[c.index as usize] {
-                // A builtin the grammar parses as its own node, such as `self` or
-                // `this`, is a keyword; one parsed as an identifier, such as
-                // JavaScript's `console`, may be shadowed by a local.
-                "variable.builtin" if c.node.kind() != "identifier" => Some(Group::Keyword),
-                name => group(name),
+            let capture = match names[c.index as usize] {
+                // In the 16 colours, a builtin the grammar parses as its own node, such
+                // as `self` or `this`, is a keyword; one parsed as an identifier, such
+                // as JavaScript's `console`, may be shadowed by a local. A theme colours
+                // both as `variable.builtin`.
+                "variable.builtin" if style == Style::Color && c.node.kind() != "identifier" => {
+                    "keyword"
+                }
+                name => name,
             };
-            if let Some(group) = group
-                && !c.node.byte_range().is_empty()
-            {
-                captures.push((c.node, m.pattern_index, group));
+            if style.colours(capture) && !c.node.byte_range().is_empty() {
+                captures.push((c.node, m.pattern_index, capture));
             }
         }
     }
     use std::cmp::Ordering;
     // Outer nodes before inner ones, and a node's patterns in order, so that
-    // painting in order leaves the innermost node's latest pattern.
+    // painting in order leaves the innermost node's most specific, then latest,
+    // pattern.
     captures.sort_by(|(a, a_pattern, _), (b, b_pattern, _)| {
         let key = |node: &Node| (node.start_byte(), Reverse(node.end_byte()));
         key(a)
@@ -108,25 +84,25 @@ pub fn spans(
                 false if encloses(*a, *b) => Ordering::Less,
                 false => Ordering::Greater,
             })
-            .then(a_pattern.cmp(b_pattern))
+            .then((specificity[*a_pattern], a_pattern).cmp(&(specificity[*b_pattern], b_pattern)))
     });
-    let mut painted: Vec<Option<Group>> = vec![None; range.len()];
-    for (node, _, group) in captures {
+    let mut painted: Vec<Option<&'static str>> = vec![None; range.len()];
+    for (node, _, capture) in captures {
         let (start, end) = (
             node.start_byte().max(range.start),
             node.end_byte().min(range.end),
         );
         if start < end {
-            painted[start - range.start..end - range.start].fill(Some(group));
+            painted[start - range.start..end - range.start].fill(Some(capture));
         }
     }
-    let mut spans: Vec<(Range<usize>, Group)> = Vec::new();
-    for (i, group) in painted.into_iter().enumerate() {
-        let Some(group) = group else { continue };
+    let mut spans: Vec<(Range<usize>, &'static str)> = Vec::new();
+    for (i, capture) in painted.into_iter().enumerate() {
+        let Some(capture) = capture else { continue };
         let at = range.start + i;
         match spans.last_mut() {
-            Some((r, g)) if r.end == at && *g == group => r.end += 1,
-            _ => spans.push((at..at + 1, group)),
+            Some((r, c)) if r.end == at && *c == capture => r.end += 1,
+            _ => spans.push((at..at + 1, capture)),
         }
     }
     spans
@@ -149,13 +125,42 @@ fn encloses(outer: Node, inner: Node) -> bool {
     false
 }
 
+/// How specific a highlight query pattern is: its nodes and predicates.
+fn specificity(pattern: &str) -> usize {
+    let mut count = 0;
+    let mut chars = pattern.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\\' => _ = chars.next(),
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+            }
+            ';' => while chars.next_if(|c| *c != '\n').is_some() {},
+            // A `(` before another, or before space, only groups.
+            '(' if chars
+                .peek()
+                .is_some_and(|c| *c != '(' && !c.is_whitespace()) =>
+            {
+                count += 1
+            }
+            _ => {}
+        }
+    }
+    count
+}
+
 /// `text[range]` painted with `spans`, which `spans` gave for a range
 /// containing it, and the text between them painted as `base`.
 pub fn paint(
     style: Style,
     text: &str,
     range: Range<usize>,
-    spans: &[(Range<usize>, Group)],
+    spans: &[(Range<usize>, &'static str)],
     base: Option<Role>,
 ) -> String {
     let gap = |text| match base {
@@ -165,13 +170,13 @@ pub fn paint(
     let mut out = String::new();
     let mut at = range.start;
     let first = spans.partition_point(|(r, _)| r.end <= range.start);
-    for (span, group) in &spans[first..] {
+    for (span, capture) in &spans[first..] {
         if span.start >= range.end {
             break;
         }
         let (start, end) = (span.start.max(range.start), span.end.min(range.end));
         out.push_str(&gap(&text[at..start]));
-        out.push_str(&style.paint(Role::Code(*group), &text[start..end]));
+        out.push_str(&style.code(capture, base, &text[start..end]));
         at = end;
     }
     out.push_str(&gap(&text[at..range.end]));
@@ -181,14 +186,14 @@ pub fn paint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::style::shown;
+    use crate::style::{Group, group, shown};
 
     /// Each highlighted piece of `text` in `lang`, with its group.
     fn groups(lang: Language, text: &str) -> Vec<(&str, Group)> {
         let tree = lang.parse(text);
-        spans(lang, &tree, text, 0..text.len())
+        spans(lang, &tree, text, 0..text.len(), Style::Color)
             .into_iter()
-            .map(|(range, group)| (&text[range], group))
+            .map(|(range, capture)| (&text[range], group(capture).unwrap()))
             .collect()
     }
 
@@ -197,40 +202,6 @@ mod tests {
         let found = groups(lang, text);
         for want in expected {
             assert!(found.contains(want), "{lang}: {want:?} not in {found:?}");
-        }
-    }
-
-    #[test]
-    fn captures_group_by_their_longest_dotted_prefix() {
-        let cases = [
-            ("keyword", Some(Group::Keyword)),
-            ("function.method", Some(Group::Function)),
-            ("function.macro", Some(Group::Function)),
-            ("string.special", Some(Group::String)),
-            ("string.escape", Some(Group::Constant)),
-            ("escape", Some(Group::Constant)),
-            ("comment.documentation", Some(Group::Comment)),
-            ("constant.builtin", Some(Group::Constant)),
-            ("number", Some(Group::Constant)),
-            ("attribute", Some(Group::Constant)),
-            ("constructor", Some(Group::Type)),
-            ("type.builtin", Some(Group::Type)),
-            ("variable.builtin", None),
-            ("tag", Some(Group::Tag)),
-            ("text.title", Some(Group::Heading)),
-            ("text.uri", Some(Group::Link)),
-            ("text.reference", Some(Group::Link)),
-            ("text.literal", Some(Group::String)),
-            ("variable", None),
-            ("variable.parameter", None),
-            ("property", None),
-            ("punctuation.bracket", None),
-            ("operator", None),
-            ("none", None),
-            ("keywords", None),
-        ];
-        for (name, expected) in cases {
-            assert_eq!(group(name), expected, "{name}");
         }
     }
 
@@ -353,7 +324,7 @@ mod tests {
     fn spans_are_ordered_and_disjoint() {
         let text = "/// Doc.\n#[test]\nfn f() -> u8 { CONST.max(b'x') }\n";
         let tree = Language::Rust.parse(text);
-        let found = spans(Language::Rust, &tree, text, 0..text.len());
+        let found = spans(Language::Rust, &tree, text, 0..text.len(), Style::Color);
         for pair in found.windows(2) {
             assert!(pair[0].0.end <= pair[1].0.start, "{found:?}");
         }
@@ -363,7 +334,7 @@ mod tests {
     fn spans_cover_only_the_range_asked_for() {
         let text = "fn a() {}\nfn b() {}\n";
         let tree = Language::Rust.parse(text);
-        let found = spans(Language::Rust, &tree, text, 10..text.len());
+        let found = spans(Language::Rust, &tree, text, 10..text.len(), Style::Color);
         assert!(found.iter().all(|(r, _)| r.start >= 10), "{found:?}");
         assert!(!found.is_empty());
     }
@@ -372,7 +343,7 @@ mod tests {
     fn paint_colours_the_spans_inside_the_range() {
         let text = "let s = \"a\nb\";\n";
         let tree = Language::Rust.parse(text);
-        let found = spans(Language::Rust, &tree, text, 0..text.len());
+        let found = spans(Language::Rust, &tree, text, 0..text.len(), Style::Color);
         let first = shown(&paint(Style::Color, text, 0..10, &found, None));
         assert_eq!(first, r#"\e[35mlet\e[0m s = \e[32m"a\e[0m"#);
         let second = shown(&paint(Style::Color, text, 11..14, &found, None));
@@ -383,7 +354,7 @@ mod tests {
     fn paint_gives_the_text_between_spans_the_base_role() {
         let text = "let s = 1;\n";
         let tree = Language::Rust.parse(text);
-        let found = spans(Language::Rust, &tree, text, 0..text.len());
+        let found = spans(Language::Rust, &tree, text, 0..text.len(), Style::Color);
         let painted = shown(&paint(
             Style::Color,
             text,
@@ -399,8 +370,106 @@ mod tests {
     fn plain_paint_is_the_text() {
         let text = "let s = 1;\n";
         let tree = Language::Rust.parse(text);
-        let found = spans(Language::Rust, &tree, text, 0..text.len());
+        let found = spans(Language::Rust, &tree, text, 0..text.len(), Style::Color);
         assert_eq!(paint(Style::Plain, text, 0..10, &found, None), "let s = 1;");
         assert_eq!(paint(Style::Color, text, 4..5, &[], None), "s");
+    }
+
+    const THEME: &str = r##"
+[theme]
+dark = true
+added = "#00ff00"
+removed = "#ff0000"
+[theme.syntax]
+keyword = "#c678dd"
+function = "#61afef"
+variable = "#abb2bf"
+"variable.builtin" = "#e06c75"
+constructor = "#e5c07b"
+constant = "#d19a66"
+"##;
+
+    fn captures(lang: Language, text: &str) -> Vec<(&str, &'static str)> {
+        let style = Style::Theme(
+            crate::theme::tests::leaked(THEME),
+            crate::style::Depth::Truecolor,
+        );
+        let tree = lang.parse(text);
+        spans(lang, &tree, text, 0..text.len(), style)
+            .into_iter()
+            .map(|(range, capture)| (&text[range], capture))
+            .collect()
+    }
+
+    #[test]
+    fn a_theme_highlights_by_capture_name() {
+        let found = captures(Language::Rust, "fn main() { let x = 1; }\n");
+        assert!(found.contains(&("fn", "keyword")), "{found:?}");
+        assert!(found.contains(&("main", "function")), "{found:?}");
+    }
+
+    #[test]
+    fn a_theme_colours_self_and_this_as_builtin_variables() {
+        let found = captures(Language::Rust, "fn f(&self) { self.a; }\n");
+        assert!(found.contains(&("self", "variable.builtin")), "{found:?}");
+        assert!(!found.contains(&("self", "keyword")), "{found:?}");
+        let found = captures(Language::JavaScript, "this.a;\n");
+        assert!(found.contains(&("this", "variable.builtin")), "{found:?}");
+    }
+
+    #[test]
+    fn a_more_specific_pattern_beats_a_later_catch_all() {
+        // Go's query ends with `(identifier) @variable`, after the patterns that
+        // mark functions.
+        let found = captures(Language::Go, "package p\nfunc main() { foo(x) }\n");
+        assert!(found.contains(&("main", "function")), "{found:?}");
+        assert!(found.contains(&("foo", "function")), "{found:?}");
+        assert!(found.contains(&("x", "variable")), "{found:?}");
+    }
+
+    #[test]
+    fn a_later_pattern_with_a_predicate_beats_an_earlier_catch_all() {
+        let found = captures(Language::Python, "a = Foo\nb = FOO\n");
+        assert!(found.contains(&("a", "variable")), "{found:?}");
+        assert!(found.contains(&("Foo", "constructor")), "{found:?}");
+        assert!(found.contains(&("FOO", "constant")), "{found:?}");
+    }
+
+    #[test]
+    fn specificity_counts_nodes_and_predicates() {
+        assert_eq!(specificity("(identifier) @variable"), 1);
+        assert_eq!(specificity("((identifier) @c (#match? @c \"^[A-Z]\"))"), 2);
+        assert_eq!(
+            specificity("(call_expression function: (identifier) @function)"),
+            2
+        );
+        assert_eq!(
+            specificity("((identifier) @x (#match? @x \"^(a)(b)$\"))"),
+            2
+        );
+        assert_eq!(specificity("((identifier) @x (#eq? @x \"\\\"(\"))"), 2);
+        assert_eq!(specificity("; (comment)\n(identifier) @variable"), 1);
+        assert_eq!(specificity("\"fn\" @keyword"), 0);
+        assert_eq!(specificity("[(a) (b)] @x"), 2);
+    }
+
+    #[test]
+    fn a_theme_tints_highlighted_code_on_changed_lines() {
+        let style = Style::Theme(
+            crate::theme::tests::leaked(THEME),
+            crate::style::Depth::Truecolor,
+        );
+        let text = "let s = 1;\n";
+        let tree = Language::Rust.parse(text);
+        let found = spans(Language::Rust, &tree, text, 0..text.len(), style);
+        let painted = paint(style, text, 0..10, &found, Some(Role::Removed));
+        let expected = [
+            style.code("keyword", Some(Role::Removed), "let"),
+            style.paint(Role::Removed, " s = "),
+            style.code("constant.builtin", Some(Role::Removed), "1"),
+            style.paint(Role::Removed, ";"),
+        ]
+        .concat();
+        assert_eq!(shown(&painted), shown(&expected));
     }
 }

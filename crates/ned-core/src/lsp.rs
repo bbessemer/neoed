@@ -148,6 +148,12 @@ pub enum Formatting {
 
 /// What `ned` asks of the workspace's language servers.
 pub trait Lsp {
+    /// Whether the servers are up already, so edits can be checked and
+    /// formatted through them without starting any (spec §1.1).
+    fn running(&mut self) -> bool {
+        true
+    }
+
     /// Diagnostics for each of `documents`, as their text stands. `saved`
     /// says the documents' files hold their texts, so servers may also run,
     /// and are waited for, the checks they run when a file is saved.
@@ -260,6 +266,95 @@ pub fn restore(lsp: &mut dyn Lsp, changes: &[Change]) -> Result<(), LspFailure> 
         return Ok(());
     }
     lsp.sync(&documents(changes, &typed, |i| changes[i].old.clone())?)
+}
+
+/// The diagnostics of files' texts on disk, as saved, before an edit is
+/// written over them (spec §6.5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BeforeSave {
+    /// The changes whose original text was diagnosed.
+    typed: Vec<usize>,
+    diagnosis: Option<Diagnosis>,
+}
+
+/// What the checks servers run on save found that a write introduced: per
+/// change, at the `show` level or above, by position; and why some may be
+/// missing.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Saved {
+    pub files: Vec<Vec<Diagnostic>>,
+    pub notes: Vec<String>,
+}
+
+/// Diagnoses the original text of each of `changes` that a file holds, as
+/// saved, before the edit is written.
+pub fn before_save(lsp: &mut dyn Lsp, changes: &[Change]) -> Result<BeforeSave, LspFailure> {
+    let typed: Vec<usize> = (0..changes.len())
+        .filter(|&i| changes[i].lang.is_some() && !changes[i].created)
+        .collect();
+    let diagnosis = match typed.is_empty() {
+        true => None,
+        false => Some(lsp.diagnose(
+            &documents(changes, &typed, |i| changes[i].old.clone())?,
+            true,
+        )?),
+    };
+    Ok(BeforeSave { typed, diagnosis })
+}
+
+/// Diagnoses the written `finals` of `changes` as saved, and finds what the
+/// write introduced since `before`, leaving out what `already`, the edit's
+/// check, reported.
+pub fn check_saved(
+    lsp: &mut dyn Lsp,
+    before: BeforeSave,
+    changes: &[Change],
+    finals: &[&str],
+    already: Option<&Checked>,
+) -> Result<Saved, LspFailure> {
+    let mut saved = Saved {
+        files: vec![Vec::new(); changes.len()],
+        notes: Vec::new(),
+    };
+    let typed: Vec<usize> = (0..changes.len())
+        .filter(|&i| changes[i].lang.is_some())
+        .collect();
+    if typed.is_empty() {
+        return Ok(saved);
+    }
+    let after = lsp.diagnose(
+        &documents(changes, &typed, |i| finals[i].to_string())?,
+        true,
+    )?;
+    let notes = before
+        .diagnosis
+        .iter()
+        .chain([&after])
+        .flat_map(|d| &d.notes);
+    for note in notes {
+        if !saved.notes.contains(note) {
+            saved.notes.push(note.clone());
+        }
+    }
+    for (k, &i) in typed.iter().enumerate() {
+        let Some(diagnostics) = &after.files[k] else {
+            continue;
+        };
+        let mut original: Vec<Diagnostic> = before
+            .typed
+            .iter()
+            .position(|&j| j == i)
+            .and_then(|b| before.diagnosis.as_ref()?.files[b].clone())
+            .unwrap_or_default();
+        if let Some(already) = already {
+            original.extend(already.files[i].iter().cloned());
+        }
+        let mut new = introduced(&original, diagnostics);
+        new.retain(|d| d.severity <= after.show);
+        new.sort_by_key(|d| d.start);
+        saved.files[i] = new;
+    }
+    Ok(saved)
 }
 
 /// The `typed` changes as documents holding `text(i)`.
@@ -573,13 +668,18 @@ mod tests {
     }
 
     /// Servers that report a diagnostic for each line containing ERROR, WARN or
-    /// HINT, for Rust files only.
+    /// HINT, for Rust files only, and, as saved, an error for each containing
+    /// CARGO, as rust-analyzer's `cargo check` does.
     #[derive(Default)]
     struct TextLsp {
         show: Option<Severity>,
         block: Option<Option<Severity>>,
         failure: Option<&'static str>,
         asked: Vec<Vec<String>>,
+        /// Whether each request was as saved.
+        saved: Vec<bool>,
+        /// Notes on every diagnosis.
+        notes: Vec<String>,
     }
 
     impl Lsp for TextLsp {
@@ -588,7 +688,7 @@ mod tests {
             documents: &[Document],
             saved: bool,
         ) -> Result<Diagnosis, LspFailure> {
-            assert!(!saved, "edits aren't written when they're checked");
+            self.saved.push(saved);
             self.asked
                 .push(documents.iter().map(|d| d.text.clone()).collect());
             if let Some(failure) = self.failure {
@@ -604,6 +704,7 @@ mod tests {
                                 ("ERROR", Severity::Error),
                                 ("WARN", Severity::Warning),
                                 ("HINT", Severity::Hint),
+                                (if saved { "CARGO" } else { "\0" }, Severity::Error),
                             ] {
                                 if text.contains(word) {
                                     found.push(d(line as u32, severity, word));
@@ -618,7 +719,7 @@ mod tests {
                 show: self.show.unwrap_or(Severity::Warning),
                 block: self.block.unwrap_or(Some(Severity::Error)),
                 files,
-                notes: Vec::new(),
+                notes: self.notes.clone(),
             })
         }
 
@@ -667,6 +768,11 @@ mod tests {
         let out =
             check_changes(&mut lsp, &changes, &["formatted ERROR WARN\n"], None, false).unwrap();
         assert_eq!(lsp.asked, [vec!["a\n"], vec!["formatted ERROR WARN\n"]]);
+        assert_eq!(
+            lsp.saved,
+            [false, false],
+            "edits aren't written when they're checked"
+        );
         let error = d(0, Severity::Error, "ERROR");
         assert_eq!(
             out.files,
@@ -776,5 +882,66 @@ mod tests {
             }
         );
         assert!(lsp.asked.is_empty());
+    }
+
+    fn saved(lsp: &mut TextLsp, changes: &[Change], already: Option<&Checked>) -> Saved {
+        let finals: Vec<&str> = changes.iter().map(|c| c.new.as_str()).collect();
+        let before = before_save(lsp, changes).unwrap();
+        check_saved(lsp, before, changes, &finals, already).unwrap()
+    }
+
+    #[test]
+    fn a_write_is_diagnosed_as_saved_before_and_after() {
+        let mut lsp = TextLsp::default();
+        let changes = [change("a.rs", "a\n", "a\nCARGO\n")];
+        let out = saved(&mut lsp, &changes, None);
+        assert_eq!(lsp.asked, [vec!["a\n"], vec!["a\nCARGO\n"]]);
+        assert_eq!(lsp.saved, [true, true]);
+        assert_eq!(out.files, [vec![d(1, Severity::Error, "CARGO")]]);
+    }
+
+    #[test]
+    fn a_write_reports_only_what_it_introduced_and_the_edit_check_did_not() {
+        let mut lsp = TextLsp::default();
+        let changes = [change("a.rs", "CARGO\n", "CARGO\nCARGO\nERROR\nHINT\n")];
+        let already = Checked {
+            files: vec![vec![d(2, Severity::Error, "ERROR")]],
+            blocking: Vec::new(),
+        };
+        let out = saved(&mut lsp, &changes, Some(&already));
+        assert_eq!(out.files, [vec![d(1, Severity::Error, "CARGO")]]);
+    }
+
+    #[test]
+    fn a_created_file_has_nothing_before_its_write() {
+        let mut lsp = TextLsp::default();
+        let changes = [change("a.rs", "a\n", "b\n"), change("n.rs", "", "CARGO\n")];
+        let out = saved(&mut lsp, &changes, None);
+        assert_eq!(lsp.asked, [vec!["a\n"], vec!["b\n", "CARGO\n"]]);
+        assert_eq!(out.files, [vec![], vec![d(0, Severity::Error, "CARGO")]]);
+    }
+
+    #[test]
+    fn a_write_without_typed_files_asks_nothing() {
+        let mut lsp = TextLsp::default();
+        let out = saved(&mut lsp, &[change("a.txt", "a\n", "CARGO\n")], None);
+        assert!(lsp.asked.is_empty());
+        assert_eq!(
+            out,
+            Saved {
+                files: vec![vec![]],
+                notes: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn notes_on_a_saved_diagnosis_are_passed_on() {
+        let mut lsp = TextLsp {
+            notes: vec!["cargo check didn't finish".into()],
+            ..TextLsp::default()
+        };
+        let out = saved(&mut lsp, &[change("a.rs", "a\n", "b\n")], None);
+        assert_eq!(out.notes, ["cargo check didn't finish"]);
     }
 }

@@ -1,4 +1,4 @@
-show [SEL [+N]]
+show [raw] [SEL [+N]]
 
 Prints the lines holding each span of SEL, headed PATH:START-END, as N:text.
 Without SEL, prints every file in the set. +N adds N lines of context before
@@ -8,9 +8,13 @@ start of its stage: the original, unless the script has a `|` before it.
 instead of failing.
 A line range alone that ends past a file's last line shows up to it, with a
 note.
+`show raw` prints the text alone, for copying it: no N:, headers only when
+there are several regions, and every line ends in \n (a \r\n too).
+A function named raw is fn:raw.
 
 Examples:
     show fn:parse
     show /TODO/ +3
     show all /TODO/
     show 10-30
+    show raw fn:parse

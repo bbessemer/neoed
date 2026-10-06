@@ -24,10 +24,31 @@ pub enum Piece {
 pub struct Hole {
     /// `None` for `@_`.
     pub name: Option<String>,
-    /// `@name...`: a run of siblings.
-    pub many: bool,
+    pub count: Count,
     /// Where the placeholder is in the template's text.
     pub span: Range<usize>,
+}
+
+/// How many sibling nodes a placeholder stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Count {
+    /// `@name`
+    One,
+    /// `@name...`, a run
+    OneOrMore,
+    /// `@name...?`, a run that may be empty
+    ZeroOrMore,
+}
+
+impl Count {
+    /// What follows the name in the placeholder.
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Count::One => "",
+            Count::OneOrMore => "...",
+            Count::ZeroOrMore => "...?",
+        }
+    }
 }
 
 /// A template's text as a grammar parses it: each hole becomes its
@@ -88,12 +109,15 @@ impl Template {
                 continue;
             }
             let name = &rest[..name_len];
-            let many = rest[name_len..].starts_with("...");
-            let end = at + 1 + name_len + if many { 3 } else { 0 };
+            let count = [Count::ZeroOrMore, Count::OneOrMore]
+                .into_iter()
+                .find(|c| rest[name_len..].starts_with(c.suffix()))
+                .unwrap_or(Count::One);
+            let end = at + 1 + name_len + count.suffix().len();
             flush(&mut pieces, text_start, at);
             pieces.push(Piece::Hole(Hole {
                 name: (name != "_").then(|| name.to_string()),
-                many,
+                count,
                 span: at..end,
             }));
             i = end;
@@ -122,8 +146,26 @@ impl Template {
             let start = out.len();
             let span = match piece {
                 Piece::Text { text: t, span } => {
-                    out.push_str(t);
-                    span
+                    // Separators don't count (§3.10), so a run left out
+                    // takes the one after it along, unless it's the rest of
+                    // the node before it, which the separator ends.
+                    let alone = out
+                        .trim_end()
+                        .chars()
+                        .last()
+                        .is_none_or(|c| "([{,;".contains(c));
+                    let gone = match holes.last() {
+                        Some(h) if *h == (start..start) && alone => {
+                            let ws = t.len() - t.trim_start().len();
+                            match t[ws..].starts_with([',', ';']) {
+                                true => ws + 1,
+                                false => 0,
+                            }
+                        }
+                        _ => 0,
+                    };
+                    out.push_str(&t[gone..]);
+                    &(span.start + gone..span.end)
                 }
                 Piece::Hole(hole) => {
                     match text(holes.len()) {
@@ -210,10 +252,10 @@ impl Source {
 mod tests {
     use super::*;
 
-    fn hole(name: Option<&str>, many: bool, span: Range<usize>) -> Piece {
+    fn hole(name: Option<&str>, count: Count, span: Range<usize>) -> Piece {
         Piece::Hole(Hole {
             name: name.map(String::from),
-            many,
+            count,
             span,
         })
     }
@@ -232,15 +274,36 @@ mod tests {
             t.pieces,
             [
                 text("f(", 0..2),
-                hole(Some("a"), false, 2..4),
+                hole(Some("a"), Count::One, 2..4),
                 text(", ", 4..6),
-                hole(Some("rest"), true, 6..14),
+                hole(Some("rest"), Count::OneOrMore, 6..14),
                 text(") ", 14..16),
-                hole(None, false, 16..18),
+                hole(None, Count::One, 16..18),
                 text(" ", 18..19),
-                hole(None, true, 19..24),
+                hole(None, Count::OneOrMore, 19..24),
             ]
         );
+    }
+
+    #[test]
+    fn runs_that_may_be_empty() {
+        let t = Template::parse("f(@a...?) @_...? @b? @c..?");
+        assert_eq!(
+            t.pieces,
+            [
+                text("f(", 0..2),
+                hole(Some("a"), Count::ZeroOrMore, 2..8),
+                text(") ", 8..10),
+                hole(None, Count::ZeroOrMore, 10..16),
+                text(" ", 16..17),
+                hole(Some("b"), Count::One, 17..19),
+                text("? ", 19..21),
+                hole(Some("c"), Count::One, 21..23),
+                text("..?", 23..26),
+            ]
+        );
+        let s = t.source(|_| HoleText::Placeholder);
+        assert_eq!(s.text, "f(__ned_a) __ned__ __ned_b? __ned_c..?");
     }
 
     #[test]
@@ -301,6 +364,21 @@ mod tests {
     }
 
     #[test]
+    fn empty_holes_take_their_separator_with_them() {
+        let t = Template::parse("match @e { @_..., B => 1 }");
+        let s = t.source(|i| {
+            if i == 1 {
+                HoleText::Empty
+            } else {
+                HoleText::Placeholder
+            }
+        });
+        assert_eq!(s.text, "match __ned_e {  B => 1 }");
+        assert_eq!(s.holes, [6..13, 16..16]);
+        assert_eq!(s.to_template(17), 18);
+    }
+
+    #[test]
     fn source_offsets_map_back() {
         let t = Template::parse("f(@a, @@b) z");
         let s = t.source(|_| HoleText::Placeholder);
@@ -329,6 +407,7 @@ mod tests {
         let caps = [("a", "x", ""), ("b", "y + 1", "")];
         assert_eq!(filled("foo(@b, @a)", &caps), Ok("foo(y + 1, x)".into()));
         assert_eq!(filled("foo(@a...)", &caps), Ok("foo(x)".into()));
+        assert_eq!(filled("foo(@a...?)", &caps), Ok("foo(x)".into()));
         assert_eq!(filled("@@a and a @ b", &caps), Ok("@a and a @ b".into()));
     }
 

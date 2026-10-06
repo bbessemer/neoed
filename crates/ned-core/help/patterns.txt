@@ -1,0 +1,29 @@
+patterns
+
+`CODE` is code matched against each file's syntax tree, whatever its spacing,
+line breaks and comments:
+    `dbg!(@x...)`              every dbg! call, capturing its arguments
+    `foo(@first, @rest...)`    a run: as few siblings as can match
+    `@x == @x`                 a name used twice matches equal code
+    struct:Foo>`x: u32`        a field: parsed in the body of the step before
+
+@name is one node (an expression, a statement, a name), @name... a run of one
+or more siblings, @name...? of zero or more, @_, @_... and @_...? the same
+without a name. @@ is a literal @, as in a decorator, matched with what it
+decorates: `@@Component(@o) class @c { @_... }`; an @ in a string or comment is
+literal anyway. A match arm, case, dict entry or lone decorator isn't a pattern
+yet: write the code around it too (`match @e { @_...? A => @v, @_...? }`).
+Rust macro arguments are tokens: use a run (`dbg!(@x...)`) for an argument.
+Separators (, ; and line breaks) and comments are skipped on both sides; every
+other token and node must match, so `fn @f() {}` doesn't match `pub fn f() {}`.
+A match is a span with .lines; matches don't overlap. A pattern holding
+backquotes opens and closes with a longer run of them. A pattern parses in
+place of what the step before it selected (an item's body, a part), or alone;
+spans where it doesn't parse are skipped. `replace` puts each capture where its
+@name is in TEXT.
+
+Examples:
+    show all `dbg!(@x...)`
+    delete all fn:main>`println!(@_...?);`
+    show all `` `${name}` ``
+    replace all `assert_eq!(@a..., true)` with "assert!(@a)"

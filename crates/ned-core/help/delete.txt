@@ -1,0 +1,12 @@
+delete [all] SEL
+
+Removes each span of SEL. A whole-line span removes its full lines and tidies
+the blank lines beside them: between two other lines, only as many stay as the
+larger of the gaps above and below the span; next to a bracket or after a line
+ending in `:` (Python), only those already there; at the start or end of the
+file, none.
+
+Examples:
+    delete fn:debug_dump
+    delete all fn:test_*
+    delete impl:Parser>"#[inline] "

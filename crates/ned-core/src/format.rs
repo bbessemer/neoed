@@ -37,8 +37,33 @@ pub enum Outcome {
     Formatted { name: String, text: String },
     /// No formatter for the file is installed; the note says so.
     NotFound(String),
-    /// The formatter failed, or wasn't run; the note says why.
-    Failed(String),
+    /// The formatter wasn't run; the note says why.
+    Skipped(String),
+    /// The formatter failed on the text.
+    Failed(Failure),
+}
+
+/// A formatter's failure on a file's text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure {
+    /// The formatter, to run again.
+    pub formatter: Formatter,
+    /// Its name in output.
+    pub name: String,
+    /// The first line of its stderr, or how else it failed.
+    pub why: String,
+    /// The file's path.
+    pub path: String,
+}
+
+impl Failure {
+    /// The note for writing the file unformatted.
+    pub fn note(&self) -> String {
+        format!(
+            "{} failed: {}; skipped formatting {}",
+            self.name, self.why, self.path
+        )
+    }
 }
 
 /// Formats the new text of each of `changes`, in parallel.
@@ -61,7 +86,7 @@ pub fn run(changes: &[Change], config: &mut Config) -> Result<Vec<Outcome>, Conf
             .zip(&found)
             .map(|(change, formatter)| {
                 scope.spawn(move || match formatter {
-                    Some(_) if !conflicts(&change.new).is_empty() => Outcome::Failed(format!(
+                    Some(_) if !conflicts(&change.new).is_empty() => Outcome::Skipped(format!(
                         "skipped formatting {}: it has merge conflicts",
                         change.path
                     )),
@@ -177,9 +202,14 @@ impl Config {
 
 impl Formatter {
     /// Formats `text`, the new contents of the file at `path`.
-    fn format(&self, path: &str, text: &str) -> Outcome {
-        let skipped = |name: &str, why: &str| {
-            Outcome::Failed(format!("{name} {why}; skipped formatting {path}"))
+    pub fn format(&self, path: &str, text: &str) -> Outcome {
+        let failed = |name: &str, why: &str| {
+            Outcome::Failed(Failure {
+                formatter: self.clone(),
+                name: name.into(),
+                why: why.into(),
+                path: path.into(),
+            })
         };
         let mut missing = String::new();
         for command in &self.commands {
@@ -197,7 +227,7 @@ impl Formatter {
                     missing = name;
                     continue;
                 }
-                Err(err) => return skipped(&name, &format!("failed: {err}")),
+                Err(err) => return failed(&name, &err.to_string()),
             };
             // Feed stdin from another thread so a formatter that writes before
             // reading everything can't fill its stdout pipe and deadlock.
@@ -210,13 +240,13 @@ impl Formatter {
             });
             let output = match output {
                 Ok(output) => output,
-                Err(err) => return skipped(&name, &format!("failed: {err}")),
+                Err(err) => return failed(&name, &err.to_string()),
             };
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let first = stderr.lines().map(str::trim).find(|l| !l.is_empty());
                 let why = first.map_or(output.status.to_string(), String::from);
-                return skipped(&name, &format!("failed: {why}"));
+                return failed(&name, &why);
             }
             return match String::from_utf8(output.stdout) {
                 Ok(formatted) if formatted == text => Outcome::Unchanged,
@@ -224,7 +254,7 @@ impl Formatter {
                     name,
                     text: formatted,
                 },
-                Err(_) => skipped(&name, "failed: output is not UTF-8"),
+                Err(_) => failed(&name, "output is not UTF-8"),
             };
         }
         Outcome::NotFound(format!("{missing} not found; skipped formatting {path}"))
@@ -634,6 +664,14 @@ mod tests {
         formatter.format("src/a.rs", text)
     }
 
+    /// The note for `outcome`, a failure.
+    fn failure(outcome: Outcome) -> String {
+        match outcome {
+            Outcome::Failed(failure) => failure.note(),
+            other => panic!("not a failure: {other:?}"),
+        }
+    }
+
     #[test]
     fn run_formats_each_change_in_order() {
         let root = tree(&[(
@@ -779,7 +817,7 @@ mod tests {
         assert_eq!(
             outcomes,
             [
-                Outcome::Failed(format!(
+                Outcome::Skipped(format!(
                     "skipped formatting {}: it has merge conflicts",
                     path.display()
                 )),
@@ -812,28 +850,29 @@ mod tests {
 
     #[test]
     fn a_failing_program_is_skipped_with_its_first_stderr_line() {
-        assert_eq!(
-            format_with(
-                &[&[
-                    "sh",
-                    "-c",
-                    "cat >/dev/null; echo 'bad input' >&2; echo more >&2; exit 3"
-                ]],
-                "x\n"
-            ),
-            Outcome::Failed("sh failed: bad input; skipped formatting src/a.rs".into())
+        let outcome = format_with(
+            &[&[
+                "sh",
+                "-c",
+                "cat >/dev/null; echo 'bad input' >&2; echo more >&2; exit 3",
+            ]],
+            "x\n",
         );
         assert_eq!(
-            format_with(&[&["sh", "-c", "exit 1"]], "x\n"),
-            Outcome::Failed("sh failed: exit status: 1; skipped formatting src/a.rs".into())
+            failure(outcome),
+            "sh failed: bad input; skipped formatting src/a.rs"
+        );
+        assert_eq!(
+            failure(format_with(&[&["sh", "-c", "exit 1"]], "x\n")),
+            "sh failed: exit status: 1; skipped formatting src/a.rs"
         );
     }
 
     #[test]
     fn non_utf8_output_is_a_failure() {
         assert_eq!(
-            format_with(&[&["sh", "-c", "printf '\\377'"]], "x\n"),
-            Outcome::Failed("sh failed: output is not UTF-8; skipped formatting src/a.rs".into())
+            failure(format_with(&[&["sh", "-c", "printf '\\377'"]], "x\n")),
+            "sh failed: output is not UTF-8; skipped formatting src/a.rs"
         );
     }
 
@@ -960,7 +999,7 @@ mod tests {
         let mut outcomes = [
             Outcome::NotFound(NOT_FOUND.into()),
             Outcome::Unchanged,
-            Outcome::Failed("rustfmt failed: bad; skipped formatting src/c.rs".into()),
+            Outcome::Skipped("skipped formatting src/c.rs: it has merge conflicts".into()),
             formatted("rustfmt", "D\n"),
         ];
         let expected_rest = outcomes[1..].to_vec();

@@ -215,7 +215,7 @@ impl Lexer<'_> {
 mod tests {
     use super::super::TokenKind;
     use super::*;
-    use crate::script::ast::{Op, Part, Pattern, Property, RegexFlags, Value};
+    use crate::script::ast::{LineNo, Op, Part, Pattern, Property, RegexFlags, Value};
     use crate::script::error::ParseErrorKind as E;
 
     fn filter(src: &str) -> Filter {
@@ -349,6 +349,16 @@ mod tests {
             error("[.refs.len > 1]").kind,
             E::NotAProperty("refs".into())
         );
+        assert!(matches!(
+            filter("[.lines:$.len > 1]"),
+            Filter::Cond {
+                property: Property {
+                    part: Some(Part::Line(LineNo::Last)),
+                    len: true
+                },
+                ..
+            }
+        ));
         assert_eq!(error("[.bogus > 1]").kind, E::UnknownPart("bogus".into()));
         let number = E::CompareNumber {
             property: ".len".into(),

@@ -8,24 +8,33 @@ changing behaviour.
 
 ```
 ned [FLAGS] [FILE... | -w [DIR]] [-e SCRIPT]...
+ned repl [FLAGS] [FILE... | -w [DIR]] [--attach NAME]
+ned mcp [FLAGS]
 ned help [TOPIC]
 ned daemon start|status|stop [DIR]
 ned history [-s NAME] [-w DIR] [--all]
 ned undo [-s NAME] [-w DIR] [--force]
+ned session list [--all]
+ned session delete NAME... [-w DIR]
 ```
 
 `ned help` prints a summary of the language, sized to fit in an agent's context.
 `ned help TOPIC` details one verb (`show`, `outline`, `check`, `allow`,
 `replace`, `insert`, `delete`, `sub`, `move`, `rename`, `file`, `create`), or
-`selectors`, `text`, `config` or `session`. An unknown topic is a usage error
-that lists the topics. A subcommand (`help`, `daemon`, `history`, `undo`) must
-be the first argument; write a file with one of those names as `./help`, say.
-One after a flag (`ned -s x undo`) is a usage error suggesting it first, with
-the flags it takes (`ned undo -s x`).
+`selectors`, `text`, `config`, `session`, `repl` or `mcp`. An unknown topic is a
+usage error that lists the topics. A subcommand (`repl`, `mcp`, `help`,
+`daemon`, `history`, `undo`, `session`) must be the first argument; write a file
+with one of those names as `./help`, say. One after a flag (`ned -s x undo`) is
+a usage error suggesting it first, with the flags it takes (`ned undo -s x`).
 
 - `-e SCRIPT` may be repeated; the scripts are joined with newlines, in order.
-- Without `-e`, the script is read from stdin. If stdin is a terminal, that's a
-  usage error instead of a wait for input.
+- Without `-e`, the script is read from stdin. If stdin is a terminal, `ned`
+  starts the REPL (§1.4) on the file set instead, with the same flags; a flag
+  the REPL doesn't take is a usage error.
+- With `-e`, stdin is read only where `-e -` names it: its script runs in that
+  place among the `-e` scripts, so `ned -e 'file a.rs' -e - <<'EOF'` runs both.
+  Otherwise stdin is left alone, so `ned` in a `while read` loop doesn't take
+  the loop's input. Giving `-e -` twice is a usage error.
 - A `FILE` that doesn't exist but is a command's name (`ned outline a.rs`) is a
   usage error suggesting the `-e` form (`ned a.rs -e 'outline'`).
 - `FILE...` sets the initial **file set** (§2.4). A script may also name files
@@ -39,8 +48,9 @@ Flags:
 - `-n`, `--dry-run`: Resolve and apply edits in memory, print the output, write
   nothing.
 - `-q`, `--quiet`: Print only the per-file summary lines on success (§6.3).
-- `--force`: Skip the parse-error guard (§4.3) and blocking on introduced
-  diagnostics (§6.5).
+- `--force`: Skip the parse-error guard (§4.3), blocking on introduced
+  diagnostics (§6.5), and rejecting a formatter failure an edit introduces
+  (§6.4).
 - `--no-check`: Don't check edits with language servers (§6.5).
 - `-w`, `--workspace [DIR]`: Start with every file in the workspace, `DIR` or
   the one detected (§1.1), instead of `FILE` arguments (§2.4).
@@ -170,13 +180,16 @@ failures (a script syntax error too), so a failed one can be repeated with a
 fix. An entry holds the script, the `FILE` arguments or `-w` directory, the
 working directory, the exit code and, for one that wrote files, each file's text
 before and after. A successful `ned undo` records an entry too; a failed one
-isn't recorded. Usage errors from the arguments themselves are not recorded.
+isn't recorded. Usage errors from the arguments themselves are not recorded. The
+REPL (§1.4) records each script it runs with no changes, since its edits stay in
+memory, and each write as an entry of its own.
 
 `ned history` prints the session's last 10 entries, or with `--all` every entry,
 oldest first, one line each: the entry's number, its outcome (`ok`, `dry run`,
-`exit N`, or `undo N` for an undo), the number of files it changed, `commit SHA`
-(its first 7 characters) if it made a commit (§1.3), `undone` if it has been,
-and the script's first line, followed by `(+N lines)` if it has more.
+`exit N`, `undo N` for an undo, or `write` for a REPL write), the number of
+files it changed, `commit SHA` (its first 7 characters) if it made a commit
+(§1.3), `undone` if it has been, and the script's first line, followed by
+`(+N lines)` if it has more.
 
 ```
 $ ned history
@@ -187,11 +200,11 @@ $ ned history
 ```
 
 `ned undo` reverts the files of the session's last entry that changed files and
-isn't undone, and prints `undo N: SCRIPT` (the script's first line) followed by
-the summary and hunks of each file it changed, as for an edit (§6.3). Repeated,
-it walks further back; there is no redo. A file the entry created is removed,
-and summarized as `PATH: removed, -N`. Undo writes files atomically and runs no
-formatter, guard or check.
+isn't undone, and prints `undo N: SCRIPT` (the script's first line, or `write`
+for a REPL write) followed by the summary and hunks of each file it changed, as
+for an edit (§6.3). Repeated, it walks further back; there is no redo. A file
+the entry created is removed, and summarized as `PATH: removed, -N`. Undo writes
+files atomically and runs no formatter, guard or check.
 
 If a file no longer holds the text the entry wrote, `undo` is refused (exit 1),
 naming the file. `--force` instead merges the undo into the file's current text,
@@ -200,8 +213,11 @@ overlaps one of the entry's is an error naming its line, and nothing is written.
 A file removed since can't be undone, even with `--force`. A created file that
 the merge leaves empty is removed.
 
-A script that is `!!` repeats the session's last script (a recorded `!!` is
-recorded as the script it expanded to). Modifiers after it correct the repeat,
+A script that is `!!` repeats the session's last script that edits or failed: a
+script of only `show`, `outline` and `check` commands (with `file` and `allow`)
+that succeeded is passed over, so looking around after a failed edit leaves `!!`
+on the edit. With no such script, `!!` repeats the last script. A recorded `!!`
+is recorded as the script it expanded to. Modifiers after it correct the repeat,
 applied in order:
 
 - `:s/OLD/NEW/` replaces the first occurrence of `OLD` with `NEW`, both literal
@@ -234,6 +250,29 @@ error listing the workspace's sessions. A session belongs to the workspace of
 the invocations it records (§1.1), so one recorded with `-w DIR` is reached with
 `-w DIR`: `ned history -w DIR`, `ned undo -w DIR` and `ned -w DIR -e '!!'`.
 
+`ned session list` prints the names of the workspace's sessions, one per line,
+sorted. With `--all` it prints every workspace that has sessions, by path, each
+followed by its sessions' names indented two spaces:
+
+```
+$ ned session list --all
+/src/other
+  agent
+/src/proj
+  agent
+  review
+```
+
+A workspace's path is read from its logs; one whose logs are all unreadable is
+shown as its directory under `sessions/`.
+
+`ned session delete NAME...` deletes the named sessions of the workspace, or of
+`-w DIR`'s, printing `NAME: deleted` for each. It doesn't read `NED_SESSION`. An
+invalid name, or one the workspace has no log for, is a usage error listing its
+sessions, and nothing is deleted. Each deletion waits for the session's lock, so
+it never cuts short a frontend's append; a workspace's directory is removed with
+its last session.
+
 Sessions live in `$XDG_STATE_HOME/ned/sessions/`, or `~/.local/state/ned/...`
 without it, in a directory per workspace (§1.1) named after the root's last
 component and a hash of its path. `ned` creates them private to the user and
@@ -249,20 +288,22 @@ session name. Each later line is one entry, numbered from 1 in order. A last
 line cut short by an interrupted append is ignored, and the next append replaces
 it:
 
-| Field       | Value                                                                                          |
-| ----------- | ---------------------------------------------------------------------------------------------- |
-| `id`        | The entry's number                                                                             |
-| `time`      | Seconds since the Unix epoch                                                                   |
-| `cwd`       | The absolute working directory                                                                 |
-| `files`     | The `FILE` arguments as given                                                                  |
-| `workspace` | The `-w` workspace's absolute root, or `null`                                                  |
-| `script`    | The script (after `!!` expansion), or `null` for an undo                                       |
-| `undoes`    | The `id` an undo reverted, or `null`                                                           |
-| `dry_run`   | Whether `-n` was given                                                                         |
-| `exit`      | The exit code                                                                                  |
-| `error`     | The error message, or `null`                                                                   |
-| `changes`   | Per written file: `path` (absolute), `before` (`null` if created), `after` (`null` if removed) |
-| `commit`    | The commit that `--commit` made (§1.3), or `null`; read as `null` if missing                   |
+| Field       | Value                                                                                               |
+| ----------- | --------------------------------------------------------------------------------------------------- |
+| `id`        | The entry's number                                                                                  |
+| `time`      | Seconds since the Unix epoch                                                                        |
+| `cwd`       | The absolute working directory                                                                      |
+| `files`     | The `FILE` arguments as given                                                                       |
+| `workspace` | The `-w` workspace's absolute root, or `null`                                                       |
+| `script`    | The script (after `!!` expansion), or `null` for an undo or a write                                 |
+| `undoes`    | The `id` an undo reverted, or `null`                                                                |
+| `write`     | Whether it is a REPL write (§1.4); read as `false` if missing                                       |
+| `dry_run`   | Whether `-n` was given                                                                              |
+| `exit`      | The exit code                                                                                       |
+| `error`     | The error message, or `null`                                                                        |
+| `changes`   | Per written file: `path` (absolute), `before` (`null` if created), `after` (`null` if removed)      |
+| `commit`    | The commit that `--commit` made (§1.3), or `null`; read as `null` if missing                        |
+| `comment`   | What the call was for, from the MCP server's `comment` (§1.5), or `null`; read as `null` if missing |
 
 ### 1.3 Committing
 
@@ -318,6 +359,214 @@ src/parser.rs: 1 edit, +1 -1
 commit 3f9c2a1: Say what input ended
 ```
 
+### 1.4 REPL
+
+`ned repl` is an editor for a human. It runs scripts as `ned` does, but keeps
+their edits in memory until they're written, so a change can be read, undone and
+reworked before any file changes. Bare `ned` on a terminal without `-e` starts
+it too (§1).
+
+```
+$ ned repl src/parser.rs
+note: recording in session repl-1
+ned› replace fn:parse>"end" with "end of input"
+src/parser.rs: 1 edit, +1 -1
+@@ -14,3 +14,3 @@
+...
+ned› :write
+src/parser.rs: written, +1 -1
+ned› :quit
+```
+
+It takes `FILE...` or `-w [DIR]` and the flags `--force`, `--no-check`,
+`--no-fmt`, `--lang`, `--context`, `--color`, `-s` and `--attach NAME`; `-n`,
+`-q`, `--commit` and `-e` are usage errors. On a terminal it reads lines with
+history (kept in `$XDG_STATE_HOME/ned/repl_history`) and the usual editing keys,
+at the prompt `ned› `, or `ned> ` unless the locale is UTF-8 (the first of
+`LC_ALL`, `LC_CTYPE` and `LANG` that's set names `UTF-8`); otherwise it reads
+them from stdin without a prompt.
+
+**Scripts.** Each input is a script, run on the file set the REPL started with
+(`file` changes it for the rest of that script only, §2.4). A script that ends
+inside a heredoc or a pattern continues on the next line, at the prompt `…`
+(`...>` unless the locale is UTF-8), right-aligned under the first. Its output
+is what `ned` prints, from the same pipeline: the parse-error guard, formatting
+and edit checks apply, and so do `--force`, `--no-fmt` and `--no-check`. An
+error is printed and the REPL goes on. `!!` repeats the session's last script
+(§1.2), on its file set.
+
+**Buffers.** An edit changes the file's buffer, not the file. A buffer holds the
+file's text as edited, and its **base**: the text on disk when its first
+unwritten edit was made, or that a followed session last wrote (below). Scripts
+read buffers in place of the files, and files without one from disk, so another
+program's change to a file without unwritten edits is seen by the next script.
+Language servers see the buffers' text, so `check` and `.refs` see unwritten
+edits; save-time checks (`cargo check`) see only written files.
+
+**Commands** start with `:` and aren't scripts. A command is written in full or
+as any prefix that names only one (`:w` is `:write`, `:u` is `:undo`, `:di` is
+`:diff`); an ambiguous or unknown one is an error listing the commands it could
+be. `!` after a command's name forces it. `:wq` is a shorthand, written only in
+full, so `:w` is still `:write`.
+
+| Command                   | Effect                                                                                   |
+| ------------------------- | ---------------------------------------------------------------------------------------- |
+| `:write [FILE...]`        | Write every buffer with unwritten edits, or the named ones                               |
+| `:write! [FILE...]`       | Write them over the files' current text, without merging                                 |
+| `:commit MSG`             | Write every buffer with unwritten edits, then commit the session's edits to git          |
+| `:undo`                   | Undo the last script's edits to the buffers; repeated, walk further back                 |
+| `:diff [FILE...]`         | Print what `:write` would write, as summary and hunks against the file on disk           |
+| `:reload [FILE...]`       | Drop the unwritten edits of every buffer, or the named ones                              |
+| `:files [FILE... \| -w]`  | Print the file set and the buffers with unwritten edits; with arguments, replace the set |
+| `:history [--all]`        | Print the session's history, as `ned history` does                                       |
+| `:attach NAME`, `:detach` | Follow session `NAME` and record into it; stop                                           |
+| `:help [TOPIC]`           | Print `ned help TOPIC`                                                                   |
+| `:quit`, `:quit!`         | Quit; `:quit!` discards unwritten edits                                                  |
+| `:wq`                     | `:write`, then `:quit` if it succeeded                                                   |
+
+`:write` writes atomically, all files or none, and prints `PATH: written, +A -R`
+for each (`PATH: created, +N` for a file a `create` made). If a file changed on
+disk since its buffer's base, the buffer's edits are merged into its current
+text, as `ned undo --force` merges (§1.2); an edit that overlaps the change is
+an error naming the line, and nothing is written. A created file that now
+exists, or a file removed since, is an error too. `:write!` writes the buffers
+as they are. A write runs no formatter or parse-error guard, and its edits were
+checked when they were made, but the checks servers run on save do run, as for
+any written edit (§6.5), and print what the write introduced after the `written`
+lines.
+
+`:diff` prints the text `:write` would write over each file on disk: the
+buffer's edits, merged into a change made to the file since. Where `:write`
+would refuse (an overlap, a created file that now exists, a file removed since),
+a note gives the error, and it prints what `:write!` would write instead.
+
+`:commit MSG` takes the rest of the line as the message. It writes as `:write`
+does, then commits as `--commit MSG` does in a session (§1.3): every edit the
+session recorded since its last commit, its own write included, and nothing else
+in the working tree or index. It prints the write's lines, then
+`commit SHA: SUBJECT`. With no unwritten edits it commits the session's earlier
+edits alone; with none of those either, it's "nothing to commit". Attached to an
+agent's session, that includes the agent's edits. Its errors are `--commit`'s,
+and like `--commit`, a refused commit writes nothing: the buffers keep their
+edits.
+
+`:undo` reverts each file the last script edited (that `:undo` hasn't undone) to
+its text before the script, written or not, and prints the hunks, like
+`ned undo`. If the buffer changed since, the undo is merged into it, and an
+overlap is an error naming the line. A file the script created is dropped if it
+hasn't been written; once written, undoing its creation is an error, since a
+buffer can't remove a file (`ned undo` reverts the write). Nothing changes when
+`:undo` fails. There is no redo.
+
+`:quit` with unwritten edits is refused, naming the files. Ctrl-D is `:quit`,
+and Ctrl-C clears the line. At the end of input that isn't a terminal, unwritten
+edits are discarded with an error naming the files, and the REPL exits 1;
+otherwise it exits 0.
+
+`:files -w` sets the file set to the REPL's workspace (the one it started in, or
+`-w DIR`'s); its session and language servers belong to that workspace, so
+another one needs another REPL.
+
+**Sessions.** The REPL always records into a session (§1.2): `-s NAME` or
+`NED_SESSION`, otherwise the first of `repl-1`, `repl-2`, ... that the workspace
+has no log for, whose log it creates at start so that two started together take
+different names. A note on stderr names it at start. Each script is recorded
+with no changes, and `:write` and `:commit` as a `write` entry (`:commit`'s
+holding its `commit`), so `ned undo` reverts a write and `--commit` includes it.
+
+`:attach NAME` (or `--attach NAME` at start) follows session `NAME`, an agent's
+say: it prints the session's last 10 history lines, then each entry another
+program appends, as its history line prefixed by the session's name followed by
+its comment (§1.5), if any, each line prefixed with `# `, and the hunks of each
+file it changed. The REPL records into `NAME` from then on, so a correction
+lands in the agent's history, and the agent's `ned undo` and `!!` see it. When
+an entry changes a file whose buffer has unwritten edits, the change is merged
+into the buffer as it arrives, as `:write` would merge it, and the file's new
+text becomes the buffer's base; a note says so. If the change overlaps the
+unwritten edits, the buffer is left as it was and the note names the line, so
+`:write` refuses until the overlap is resolved (`:write!` overwrites the change,
+`:reload` drops the edits). `:detach` stops following and records into the
+REPL's own session again. A session the workspace has no log for is an error
+listing its sessions.
+
+### 1.5 MCP server
+
+`ned mcp` serves `ned` to an agent framework over the Model Context Protocol, so
+an agent can run scripts without a shell. It speaks JSON-RPC 2.0 on stdin and
+stdout, one message per line; stdout carries nothing else, and notes go to
+stderr. It runs until stdin ends, then exits 0.
+
+```
+$ claude mcp add ned -- ned mcp
+```
+
+It takes `-w DIR`, `-s NAME`, `--lang` and `--context`, which apply to every
+call; another flag, or `FILE` arguments, are a usage error. Its workspace is the
+one detected from its working directory, or `DIR` (§1.1), and the `files` of a
+call are relative to its working directory. It uses the workspace's daemon as
+`ned` does, and never colours its output.
+
+**Sessions.** The server always records into a session (§1.2): `-s NAME` or
+`NED_SESSION`, otherwise the first of `mcp-1`, `mcp-2`, ... that the workspace
+has no log for, whose log it creates at start so that two started together take
+different names. A note on stderr names it at start, and so do the
+`instructions` it returns from `initialize`. Each call that runs a script is
+recorded as the `ned` invocation it stands for (its `files` as `FILE` arguments,
+`workspace` as `-w`), and `undo` as `ned undo` is, so `ned history`, `ned undo`
+and `--commit` see an agent's calls whichever way it made them.
+
+**Protocol.** The server answers `initialize`, `ping`, `tools/list` and
+`tools/call`, one request at a time, in order; notifications need no answer and
+are ignored, as are responses from the client. `initialize` answers with the
+client's protocol version if it is one the server knows (`2025-06-18`,
+`2025-03-26` or `2024-11-05`), otherwise the latest, with the `tools` capability
+and `serverInfo` naming `ned` and its version (`-V`). A line that isn't JSON is
+a parse error (-32700), a message that isn't a request, or a batch, is an
+invalid request (-32600), an unknown method is -32601, and an unknown tool, or
+arguments missing one that's required or of the wrong type, are invalid params
+(-32602).
+
+**Tools.** A call's result is one text content holding what `ned` would print
+for it, stdout then stderr, without colour. If its exit code (§7) isn't 0, the
+result has `isError` set and its text ends with the line `exit N`. A usage error
+(both `files` and `workspace`, or `commit` with `dry_run`, say) is such a
+result, with exit 2, not a protocol error.
+
+| Tool      | Arguments                                                                                                             | Runs                                  |
+| --------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| `ned`     | `script`, and optionally `comment`, `files`, `workspace`, `dry_run`, `quiet`, `force`, `no_fmt`, `no_check`, `commit` | `ned [FILES \| -w] [FLAGS] -e SCRIPT` |
+| `outline` | `files` or `workspace`                                                                                                | `outline`                             |
+| `show`    | `selector`, and `files` or `workspace`                                                                                | `show SELECTOR`                       |
+| `history` | optionally `all`                                                                                                      | `ned history [--all]`                 |
+| `undo`    | optionally `force`                                                                                                    | `ned undo [--force]`                  |
+| `help`    | optionally `topic`                                                                                                    | `ned help [TOPIC]`                    |
+| `cd`      | `dir`                                                                                                                 | `cd DIR`, then `ned` there            |
+
+`files` is an array of paths and globs, `workspace` a boolean for `-w`,
+`script`, `selector`, `commit` (`--commit`'s message), `comment`, `topic` and
+`dir` are strings, and the rest are booleans for the flags of the same names.
+`selector` is written as after `show`, so `all /re/ +2` works; one that holds
+more than a selector, such as `fn:a; delete fn:b`, is a usage error. A `ned`
+script may be `!!` (§1.2), which repeats on the last script's file set unless
+the call gives `files` or `workspace`. `comment` says what the call is for, for
+following the session: it is recorded in the call's entry, and a REPL attached
+to the session prints it with the call's edits (§1.4); an empty one is none. The
+`ned` tool's description is the `ned help` summary, so an agent has the language
+without asking; `outline`, `show`, `history`, `help` and `cd` are marked
+read-only.
+
+`cd` moves the server, for the rest of its life, as if it had been started in
+`dir` (relative to its working directory): `dir` becomes its working directory,
+which later calls' `files` are relative to, and its workspace becomes the one
+detected from `dir` (§1.1), for `workspace`, the daemon and the session. In the
+same workspace, the server keeps its session, so `!!` and `undo` reach its
+earlier calls. In another, a session named with `-s` or `NED_SESSION` keeps its
+name, in the new workspace; otherwise the server records into the first `mcp-N`
+that the new workspace has no log for, so it never records into another server's
+session. It prints `workspace ROOT, recording in session NAME` and records
+nothing. A `dir` that doesn't exist or isn't a directory is an error (exit 3),
+and the server stays where it was.
+
 ## 2. Scripts
 
 ### 2.1 Lexical structure
@@ -368,7 +617,7 @@ line       = [ command { ( ";" | "|" ) command } [ "|" ] ] [ comment ] NEWLINE
 command    = show | outline | replace | insert | delete | sub | move | create
            | file | check | allow | rename | resolve ;
 
-show       = "show" [ target [ context ] ] ;
+show       = "show" [ "raw" ] [ target [ context ] ] ;
 outline    = "outline" [ target ] ;
 replace    = "replace" target "with" text ;
 insert     = "insert" position target text ;
@@ -389,8 +638,8 @@ selector   = step { ">" step } ;
 step       = primary [ ".." primary ] { part } { filter } ;
 context    = "+" digit { digit } ;
 part       = ".body" | ".sig" | ".params" | ".name" | ".doc" | ".attrs"
-           | ".ret" | ".type" | ".value" | ".whole" | ".lines" | ".refs"
-           | ".def" | ".ours" | ".theirs" | ".base" ;
+           | ".ret" | ".type" | ".value" | ".whole" | ".lines" [ ":" lineno ]
+           | ".refs" | ".def" | ".ours" | ".theirs" | ".base" ;
 filter     = "[" or "]" ;   (* whitespace allowed inside *)
 or         = and { "||" and } ;
 and        = cond { "&&" cond } ;
@@ -404,7 +653,7 @@ primary    = lines | regex | literal | syntax | conflict | query | pattern ;
 lines      = lineno [ "-" lineno ] ;
 lineno     = digit { digit } | "$" ;
 literal    = string | heredoc ;
-syntax     = kind [ ":" name ] ;
+syntax     = kind [ ":" name ] | "*:" name ;
 kind       = ident ;
 name       = name-char { name-char } | string ;   (* name-char: [A-Za-z0-9_:*] *)
 conflict   = "conflict" [ ":" number ] ;
@@ -532,6 +781,15 @@ characters, such as `.` or `-`, must be quoted: `import:"os.path"`. A kind
 without `:name` selects every item of the kind: `fn` is `fn:*`, so
 `impl:Parser>fn` is every method of `Parser`.
 
+`*:name` selects items of any kind by name, so a script needn't know whether
+`LIMIT` is a `const` or a `var`: `show *:LIMIT`. An item that is several kinds
+at once (a JavaScript arrow function bound to a `const` is `fn` and `const`) is
+one match, of the first kind in the table below. Names, parts, nesting and
+filters work as with a kind: `*:test_*`, `*:parse.body`, `*:Parser>fn:new`, and
+`*:*` is every item. When the name matches items of several kinds (a Rust struct
+and its impl), it is ambiguous (§3.5), and each candidate names its item's kind:
+`struct:Parser`, `impl:Parser`. A bare `*` is an error that suggests `*:NAME`.
+
 Core kinds. Each language maps a subset of these through
 `queries/<lang>/selectors.scm` (JavaScript and TypeScript both start with
 `queries/ecma/selectors.scm`):
@@ -657,6 +915,7 @@ The kinds each language supports, and the items they cover there:
 | `.value`                    | the value a constant, variable, field or variant is given; the type a `type` item names                                          |
 | `.whole`                    | the item's default span (§3.3), doc comments, attributes and trailing `,` included, which `replace` replaces whole               |
 | `.lines`                    | each whole line the span touches, as a span of its own (any selector)                                                            |
+| `.lines:N`, `.lines:$`      | the span's `N`th line, counting from 1, or its last: one of the lines `.lines` selects                                           |
 | `.refs`                     | each reference to the symbol at the span (below), without its declaration                                                        |
 | `.def`                      | the symbol's definition: the item it names, or its identifier if it names no item                                                |
 | `.ours`, `.theirs`, `.base` | a conflict's sides (§3.11)                                                                                                       |
@@ -709,7 +968,16 @@ The kinds each language supports, and the items they cover there:
   another part, as in `.body.name`.
 - `.lines` on a span within one line widens it to that line. On a multi-line
   span it selects each line separately, so `fn:parse.lines` is many spans: use
-  `all`, or nest a line number (`fn:parse>12`).
+  `all`, or pick one line.
+- `.lines:N` picks the `N`th of those lines, counting from 1 within each span
+  (`fn:parse.body.lines:1` is the first line of the body of each `parse`), and
+  `.lines:$` the last; filters after it test the picked line. A span with fewer
+  than `N` lines is skipped, with a note on how many were
+  (`note: fn.lines:4: skipped 2 spans with fewer than 4 lines`); only an empty
+  conflict side (§3.11) is too short for `.lines:$`, and the note says it has no
+  lines. Skipped spans don't count toward the ambiguity rules (§3.5); if every
+  span is skipped, the selector matches nothing. A line number nested in the
+  span picks a line too, but counts from the start of the file: `fn:parse>12`.
 
 ### 3.5 Ambiguity and `all`
 
@@ -720,21 +988,23 @@ The kinds each language supports, and the items they cover there:
 - `all SEL` applies the verb to every match. Zero matches is still an error.
 - An ambiguous `.refs` or `.def` result lists where its matches are instead of
   candidate selectors, since no scope picks one out; add `all`.
-- There is no nth-match syntax, except for conflicts (§3.11). To disambiguate,
-  nest (`impl:Lexer>fn:new`), scope by lines (`40-80>fn:new`), or scope by file
-  (`file:src/a.rs>fn:new`). Error messages list the candidates in exactly these
-  forms (§7): nested in the match's nearest enclosing item (within the previous
-  step's span) if that's unique among the matches, otherwise scoped by file if
-  that's unique, otherwise by lines. A `file:` scope goes first; an item or line
-  scope goes just before the selector's last step
-  (`impl:Lexer>fn:new>40-44>/x/`), and a line scope covers the whole matched
-  item, even when a part follows it.
+- There is no nth-match syntax, except for conflicts (§3.11) and a span's lines
+  (`.lines:N`, §3.4). To disambiguate, nest (`impl:Lexer>fn:new`), scope by
+  lines (`40-80>fn:new`), or scope by file (`file:src/a.rs>fn:new`). Error
+  messages list the candidates in exactly these forms (§7): nested in the
+  match's nearest enclosing item (within the previous step's span) if that's
+  unique among the matches, otherwise scoped by file if that's unique, otherwise
+  by lines. A `file:` scope goes first; an item or line scope goes just before
+  the selector's last step (`impl:Lexer>fn:new>40-44>/x/`), and a line scope
+  covers the whole matched item, even when a part follows it.
 - Every listed candidate picks exactly one match. Matches that share a line with
   another match can't be picked by scope, so they aren't listed; the error
   counts them and suggests selecting longer text, or `all`.
 - When the last step is a syntax step with a `*` in its name, each candidate
   names its item instead (`fn:test_*` lists `fn:test_parse`), and is scoped as
-  above only among the matches with the same name.
+  above only among the matches with the same name. Likewise a `*:` step's
+  candidates name their item's kind (`*:Parser` lists `struct:Parser` and
+  `impl:Parser`).
 - A line that `.lines` split from a multi-line span is listed as its step
   without `.lines` and any parts or filters after it, with its line number
   nested after the step: `fn:new.lines` lists `fn:new>41`, `fn:new>42`, and so
@@ -802,8 +1072,10 @@ filter follows the step's parts and tests the spans they select.
     `.text` after it for its length or text: `fn[.body.len > 50]`. An item
     without the part, such as a function without doc comments, has `""` there,
     with length 0. A part needs an item (or a conflict, for its sides):
-    `/x/[.name == "a"]` is an error, as `/x/.name` is. `.lines`, `.refs` and
-    `.def` can't be properties.
+    `/x/[.name == "a"]` is an error, as `/x/.name` is. `.lines:N` and `.lines:$`
+    are the picked line (§3.4), and a span with fewer than `N` lines has `""`
+    there: `all fn[.lines:1 ~= /async/]`, `fn[.lines:2.len > 80]`. `.lines`
+    alone, `.refs` and `.def` can't be properties.
 - `.len` is a number, compared with `==`, `!=`, `<`, `>`, `<=` or `>=` and a
   number. Text is compared with `==` or `!=` and a string, or with `~=` and a
   regex, which matches anywhere in it unless anchored (`~= /^test_/`). Any other
@@ -824,7 +1096,7 @@ makes them matter, as Python's indentation does.
 
 ```
 show all `dbg!(@x...)`
-delete all fn:main>`println!(@_...);`
+delete all fn:main>`println!(@_...?);`
 show `impl Display for @t { @_... }`>fn:fmt
 ```
 
@@ -838,23 +1110,27 @@ common to the pattern's lines is ignored.
 
 **Placeholders** stand for the parts of the code that vary:
 
-| Placeholder      | Matches                                         | Captures |
-| ---------------- | ----------------------------------------------- | -------- |
-| `@name`          | any one node: an expression, statement, name... | yes      |
-| `@name...`       | a run of zero or more sibling nodes             | yes      |
-| `@_` and `@_...` | the same                                        | no       |
-| `@@`             | a literal `@`                                   | -        |
+| Placeholder                | Matches                                         | Captures |
+| -------------------------- | ----------------------------------------------- | -------- |
+| `@name`                    | any one node: an expression, statement, name... | yes      |
+| `@name...`                 | a run of one or more sibling nodes              | yes      |
+| `@name...?`                | a run of zero or more sibling nodes             | yes      |
+| `@_`, `@_...` and `@_...?` | the same                                        | no       |
+| `@@`                       | a literal `@`                                   | -        |
 
 - A name is a letter or `_` followed by letters, digits and `_`. An `@` before
   anything else is literal: `a @ b`.
 - A placeholder must stand for a whole node. One inside a string or comment is
   literal text: `` `log("user@host")` ``. Anywhere else, as part of a keyword or
   operator, it's a script error (exit 2).
-- Python and TypeScript decorators start with `@`, so double it to match one:
-  `` `@@app.route(@path)` ``.
+- Python and TypeScript decorators start with `@`, so double it to match one,
+  with the definition it decorates:
+  `` `@@Component(@opts) class @c { @_... }` ``.
 - `@name...` matches as few siblings as it can while the rest of the pattern
   still matches: in `` `foo(@first, @rest...)` ``, `@first` is the first
-  argument and `@rest` the others.
+  argument and `@rest` the others. Separators don't count, so it matches calls
+  of two or more arguments, and `` `foo(@first, @rest...?)` `` also `foo(x)`. To
+  follow a run with a `?` token, put a space between: `` `@e... ?` ``.
 - A name used twice in a pattern matches only equal code, ignoring whitespace
   and comments: `` `@x == @x` ``.
 - A Rust macro's arguments are tokens, not expressions, so a placeholder there
@@ -866,27 +1142,39 @@ common to the pattern's lines is ignored.
   `` `let n = items[i] @rest...;` `` matches `let n = items[i].iter().count();`,
   and `@rest` captures `.iter().count()`.
 
-**Parsing.** Many fragments only parse inside some other code: a method inside
-an `impl` or a class, a match arm inside a `match`, a field inside a struct.
-`ned` parses the pattern alone, then inside each such construct its language
-defines, and keeps every reading that parses without errors. The pattern matches
-any of them: `` `x: u32` `` matches a struct field or a parameter.
+**Parsing.** A pattern is parsed where its step searches: in place of the code
+the step before it selected. After a syntax item, that's the item's body, so
+`` struct:Foo>`x: i64` `` parses a field and
+`` impl:Foo>`fn new() -> Self {}` `` a method. After a part, such as `.params`,
+or any other span, it's that span; an item without a body is replaced whole, so
+the pattern is read as its sibling. With no step before it, or after `file:`,
+the pattern is parsed alone, as a file, so `` file:a.rs>`x: i64` `` is a script
+error: give the field its struct.
 
-- A file whose language can't parse the pattern is skipped, and so are text and
-  Markdown files. If no searched file's language parses the pattern, it's a
-  script error (exit 2) that shows where parsing failed.
+- A pattern that doesn't parse there is read once more with a statement
+  terminator after it (`;` in Rust), so `` `foo(@a, 1)` `` parses alone too.
+- Some code parses only inside a construct that no step selects alone: a match
+  arm, a `case` clause, a dictionary or object entry, a decorator without its
+  definition. Such a pattern isn't supported yet, so write the construct around
+  it too: `` `match @e { @_...? E::B => @v, @_...? }` ``.
+- A span where the pattern doesn't parse is skipped, and so are text and
+  Markdown files. If it parses in none of the searched spans, it's a script
+  error (exit 2) that shows where parsing failed.
 - The pattern's root is the deepest node spanning all of its code, so
   `` `foo(@a)` `` is a call and matches calls in expressions as well as in
-  statements. A pattern of several statements or items matches any run of
-  consecutive siblings.
+  statements. It matches at any depth inside the span: `` `x = 1` `` in a Python
+  file also finds the statement inside a function. A pattern of several
+  statements or items matches any run of consecutive siblings.
 
-**Matching.** Two nodes match when they have the same kind and their children
-match in order; leaves (names, numbers, string contents) must have the same
-text. Comments are skipped on both sides. Separators in the file that the
-pattern leaves out (`,`, `;` and line breaks) are skipped too, so
-`` `foo(@a, @b)` `` matches `foo(x, y,)`. Every other token and node must match:
-`` `@a + @b` `` doesn't match `x - y`, `` `fn f(self) {}` `` doesn't match
-`fn f(&self) {}`, and `` `fn @name() {}` `` doesn't match `pub fn f() {}`.
+**Matching.** The pattern and the file are compared as abstract syntax trees:
+their syntax trees without comments and separators (`,`, `;` and line breaks).
+So `` `foo(@a, @b)` `` matches `foo(x, y,)`, and `` `foo(@a, @b,)` `` matches
+`foo(x, y)`. Two nodes match when they have the same kind and their children
+match in order, each in the same role, so Rust's `[0; 4]` (a value and a length)
+doesn't match `[0, 4]`; leaves (names, numbers, string contents) must have the
+same text. Every other token and node must match: `` `@a + @b` `` doesn't match
+`x - y`, `` `fn f(self) {}` `` doesn't match `fn f(&self) {}`, and
+`` `fn @name() {}` `` doesn't match `pub fn f() {}`.
 
 **Matches.** A match is a span (§3.8) from the start of the matched node or run
 to its end, with `.lines` but no other parts. It works as any step, like
@@ -901,8 +1189,8 @@ appear in only one step; `` `impl @t { @_... }`>fn:new `` captures `@t` for each
 `new`.
 
 **Substitution.** When `replace`'s target has pattern steps, `@name` in `TEXT`
-expands to the selected span's capture (`@name...` is the same), and `@@` to
-`@`. An `@name` that nothing captured is a script error.
+expands to the selected span's capture (`@name...` and `@name...?` are the
+same), and `@@` to `@`. An `@name` that nothing captured is a script error.
 
 - A capture spanning several lines keeps the indentation of its later lines
   relative to its first, under the indentation of the `TEXT` line where `@name`
@@ -964,9 +1252,11 @@ END
 
 ### 4.1 Reads
 
-- **`show [SEL [+N]]`** prints the lines containing each selected span, numbered
-  (§6.1), with `N` lines of context around each. Without a selector, it prints
-  each whole file in the set.
+- **`show [raw] [SEL [+N]]`** prints the lines containing each selected span,
+  numbered (§6.1), with `N` lines of context around each. Without a selector, it
+  prints each whole file in the set. `raw` prints the text alone, for copying it
+  verbatim (§6.1); a bare `raw` right after `show` is always this word, so a
+  function named `raw` is selected as `fn:raw`.
 - **`outline [SEL]`** prints the symbol tree (§6.2) of each file, or of the
   items inside `SEL`.
 - **`check [SEL] [LEVEL]`** prints the language server's diagnostics for each
@@ -1032,11 +1322,17 @@ Notes:
   variant) and the moved text doesn't, one is appended, as for `replace`. A
   destination inside a moved span is an error.
 - If a moved whole-line span had a blank line directly above or below it, and it
-  moves `before` or `after` a whole-line destination, one blank line separates
-  it from the destination. A whole-line span moved to the `start` (`end`) of a
-  body whose first (last) item has a blank line between it and the next
-  (previous) item is separated from that item by one blank line, whether or not
-  the span had one.
+  moves `before` or `after` a whole-line destination, blank lines separate it
+  from the destination: as many as the destination already has between it and
+  its neighbour on that side, else on its other side, else as many as the span
+  had between it and its neighbours (the larger count). A neighbour is the
+  nearest non-blank line, if it is indented at least as deeply as the item and
+  isn't an opening (above) or closing (below) delimiter line. So a function
+  moved after the last method of a Python class gets the one blank line the
+  methods have, not the two before the next top-level function. A whole-line
+  span moved to the `start` (`end`) of a body whose first (last) item has a
+  blank line between it and the next (previous) item is separated from that item
+  by one blank line, whether or not the span had one.
 - `insert before|after` on a syntax item other than an import or a Markdown list
   item, when the item has a blank line directly above or below it, separates the
   new text from it with one blank line, unless the text already starts (for
@@ -1063,11 +1359,14 @@ Notes:
     starts with what precedes the span on its first line, ignoring whitespace
     and line breaks (`TEXT` may re-wrap them). On a single-line span, the note
     suggests selecting its line with `.lines`.
-- **Blank-line tidy.** When deleting a whole-line span (§5.1) leaves two blank
-  lines in a row, a blank line right after an opening delimiter (or a line
-  ending in `:`, as in Python) or right before a closing one, or a blank line at
-  the start or end of the file, one blank line is removed. Merged deletions
-  (§2.3) are tidied as one span.
+- **Blank-line tidy.** Deleting a whole-line span (§5.1) also removes blank
+  lines beside it. Between two remaining lines, as many blank lines remain as
+  the larger of the two gaps around the span, so a file's own spacing survives
+  and the gaps don't add up. Right after an opening delimiter (or a line ending
+  in `:`, as in Python), only the blank lines that were above the span remain;
+  right before a closing one, only those below it, and the fewer if both. At the
+  start or end of the file, the whole run of blank lines beside the span goes.
+  Merged deletions (§2.3) are tidied as one span.
 - Text that `replace`, `insert` or `move` puts into an empty `.body` is always
   line-oriented, re-based to the enclosing item's indentation plus one indent
   unit (§5.2). An empty single-line body such as `fn f() {}` is opened onto
@@ -1093,16 +1392,20 @@ rename impl:Parser>fn:new>"tokens" to toks
 For each modified file that has a language, `ned` counts the tree-sitter `ERROR`
 and `MISSING` nodes, and the matches of the language's
 `queries/<lang>/errors.scm` (code the grammar accepts but the language does not,
-such as an empty Python block), before and after each stage's edits (§2.3). If
-the count rises, the script is rejected (exit 1) and the error shows the first
-new error node the edits touch, from where the text first changes if the node
-starts before that (an `ERROR` node can span the whole file). If the edits
-replace a `.sig` with text ending in the character that follows it (Python's
-`:`, or the `{` of a body), the error adds that `.sig` stops before it. If the
-edited text holds an escape such as `\x27`, the error adds that heredocs read no
-escapes, and to pass a script that holds a `'` on stdin (§1). Conflict markers
-are hidden from the grammar (§3.3), so a file with merge conflicts can be
-edited. `--force` skips this check.
+such as an empty Python block, or a Rust macro call like `todo!()` with no `;`
+before another statement), before and after each stage's edits (§2.3). If the
+count rises, the script is rejected (exit 1) and the error shows the first new
+error node the edits touch, from where the text first changes if the node starts
+before that (an `ERROR` node can span the whole file). An error query's match
+may set a message saying what is wrong and how to fix it, which the error gives
+in place of the generic advice to use `--force`: for the Rust macro call,
+`macro statement needs a ; before the next statement; add one after its closing bracket`.
+If the edits replace a `.sig` with text ending in the character that follows it
+(Python's `:`, or the `{` of a body), the error adds that `.sig` stops before
+it. If the edited text holds an escape such as `\x27`, the error adds that
+heredocs read no escapes, and to pass a script that holds a `'` on stdin (§1).
+Conflict markers are hidden from the grammar (§3.3), so a file with merge
+conflicts can be edited. `--force` skips this check.
 
 ### 4.4 Directives
 
@@ -1212,6 +1515,12 @@ Its lines follow as `N:text`, with no padding. `show SEL +N` adds up to `N`
 lines of context before and after each span. If regions are within one line of
 each other, they merge.
 
+`show raw` prints each line's text alone, with no `N:` before it, and heads the
+regions with `PATH:START-END` only when it prints more than one, so a single
+region's output is the file's text, except that every line ends in `\n`: a
+`\r\n` line ending prints as `\n`, and so does a missing one at the end of the
+file. Context, merging and the messages below are as without `raw`.
+
 `show all` is a search: when its last step (a regex, literal, heredoc or
 `.refs`) matches nothing where the earlier steps matched, it prints
 `no matches for SEL in N files` and the script goes on, exiting 0 if nothing
@@ -1296,6 +1605,11 @@ formatted.
   `note: rustfmt not found; skipped formatting src/parser.rs`, or
   `note: rustfmt failed: <first stderr line>; skipped formatting src/parser.rs`.
   The file is written unformatted and the exit code stays 0.
+- If the formatter fails on a modified file but succeeds on its text before the
+  script, the edit introduced the failure (code the parse-error guard can't
+  see), and the script is rejected (exit 1):
+  `error: src/parser.rs: edit makes rustfmt fail: <first stderr line>; fix it, or use --force to apply anyway`.
+  With `--force`, or for a file `create` makes, it is a note as above.
 - A file that still has merge conflicts (§3.3) isn't formatted, by its formatter
   or a language server, since formatting may rewrite its marker lines:
   `note: skipped formatting src/a.rs: it has merge conflicts`.
@@ -1372,8 +1686,15 @@ Positions don't count, since edits move them.
   with a note, and the edit applies:
   `note: rust-analyzer didn't answer diagnostics within 30s; it may still be indexing, so rerun in a few seconds; skipped checking src/parser.rs`.
 - If the edit isn't written, the servers are sent the original text again.
-- Checks a server runs on save (rust-analyzer's `cargo check`) don't run, since
-  the edit isn't written yet; run `check` after the edit for those.
+- Checks a server runs on save (rust-analyzer's `cargo check`) can't check an
+  edit before it's written. Once it is, they run: the servers diagnose each
+  written file's text before the write as saved, then its written text as saved,
+  and the diagnostics the write introduced, at `[check] show` or above, are
+  printed after the edit's output (before a `commit` line, §1.3), in `check`'s
+  format, except any the edit's check already printed. They don't block, as the
+  files are written; fix them with another edit. A file the write created has no
+  diagnostics before it. A dry run writes nothing, so it runs none. A server
+  that fails or doesn't answer in time skips this with a note.
 
 ### 6.6 Terminal output
 
@@ -1384,11 +1705,13 @@ subcommand takes `--color` after its name: `ned undo --color always`. Uncoloured
 output is exactly as §6.1–6.5 and §7 give it, so output read by a program never
 changes.
 
-Colour changes only how output looks, not what it says:
+Colour changes only how output looks, not what it says. The colours below are
+the terminal's own 16, used when no theme (below) applies:
 
 - `show` prints each line's number right-aligned to the widest in its region,
   dimmed and followed by a space instead of `:`, then the line's code,
-  highlighted with its language's highlight query.
+  highlighted with its language's highlight query; `show raw` prints the code
+  alone.
 - `outline` dims each item's lines and colours its kind.
 - The headers naming a file, a `show` region's or `outline`'s, are bold.
 - An edit's summary line and `fmt` header are bold; in its hunks, `@@` headers
@@ -1399,6 +1722,68 @@ Colour changes only how output looks, not what it says:
 - On stderr, only the `error:` and `note:` that start a message are coloured,
   except in an error in the command line's options, which also colours the
   arguments it quotes and its usage.
+
+#### Themes
+
+A theme gives a colour to each highlight capture and output role. It applies
+only on a terminal that reports more than 16 colours: truecolor when `COLORTERM`
+is `truecolor` or `24bit`, else 256 colours when `TERM` contains `256color`,
+where each colour becomes the nearest of the xterm-256 palette's cube and grey
+ramp (by OKLab distance). On other terminals, output uses the 16 colours above.
+A theme never sets the background. It is read only when stdout is coloured, so
+an error in it stops no run whose output a program reads; when stdout isn't
+coloured, stderr uses the 16 colours.
+
+Only the user config sets a theme; `[theme]` or `theme` in a `.ned.toml` is an
+error. `theme = "NAME"` uses a theme as it is; a `[theme]` table writes one, or
+changes one named by `from`. A non-empty `NED_THEME` environment variable names
+a theme as `theme = "NAME"` does, instead of the user config's, with a path
+relative to the working directory. With neither, the theme is `default-dark`:
+
+```toml
+[theme]
+from = "default-dark"
+dark = true
+added = "#98c379"
+removed = "#e06c75"
+
+[theme.syntax]
+keyword = "#c678dd bold"
+"function.method" = "#61afef"
+
+[theme.ui]
+hunk-header = "#56b6c2"
+line-number = "dim"
+```
+
+- A name is a built-in theme (`default-dark`, `default-light`), else
+  `themes/NAME.toml` in the user config's directory. A value with a `/` or
+  ending in `.toml` is a path, relative to the file that names it.
+- A theme file holds a `[theme]` table's keys at its top level, and may itself
+  have `from`; a cycle is an error. Keys set beside `from` replace the ones it
+  gives, one key at a time.
+- `dark` says whether the theme is meant for a dark background; `added` and
+  `removed` colour added and removed lines. A theme must give all three, itself
+  or through `from`.
+- A colour is `#rrggbb`, followed by any of `bold`, `dim`, `italic` and
+  `underline`; a value may also be those words alone.
+- `[theme.syntax]` keys are highlight query capture names. A capture without its
+  own key takes its longest dotted prefix's (`function.method` falls back to
+  `function`); one with neither is not coloured. Where two of a query's patterns
+  capture the same node, the one with more nodes and predicates wins, then the
+  later; a capture that isn't coloured never wins.
+- `[theme.ui]` keys are `header`, `line-number`, `kind`, `dim`, `hunk-header`,
+  `error`, `warning`, `info` and `note`. One the theme leaves out looks as it
+  does on a 16-colour terminal.
+- An unknown key or bad value is an error at its location, as in §6.4.
+
+In a hunk, a removed or added line's sign and the text between its highlighted
+tokens take `removed` or `added`, and each token's colour is tinted by it (a
+token with no colour of its own takes the line's). The tint multiplies each sRGB
+channel, from 0 to 1, by the line's colour's. A dark theme then sets the
+result's OKLab lightness back to the token colour's, so tinted code stays as
+legible on a dark background; a light theme keeps the darker result. Unchanged
+lines are highlighted as in `show`.
 
 ## 7. Errors and exit codes
 
@@ -1459,6 +1844,10 @@ The fix each error suggests:
 - Ambiguous selector: Candidate selectors (§3.5), or longer text for matches
   that share a line
 - Missing part, part on a non-syntax step: The parts the item has, or an example
+- `.lines:N` that skipped every span as too short: How many it skipped, and
+  `.lines:$` for the last line (dropping `.lines:N`, for spans with no lines); a
+  number or `$` for `.lines:` with anything else; for another part followed by
+  `:N`, `.lines:N` after it
 - `resolve` of a span that isn't a whole conflict: Selecting one with
   `conflict:N`, or `replace`
 - Invalid query: The closest node type or field name in the grammar
@@ -1533,10 +1922,10 @@ Exit codes:
 - `0`: Success, including dry runs and skipped formatters
 - `1`: Edit rejected: no match, ambiguous match, overlap, missing part, unknown
   kind, text file, line past the end, file not in the set, `create` of an
-  existing file, parse-error guard, introduced diagnostics, move into its own
-  source, rename refused, reaching outside the file set, ambiguous
-  `.refs`/`.def` result, nothing to undo, undo of a file changed or removed
-  since, undo merge overlap, a refused `--commit` (§1.3)
+  existing file, parse-error guard, introduced diagnostics, an introduced
+  formatter failure, move into its own source, rename refused, reaching outside
+  the file set, ambiguous `.refs`/`.def` result, nothing to undo, undo of a file
+  changed or removed since, undo merge overlap, a refused `--commit` (§1.3)
 - `2`: Usage error (bad flags or arguments, a command's name given as a `FILE`,
   a subcommand after a flag, no script on a terminal, no files to edit, a bad
   session name, no session, a bad `!!`, `--commit` with `-n` or outside a git

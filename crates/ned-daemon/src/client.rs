@@ -148,16 +148,6 @@ impl Workspace {
         }
     }
 
-    /// Whether a daemon is running for the workspace; never spawns one.
-    pub fn running(&mut self) -> bool {
-        if self.client.is_none()
-            && let Ok(runtime) = runtime_dir()
-        {
-            self.client = Client::connect(&Paths::new(&runtime, &self.root, &self.version));
-        }
-        self.client.is_some()
-    }
-
     /// The daemon, spawned if it isn't running.
     fn client(&mut self) -> Result<Client, LspFailure> {
         if let Some(client) = &self.client {
@@ -181,6 +171,16 @@ impl Workspace {
 }
 
 impl Lsp for Workspace {
+    /// Whether a daemon is running for the workspace; never spawns one.
+    fn running(&mut self) -> bool {
+        if self.client.is_none()
+            && let Ok(runtime) = runtime_dir()
+        {
+            self.client = Client::connect(&Paths::new(&runtime, &self.root, &self.version));
+        }
+        self.client.is_some()
+    }
+
     fn diagnose(&mut self, documents: &[Document], saved: bool) -> Result<Diagnosis, LspFailure> {
         let documents = documents.to_vec();
         match self.request(&Request::Diagnose { documents, saved })? {

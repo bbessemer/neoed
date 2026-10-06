@@ -250,6 +250,10 @@ impl Parser<'_> {
     }
 
     fn show(&mut self) -> Result<CommandKind, ParseError> {
+        let raw = matches!(&self.peek()?.kind, TokenKind::Word(word) if word == "raw");
+        if raw {
+            self.bump()?;
+        }
         let target = self.optional_target()?;
         let context = match self.peek()?.kind {
             TokenKind::Context(n) if target.is_some() => {
@@ -273,7 +277,11 @@ impl Parser<'_> {
             }
             _ => 0,
         };
-        Ok(CommandKind::Show { target, context })
+        Ok(CommandKind::Show {
+            target,
+            context,
+            raw,
+        })
     }
 
     /// Turns the error at the `-` of `show SEL -N` into the fix `show SEL +N`.
@@ -1078,7 +1086,7 @@ const KEYWORDS: [&str; 8] = [
 /// The syntax of the command `verb`, as `ned help VERB` starts.
 pub fn usage(verb: &str) -> Option<&'static str> {
     Some(match verb {
-        "show" => "show [SEL [+N]]",
+        "show" => "show [raw] [SEL [+N]]",
         "outline" => "outline [SEL]",
         "replace" => "replace [all] SEL with TEXT",
         "insert" => "insert before|after|start|end [all] SEL TEXT",
@@ -1194,9 +1202,14 @@ mod tests {
     fn unspan(kind: CommandKind) -> CommandKind {
         use CommandKind::*;
         match kind {
-            Show { target, context } => Show {
+            Show {
+                target,
+                context,
+                raw,
+            } => Show {
                 target: target.map(unspan_target),
                 context,
+                raw,
             },
             Outline(t) => Outline(t.map(unspan_target)),
             Replace { target, text } => Replace {
@@ -1325,7 +1338,8 @@ mod tests {
             one("show"),
             CommandKind::Show {
                 target: None,
-                context: 0
+                context: 0,
+                raw: false,
             }
         );
         assert_eq!(one("outline"), CommandKind::Outline(None));
@@ -1334,6 +1348,7 @@ mod tests {
             CommandKind::Show {
                 target: Some(target(vec![lines(N(12), Some(N(20)))])),
                 context: 0,
+                raw: false,
             }
         );
         assert_eq!(
@@ -1407,6 +1422,40 @@ mod tests {
                 &[Part::Lines]
             )]))
         );
+    }
+
+    #[test]
+    fn line_of_a_span() {
+        let show = |steps| CommandKind::Show {
+            target: Some(target(steps)),
+            context: 0,
+            raw: false,
+        };
+        assert_eq!(
+            one("show fn:a.lines:2"),
+            show(vec![parts(
+                syntax("fn", "a"),
+                &[Part::Line(LineNo::Number(2))]
+            )])
+        );
+        assert_eq!(
+            one("show fn:f.body.lines:$>/x/"),
+            show(vec![
+                parts(syntax("fn", "f"), &[Part::Body, Part::Line(LineNo::Last)]),
+                step(Primary::Regex(pattern("x")))
+            ])
+        );
+        let CommandKind::Show {
+            target: Some(target),
+            ..
+        } = one("show all fn.body.lines:1[.text ~= /x/]")
+        else {
+            panic!("not a show");
+        };
+        let step = &target.selector.steps[0];
+        assert!(target.all);
+        assert_eq!(step.parts, [Part::Body, Part::Line(LineNo::Number(1))]);
+        assert_eq!(step.filters.len(), 1);
     }
 
     #[test]
@@ -1536,6 +1585,7 @@ mod tests {
         let show = |steps| CommandKind::Show {
             target: Some(target(steps)),
             context: 0,
+            raw: false,
         };
         assert_eq!(
             one("show impl:Parser.body>fn:new.sig"),
@@ -1580,6 +1630,7 @@ mod tests {
         let show = |steps| CommandKind::Show {
             target: Some(target(steps)),
             context: 0,
+            raw: false,
         };
         let conflict = |n| step(Primary::Conflict(n));
         assert_eq!(
@@ -1653,6 +1704,7 @@ mod tests {
         let show = |steps| CommandKind::Show {
             target: Some(target(steps)),
             context: 0,
+            raw: false,
         };
         assert_eq!(one("show fn"), show(vec![syntax("fn", "*")]));
         assert_eq!(
@@ -1687,10 +1739,33 @@ mod tests {
     }
 
     #[test]
+    fn any_kind_is_a_star_syntax_step() {
+        let show = |steps| CommandKind::Show {
+            target: Some(target(steps)),
+            context: 0,
+            raw: false,
+        };
+        assert_eq!(one("show *:LIMIT"), show(vec![syntax("*", "LIMIT")]));
+        assert_eq!(
+            one("show *:Parser>fn:new"),
+            show(vec![syntax("*", "Parser"), syntax("fn", "new")])
+        );
+        assert_eq!(
+            one("show *:parse.body"),
+            show(vec![parts(syntax("*", "parse"), &[Part::Body])])
+        );
+        assert_eq!(
+            message("show *"),
+            "`*` alone selects nothing; *:NAME is the item NAME of any kind, e.g. *:parse, and *:* is every item"
+        );
+    }
+
+    #[test]
     fn filters_follow_a_step_and_its_parts() {
         let show = |steps| CommandKind::Show {
             target: Some(target(steps)),
             context: 0,
+            raw: false,
         };
         let long = Filter::Cond {
             property: Property {
@@ -1759,6 +1834,7 @@ mod tests {
         let show = |steps| CommandKind::Show {
             target: Some(target(steps)),
             context: 0,
+            raw: false,
         };
         let range = |from: Step, to: Step| {
             step(Primary::Range {
@@ -1801,6 +1877,7 @@ mod tests {
         let show = |context| CommandKind::Show {
             target: Some(target(vec![syntax("fn", "x")])),
             context,
+            raw: false,
         };
         assert_eq!(one("show fn:x +3"), show(3));
         assert_eq!(one("show fn:x+3"), show(3));
@@ -1810,7 +1887,7 @@ mod tests {
         );
         assert_eq!(
             message("show +3"),
-            "expected a selector, found a context count; usage: show [SEL [+N]]"
+            "expected a selector, found a context count; usage: show [raw] [SEL [+N]]"
         );
         assert_eq!(
             message("show /re/+0..+70"),
@@ -1851,6 +1928,36 @@ mod tests {
     }
 
     #[test]
+    fn show_raw() {
+        let show = |target, context, raw| CommandKind::Show {
+            target,
+            context,
+            raw,
+        };
+        assert_eq!(one("show raw"), show(None, 0, true));
+        assert_eq!(
+            one("show raw fn:x +2"),
+            show(Some(target(vec![syntax("fn", "x")])), 2, true)
+        );
+        assert_eq!(
+            one("show raw all fn:x"),
+            show(Some(all(vec![syntax("fn", "x")])), 0, true)
+        );
+        assert_eq!(
+            one("show fn:raw"),
+            show(Some(target(vec![syntax("fn", "raw")])), 0, false)
+        );
+        assert_eq!(
+            commands("show raw; show raw | show raw"),
+            [
+                show(None, 0, true),
+                show(None, 0, true),
+                show(None, 0, true)
+            ]
+        );
+    }
+
+    #[test]
     fn several_commands() {
         assert_eq!(commands("show 1; delete 2\n\n# c\nshow").len(), 3);
         assert_eq!(
@@ -1884,7 +1991,8 @@ mod tests {
                 CommandKind::File(vec!["a.rs".into()]),
                 CommandKind::Show {
                     target: Some(target(vec![lines(N(1), None)])),
-                    context: 0
+                    context: 0,
+                    raw: false,
                 }
             ]
         );
@@ -2492,7 +2600,7 @@ mod tests {
             assert!(usage.starts_with(verb), "{usage}");
         }
         assert_eq!(usage("frobnicate"), None);
-        assert_eq!(usage("show"), Some("show [SEL [+N]]"));
+        assert_eq!(usage("show"), Some("show [raw] [SEL [+N]]"));
     }
 
     #[test]
@@ -2546,6 +2654,7 @@ mod tests {
             CommandKind::Show {
                 target: Some(all(vec![parts(syntax("fn", "parse"), &[Part::Refs])])),
                 context: 0,
+                raw: false,
             }
         );
         assert_eq!(
@@ -2556,6 +2665,7 @@ mod tests {
                     &[Part::Def, Part::Lines]
                 )])),
                 context: 0,
+                raw: false,
             }
         );
         assert_eq!(

@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 use std::cmp::Reverse;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::ops::Range;
@@ -66,7 +66,7 @@ pub struct Change {
 
 /// Settings from the command line that affect a run.
 #[derive(Debug, Clone, Default)]
-pub struct Options {
+pub struct Options<'o> {
     /// The language of every file, instead of detecting it; `Some(None)` reads
     /// every file as text.
     pub lang: Option<Option<Language>>,
@@ -74,7 +74,14 @@ pub struct Options {
     pub force: bool,
     /// How reads paint their output (§6.6).
     pub style: Style,
+    /// Texts to read in place of the files on disk: the REPL's buffers (§1.4).
+    pub overlay: Option<&'o Overlay>,
 }
+
+/// File texts by absolute path (as `fs::canonical` makes it), read in
+/// place of the files; a path that doesn't exist on disk is a file made but
+/// not yet written.
+pub type Overlay = BTreeMap<PathBuf, String>;
 
 /// Runs `script` (parsed from `src`) on the `initial` file set. Nothing is
 /// written.
@@ -82,7 +89,7 @@ pub fn run<'s, 'l: 's>(
     script: &Script,
     src: &'s str,
     initial: Initial,
-    options: &'s Options,
+    options: &'s Options<'s>,
     lsp: Option<&'s mut (dyn Lsp + 'l)>,
 ) -> Run {
     let mut executor = Executor {
@@ -157,7 +164,7 @@ struct Member {
 
 struct Executor<'s> {
     src: &'s str,
-    options: &'s Options,
+    options: &'s Options<'s>,
     /// Every file loaded so far, in order of first appearance.
     files: Vec<Loaded>,
     /// The current file set, read as commands need it.
@@ -182,7 +189,12 @@ impl Executor<'_> {
             Initial::Files(paths) => self.open(paths, None)?,
             Initial::Workspace(root) => {
                 let cwd = std::env::current_dir().unwrap_or_default();
-                let paths = workspace::files(&root, &cwd);
+                let paths = with_unwritten(
+                    workspace::files(&root, &cwd),
+                    &root,
+                    &cwd,
+                    self.options.overlay,
+                );
                 self.workspace = Some(paths.clone());
                 paths
                     .into_iter()
@@ -302,7 +314,7 @@ impl Executor<'_> {
     fn create(&mut self, path: &str, new: &Text) -> Result<(), ExecErrorKind> {
         let loaded = self.files.iter().any(|l| same_path(&l.file.path, path))
             || self.set.iter().any(|m| same_path(&m.path, path));
-        if loaded || std::path::Path::new(path).exists() {
+        if loaded || self.buffer(path).is_some() || std::path::Path::new(path).exists() {
             return Err(ExecErrorKind::FileExists { path: path.into() });
         }
         let lang = self.lang(path, &new.value);
@@ -345,7 +357,7 @@ impl Executor<'_> {
     ) -> Result<Vec<Member>, ExecError> {
         let mut set: Vec<Member> = Vec::new();
         for path in paths {
-            for path in expand(path, span)? {
+            for path in expand(path, self.options.overlay, span)? {
                 if set.iter().any(|m| same_path(&m.path, &path)) {
                     continue;
                 }
@@ -354,6 +366,7 @@ impl Executor<'_> {
                     .iter()
                     .position(|l| same_path(&l.file.path, &path));
                 if file.is_none()
+                    && self.buffer(&path).is_none()
                     && let Err(err) = fs::metadata(&path)
                 {
                     let message = match err.kind() {
@@ -428,11 +441,19 @@ impl Executor<'_> {
                 span.clone(),
             )
         };
+        if let Some(text) = self.buffer(path).cloned() {
+            return Ok(self.push_loaded(path, text));
+        }
         let bytes = fs::read(path).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => io(format!("no such file{}", relative_note(path))),
             _ => io(e.to_string()),
         })?;
         let text = String::from_utf8(bytes).map_err(|_| io("not valid UTF-8".into()))?;
+        Ok(self.push_loaded(path, text))
+    }
+
+    /// Adds the file at `path`, holding `text`, to `files`; its index.
+    fn push_loaded(&mut self, path: &str, text: String) -> usize {
         let lang = self.lang(path, &text);
         let file = SourceFile::new(path, text, lang);
         let edits = EditSet::new(&file.buffer);
@@ -445,7 +466,14 @@ impl Executor<'_> {
             applied: 0,
             created: false,
         });
-        Ok(self.files.len() - 1)
+        self.files.len() - 1
+    }
+
+    /// The overlay's text for `path`, read in place of the file (§1.4).
+    fn buffer(&self, path: &str) -> Option<&String> {
+        self.options
+            .overlay?
+            .get(&crate::fs::canonical(Path::new(path)))
     }
 
     fn command(&mut self, index: usize, command: &Command) -> Result<(), ExecError> {
@@ -470,7 +498,11 @@ impl Executor<'_> {
             _ => {}
         }
         match &command.kind {
-            CommandKind::Show { target, context } => self.show(target.as_ref(), *context)?,
+            CommandKind::Show {
+                target,
+                context,
+                raw,
+            } => self.show(target.as_ref(), *context, *raw)?,
             CommandKind::Outline(target) => self.outline(span, target.as_ref())?,
             CommandKind::Replace { target, text } => {
                 let last = target.selector.steps.last().and_then(|s| s.parts.last());
@@ -688,26 +720,37 @@ impl Executor<'_> {
                 found = match part {
                     Part::Refs => self.locate(Locate::References, &found, what, &span)?,
                     Part::Def => self.locate(Locate::Definition, &found, what, &span)?,
-                    part => found
-                        .into_iter()
-                        .map(|m| {
-                            let plain = Span {
-                                range: m.range,
-                                of: Of::Plain,
-                            };
-                            let spans = plain.part(*part, &self.files[m.file].file.text)?;
-                            let (file, captures) = (m.file, m.captures);
-                            Ok(spans.into_iter().map(move |s| Match {
-                                file,
-                                range: s.range,
-                                captures: captures.clone(),
-                            }))
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|kind| ExecError::new(kind, Some(span.clone())))?
-                        .into_iter()
-                        .flatten()
-                        .collect(),
+                    part => {
+                        let mut short = 0;
+                        let picked = found
+                            .into_iter()
+                            .map(|m| {
+                                let plain = Span {
+                                    range: m.range,
+                                    of: Of::Plain,
+                                };
+                                let spans = plain.part(*part, &self.files[m.file].file.text)?;
+                                short += usize::from(spans.is_empty());
+                                let (file, captures) = (m.file, m.captures);
+                                Ok(spans.into_iter().map(move |s| Match {
+                                    file,
+                                    range: s.range,
+                                    captures: captures.clone(),
+                                }))
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                            .map_err(|kind| ExecError::new(kind, Some(span.clone())))?
+                            .into_iter()
+                            .flatten()
+                            .collect();
+                        if let Part::Line(n) = part
+                            && short > 0
+                        {
+                            let note = select::skipped_spans(*n, short);
+                            self.notes.push(format!("{what}: {note}"));
+                        }
+                        picked
+                    }
                 };
             }
             let filters = match split {
@@ -990,26 +1033,30 @@ impl Executor<'_> {
         for from in self.resolve(target, false)? {
             let source = &self.files[from.file].file;
             let removal = removal(source, from.range.clone());
-            let (mut moved, separated) = moved_text(source, &from.range);
+            let (mut moved, separation) = moved_text(source, &from.range);
             let target = &self.files[to.file].file;
             let at = heredoc_lines(target, &dest, position, &moved, to.range.clone());
             // Doc comments and attributes attach to the item they move before.
             let attaches =
                 matches!(position, Position::Before) && only_leading(target, &moved.value);
-            let blank_line = match position {
-                Position::Before | Position::After => {
-                    separated && !attaches && text::is_whole_line(&target.text, &at)
+            let blank_lines = match position {
+                Position::Before | Position::After
+                    if separation > 0 && !attaches && text::is_whole_line(&target.text, &at) =>
+                {
+                    destination_gap(target, &at, position).unwrap_or(separation)
                 }
-                Position::Start | Position::End => {
-                    matches!(moved.kind, TextKind::Heredoc)
-                        && body_edge_separated(target, &to.range, position)
+                Position::Start | Position::End
+                    if matches!(moved.kind, TextKind::Heredoc)
+                        && body_edge_separated(target, &to.range, position) =>
+                {
+                    1
                 }
+                _ => 0,
             };
-            if blank_line {
-                match position {
-                    Position::Before | Position::Start => moved.value.push('\n'),
-                    Position::After | Position::End => moved.value.insert(0, '\n'),
-                }
+            let blank_lines = "\n".repeat(blank_lines);
+            match position {
+                Position::Before | Position::Start => moved.value.push_str(&blank_lines),
+                Position::After | Position::End => moved.value.insert_str(0, &blank_lines),
             }
             let moved = with_trailing_comma(target, &at, &moved);
             let (range, new) = insert(target, at, position, &moved, &dest.selector);
@@ -1030,7 +1077,12 @@ impl Executor<'_> {
         Ok(())
     }
 
-    fn show(&mut self, target: Option<&Target>, context: usize) -> Result<(), ExecError> {
+    fn show(
+        &mut self,
+        target: Option<&Target>,
+        context: usize,
+        raw: bool,
+    ) -> Result<(), ExecError> {
         // (file, first line, last line, empty side), 0-based.
         let mut spans: Vec<(usize, usize, usize, Option<String>)> = Vec::new();
         match target {
@@ -1114,6 +1166,7 @@ impl Executor<'_> {
                 _ => regions.push((file, first, last, empty)),
             }
         }
+        let headed = !raw || regions.len() > 1;
         for (file, first, last, empty) in regions {
             let f = &self.files[file].file;
             if let Some(side) = empty {
@@ -1128,14 +1181,20 @@ impl Executor<'_> {
             };
             let style = self.options.style;
             let header = format!("{}:{lines}", f.path);
-            self.output
-                .push_str(&format!("{}\n", style.paint(Role::Header, &header)));
+            if headed {
+                self.output
+                    .push_str(&format!("{}\n", style.paint(Role::Header, &header)));
+            }
             let width = (last + 1).to_string().len();
             let region = |line| f.buffer.line_range(line).expect("line within the file");
-            let spans = match (style, f.lang, f.tree()) {
-                (Style::Color, Some(lang), Some(tree)) => {
-                    highlight::spans(lang, tree, &f.text, region(first).start..region(last).end)
-                }
+            let spans = match (f.lang, f.tree()) {
+                (Some(lang), Some(tree)) if style != Style::Plain => highlight::spans(
+                    lang,
+                    tree,
+                    &f.text,
+                    region(first).start..region(last).end,
+                    style,
+                ),
                 _ => Vec::new(),
             };
             for line in first..=last {
@@ -1143,12 +1202,17 @@ impl Executor<'_> {
                 let content = f.text[range.clone()].trim_end_matches('\n');
                 let content = content.strip_suffix('\r').unwrap_or(content);
                 let numbered = match style {
+                    Style::Plain if raw => format!("{content}\n"),
                     Style::Plain => format!("{}:{content}\n", line + 1),
-                    Style::Color => {
+                    Style::Color | Style::Theme(..) => {
                         let number = format!("{:>width$}", line + 1);
                         let content = range.start..range.start + content.len();
                         let code = highlight::paint(style, &f.text, content, &spans, None);
-                        format!("{} {code}\n", style.paint(Role::LineNumber, &number))
+                        if raw {
+                            format!("{code}\n")
+                        } else {
+                            format!("{} {code}\n", style.paint(Role::LineNumber, &number))
+                        }
                     }
                 };
                 self.output.push_str(&numbered);
@@ -1529,8 +1593,13 @@ fn last_line_hint(line: &str) -> &'static str {
     }
 }
 
-/// The files `path` names: itself, or a glob's sorted matches.
-fn expand(path: &str, span: Option<&Range<usize>>) -> Result<Vec<String>, ExecError> {
+/// The files `path` names: itself, or a glob's sorted matches, among them the
+/// `overlay`'s files not yet written.
+fn expand(
+    path: &str,
+    overlay: Option<&Overlay>,
+    span: Option<&Range<usize>>,
+) -> Result<Vec<String>, ExecError> {
     let options = select::glob_options();
     let paths = match glob::glob_with(path, options) {
         Ok(paths) if path.contains(['*', '?', '[']) => paths,
@@ -1542,6 +1611,27 @@ fn expand(path: &str, span: Option<&Range<usize>>) -> Result<Vec<String>, ExecEr
         .filter(|p| p.is_file())
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
+    // An unwritten file's key is canonical (§1.4), so the glob's literal leading
+    // directories are resolved before matching, and the match is shown under them
+    // as written.
+    let glob_at = path.find(['*', '?', '[']).unwrap_or(path.len());
+    let (literal, rest) = path.split_at(path[..glob_at].rfind('/').map_or(0, |i| i + 1));
+    if let Ok(pattern) = glob::Pattern::new(rest) {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let base = crate::fs::canonical(&cwd.join(literal));
+        let unwritten = overlay
+            .into_iter()
+            .flat_map(|o| o.keys())
+            .filter(|k| !k.exists());
+        for key in unwritten {
+            let Ok(tail) = key.strip_prefix(&base) else {
+                continue;
+            };
+            if pattern.matches_path_with(tail, options) {
+                files.push(format!("{literal}{}", tail.display()));
+            }
+        }
+    }
     if files.is_empty() {
         let kind = ExecErrorKind::NoGlobMatch {
             glob: path.into(),
@@ -1551,6 +1641,25 @@ fn expand(path: &str, span: Option<&Range<usize>>) -> Result<Vec<String>, ExecEr
     }
     files.sort();
     Ok(files)
+}
+
+/// The workspace's `files`, with the `overlay`'s files under `root` not yet
+/// written added in order, shown as `workspace::files` shows paths.
+fn with_unwritten(
+    mut files: Vec<String>,
+    root: &Path,
+    cwd: &Path,
+    overlay: Option<&Overlay>,
+) -> Vec<String> {
+    let unwritten = overlay
+        .into_iter()
+        .flat_map(|o| o.keys())
+        .filter(|k| k.starts_with(root) && !k.exists());
+    for key in unwritten {
+        files.push(key.strip_prefix(cwd).unwrap_or(key).display().to_string());
+    }
+    files.sort_by(|a, b| Path::new(a).cmp(Path::new(b)));
+    files
 }
 
 /// `target`, with `.body` added when `insert start|end` targets a syntax
@@ -1629,6 +1738,8 @@ fn stage_input(l: &Loaded) -> Cow<'_, SourceFile> {
     }
 }
 
+const GUARD_MESSAGE: &str = "edit introduces a syntax error (use --force to apply anyway)";
+
 /// Rejects `new`, the edited text of `l`, if it has more syntax errors than
 /// its stage input (§4.3).
 fn guard(l: &Loaded, new: &str) -> Result<(), ExecError> {
@@ -1647,15 +1758,16 @@ fn guard(l: &Loaded, new: &str) -> Result<(), ExecError> {
     let suffix = common_len(f.text.bytes().rev(), new.bytes().rev())
         .min(f.text.len().min(new.len()) - prefix);
     let changed = prefix..new.len() - suffix;
-    let node = errors
+    let (node, message) = errors
         .iter()
-        .find(|n| n.start_byte() <= changed.end && changed.start <= n.end_byte())
+        .find(|(n, _)| n.start_byte() <= changed.end && changed.start <= n.end_byte())
         .unwrap_or(&errors[0]);
     // An `ERROR` node can start well before the edits, even span the file.
     let start = node.start_byte().max(changed.start.min(node.end_byte()));
     let (line, column) = location(new, start);
     Err(ExecError::new(
         ExecErrorKind::SyntaxError {
+            message: message.unwrap_or(GUARD_MESSAGE),
             location: format!("{}:{line}:{column}", f.path),
             hint: match l.sig_end {
                 Some(c) => {
@@ -1688,24 +1800,43 @@ fn escape_hint(text: &str) -> String {
 }
 
 /// The `ERROR` and `MISSING` nodes of `tree`, a parse of `text`, and the
-/// matches of `lang`'s error query, in source order.
-fn error_nodes<'t>(lang: Language, tree: &'t Tree, text: &str) -> Vec<Node<'t>> {
+/// `@error` captures of `lang`'s error query, in source order, each with the
+/// `message` its query pattern sets, if any.
+fn error_nodes<'t>(
+    lang: Language,
+    tree: &'t Tree,
+    text: &str,
+) -> Vec<(Node<'t>, Option<&'static str>)> {
     let mut out = Vec::new();
     let mut stack = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
         if node.is_error() || node.is_missing() {
-            out.push(node);
+            out.push((node, None));
         }
         if node.has_error() {
             stack.extend(node.children(&mut node.walk()));
         }
     }
+    let query = lang.errors();
+    let names = query.capture_names();
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(lang.errors(), tree.root_node(), text.as_bytes());
+    let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
     while let Some(m) = matches.next() {
-        out.extend(m.captures().iter().map(|c| c.node));
+        let message = query
+            .property_settings(m.pattern_index)
+            .iter()
+            .find(|s| &*s.key == "message")
+            .and_then(|s| s.value.as_deref());
+        out.extend(
+            m.captures()
+                .iter()
+                .filter(|c| names[c.index as usize] == "error")
+                .map(|c| (c.node, message)),
+        );
     }
-    out.sort_by_key(|n| (n.start_byte(), n.end_byte()));
+    out.sort_by_key(|(n, _)| (n.start_byte(), n.end_byte()));
+    // A query can match one node with each of several siblings.
+    out.dedup_by_key(|(n, _)| n.id());
     out
 }
 
@@ -2031,8 +2162,21 @@ fn separated<'t>(
             primary: Primary::Syntax { kind, .. },
             parts,
             ..
-        }) => (parts.is_empty() && !syntax::find_kind(kind).is_some_and(|k| k.stacked))
-            .then(|| text::full_lines(t, range.clone())),
+        }) => {
+            // A `*:` step's item takes the first of its kinds, as it's selected.
+            let kind = match kind.as_str() {
+                "*" => f
+                    .items()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|i| i.range == *range)
+                    .min_by_key(|i| syntax::rank(i.kind))
+                    .map_or("*", |i| i.kind),
+                kind => kind,
+            };
+            (parts.is_empty() && !syntax::find_kind(kind).is_some_and(|k| k.stacked))
+                .then(|| text::full_lines(t, range.clone()))
+        }
         Some(Step { parts, .. })
             if parts.is_empty()
                 && matches!(position, Position::Before)
@@ -2125,10 +2269,22 @@ fn item_lines_at(f: &SourceFile, start: usize) -> Option<Range<usize>> {
         .max_by_key(|full| full.end)
 }
 
+/// The blank lines between the whole-line destination `at` and its neighbour
+/// on the side `position` names, else on its other side, if it has one (§4.2).
+fn destination_gap(f: &SourceFile, at: &Range<usize>, position: Position) -> Option<usize> {
+    let (above, below) = text::neighbour_gaps(&f.text, text::full_lines(&f.text, at.clone()));
+    let (near, far) = match position {
+        Position::Before => (above, below),
+        _ => (below, above),
+    };
+    near.or(far)
+}
+
 /// The text `move` carries from `range`: its full lines, to be re-based, if
-/// it's whole-line, else the span verbatim. The flag says whether a blank line
-/// was directly above or below those full lines.
-fn moved_text(f: &SourceFile, range: &Range<usize>) -> (Text, bool) {
+/// it's whole-line, else the span verbatim. The count is the blank lines that
+/// separated those full lines from their neighbours (the larger gap), at least
+/// one if a blank line was directly above or below them, else zero.
+fn moved_text(f: &SourceFile, range: &Range<usize>) -> (Text, usize) {
     let t = &f.text;
     if !text::is_whole_line(t, range) {
         let value = t[range.clone()].replace("\r\n", "\n");
@@ -2137,7 +2293,7 @@ fn moved_text(f: &SourceFile, range: &Range<usize>) -> (Text, bool) {
                 value,
                 kind: TextKind::Str,
             },
-            false,
+            0,
         );
     }
     let full = text::full_lines(t, range.clone());
@@ -2150,7 +2306,13 @@ fn moved_text(f: &SourceFile, range: &Range<usize>) -> (Text, bool) {
         value,
         kind: TextKind::Heredoc,
     };
-    (text, text::blank_separated(t, full))
+    let separation = if text::blank_separated(t, full.clone()) {
+        let (above, below) = text::neighbour_gaps(t, full);
+        above.max(below).unwrap_or(0).max(1)
+    } else {
+        0
+    };
+    (text, separation)
 }
 
 /// `range`, widened to its whole lines if it's partial and heredoc `new` is
@@ -2165,7 +2327,7 @@ fn heredoc_lines(
     let item_part = target.selector.steps.last().is_some_and(|s| {
         s.parts
             .iter()
-            .any(|p| !matches!(p, Part::Lines | Part::Refs | Part::Def))
+            .any(|p| !matches!(p, Part::Lines | Part::Line(_) | Part::Refs | Part::Def))
     });
     let beside = matches!(position, Position::Before | Position::After);
     if beside && new.kind != TextKind::Str && !item_part && !text::is_whole_line(&f.text, &range) {
@@ -2469,12 +2631,13 @@ pub enum ExecErrorKind {
     /// `note` is empty, or where relative paths start.
     #[error("glob `{glob}` matched nothing{note}")]
     NoGlobMatch { glob: String, note: String },
-    /// `location` is `PATH:LINE:COL`; `hint` is empty or a `; ` and a fix;
-    /// `excerpt` is empty, or a newline and the offending line with a caret.
-    #[error(
-        "{location}: edit introduces a syntax error (use --force to apply anyway){hint}{excerpt}"
-    )]
+    /// `message` is the generic one, or what the language's error query says
+    /// is wrong, with its fix; `location` is `PATH:LINE:COL`; `hint` is empty
+    /// or a `; ` and a fix; `excerpt` is empty, or a newline and the offending
+    /// line with a caret.
+    #[error("{location}: {message}{hint}{excerpt}")]
     SyntaxError {
+        message: &'static str,
         location: String,
         hint: String,
         excerpt: String,
@@ -2542,6 +2705,44 @@ impl fmt::Display for Candidates {
             )?;
         }
         Ok(())
+    }
+}
+
+impl ExecErrorKind {
+    /// The exit code for an error that rejected a script (spec §7).
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            ExecErrorKind::NoMatch { .. }
+            | ExecErrorKind::Ambiguous { .. }
+            | ExecErrorKind::LineOutOfRange { .. }
+            | ExecErrorKind::NotInFileSet { .. }
+            | ExecErrorKind::NoFileMatch { .. }
+            | ExecErrorKind::Overlap { .. }
+            | ExecErrorKind::SyntaxError { .. }
+            | ExecErrorKind::NoLanguage { .. }
+            | ExecErrorKind::NoCodeLanguage { .. }
+            | ExecErrorKind::ParsingDisabled { .. }
+            | ExecErrorKind::UnknownKind { .. }
+            | ExecErrorKind::MissingPart { .. }
+            | ExecErrorKind::PartNeedsItem { .. }
+            | ExecErrorKind::PartNeedsConflict { .. }
+            | ExecErrorKind::NotAConflict { .. }
+            | ExecErrorKind::MoveIntoSource { .. }
+            | ExecErrorKind::FileExists { .. }
+            | ExecErrorKind::RenameRefused { .. }
+            | ExecErrorKind::Outside { .. }
+            | ExecErrorKind::AmbiguousLocated { .. } => 1,
+            ExecErrorKind::NoFiles
+            | ExecErrorKind::InvalidQuery { .. }
+            | ExecErrorKind::InvalidPattern { .. }
+            | ExecErrorKind::DuplicateCapture { .. }
+            | ExecErrorKind::UnknownCapture { .. }
+            | ExecErrorKind::WildcardInText
+            | ExecErrorKind::NoServer { .. } => 2,
+            ExecErrorKind::Io { .. }
+            | ExecErrorKind::NoGlobMatch { .. }
+            | ExecErrorKind::Lsp(_) => 3,
+        }
     }
 }
 
@@ -2885,6 +3086,45 @@ mod tests {
             exec(TEXT, "show $ +1").output,
             "a.rs:7-8\n7:    let x = 3;\n8:}\n"
         );
+    }
+
+    #[test]
+    fn show_raw_prints_one_region_as_the_file_text() {
+        assert_eq!(
+            exec(TEXT, "show raw 2-3").output,
+            "    let x = 1;\n    let y = 2;\n"
+        );
+        assert_eq!(
+            exec(TEXT, "show raw 3 +1").output,
+            "    let x = 1;\n    let y = 2;\n}\n"
+        );
+        assert_eq!(exec(TEXT, "show raw").output, TEXT);
+        assert_eq!(exec("a\r\nb\r\n", "show raw $").output, "b\n");
+    }
+
+    #[test]
+    fn show_raw_heads_regions_only_when_there_are_several() {
+        assert_eq!(
+            exec(TEXT, "show raw all /let x/").output,
+            "a.rs:2\n    let x = 1;\na.rs:7\n    let x = 3;\n"
+        );
+        let out = exec_with_options(
+            &[("a.txt", "one\n"), ("b.txt", "two\n")],
+            2,
+            "show raw",
+            &Options::default(),
+        );
+        assert_eq!(out.output, "a.txt:1\none\nb.txt:1\ntwo\n");
+    }
+
+    #[test]
+    fn colored_show_raw_has_no_line_numbers() {
+        let color = Options {
+            style: Style::Color,
+            ..Options::default()
+        };
+        let out = exec_with_options(&[("a.txt", "one\ntwo\n")], 1, "show raw 1-2", &color);
+        assert_eq!(shown(&out.output), "one\ntwo\n");
     }
 
     #[test]
@@ -3408,6 +3648,48 @@ mod tests {
         assert_eq!(
             edited_in("a.py", text, "delete fn:a"),
             "class A:\n    def b(self):\n        pass\n"
+        );
+    }
+
+    const PY_FNS: &str = "def f():\n    pass\n\n\ndef g():\n    pass\n\n\ndef h():\n    pass\n";
+
+    /// The top-level functions of a Python file, in `order`, two blank lines
+    /// apart.
+    fn py_fns(order: &str) -> String {
+        order
+            .chars()
+            .map(|c| format!("def {c}():\n    pass\n"))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    #[test]
+    fn python_delete_keeps_two_blank_lines() {
+        let delete = |f| edited_in("a.py", PY_FNS, &format!("delete fn:{f}"));
+        assert_eq!(delete("f"), py_fns("gh"));
+        assert_eq!(delete("g"), py_fns("fh"));
+        assert_eq!(delete("h"), py_fns("fg"));
+    }
+
+    #[test]
+    fn python_move_keeps_two_blank_lines() {
+        let moved = |script: &str| edited_in("a.py", PY_FNS, script);
+        assert_eq!(
+            edited_in("a.py", &py_fns("fg"), "move fn:f after fn:g"),
+            py_fns("gf")
+        );
+        assert_eq!(moved("move fn:f after fn:h"), py_fns("ghf"));
+        assert_eq!(moved("move fn:f after fn:g"), py_fns("gfh"));
+        assert_eq!(moved("move fn:h before fn:f"), py_fns("hfg"));
+        assert_eq!(moved("move fn:h before fn:g"), py_fns("fhg"));
+    }
+
+    #[test]
+    fn python_move_into_a_class_takes_its_spacing() {
+        let text = "class A:\n    def a(self):\n        pass\n\n    def b(self):\n        pass\n\n\ndef f():\n    pass\n";
+        assert_eq!(
+            edited_in("a.py", text, "move fn:f after fn:b"),
+            "class A:\n    def a(self):\n        pass\n\n    def b(self):\n        pass\n\n    def f():\n        pass\n"
         );
     }
 
@@ -4347,6 +4629,29 @@ fn main() {}
     }
 
     #[test]
+    fn move_keeps_two_blank_lines_in_rust() {
+        let text = "fn a() {}\n\n\nfn b() {}\n\n\nfn c() {}\n";
+        assert_eq!(
+            edited(text, "move fn:a after fn:c"),
+            "fn b() {}\n\n\nfn c() {}\n\n\nfn a() {}\n"
+        );
+        assert_eq!(edited(text, "delete fn:b"), "fn a() {}\n\n\nfn c() {}\n");
+    }
+
+    #[test]
+    fn move_into_a_packed_body_adds_no_blank_line() {
+        let text = "fn c() {}\n\n\nmod m {\n    fn a() {}\n    fn b() {}\n}\n";
+        assert_eq!(
+            edited(text, "move fn:c after fn:b"),
+            "mod m {\n    fn a() {}\n    fn b() {}\n    fn c() {}\n}\n"
+        );
+        assert_eq!(
+            edited(text, "move fn:c before fn:a"),
+            "mod m {\n    fn c() {}\n    fn a() {}\n    fn b() {}\n}\n"
+        );
+    }
+
+    #[test]
     fn move_all_keeps_source_order() {
         assert_eq!(edited(MOVE, "move all fn:helper_* before fn:main"), MOVE);
     }
@@ -4530,6 +4835,78 @@ fn main() {}
             "class A:\n    x = 1\n",
             "replace \"x = 1\" with \"pass\"",
         );
+        assert!(out.result.is_ok(), "{}", out.error());
+    }
+
+    const MACRO_BODY: &str = "fn f() {\n    todo!()\n}\n";
+
+    const MACRO_ERROR: &str =
+        "macro statement needs a `;` before the next statement; add one after its closing bracket";
+
+    #[test]
+    fn guard_rejects_a_rust_macro_statement_without_a_semicolon() {
+        let script = "insert end fn:f <<END\nfn g() {}\nEND";
+        let out = guarded("a.rs", MACRO_BODY, script);
+        assert!(out.error().contains(MACRO_ERROR), "{}", out.error());
+        let out = guarded(
+            "a.rs",
+            "fn f() {\n    x\n}\n",
+            "replace \"x\" with \"vec![1]\\nlet y = 2;\"",
+        );
+        assert!(out.error().contains(MACRO_ERROR), "{}", out.error());
+        let out = exec_with(&[("a.rs", MACRO_BODY)], 1, script);
+        assert_eq!(out.new_text(), "fn f() {\n    todo!()\n    fn g() {}\n}\n");
+    }
+
+    #[test]
+    fn guard_says_a_rust_macro_statement_needs_a_semicolon() {
+        let out = guarded("a.rs", MACRO_BODY, "insert end fn:f <<END\nfn g() {}\nEND");
+        let err = out.error();
+        assert!(
+            err.starts_with(&format!("error: a.rs:2:12: {MACRO_ERROR}")),
+            "{err}"
+        );
+        assert!(!err.contains("--force"), "{err}");
+        assert!(err.contains("\n2:    todo!()\n"), "{err}");
+    }
+
+    #[test]
+    fn guard_allows_rust_macros_that_need_no_semicolon() {
+        for (text, script) in [
+            (
+                "fn f() {\n    todo!();\n}\n",
+                "insert end fn:f \"let x = 1;\"",
+            ),
+            (
+                "fn f() {\n    foo! { a }\n}\n",
+                "insert end fn:f \"let x = 1;\"",
+            ),
+            (
+                "fn f() {\n    let x = 1;\n}\n",
+                "insert end fn:f \"vec![x]\"",
+            ),
+            (
+                "fn f() {\n    let x = 1;\n}\n",
+                "insert end fn:f \"println!(\\\"{x}\\\"); // done\"",
+            ),
+            (
+                "fn f() {\n    let x = 1;\n}\n",
+                "insert end fn:f \"bar!(x) // done\"",
+            ),
+            (
+                "fn f() {\n    let x = 1;\n}\n",
+                "insert end fn:f \"macro_rules! m { () => {} }\\nm!()\"",
+            ),
+        ] {
+            let out = guarded("a.rs", text, script);
+            assert!(out.result.is_ok(), "{script}: {}", out.error());
+        }
+    }
+
+    #[test]
+    fn guard_allows_rust_macro_statements_that_were_already_there() {
+        let text = "fn f() {\n    todo!()\n    let x = 1;\n}\n";
+        let out = guarded("a.rs", text, "insert end fn:f \"let y = 2;\"");
         assert!(out.result.is_ok(), "{}", out.error());
     }
 
@@ -5612,6 +5989,168 @@ fn main() {}
             },
             notes: run.notes,
         }
+    }
+
+    /// Runs `script` with `disk` written to a temporary directory and `buffers`
+    /// overlaid on it, on `initial` (paths under the directory) or, with `None`,
+    /// the directory as the workspace; the directory is removed from every path.
+    fn overlaid(
+        disk: &[(&str, &str)],
+        buffers: &[(&str, &str)],
+        initial: Option<&[&str]>,
+        script: &str,
+    ) -> Outcome {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for (name, text) in disk {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        let overlay: Overlay = buffers
+            .iter()
+            .map(|(name, text)| (root.join(name), text.to_string()))
+            .collect();
+        let prefix = format!("{}/", root.display());
+        let paths: Vec<String> = initial
+            .unwrap_or_default()
+            .iter()
+            .map(|name| format!("{prefix}{name}"))
+            .collect();
+        let initial = match initial {
+            Some(_) => Initial::Files(&paths),
+            None => Initial::Workspace(root.clone()),
+        };
+        let options = Options {
+            overlay: Some(&overlay),
+            ..Options::default()
+        };
+        let src = script.replace("{dir}/", &prefix);
+        let run = run(&parse(&src).unwrap(), &src, initial, &options, None);
+        let strip = |s: &str| s.replace(&prefix, "");
+        Outcome {
+            output: strip(&run.output),
+            result: match run.result {
+                Ok(changes) => Ok(changes
+                    .into_iter()
+                    .map(|c| Change {
+                        path: strip(&c.path),
+                        ..c
+                    })
+                    .collect()),
+                Err(err) => Err(strip(&err.render(&src))),
+            },
+            notes: run.notes,
+        }
+    }
+
+    #[test]
+    fn an_overlaid_file_is_read_from_its_buffer() {
+        let out = overlaid(
+            &[("a.rs", "fn a() {}\n")],
+            &[("a.rs", "fn b() {}\n")],
+            Some(&["a.rs"]),
+            "replace fn:b.name with \"c\"",
+        );
+        let changes = out.result.unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(
+            (changes[0].old.as_str(), changes[0].new.as_str()),
+            ("fn b() {}\n", "fn c() {}\n")
+        );
+        assert!(!changes[0].created);
+    }
+
+    #[test]
+    fn an_overlaid_file_is_read_from_its_buffer_by_any_path() {
+        let out = overlaid(
+            &[("a.rs", "fn a() {}\n"), ("sub/x.txt", "")],
+            &[("a.rs", "fn b() {}\n")],
+            Some(&["sub/../a.rs"]),
+            "replace fn:b.name with \"c\"",
+        );
+        let changes = out.result.unwrap();
+        assert_eq!(changes[0].old, "fn b() {}\n");
+    }
+
+    #[test]
+    fn an_unwritten_file_can_be_a_file_argument() {
+        let out = overlaid(
+            &[],
+            &[("new.rs", "fn n() {}\n")],
+            Some(&["new.rs"]),
+            "show fn:n",
+        );
+        assert_eq!(out.output, "new.rs:1\n1:fn n() {}\n");
+        assert_eq!(out.result, Ok(vec![]));
+    }
+
+    #[test]
+    fn file_can_name_an_unwritten_file() {
+        let out = overlaid(
+            &[("a.rs", "fn a() {}\n")],
+            &[("new.rs", "fn n() {}\n")],
+            Some(&["a.rs"]),
+            "file {dir}/new.rs\nshow fn:n",
+        );
+        assert_eq!(out.output, "new.rs:1\n1:fn n() {}\n");
+    }
+
+    #[test]
+    fn create_refuses_an_unwritten_file() {
+        let out = overlaid(
+            &[("a.rs", "fn a() {}\n")],
+            &[("new.rs", "fn n() {}\n")],
+            Some(&["a.rs"]),
+            "create {dir}/new.rs \"fn m() {}\"",
+        );
+        assert!(
+            out.error().contains("new.rs already exists"),
+            "{}",
+            out.error()
+        );
+    }
+
+    #[test]
+    fn globs_match_unwritten_files() {
+        let out = overlaid(
+            &[("a.rs", "fn a() {}\n"), ("c.rs", "fn c() {}\n")],
+            &[("b.rs", "fn b() {}\n"), ("b.py", "def b(): pass\n")],
+            Some(&["*.rs"]),
+            "show all /fn /",
+        );
+        assert_eq!(
+            out.output,
+            "a.rs:1\n1:fn a() {}\nb.rs:1\n1:fn b() {}\nc.rs:1\n1:fn c() {}\n"
+        );
+    }
+
+    #[test]
+    fn globs_match_unwritten_files_by_any_path() {
+        for glob in ["./*.rs", "sub/../*.rs"] {
+            let out = overlaid(
+                &[("a.rs", "fn a() {}\n"), ("sub/x.txt", "")],
+                &[("b.rs", "fn b() {}\n")],
+                Some(&[glob]),
+                "show all /fn /",
+            );
+            let dir = glob.trim_end_matches("*.rs");
+            assert_eq!(
+                out.output,
+                format!("{dir}a.rs:1\n1:fn a() {{}}\n{dir}b.rs:1\n1:fn b() {{}}\n")
+            );
+        }
+    }
+
+    #[test]
+    fn a_workspace_set_holds_unwritten_files() {
+        let out = overlaid(
+            &[("a.rs", "fn a() {}\n")],
+            &[("sub/b.rs", "fn b() {}\n")],
+            None,
+            "show all /fn /",
+        );
+        assert_eq!(out.output, "a.rs:1\n1:fn a() {}\nsub/b.rs:1\n1:fn b() {}\n");
     }
 
     fn workspace_tree() -> tempfile::TempDir {

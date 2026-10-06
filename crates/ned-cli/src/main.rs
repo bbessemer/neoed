@@ -22,30 +22,24 @@ macro_rules! errln {
 }
 
 mod daemon;
-mod help;
+mod mcp;
+mod repl;
 mod session;
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal, Read};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::OnceLock;
 
-use clap::builder::NonEmptyStringValueParser;
+use clap::builder::{NonEmptyStringValueParser, PossibleValuesParser};
 use clap::{Arg, CommandFactory, Parser, Subcommand};
-use ned_core::buffer::Buffer;
-use ned_core::config::{self, Config};
-use ned_core::diff::{self, DiffStat};
-use ned_core::exec::{self, ExecErrorKind, Initial, Options};
-use ned_core::format::{self, Outcome};
-use ned_core::git::{FileEdit, GitError, Prepared, Repo};
+use ned_core::config;
+use ned_core::invoke::{self, Failure, Invocation, Output};
 use ned_core::lang::{self, Language};
-use ned_core::lsp;
-#[cfg(unix)]
-use ned_core::lsp::Lsp;
-use ned_core::session::{Entry, FileChange};
-use ned_core::style::{Role, Style, When};
-use ned_core::{fs, script, workspace};
+use ned_core::style::{Depth, Style, When};
+use ned_core::theme::Theme;
+use ned_core::{help, script, workspace};
 
 /// A `--lang` value, `None` for text. Clap would read `Option<Option<_>>` as a
 /// flag whose value is optional.
@@ -59,7 +53,7 @@ type LangFlag = Option<Language>;
     args_conflicts_with_subcommands = true,
     disable_help_subcommand = true,
     // clap leaves a user-defined `help` subcommand out of the usage.
-    override_usage = "ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]\n       ned history|undo [-s NAME] [-w DIR]"
+    override_usage = "ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...\n       ned repl [OPTIONS] [FILES... | -w [DIR]]    (edit interactively)\n       ned mcp [OPTIONS]    (serve agents over MCP)\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]\n       ned history|undo [-s NAME] [-w DIR]\n       ned session list|delete"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -71,7 +65,7 @@ struct Cli {
     #[arg(short, long, value_name = "DIR", num_args = 0..=1, conflicts_with = "files")]
     workspace: Option<Option<PathBuf>>,
     /// A script to run; repeat to join several with newlines. Without -e, the
-    /// script is read from stdin.
+    /// script is read from stdin; with -e, only in the place of a `-e -`.
     #[arg(short = 'e', value_name = "SCRIPT")]
     scripts: Vec<String>,
     /// Resolve and apply edits in memory and print the output, but write
@@ -81,8 +75,8 @@ struct Cli {
     /// Print only the per-file summary lines on success.
     #[arg(short, long)]
     quiet: bool,
-    /// Skip the parse-error guard: apply edits even if they introduce syntax
-    /// errors.
+    /// Skip the guards: apply edits even if they introduce syntax errors,
+    /// language-server errors or a formatter failure.
     #[arg(long)]
     force: bool,
     /// Don't run formatters.
@@ -111,8 +105,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Edit interactively, in memory until written (`ned help repl`).
+    Repl(repl::ReplArgs),
+    /// Serve ned to an agent over the Model Context Protocol (`ned help mcp`).
+    Mcp(mcp::McpArgs),
     /// Print a summary of the command language, or details of one topic.
-    Help { topic: Option<help::Topic> },
+    Help {
+        #[arg(value_parser = PossibleValuesParser::new(help::TOPICS.iter().map(|(name, _)| name)))]
+        topic: Option<String>,
+    },
     /// Manage the language-server daemon for the workspace containing DIR.
     Daemon {
         #[command(subcommand)]
@@ -144,6 +145,11 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// List or delete sessions.
+    Session {
+        #[command(subcommand)]
+        action: session::Action,
+    },
 }
 
 /// The styles of stdout and stderr, from `--color` (spec §6.6).
@@ -171,9 +177,24 @@ fn color_arg(args: impl Iterator<Item = OsString>) -> When {
     when
 }
 
+/// `styles`, of stdout and stderr, with the theme `read` gives when stdout
+/// colours on a terminal of `depth`. Only then is the theme read, so a bad one
+/// stops no run whose output a program reads (spec §6.6).
+fn themed<E>(
+    styles: (Style, Style),
+    depth: Option<Depth>,
+    read: impl FnOnce() -> Result<&'static Theme, E>,
+) -> Result<(Style, Style), E> {
+    if depth.is_none() || styles.0 != Style::Color {
+        return Ok(styles);
+    }
+    let theme = Some(read()?);
+    Ok((styles.0.themed(theme, depth), styles.1.themed(theme, depth)))
+}
+
 fn main() -> ExitCode {
     let no_color = std::env::var_os("NO_COLOR");
-    let mut cli = match Cli::try_parse() {
+    let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => {
             let args: Vec<_> = std::env::args_os()
@@ -193,8 +214,8 @@ fn main() -> ExitCode {
             let args = std::env::args_os().skip(1);
             let text = err.render();
             let text = match color_arg(args).style(terminal, no_color.as_deref()) {
-                Style::Color => text.ansi().to_string(),
                 Style::Plain => text.to_string(),
+                _ => text.ansi().to_string(),
             };
             match err.use_stderr() {
                 true => eprint!("{text}"),
@@ -204,13 +225,38 @@ fn main() -> ExitCode {
         }
     };
     let style = |terminal| cli.color.style(terminal, no_color.as_deref());
-    let _ = STYLES.set((
+    let styles = (
         style(io::stdout().is_terminal()),
         style(io::stderr().is_terminal()),
-    ));
+    );
+    let var = std::env::var_os;
+    let depth = Depth::detect(var("COLORTERM").as_deref(), var("TERM").as_deref());
+    let read = || {
+        let env = var("NED_THEME");
+        let theme = config::user_theme(
+            config::user_config().as_deref(),
+            env.as_deref().and_then(OsStr::to_str),
+        )?;
+        Ok::<_, config::ConfigError>(&*Box::leak(Box::new(theme)))
+    };
+    match themed(styles, depth, read) {
+        Ok(styles) => {
+            let _ = STYLES.set(styles);
+        }
+        Err(err) => {
+            let _ = STYLES.set(styles);
+            errln!("error: {err}");
+            return ExitCode::from(2);
+        }
+    }
     match cli.command {
+        Some(Command::Repl(args)) => return repl::run(args),
+        Some(Command::Mcp(args)) => return mcp::run(args),
         Some(Command::Help { topic }) => {
-            out!("{}", help::text(topic));
+            out!(
+                "{}",
+                help::text(topic.as_deref()).expect("clap checks the topic")
+            );
             return ExitCode::SUCCESS;
         }
         Some(Command::Daemon { action }) => return daemon::run(action),
@@ -224,24 +270,36 @@ fn main() -> ExitCode {
             workspace,
             force,
         }) => return finish(session::undo(session, workspace, force)),
+        Some(Command::Session { action }) => return finish(session::run(action)),
         None => {}
+    }
+    if cli.scripts.is_empty() && io::stdin().is_terminal() && usage_error(&cli).is_none() {
+        return match repl::ReplArgs::from_cli(cli) {
+            Ok(args) => repl::run(args),
+            Err(err) => {
+                errln!("error: {err}");
+                ExitCode::from(2)
+            }
+        };
     }
     if let Some(err) = usage_error(&cli) {
         errln!("error: {err}");
         return ExitCode::from(2);
     }
-    let mut src = if cli.scripts.is_empty() {
-        let mut src = String::new();
-        if let Err(err) = io::stdin().read_to_string(&mut src) {
+    let mut scripts = cli.scripts.clone();
+    if scripts.is_empty() {
+        scripts.push("-".to_string());
+    }
+    if let Some(script) = scripts.iter_mut().find(|script| *script == "-") {
+        script.clear();
+        if let Err(err) = io::stdin().read_to_string(script) {
             errln!("error: cannot read the script from stdin: {err}");
             return ExitCode::from(2);
         }
-        src
-    } else {
-        cli.scripts.join("\n")
-    };
+    }
+    let src = scripts.join("\n");
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut root = match &cli.workspace {
+    let root = match &cli.workspace {
         Some(Some(dir)) => match dir.canonicalize() {
             Ok(dir) => dir,
             Err(err) => {
@@ -251,333 +309,54 @@ fn main() -> ExitCode {
         },
         _ => workspace::root(&cwd).unwrap_or(cwd.clone()),
     };
-    let session = match session::name(cli.session.clone()) {
+    let session = match invoke::session_name(cli.session.clone()) {
         None => None,
-        Some(name) => match session::open(&name, &root) {
+        Some(name) => match invoke::open(&name, &root) {
             Ok(session) => Some(session),
-            Err((error, code)) => {
-                errln!("{error}");
-                return ExitCode::from(code);
-            }
-        },
-    };
-    src = match session::repeat(
-        session.as_ref(),
-        src,
-        &cwd,
-        &mut cli.files,
-        &mut cli.workspace,
-        &mut root,
-        cli.dry_run,
-    ) {
-        Ok(src) => src,
-        Err(failure) => return finish(Err(failure)),
-    };
-
-    let prior = match (&cli.commit, &session) {
-        (Some(_), Some(session)) => match session::uncommitted(session) {
-            Ok(prior) => prior,
             Err(failure) => return finish(Err(failure)),
         },
-        _ => Vec::new(),
     };
-    let ran = run(&cli, &src, &cwd, root.clone(), &prior);
-    if let Some(session) = &session {
-        session::record(
-            session,
-            Entry {
-                id: 0,
-                time: ned_core::session::now(),
-                cwd,
-                files: cli.files.clone(),
-                workspace: cli.workspace.is_some().then_some(root),
-                script: Some(src),
-                undoes: None,
-                dry_run: cli.dry_run,
-                exit: ran.exit,
-                error: ran.error,
-                changes: ran.changes,
-                commit: ran.commit,
-            },
-        );
-    }
-    ExitCode::from(ran.exit)
-}
-
-/// The outcome of running a script, as a session records it.
-struct Ran {
-    exit: u8,
-    error: Option<String>,
-    changes: Vec<FileChange>,
-    /// The commit `--commit` made.
-    commit: Option<String>,
-}
-
-impl Ran {
-    /// Prints `error` and fails with `exit`.
-    fn failed(exit: u8, error: String) -> Ran {
-        let error = error.trim_end().to_string();
-        errln!("{error}");
-        Ran {
-            exit,
-            error: Some(error),
-            changes: Vec::new(),
-            commit: None,
-        }
-    }
-}
-
-/// Runs the script `src`: prints its output and writes its edits, and with
-/// `--commit` commits them after the session's `prior` changes.
-fn run(cli: &Cli, src: &str, cwd: &Path, root: PathBuf, prior: &[(u64, FileChange)]) -> Ran {
-    let parsed = match script::parse(src) {
-        Ok(parsed) => parsed,
-        Err(err) => return Ran::failed(2, err.render(src)),
-    };
-    let options = Options {
-        lang: cli.lang,
+    let invocation = Invocation {
+        cwd,
+        files: cli.files,
+        workspace: cli.workspace.is_some(),
+        root,
+        dry_run: cli.dry_run,
+        quiet: cli.quiet,
         force: cli.force,
-        style: styles().0,
+        no_fmt: cli.no_fmt,
+        no_check: cli.no_check,
+        lang: cli.lang,
+        context: cli.context,
+        commit: cli.commit,
+        style: crate::styles().0,
+        comment: None,
     };
-    let top = root.clone();
-    // HEAD as the script starts, so a commit made while it runs is noticed.
-    let before = cli.commit.as_ref().and_then(|_| Repo::discover(&top).ok());
-    let initial = match cli.workspace {
-        Some(_) => Initial::Workspace(root.clone()),
-        None => Initial::Files(&cli.files),
-    };
-    #[cfg(unix)]
-    let mut workspace = daemon::workspace(root);
-    #[cfg(unix)]
-    let lsp: Option<&mut dyn Lsp> = Some(&mut workspace);
-    #[cfg(not(unix))]
-    let lsp = None;
-    let run = exec::run(&parsed, src, initial, &options, lsp);
-    out!("{}", run.output);
-    for note in &run.notes {
-        errln!("note: {note}");
-    }
-    let changes = match run.result {
-        Ok(changes) => changes,
-        Err(err) => return Ran::failed(exit_code(&err.kind), err.render(src)),
-    };
-
-    #[cfg_attr(not(unix), allow(unused_mut))]
-    let mut outcomes = if cli.no_fmt {
-        vec![Outcome::Unchanged; changes.len()]
-    } else {
-        let formatted = Config::new(config::user_config().as_deref())
-            .and_then(|mut config| format::run(&changes, &mut config));
-        match formatted {
-            Ok(outcomes) => outcomes,
-            Err(err) => return Ran::failed(2, format!("error: {err}")),
-        }
-    };
-
-    #[cfg(unix)]
-    if workspace.running() {
-        format::fallback(&changes, &mut outcomes, &mut workspace);
-    }
-
-    let finals: Vec<&str> = changes
-        .iter()
-        .zip(&outcomes)
-        .map(|(change, outcome)| match outcome {
-            Outcome::Formatted { text, .. } => text.as_str(),
-            _ => change.new.as_str(),
-        })
-        .collect();
-    #[cfg(unix)]
-    let checked = match cli.no_check {
-        true => None,
-        false => daemon::check(&mut workspace, &changes, &finals, run.allow, cli.force),
-    };
-    #[cfg(not(unix))]
-    let checked: Option<ned_core::lsp::Checked> = None;
-    if let Some(checked) = &checked
-        && !checked.blocking.is_empty()
-    {
-        #[cfg(unix)]
-        daemon::restore(&mut workspace, &changes);
-        return Ran::failed(1, daemon::blocked(&changes, &finals, checked));
-    }
-
-    let committed = match &cli.commit {
-        Some(message) => match commit(&top, before, cwd, prior, &changes, &finals, message) {
-            Ok(committed) => Some(committed),
-            Err(err) => {
-                #[cfg(unix)]
-                daemon::restore(&mut workspace, &changes);
-                return Ran::failed(git_exit_code(&err), commit_error(&err, prior));
-            }
-        },
-        None => None,
-    };
-
-    if !cli.dry_run {
-        let writes: Vec<(PathBuf, String)> = changes
-            .iter()
-            .zip(&finals)
-            .map(|(change, text)| (PathBuf::from(&change.path), text.to_string()))
-            .collect();
-        if let Err(err) = fs::write_atomic(&writes, &[]) {
-            if let Some((repo, prepared)) = &committed
-                && let Err(git) = repo.retreat(prepared)
-            {
-                errln!("error: {git}");
-            }
-            let error = format!("error: cannot write files: {err}; no file was changed");
-            return Ran::failed(3, error);
-        }
-    }
-    let recorded = match cli.dry_run {
-        true => Vec::new(),
-        false => changes
-            .iter()
-            .zip(&finals)
-            .map(|(change, text)| {
-                let path = cwd.join(&change.path);
-                FileChange {
-                    path: std::fs::canonicalize(&path).unwrap_or(path),
-                    before: (!change.created).then(|| change.old.clone()),
-                    after: Some(text.to_string()),
-                }
-            })
-            .collect(),
-    };
-    let style = styles().0;
-    for (i, (change, outcome)) in changes.iter().zip(&outcomes).enumerate() {
-        let stat = DiffStat::between(&change.old, &change.new);
-        let summary = if change.created {
-            diff::created_summary(&change.path, stat, cli.dry_run)
-        } else {
-            diff::summary(&change.path, change.edits, stat, cli.dry_run)
-        };
-        outln!("{}", style.paint(Role::Header, &summary));
-        let new = diff::Side::new(&change.new, change.lang);
-        if !cli.quiet {
-            let old = diff::Side::new(&change.old, change.lang);
-            out!("{}", diff::hunks(&old, &new, cli.context, style));
-        }
-        match outcome {
-            Outcome::Formatted { name, text } => {
-                let header = format!("fmt {name}: {}", DiffStat::between(&change.new, text));
-                outln!("{}", style.paint(Role::Header, &header));
-                if !cli.quiet {
-                    let text = diff::Side::new(text, change.lang);
-                    out!("{}", diff::hunks(&new, &text, cli.context, style));
-                }
-            }
-            Outcome::NotFound(note) | Outcome::Failed(note) => errln!("note: {note}"),
-            Outcome::Unchanged => {}
-        }
-        if let Some(checked) = &checked {
-            let buffer = Buffer::new(finals[i]);
-            for d in &checked.files[i] {
-                out!("{}", lsp::render(&change.path, &buffer, d, style));
-            }
-        }
-    }
-    if let Some((repo, prepared)) = &committed {
-        let subject = cli
-            .commit
-            .as_deref()
-            .unwrap_or_default()
-            .lines()
-            .next()
-            .unwrap_or_default();
-        let name = repo
-            .short(&prepared.commit)
-            .unwrap_or_else(|_| prepared.commit.clone());
-        outln!("commit {name}: {subject}");
-    }
-    #[cfg(unix)]
-    if checked.is_some() && cli.dry_run {
-        daemon::restore(&mut workspace, &changes);
-    }
-    Ran {
-        exit: 0,
-        error: None,
-        changes: recorded,
-        commit: committed.map(|(_, prepared)| prepared.commit),
-    }
+    let exit = invoke::invoke(
+        invocation,
+        src,
+        session.as_ref(),
+        daemon::workspace,
+        &mut Terminal,
+    );
+    ExitCode::from(exit)
 }
 
-/// Makes the commit of the run's edits and moves `HEAD` to it (§1.3), if
-/// `HEAD` hasn't moved since `before`, the repository found as the run
-/// started, was found.
-fn commit(
-    top: &Path,
-    before: Option<Repo>,
-    cwd: &Path,
-    prior: &[(u64, FileChange)],
-    changes: &[exec::Change],
-    finals: &[&str],
-    message: &str,
-) -> Result<(Repo, Prepared), GitError> {
-    let paths: Vec<PathBuf> = changes.iter().map(|c| cwd.join(&c.path)).collect();
-    let earlier = prior.iter().map(|(_, change)| FileEdit {
-        path: &change.path,
-        before: change.before.as_deref(),
-        after: change.after.as_deref(),
-    });
-    let edits: Vec<FileEdit> = earlier
-        .chain(
-            changes
-                .iter()
-                .zip(finals)
-                .zip(&paths)
-                .map(|((change, after), path)| FileEdit {
-                    path,
-                    before: (!change.created).then_some(change.old.as_str()),
-                    after: Some(after),
-                }),
-        )
-        .collect();
-    let found = Repo::discover(paths.first().map_or(top, PathBuf::as_path))?;
-    let repo = before.filter(|b| b.top == found.top).unwrap_or(found);
-    if changes.is_empty() {
-        return Err(GitError::NothingToCommit);
-    }
-    let mut prepared = repo.prepare(&edits, message)?;
-    repo.advance(&prepared)?;
-    if let Err(err) = repo.stage(&mut prepared) {
-        if let Err(git) = repo.retreat(&prepared) {
-            errln!("error: {git}");
-        }
-        return Err(err);
-    }
-    Ok((repo, prepared))
-}
+/// Prints an invocation's output to stdout, and its messages to stderr.
+struct Terminal;
 
-/// The message for `err`, naming the session entry whose edit it concerns,
-/// if `prior` (§1.3) holds that edit.
-fn commit_error(err: &GitError, prior: &[(u64, FileChange)]) -> String {
-    let (problem, edit) = match err {
-        GitError::Ignored { path, edit } => (format!("{path} is ignored by git"), edit),
-        GitError::Outside { path, top, edit } => {
-            (format!("{path} isn't in the repository at {top}"), edit)
-        }
-        _ => return format!("error: {err}"),
-    };
-    match prior.get(*edit) {
-        Some((id, _)) => format!(
-            "error: {problem}, and session entry {id} edited it, so the session's edits can't be committed; start a new session (-s NAME) to commit only the edits from then on"
-        ),
-        None => format!("error: {err}"),
+impl Output for Terminal {
+    fn out(&mut self, text: &str) {
+        out!("{text}");
     }
-}
 
-fn git_exit_code(err: &GitError) -> u8 {
-    match err {
-        GitError::NoGit | GitError::NotARepo(_) => 2,
-        GitError::Failed { .. } | GitError::IndexLocked(_) => 3,
-        _ => 1,
+    fn message(&mut self, message: &str) {
+        errln!("{message}");
     }
 }
 
 /// The exit code of a subcommand, printing its error if it failed.
-fn finish(result: Result<(), session::Failure>) -> ExitCode {
+fn finish(result: Result<(), Failure>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err((error, code)) => {
@@ -701,8 +480,7 @@ fn misplaced_subcommand(args: &[String]) -> Option<String> {
 }
 
 /// A usage error found before the script is read (spec §1): a subcommand after
-/// a flag, a command's name given as a FILE, or no script with stdin a
-/// terminal.
+/// a flag, or a command's name given as a FILE.
 fn usage_error(cli: &Cli) -> Option<String> {
     let args: Vec<_> = std::env::args_os()
         .skip(1)
@@ -731,40 +509,41 @@ fn usage_error(cli: &Cli) -> Option<String> {
             words.join(" ")
         ));
     }
-    (cli.scripts.is_empty() && io::stdin().is_terminal())
-        .then(|| "no script: give one with -e SCRIPT or on stdin, e.g. ned FILE -e outline".into())
+    if cli.scripts.iter().filter(|script| *script == "-").count() > 1 {
+        return Some("stdin holds one script; give `-e -` once".to_string());
+    }
+    None
 }
 
-/// The exit code for an error that rejected a script (spec §7).
-fn exit_code(kind: &ExecErrorKind) -> u8 {
-    match kind {
-        ExecErrorKind::NoMatch { .. }
-        | ExecErrorKind::Ambiguous { .. }
-        | ExecErrorKind::LineOutOfRange { .. }
-        | ExecErrorKind::NotInFileSet { .. }
-        | ExecErrorKind::NoFileMatch { .. }
-        | ExecErrorKind::Overlap { .. }
-        | ExecErrorKind::SyntaxError { .. }
-        | ExecErrorKind::NoLanguage { .. }
-        | ExecErrorKind::NoCodeLanguage { .. }
-        | ExecErrorKind::ParsingDisabled { .. }
-        | ExecErrorKind::UnknownKind { .. }
-        | ExecErrorKind::MissingPart { .. }
-        | ExecErrorKind::PartNeedsItem { .. }
-        | ExecErrorKind::PartNeedsConflict { .. }
-        | ExecErrorKind::NotAConflict { .. }
-        | ExecErrorKind::MoveIntoSource { .. }
-        | ExecErrorKind::FileExists { .. }
-        | ExecErrorKind::RenameRefused { .. }
-        | ExecErrorKind::Outside { .. }
-        | ExecErrorKind::AmbiguousLocated { .. } => 1,
-        ExecErrorKind::NoFiles
-        | ExecErrorKind::InvalidQuery { .. }
-        | ExecErrorKind::InvalidPattern { .. }
-        | ExecErrorKind::DuplicateCapture { .. }
-        | ExecErrorKind::UnknownCapture { .. }
-        | ExecErrorKind::WildcardInText
-        | ExecErrorKind::NoServer { .. } => 2,
-        ExecErrorKind::Io { .. } | ExecErrorKind::NoGlobMatch { .. } | ExecErrorKind::Lsp(_) => 3,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default() -> &'static Theme {
+        Box::leak(Box::new(
+            config::user_theme(None, Some("default-dark")).unwrap(),
+        ))
+    }
+
+    #[test]
+    fn a_coloured_stdout_reads_the_theme_for_both_streams() {
+        let theme = default();
+        let styles = themed((Style::Color, Style::Color), Some(Depth::Xterm256), || {
+            Ok::<_, ()>(theme)
+        });
+        let painted = Style::Theme(theme, Depth::Xterm256);
+        assert_eq!(styles, Ok((painted, painted)));
+    }
+
+    #[test]
+    fn only_a_coloured_stdout_reads_the_theme() {
+        let unread = || -> Result<&'static Theme, &str> { Err("read") };
+        let depth = Some(Depth::Truecolor);
+        for styles in [(Style::Plain, Style::Color), (Style::Plain, Style::Plain)] {
+            assert_eq!(themed(styles, depth, unread), Ok(styles));
+        }
+        let styles = (Style::Color, Style::Plain);
+        assert_eq!(themed(styles, None, unread), Ok(styles));
+        assert_eq!(themed(styles, depth, unread), Err("read"));
     }
 }

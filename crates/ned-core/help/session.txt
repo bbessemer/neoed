@@ -1,19 +1,20 @@
 session
 
-  ned -s NAME [FILE...] -e SCRIPT    (or NED_SESSION=NAME in the environment)
+  ned -s NAME [FILE...] -e SCRIPT    (or NED_SESSION=NAME)
   ned history [-s NAME] [-w DIR] [--all]
   ned undo [-s NAME] [-w DIR] [--force]
+  ned session list [--all] | delete NAME... [-w DIR]
 
 A session records each invocation in the workspace: its script, files and
-outcome, and the text of each file it wrote, before and after. -s overrides
-NED_SESSION; a name is letters, digits, `.`, `_` and `-`, not starting with
-`.`. Without a session, nothing is recorded. Sessions live in
-$XDG_STATE_HOME/ned/sessions (default ~/.local/state). A run with -w DIR is
-recorded in DIR's sessions: give history, undo or `!!` -w DIR too.
+outcome, and each file it wrote, before and after. -s overrides NED_SESSION;
+a name is letters, digits, `.`, `_` and `-`, not starting with `.`. Sessions
+live in $XDG_STATE_HOME/ned/sessions (default ~/.local/state). A run with
+-w DIR is recorded in DIR's sessions: give history, undo, `!!` or delete
+-w DIR too.
 
 `ned history` prints the last 10 entries (--all: every one), a line each:
-the entry's number, its outcome (ok, dry run, exit N, or undo N), how many
-files it wrote, `undone` if it has been, and the script's first line:
+the entry's number, its outcome (ok, dry run, exit N, undo N, write), how
+many files it wrote, `undone` if it has been, and the script's first line:
 
   3 ok, 1 file: replace fn:parse>"end" with "end of input"
 
@@ -26,8 +27,9 @@ a later change overlaps the entry's.
 its last commit); nothing else goes in, hooks don't run, and an edit
 overlapping uncommitted changes is refused.
 
-A script that is `!!` repeats the last script, on its files or -w workspace
-unless others are given, but not its flags: after a dry run it needs -n.
+`!!` repeats the last script that edited or failed, on its files or -w
+workspace unless others are given, but not its flags: after a dry run it
+needs -n.
 `:s/OLD/NEW/` corrects the first OLD in it and `:gs/OLD/NEW/` every one:
 
   ned -e '!!:s/fn:prase/fn:parse/'

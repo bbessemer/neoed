@@ -191,13 +191,48 @@ fn an_unfinished_save_time_check_is_a_note() {
 }
 
 #[test]
-fn edits_are_checked_without_saving() {
+fn a_written_edit_reports_what_checks_on_save_find_it_introduced() {
     let ws = Workspace::with_flags(&["flycheck"], "");
-    ws.write("a.rs", CLEAN);
+    ws.write("a.rs", "// done\nfn a() {} // CARGO\n");
     ws.start();
     let out = ws.ned(&["a.rs", "-q", "-e", "insert after 2 \"// CARGO\""]);
     assert!(out.status.success(), "{out:?}");
-    assert_eq!(text(&out.stdout), "a.rs: 1 edit, +1 -0\n");
+    assert_eq!(
+        text(&out.stdout),
+        "a.rs: 1 edit, +1 -0\na.rs:3:1: error: cargo here [cargo]\n"
+    );
+    assert_eq!(text(&out.stderr), "");
+    assert_eq!(ws.read("a.rs"), "// done\nfn a() {} // CARGO\n// CARGO\n");
+}
+
+#[test]
+fn checks_on_save_repeat_nothing_the_edit_check_printed() {
+    let ws = Workspace::with_flags(&["flycheck"], "");
+    ws.write("a.rs", CLEAN);
+    ws.start();
+    let out = ws.ned(&[
+        "a.rs",
+        "-q",
+        "-e",
+        "allow errors\ninsert after 2 \"// ERROR\"",
+    ]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        text(&out.stdout),
+        "a.rs: 1 edit, +1 -0\na.rs:3:4: error: error here [fake F1]\n"
+    );
+}
+
+#[test]
+fn unwritten_edits_get_no_checks_on_save() {
+    let ws = Workspace::with_flags(&["flycheck"], "");
+    ws.write("a.rs", CLEAN);
+    ws.start();
+    for flag in ["-n", "--no-check"] {
+        let out = ws.ned(&["a.rs", "-q", flag, "-e", "insert after 2 \"// CARGO\""]);
+        assert!(out.status.success(), "{out:?}");
+        assert!(!text(&out.stdout).contains("cargo here"), "{out:?}");
+    }
     let log = fs::read_to_string(ws.dir.path().join("lsp.log")).unwrap();
     assert!(!log.contains("textDocument/didSave"), "{log}");
 }
