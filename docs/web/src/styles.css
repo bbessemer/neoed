@@ -257,6 +257,20 @@ main {
   max-width: 46rem;
 }
 
+.home > .home-note {
+  max-width: 50rem;
+  margin: 0 auto 1.5rem;
+  color: var(--text-muted);
+}
+
+.home-note p {
+  margin: 0.5rem 0;
+}
+
+.home-note a {
+  color: inherit;
+}
+
 .example {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 2.2fr);

@@ -30,12 +30,13 @@ export default function Home() {
     <>
       <section className="hero">
         <div className="hero-text">
-          <h1>Edit code by naming it.</h1>
+          <h1>A smart editor for you and your agents</h1>
           <p className="lede">
-            ned is a line editor that finds code by its syntax. You give it
-            files and a short script, and it makes the edit, fixes the
-            indentation, runs your formatter and prints a diff. It was built for
-            AI coding agents, and it works just as well in your own terminal.
+            Neoed (<code>ned</code>) is a line editor that can address code by
+            its syntax, not just line numbers and regex patterns. It brings all
+            the features you&rsquo;d expect from a modern text editor, including
+            LSP integration, to an interface that AI agents can use, and it
+            works well in your own terminal, too.
           </p>
           <InstallCommand />
           <p className="install-more">
@@ -58,6 +59,29 @@ export default function Home() {
         </div>
       </section>
       <div className="prose home">
+        <aside className="home-note">
+          <p>
+            Modern text editors include language-aware tools that allow power
+            users to perform complex edits with a few keystrokes. In comparison,
+            the tools used by most AI agents are a step backwards: they require
+            agents to waste tokens quoting code they already wrote, or can
+            silently fail or introduce syntax errors. Neoed gives agents the
+            tools humans already have in Vim, Emacs, or VS Code. For more, see{" "}
+            <Link to="/why">Why ned?</Link>
+          </p>
+          <p>
+            Neoed&rsquo;s name comes from{" "}
+            <Link to="https://en.wikipedia.org/wiki/Ed_(text_editor)">
+              <code>ed</code>
+            </Link>
+            , part of the original Unix operating system, which was designed for
+            an{" "}
+            <Link to="https://en.wikipedia.org/wiki/Teleprinter">
+              interface
+            </Link>{" "}
+            with limitations similar to today&rsquo;s LLMs.
+          </p>
+        </aside>
         <HomeContent components={components} />
       </div>
     </>

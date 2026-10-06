@@ -6,6 +6,7 @@ const pages = [
   { to: "/why", label: "Why ned?" },
   { to: "/tutorial", label: "Tutorial" },
   { to: "/reference", label: "Reference" },
+  { to: "/agents", label: "Agents" },
 ];
 
 export default function Layout() {

@@ -31,6 +31,11 @@ const Reference = docPage(
   3,
 );
 
+const Agents = docPage(
+  () => import("./content/agents.mdx"),
+  "Using ned with AI agents",
+);
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <BrowserRouter basename={import.meta.env.BASE_URL}>
@@ -40,6 +45,7 @@ createRoot(document.getElementById("root")!).render(
           <Route path="why" element={<Why />} />
           <Route path="tutorial" element={<Tutorial />} />
           <Route path="reference" element={<Reference />} />
+          <Route path="agents" element={<Agents />} />
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>
