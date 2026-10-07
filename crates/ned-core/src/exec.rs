@@ -1948,7 +1948,26 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text, whole: bool) -> (Ran
         (full, new)
     } else {
         let indent = text::indent_at(t, range.start);
-        (range, verbatim(new, indent, unit))
+        let mut out = verbatim(new, indent, unit);
+        // A span that takes in part of its line's indentation, and text after it,
+        // keeps it, unless the text gives its own.
+        let lead = &t[text::line_start(t, range.start)..range.start];
+        let past_indent = t[range.clone()]
+            .lines()
+            .next()
+            .is_some_and(|l| !l.trim().is_empty());
+        if new.kind != TextKind::RawHeredoc
+            && past_indent
+            && !out.starts_with([' ', '\t'])
+            && let Some(missing) = indent.strip_prefix(lead).filter(|m| !m.is_empty())
+        {
+            out = format!("{missing}{out}");
+        }
+        // A heredoc's last line has no line ending to stand in for the span's.
+        if new.kind != TextKind::Str && t[..range.end].ends_with('\n') {
+            out.push('\n');
+        }
+        (range, out)
     }
 }
 
@@ -3353,6 +3372,56 @@ mod tests {
         assert_eq!(
             edited(TEXT, "replace \"2\" with \"vec![\\n1,\\n]\""),
             TEXT.replace("2;", "vec![\n    1,\n    ];")
+        );
+    }
+
+    #[test]
+    fn replace_partial_span_ending_in_a_newline_with_a_heredoc_keeps_the_line_break() {
+        let text = "// x reads.\nfn a() {}\n";
+        let want = "// y\nz.\nfn a() {}\n";
+        assert_eq!(
+            edited(text, "replace \"x reads.\\n\" with <<END\ny\nz.\nEND"),
+            want
+        );
+        assert_eq!(
+            edited(text, "replace \"x reads.\\n\" with <<'END'\ny\nz.\nEND"),
+            want
+        );
+        // A string's line endings are its own.
+        assert_eq!(
+            edited(text, "replace \"x reads.\\n\" with \"y\\n\""),
+            "// y\nfn a() {}\n"
+        );
+    }
+
+    #[test]
+    fn replace_partial_span_taking_in_indentation_keeps_it() {
+        assert_eq!(
+            edited(TEXT, r#"replace /^\s*let x = 1/ with "let y = 1""#),
+            TEXT.replace("let x = 1;", "let y = 1;")
+        );
+        assert_eq!(
+            edited(TEXT, r#"replace /^  \s*let x = 1/ with "let y = 1""#),
+            TEXT.replace("let x = 1;", "let y = 1;")
+        );
+        // Text with its own indentation, or a span of indentation alone,
+        // changes it.
+        assert_eq!(
+            edited(TEXT, r#"replace /^    let x = 1/ with "  let x = 1""#),
+            TEXT.replace("    let x = 1;", "  let x = 1;")
+        );
+        assert_eq!(
+            edited(TEXT, r#"replace all /^    / with "\t""#),
+            TEXT.replace("    ", "\t")
+        );
+        assert_eq!(
+            edited(TEXT, r#"replace all /^ +/ with """#),
+            TEXT.replace("    ", "")
+        );
+        // Text that begins on the span's own line is placed as written.
+        assert_eq!(
+            edited(TEXT, r#"replace /let x = 1/ with "let y = 1""#),
+            TEXT.replace("let x = 1;", "let y = 1;")
         );
     }
 

@@ -1438,6 +1438,10 @@ and regex matches are not.
 - **Partial-line target:** `TEXT` is inserted **verbatim** at the span.
   - If `TEXT` has several lines, the first is inserted as-is. The rest are
     re-based relative to the line the span starts on.
+  - `replace` of a span that takes in some of its line's indentation
+    (`/^\s*let/`) and text after it gives the first line that indentation back,
+    unless that line starts with its own; and when the span ends with a line
+    ending, a heredoc's last line ends with one too.
   - Exception: `insert before|after` with heredoc `TEXT` widens a partial-line
     target to its whole lines, so `insert after /re/ <<END` adds lines after the
     match's line. A target that ends in an item part (any part but `.lines`,
@@ -1827,13 +1831,14 @@ The fix each error suggests:
   Dropping `all`, since `sub` replaces every match
 - A literal in `sub` (`sub 3 "- [ ]" with "- [x]"`): The `replace` it means,
   every match kept: `replace all 3>"- [ ]" with "- [x]"`
-- Selector matches nothing: The same name under another kind; a close syntax
-  name, or the name without its generic arguments and paths (`impl:Log` for
-  `impl:"Log<'_>"`); for `P>"a"..P>"b"`, `P>"a".."b"`; a string literal that
-  matches as escaped source text (`"\\n"` for `"\n"`); a literal match that
-  differs only in case or spacing; a Markdown item's name without its `[ ]`
-  checkbox (`item:done` for `item:"[x] done"`); a regex that matches with `i`;
-  for a nested search that matches across spans of the step before it
+- Selector matches nothing: The same name under another kind; where the name is
+  written in code that doesn't parse, its line and the broken construct's; a
+  close syntax name, or the name without its generic arguments and paths
+  (`impl:Log` for `impl:"Log<'_>"`); for `P>"a"..P>"b"`, `P>"a".."b"`; a string
+  literal that matches as escaped source text (`"\\n"` for `"\n"`); a literal
+  match that differs only in case or spacing; a Markdown item's name without its
+  `[ ]` checkbox (`item:done` for `item:"[x] done"`); a regex that matches with
+  `i`; for a nested search that matches across spans of the step before it
   (`import>"use a;\nuse b;"`), the selector without that step, or with an `A..B`
   of their items or a line range in its place; the spans a nested step searched;
   a `|` before the command, when the stage's earlier edits make it match; or
