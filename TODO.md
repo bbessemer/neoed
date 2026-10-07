@@ -115,7 +115,11 @@ Version: minor when a first plugin can load; the spike releases nothing.
 Hints and relaxed errors: each is a patch, and they batch into the next release
 of either kind.
 
-None open.
+- [ ] A parse error after a heredoc whose delimiter also appears as a line of
+      its text (`<<'EOF'` around a block holding `EOF`) names the likely cause:
+      the heredoc at line N ended at that line, so pick another delimiter (today
+      it reports whatever the leftover text breaks, e.g. an unterminated
+      pattern)
 
 ## Bugs
 
