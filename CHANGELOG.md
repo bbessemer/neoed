@@ -4,6 +4,62 @@ Every tagged release of `ned`. Before 0.6.1, every PR to `main` bumped the
 version, so versions merged in quick succession (0.2.0, 0.3.0) were never tagged
 or released on their own; their changes are listed under the next tag.
 
+## 0.8.1 (2026-10-07)
+
+### Added
+
+- Re-basing converts indent width as well as style: 2-space text goes into a
+  4-space file at 4. Aligned lines keep their offset from the line they align
+  to: continuations after an unclosed bracket, a block comment's `*` lines, list
+  item continuations, fenced code, and lines inside a multi-line string.
+
+### Changed
+
+- `.refs` and `.def` show results in files outside the file set, such as a
+  library's source; editing one needs `-w`, or `file PATH` in the script.
+  `rename` reaching outside the set is still an error.
+- The MCP server's help texts and the `ned` tool's description name tool
+  arguments (`files`, `dry_run`, ...) instead of the CLI's flags, and leave out
+  its usage, `-e` and stdin; `repl` and `mcp` are CLI-only help topics. The
+  skill and agent guide tell agents to prefer the MCP server when it's
+  connected.
+
+### Fixed
+
+- A heredoc replacing a partial span that ends in a line ending ends its last
+  line with one, instead of joining the next line on.
+- `replace` of a span that takes in some of its line's indentation and the text
+  after it (`/^\s*let/`) gives the first line that indentation back, unless the
+  text gives its own.
+- A `case` or `default` clause inserted next to a line of another clause (Go and
+  JavaScript `switch`, Python `match`) goes beside it.
+- One paragraph of Markdown prose placed in a list item puts its later lines
+  under the item's text; prose inserted before an item's first line stays
+  outside it.
+- Text placed in a Markdown block quote takes its `>` markers, on blank lines
+  too, and quoted text loses one level of `>` first.
+
+### Hints
+
+- A parse error after a heredoc whose tag appears again later, alone on a line,
+  names the heredoc and where it ended.
+- A bare name with a part or a step after it suggests `*:NAME`, or the kind of
+  the item with that name.
+- A selector that matches nothing because its name sits in code that doesn't
+  parse says where, and which construct is broken.
+- A `!!:s` OLD the script holds only with escaped delimiters suggests another
+  delimiter; text after a modifier says NEW ended at the delimiter. A repeat
+  given no flags notes it runs `without flags` (MCP: `without arguments`).
+- A missing FILE argument that the script `create`s says to drop it; a script
+  run on no files says whether it reads or edits, and names the files its
+  `file:` steps select.
+- A comma between selectors says to separate commands, and spells them out for a
+  command that takes only selectors (`delete 3; delete 7`).
+- A range whose end matches only before its start ends says so.
+- A formatter that changed lines away from the edit gets a note naming them.
+- A single-quoted TEXT holding a `/` gets the usual error about double quotes,
+  not a garbled sed-form rewrite.
+
 ## 0.8.0 (2026-10-06)
 
 ### Added
