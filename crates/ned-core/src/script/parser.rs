@@ -10,6 +10,42 @@ use crate::syntax;
 
 pub fn parse(src: &str) -> Result<Script, ParseError> {
     let mut parser = Parser::new(src);
+    script(&mut parser).map_err(|err| ended_early(src, &parser.lexer.heredocs, err))
+}
+
+/// `err`, naming the heredoc that ended early when it follows one whose tag
+/// appears again later, alone on a line (§7).
+fn ended_early(src: &str, heredocs: &[(String, usize, usize)], err: ParseError) -> ParseError {
+    if matches!(err.kind, E::UnterminatedHeredoc(_)) {
+        return err;
+    }
+    // The tag alone on a later line, before any heredoc that it could end.
+    let again = |tag: &str, end: usize| {
+        let openers = [format!("<<{tag}"), format!("<<'{tag}'")];
+        src[end..]
+            .lines()
+            .skip(1)
+            .take_while(|l| !openers.iter().any(|o| l.contains(o.as_str())))
+            .any(|l| l.trim() == tag)
+    };
+    let Some((tag, opener, end)) = heredocs
+        .iter()
+        .rev()
+        .find(|(tag, _, end)| *end <= err.span.start && again(tag, *end))
+    else {
+        return err;
+    };
+    let line = |offset: usize| src[..offset].matches('\n').count() + 1;
+    let kind = E::EarlyHeredoc {
+        error: Box::new(err.kind),
+        tag: tag.clone(),
+        opener: line(*opener),
+        end: line(*end),
+    };
+    ParseError::new(kind, err.span)
+}
+
+fn script(parser: &mut Parser) -> Result<Script, ParseError> {
     let mut commands: Vec<Command> = Vec::new();
     let mut stages: Vec<usize> = Vec::new();
     let mut pipe = 0..0;
@@ -892,9 +928,9 @@ fn primary(src: &str, token: Token) -> Result<Primary, ParseError> {
             Ok(text) => Primary::Literal(text),
             Err(kind) => {
                 let token = Token { kind, ..token };
-                return Err(
-                    bare_path(src, &token).unwrap_or_else(|| expected("a selector", &token))
-                );
+                return Err(bare_path(src, &token)
+                    .or_else(|| bare_name(src, &token))
+                    .unwrap_or_else(|| expected("a selector", &token)));
             }
         },
     })
@@ -943,6 +979,38 @@ fn bare_path(src: &str, token: &Token) -> Option<ParseError> {
             token.span.start..token.span.end + tail.len(),
         )
     })
+}
+
+/// For a bare name where a selector is expected, such as `GitError.body>…`, an
+/// error suggesting the item it may name.
+fn bare_name(src: &str, token: &Token) -> Option<ParseError> {
+    let TokenKind::Word(word) = &token.kind else {
+        return None;
+    };
+    if !word.chars().all(is_ident_char)
+        || KEYWORDS.contains(&word.as_str())
+        || usage(word).is_some()
+    {
+        return None;
+    }
+    let rest = &src[token.span.end..];
+    let rest = &rest[..rest
+        .find(|c: char| c.is_whitespace() || matches!(c, ';' | '|'))
+        .unwrap_or(rest.len())];
+    if !(rest.is_empty() || rest.starts_with(['.', '>'])) {
+        return None;
+    }
+    // A quoted step or filter may hold the whitespace `rest` ended at.
+    let rest = match rest.find(['"', '`', '/', '[', '<']) {
+        Some(i) => format!("{}…", &rest[..i]),
+        None => rest.to_string(),
+    };
+    let kind = E::BareName {
+        word: word.clone(),
+        rest,
+        kind: None,
+    };
+    Some(ParseError::new(kind, token.span.clone()))
 }
 
 /// The text of a string or heredoc token, or the token kind back if it is
@@ -2363,8 +2431,45 @@ mod tests {
         );
         assert_eq!(
             message("show x.body"),
-            r#"expected a selector, found `x`; quote literal text: "x""#
+            r#"expected a selector, found `x`; quote literal text: "x", or select an item by name: *:x.body"#
         );
+    }
+
+    #[test]
+    fn bare_names_suggest_selecting_an_item() {
+        assert_eq!(
+            message("show GitError.body>fn:x"),
+            "expected a selector, found `GitError`; quote literal text: \"GitError\", or select an item by name: *:GitError.body>fn:x"
+        );
+        assert_eq!(
+            message("delete GitError; show 1"),
+            "expected a selector, found `GitError`; quote literal text: \"GitError\""
+        );
+        let kind = |src: &str| {
+            let mut err = parse(src).unwrap_err();
+            if let E::BareName { kind, .. } = &mut err.kind {
+                *kind = Some("enum");
+            }
+            err.kind.to_string()
+        };
+        assert_eq!(
+            kind("show GitError.body"),
+            "expected a selector, found `GitError`; select the enum by name: enum:GitError.body"
+        );
+    }
+
+    #[test]
+    fn an_error_after_a_heredoc_that_ended_early_names_it() {
+        let src = "insert end fn:x <<EOF\na\nEOF\nb `c\nEOF\n";
+        assert!(
+            message(src).ends_with("; the heredoc <<EOF at line 1 ended at line 3, which holds only EOF: pick a tag its text doesn't hold"),
+            "{}",
+            message(src)
+        );
+        // Without the tag again later, the heredoc ended where it was meant to.
+        assert!(!message("insert end fn:x <<EOF\na\nEOF\nb `c\n").contains("heredoc"));
+        // An error before the heredoc's end is not about it.
+        assert!(!message("insert end fn:x x <<EOF\na\nEOF\nb\nEOF\n").contains("ended at"));
     }
 
     #[test]

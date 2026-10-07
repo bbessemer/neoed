@@ -92,19 +92,7 @@ pub fn run<'s, 'l: 's>(
     options: &'s Options<'s>,
     lsp: Option<&'s mut (dyn Lsp + 'l)>,
 ) -> Run {
-    let mut executor = Executor {
-        src,
-        options,
-        lsp: lsp.map(|lsp| -> &'s mut dyn Lsp { lsp }),
-        allow: None,
-        named: Vec::new(),
-        workspace: None,
-        files: Vec::new(),
-        set: Vec::new(),
-        output: String::new(),
-        notes: Vec::new(),
-        unknown: BTreeSet::new(),
-    };
+    let mut executor = Executor::new(src, options, lsp.map(|lsp| -> &'s mut dyn Lsp { lsp }));
     let result = executor.run(script, initial).map_err(|mut e| {
         if let (Some(None), ExecErrorKind::NoLanguage { selector, .. })
         | (Some(None), ExecErrorKind::NoCodeLanguage { selector, .. }) = (options.lang, &e.kind)
@@ -128,6 +116,28 @@ pub fn run<'s, 'l: 's>(
         allow: executor.allow,
         notes: executor.notes,
     }
+}
+
+/// The kinds of the items named `name` in the files `paths` name, most likely
+/// first, for a hint (§7).
+pub fn kinds_named(paths: &[String], options: &Options, name: &str) -> Vec<&'static str> {
+    let mut executor = Executor::new("", options, None);
+    let Ok(set) = executor.open(paths, None) else {
+        return Vec::new();
+    };
+    executor.set = set;
+    let Ok(files) = executor.read(|_| true) else {
+        return Vec::new();
+    };
+    let mut kinds: Vec<&'static str> = files
+        .iter()
+        .flat_map(|&i| executor.files[i].file.items().unwrap_or_default())
+        .filter(|item| syntax::item_matches(name, item))
+        .map(|item| item.kind)
+        .collect();
+    kinds.sort_by_key(|kind| syntax::rank(kind));
+    kinds.dedup();
+    kinds
 }
 
 struct Loaded {
@@ -186,7 +196,23 @@ struct Executor<'s> {
     workspace: Option<Vec<String>>,
 }
 
-impl Executor<'_> {
+impl<'s> Executor<'s> {
+    fn new(src: &'s str, options: &'s Options<'s>, lsp: Option<&'s mut dyn Lsp>) -> Self {
+        Executor {
+            src,
+            options,
+            lsp,
+            allow: None,
+            named: Vec::new(),
+            workspace: None,
+            files: Vec::new(),
+            set: Vec::new(),
+            output: String::new(),
+            notes: Vec::new(),
+            unknown: BTreeSet::new(),
+        }
+    }
+
     fn run(&mut self, script: &Script, initial: Initial) -> Result<Vec<Change>, ExecError> {
         self.set = match initial {
             Initial::Files(paths) => self.open(paths, None)?,

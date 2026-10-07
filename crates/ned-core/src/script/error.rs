@@ -99,6 +99,25 @@ pub enum ParseErrorKind {
     MissingHeredocTag,
     #[error("unterminated heredoc <<{0} (started here); end it with a line holding only {0}")]
     UnterminatedHeredoc(String),
+    /// `error`, after a heredoc that ended at a line of its text holding only
+    /// its tag, so the script went on in what was meant as text.
+    #[error(
+        "{error}; the heredoc <<{tag} at line {opener} ended at line {end}, which holds only {tag}: pick a tag its text doesn't hold"
+    )]
+    EarlyHeredoc {
+        error: Box<ParseErrorKind>,
+        tag: String,
+        opener: usize,
+        end: usize,
+    },
+    /// A bare word where a selector is expected, followed by `rest` of the
+    /// selector; `kind` is that of an item with that name, if known.
+    #[error("expected a selector, found `{word}`; {}", bare_name_hint(word, rest, *kind))]
+    BareName {
+        word: String,
+        rest: String,
+        kind: Option<&'static str>,
+    },
     #[error("expected a name after `{0}:`, e.g. {0}:foo or {0}:*")]
     MissingName(String),
     #[error(
@@ -185,6 +204,17 @@ pub enum ParseErrorKind {
 /// Every command, as error messages list them.
 pub const COMMANDS: &str =
     "show outline check replace insert delete sub move rename resolve file create allow";
+
+fn bare_name_hint(word: &str, rest: &str, kind: Option<&str>) -> String {
+    match kind {
+        Some(kind) => format!("select the {kind} by name: {kind}:{word}{rest}"),
+        // A lone word is more likely unquoted text than an item.
+        None if rest.is_empty() => format!("quote literal text: \"{word}\""),
+        None => {
+            format!("quote literal text: \"{word}\", or select an item by name: *:{word}{rest}")
+        }
+    }
+}
 
 fn quote_hint(c: char) -> &'static str {
     match c {

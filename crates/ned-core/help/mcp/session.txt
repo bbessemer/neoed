@@ -23,6 +23,7 @@ uncommitted changes is refused.
 A `ned` script of `!!` repeats the last script that edited or failed, on
 its files or workspace unless others are given, but not its other arguments:
 after a dry run it needs `dry_run`. `:s/OLD/NEW/` corrects the first OLD in
-it and `:gs/OLD/NEW/` every one:
+it and `:gs/OLD/NEW/` every one; any punctuation can stand for `/`, and `\`
+before it makes it literal:
 
   !!:s/fn:prase/fn:parse/

@@ -331,6 +331,7 @@ fn main() -> ExitCode {
         lang: cli.lang,
         context: cli.context,
         commit: cli.commit,
+        frontend: help::Frontend::Cli,
         style: crate::styles().0,
         comment: None,
     };

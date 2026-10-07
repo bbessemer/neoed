@@ -73,6 +73,9 @@ pub struct Lexer<'a> {
     heredoc_cursor: Option<usize>,
     /// The last regex lexed, from its opening `/` to after its closing one.
     pub(super) last_regex: Option<Range<usize>>,
+    /// Each heredoc lexed: its tag, its opener's start, and the start of the
+    /// line that ended it.
+    pub(super) heredocs: Vec<(String, usize, usize)>,
 }
 
 impl<'a> Lexer<'a> {
@@ -82,6 +85,7 @@ impl<'a> Lexer<'a> {
             pos: 0,
             heredoc_cursor: None,
             last_regex: None,
+            heredocs: Vec::new(),
         }
     }
 
@@ -614,6 +618,7 @@ impl<'a> Lexer<'a> {
             let line = line.strip_suffix('\r').unwrap_or(line);
             if line.trim() == tag {
                 self.heredoc_cursor = Some(next);
+                self.heredocs.push((tag.into(), start, line_start));
                 return Ok(TokenKind::Heredoc {
                     tag: tag.into(),
                     body: body.join("\n"),

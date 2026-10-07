@@ -9,7 +9,7 @@ A session records each invocation in the workspace: its script, files and
 outcome, and each file it wrote, before and after. -s overrides NED_SESSION;
 a name is letters, digits, `.`, `_` and `-`, not starting with `.`. Sessions
 live in $XDG_STATE_HOME/ned/sessions (default ~/.local/state). A run with
--w DIR is recorded in DIR's sessions: give history, undo, `!!` or delete
+-w DIR records in DIR's sessions: give history, undo, `!!` or delete
 -w DIR too.
 
 `ned history` prints the last 10 entries (--all: every one), a line each:
@@ -19,8 +19,8 @@ many files it wrote, `undone` if it has been, and the script's first line:
   3 ok, 1 file: replace fn:parse>"end" with "end of input"
 
 `ned undo` reverts the last entry that wrote files and isn't undone, removing
-files it created, and prints the diff; repeat it to go further back. A file
-changed since is refused; --force merges the undo into it instead, unless
+files it created, and prints the diff; repeat to go further back. A file
+changed since is refused; --force merges the undo into it, unless
 a later change overlaps the entry's.
 
 --commit MSG commits just the edits written to git (in a session, all since
@@ -28,8 +28,8 @@ its last commit); nothing else goes in, hooks don't run, and an edit
 overlapping uncommitted changes is refused.
 
 `!!` repeats the last script that edited or failed, on its files or -w
-workspace unless others are given, but not its flags: after a dry run it
-needs -n.
-`:s/OLD/NEW/` corrects the first OLD in it and `:gs/OLD/NEW/` every one:
+workspace unless others are given, without its flags (after a dry run, add
+-n). `:s/OLD/NEW/` corrects the first OLD, `:gs/OLD/NEW/` every one;
+any punctuation can replace `/`:
 
   ned -e '!!:s/fn:prase/fn:parse/'

@@ -222,6 +222,7 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             lang: self.lang,
             context: self.context,
             commit: args.string("commit")?,
+            frontend: help::Frontend::Mcp,
             style: Style::Plain,
             comment: args
                 .string("comment")?

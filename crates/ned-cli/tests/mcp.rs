@@ -317,7 +317,7 @@ fn bang_bang_repeats_the_last_script_on_its_files() {
     );
     assert!(failed(&results[0]) && !failed(&results[1]));
     assert!(
-        text(&results[1]).contains("note: repeating 1: "),
+        text(&results[1]).contains("note: repeating 1 without arguments: "),
         "{}",
         text(&results[1])
     );

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::apply::{self, Committed, Finished, Render, Settings};
 use crate::exec::{self, Change, Initial, Options};
 use crate::git::Repo;
+use crate::help::Frontend;
 use crate::lang::Language;
 use crate::lsp::Lsp;
 use crate::session::{self, Entry, FileChange, Session, SessionError, UncommittedError, UndoError};
@@ -43,6 +44,8 @@ pub struct Invocation {
     /// `--lang`: a language for every file, `None` within for text.
     pub lang: Option<Option<Language>>,
     pub context: usize,
+    /// Who gave it, which names its flags in notes.
+    pub frontend: Frontend,
     /// `--commit`'s message.
     pub commit: Option<String>,
     /// The style of what goes to stdout.
@@ -97,9 +100,22 @@ pub fn invoke<L: Lsp>(
         workspace,
         root,
         dry_run,
+        quiet,
+        force,
+        no_fmt,
+        no_check,
+        lang,
+        commit,
+        frontend,
         ..
     } = &mut invocation;
-    let src = match repeat(session, src, cwd, files, workspace, root, *dry_run, out) {
+    // The MCP server's language is its own, not a call's.
+    let lang = lang.is_some() && *frontend == Frontend::Cli;
+    let flags = *dry_run || *quiet || *force || *no_fmt || *no_check || lang || commit.is_some();
+    let without = (!flags).then_some(*frontend);
+    let src = match repeat(
+        session, src, cwd, files, workspace, root, *dry_run, without, out,
+    ) {
         Ok(src) => src,
         Err(failure) => return fail(failure, out),
     };
@@ -152,7 +168,14 @@ pub fn execute(
 ) -> Result<Edited, Ran> {
     let parsed = match script::parse(src) {
         Ok(parsed) => parsed,
-        Err(err) => return Err(Ran::failed(2, err.render(src), out)),
+        Err(mut err) => {
+            if let (script::ParseErrorKind::BareName { word, kind, .. }, Initial::Files(paths)) =
+                (&mut err.kind, &initial)
+            {
+                *kind = exec::kinds_named(paths, options, word).first().copied();
+            }
+            return Err(Ran::failed(2, err.render(src), out));
+        }
     };
     let run = exec::run(&parsed, src, initial, options, Some(&mut *lsp));
     out.out(&run.output);
@@ -359,9 +382,10 @@ pub fn uncommitted(session: &Session) -> Result<Vec<(u64, FileChange)>, Failure>
 }
 
 /// Expands a `!!` script from `session`'s log, printing a note of what it
-/// repeats; another script is returned as it is. Without `files` or
-/// `workspace`, the repeat takes the last script's, and with its -w, its
-/// `root`.
+/// repeats, and, when `without` names the frontend of an invocation that gave
+/// no flags, that it's without them; another script is returned as it is.
+/// Without `files` or `workspace`, the repeat takes the last script's, and with
+/// its -w, its `root`.
 #[allow(clippy::too_many_arguments)]
 pub fn repeat(
     session: Option<&Session>,
@@ -371,6 +395,7 @@ pub fn repeat(
     workspace: &mut bool,
     root: &mut PathBuf,
     dry_run: bool,
+    without: Option<Frontend>,
     out: &mut dyn Output,
 ) -> Result<String, Failure> {
     if !session::is_repeat(&src) {
@@ -387,7 +412,12 @@ pub fn repeat(
         Some(result) => result.map_err(|err| (format!("error: {err}"), 2))?,
     };
     let summary = session::script_summary(&script);
-    out.message(&format!("note: repeating {}: {summary}", entry.id));
+    let without = match without {
+        None => "",
+        Some(Frontend::Cli) => " without flags",
+        Some(Frontend::Mcp) => " without arguments",
+    };
+    out.message(&format!("note: repeating {}{without}: {summary}", entry.id));
     if files.is_empty() && !*workspace {
         match &entry.workspace {
             Some(dir) => {

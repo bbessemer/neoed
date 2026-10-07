@@ -346,6 +346,7 @@ impl Repl {
             &mut workspace,
             &mut root,
             true,
+            None,
             &mut Terminal,
         );
         let src = match repeated {

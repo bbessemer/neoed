@@ -631,7 +631,28 @@ fn repeating_a_script_leaves_piped_stdin_alone() {
     parser.rs:2
     2:
     --- stderr
-    note: repeating 1: show 2
+    note: repeating 1 without flags: show 2
+    ");
+}
+
+#[test]
+fn a_bare_item_name_suggests_its_kind() {
+    let dir = dir_with(&[("a.rs", "enum GitError {\n    A,\n}\n")]);
+    assert_snapshot!(ned(dir.path(), &["a.rs", "-e", "show GitError.body"], ""), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:6: expected a selector, found `GitError`; select the enum by name: enum:GitError.body
+    1:show GitError.body
+           ^
+    ");
+    assert_snapshot!(ned(dir.path(), &["a.rs", "-e", "delete GitError"], ""), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:8: expected a selector, found `GitError`; select the enum by name: enum:GitError
+    1:delete GitError
+             ^
     ");
 }
 

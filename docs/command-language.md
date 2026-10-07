@@ -232,7 +232,7 @@ $ export NED_SESSION=agent
 $ ned src/parser.rs -e 'replace fn:prase>"end" with "end of input"'
 error: script:1:9: fn:prase matches nothing in src/parser.rs; did you mean fn:parse (14-17)?
 $ ned -e '!!:s/prase/parse/'
-note: repeating 1: replace fn:parse>"end" with "end of input"
+note: repeating 1 without flags: replace fn:parse>"end" with "end of input"
 src/parser.rs: 1 edit, +1 -1
 ...
 ```
@@ -240,11 +240,12 @@ src/parser.rs: 1 edit, +1 -1
 The repeat runs on the last script's file set — its `FILE` arguments, relative
 to the directory they were given in, or its `-w` workspace — unless the new
 invocation gives `FILE` arguments or `-w`. Flags (`-n`, `--force`, ...) are not
-repeated, so a repeat of a dry run without `-n` would apply what was only
-previewed: it is a usage error saying to send the script again to apply it, or
-to add `-n` to preview it again. `!!` without a session, with no earlier script
-in it, or with an `OLD` the script doesn't contain is a usage error; the last
-says what the script is.
+repeated (its note says `without flags`, or `without arguments` from the MCP
+server, when the invocation gives none), so a repeat of a dry run without `-n`
+would apply what was only previewed: it is a usage error saying to send the
+script again to apply it, or to add `-n` to preview it again. `!!` without a
+session, with no earlier script in it, or with an `OLD` the script doesn't
+contain is a usage error; the last says what the script is.
 
 `history` and `undo` take the session from `-s` or `NED_SESSION` like a script
 does; with neither, or a session the workspace has no log for, they're a usage
@@ -1838,15 +1839,19 @@ The fix each error suggests:
   dotted name (`KIND:App>fn:handle`, or a Go method's `fn:"App.handle"`); `\\`
   for a backslash in a string; a selector for `insert end`, or `insert after $`;
   `show SEL +M` for `+N..+M`, and `show SEL +N` for `-N` (or the line range
-  `show N-M`, after a line number); `all` before the selector, not after it,
-  e.g. `show all /re/`; `;` or a new line between commands for a second
-  selector, e.g. `show fn:a; show fn:b`; `>` before a regex, literal or pattern
-  glued to a selector in any command, e.g. `show fn:a>/re/` for `show fn:a/re/`
-  (but not before `insert`'s text or `sub`'s regex, which may follow the
-  selector directly); the rest of the command on a heredoc selector's line,
-  before its body, e.g. `replace <<END with TEXT`; `sub /re/ with TEXT` for
-  sed's `sub /re/text/`; the line range `N-M` for sed's `N,M`; otherwise the
-  command's usage, e.g. `usage: replace [all] SEL with TEXT`
+  `show N-M`, after a line number); for a bare name with a part or step after
+  it, `*:NAME`, or the kind of the item with that name in the `FILE` set
+  (`enum:GitError.body` for `GitError.body`); after a heredoc that ended at a
+  line of its text holding only its tag, where it ended, and another tag; `all`
+  before the selector, not after it, e.g. `show all /re/`; `;` or a new line
+  between commands for a second selector, e.g. `show fn:a; show fn:b`; `>`
+  before a regex, literal or pattern glued to a selector in any command, e.g.
+  `show fn:a>/re/` for `show fn:a/re/` (but not before `insert`'s text or
+  `sub`'s regex, which may follow the selector directly); the rest of the
+  command on a heredoc selector's line, before its body, e.g.
+  `replace <<END with TEXT`; `sub /re/ with TEXT` for sed's `sub /re/text/`; the
+  line range `N-M` for sed's `N,M`; otherwise the command's usage, e.g.
+  `usage: replace [all] SEL with TEXT`
 - `check`, `rename`, `.refs` or `.def` after a `|`: Running it before the first
   `|`, or in a separate `ned` call
 - `all` in `sub` (`sub all /re/ with TEXT`, or after its regex or TEXT):
@@ -1922,7 +1927,11 @@ The fix each error suggests:
 - `!!` with no earlier script: Writing the script out
 - `!!` without `-n` after a dry run: Sending the script again to apply it, or
   `-n` to preview it again
-- `!!:s/OLD/NEW/` whose `OLD` the script doesn't contain: The script
+- `!!:s/OLD/NEW/` whose `OLD` the script doesn't contain: The script, and
+  another delimiter when the script holds `OLD` with `\` before each delimiter
+  in it (`!!:s|a\/b|NEW|`)
+- Text after a `!!` modifier: `\` before a delimiter in `NEW`, or another
+  delimiter
 - Malformed `!!` modifier: `usage: !![:s/OLD/NEW/][:gs/OLD/NEW/]...`
 - Nothing to undo: `ned history`
 - Undo of a file changed since: `--force`, to merge the undo into it

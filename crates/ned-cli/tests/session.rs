@@ -516,7 +516,7 @@ fn a_repeat_corrects_a_failed_script_on_its_files() {
     assert!(output.status.success(), "{stderr}");
     assert_eq!(
         stderr,
-        "note: repeating 1: replace fn:parse with \"fn parse2() {}\"\n"
+        "note: repeating 1 without flags: replace fn:parse with \"fn parse2() {}\"\n"
     );
     assert!(stdout.starts_with("a.rs: 1 edit, +1 -1\n"), "{stdout}");
     assert_eq!(ws.read("a.rs"), "fn parse2() {}\n");
@@ -524,6 +524,23 @@ fn a_repeat_corrects_a_failed_script_on_its_files() {
     let entry = &ws.entries("agent")[1];
     assert_eq!(entry["script"], r#"replace fn:parse with "fn parse2() {}""#);
     assert_eq!(entry["files"], serde_json::json!(["a.rs"]));
+}
+
+#[test]
+fn a_repeat_given_flags_notes_none_dropped() {
+    for flags in [&["--no-fmt"][..], &["--lang", "rust"]] {
+        let ws = Workspace::new(&[("a.rs", "fn parse() {}\n")]);
+        let script = r#"replace fn:prase with "fn parse2() {}""#;
+        ws.ned_with(Some("agent"), &["a.rs", "-e", script]);
+        let args = [flags, &["-e", "!!:s/prase/parse/"]].concat();
+        let output = ws.ned_with(Some("agent"), &args);
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(output.status.success(), "{stderr}");
+        assert_eq!(
+            stderr,
+            "note: repeating 1: replace fn:parse with \"fn parse2() {}\"\n"
+        );
+    }
 }
 
 #[test]
@@ -538,7 +555,7 @@ fn a_repeat_passes_over_reads_since_the_failed_script() {
     assert!(output.status.success(), "{stderr}");
     assert_eq!(
         stderr,
-        "note: repeating 1: replace fn:parse with \"fn parse2() {}\"\n"
+        "note: repeating 1 without flags: replace fn:parse with \"fn parse2() {}\"\n"
     );
     assert_eq!(ws.read("a.rs"), "fn parse2() {}\n");
 }
@@ -608,7 +625,7 @@ fn repeat_errors_are_usage_errors_and_not_recorded() {
     exit: 2
     --- stdout
     --- stderr
-    error: `fn:b` isn't in the last script, which is:
+    error: `fn:b` isn't in the last script; OLD must match its text exactly, spacing and escapes included; the script is:
     show fn:a
     ");
     assert_eq!(ws.entries("agent").len(), 1);
