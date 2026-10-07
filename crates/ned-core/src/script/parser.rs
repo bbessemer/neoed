@@ -107,20 +107,12 @@ fn script(parser: &mut Parser) -> Result<Script, ParseError> {
 /// What in a command reads the files on disk, which a stage after a `|` can't
 /// use (§2.3): `check`, `rename`, or a `.refs` or `.def` part.
 fn reads_disk(kind: &CommandKind) -> Option<&'static str> {
-    let selectors: Vec<&Selector> = match kind {
+    match kind {
         CommandKind::Check { .. } => return Some("check"),
         CommandKind::Rename { .. } => return Some("rename"),
-        CommandKind::Show { target, .. } | CommandKind::Outline(target) => {
-            target.iter().map(|t| &t.selector).collect()
-        }
-        CommandKind::Sub { scope, .. } => scope.iter().map(|t| &t.selector).collect(),
-        CommandKind::Replace { target, .. }
-        | CommandKind::Insert { target, .. }
-        | CommandKind::Delete(target)
-        | CommandKind::Resolve { target, .. } => vec![&target.selector],
-        CommandKind::Move { target, dest, .. } => vec![&target.selector, dest],
-        CommandKind::File(_) | CommandKind::Create { .. } | CommandKind::Allow(_) => vec![],
-    };
+        _ => {}
+    }
+    let selectors = kind.selectors();
     selectors
         .iter()
         .flat_map(|s| &s.steps)

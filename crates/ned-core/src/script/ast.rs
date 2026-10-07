@@ -78,6 +78,25 @@ pub enum CommandKind {
     },
 }
 
+impl CommandKind {
+    /// The selectors the command resolves.
+    pub fn selectors(&self) -> Vec<&Selector> {
+        match self {
+            CommandKind::Show { target, .. }
+            | CommandKind::Outline(target)
+            | CommandKind::Check { target, .. } => target.iter().map(|t| &t.selector).collect(),
+            CommandKind::Sub { scope, .. } => scope.iter().map(|t| &t.selector).collect(),
+            CommandKind::Replace { target, .. }
+            | CommandKind::Insert { target, .. }
+            | CommandKind::Delete(target)
+            | CommandKind::Resolve { target, .. } => vec![&target.selector],
+            CommandKind::Move { target, dest, .. } => vec![&target.selector, dest],
+            CommandKind::Rename { selector, .. } => vec![selector],
+            CommandKind::File(_) | CommandKind::Create { .. } | CommandKind::Allow(_) => vec![],
+        }
+    }
+}
+
 /// What `resolve` keeps of a conflict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keep {

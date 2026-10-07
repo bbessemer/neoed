@@ -1645,6 +1645,10 @@ formatted.
 - A file that still has merge conflicts (§3.3) isn't formatted, by its formatter
   or a language server, since formatting may rewrite its marker lines:
   `note: skipped formatting src/a.rs: it has merge conflicts`.
+- A formatter that changes lines away from the edit's own (not next to them), as
+  one that formats the whole file may, adds a note naming them, so the changes
+  the script didn't ask for are not missed:
+  `note: prettier also changed README.md outside the edit, at lines 40-44`.
 - `--dry-run` still runs formatters, on in-memory copies.
 
 When no formatter for the language is installed and a daemon is running (§6.5),
@@ -1844,14 +1848,15 @@ The fix each error suggests:
   (`enum:GitError.body` for `GitError.body`); after a heredoc that ended at a
   line of its text holding only its tag, where it ended, and another tag; `all`
   before the selector, not after it, e.g. `show all /re/`; `;` or a new line
-  between commands for a second selector, e.g. `show fn:a; show fn:b`; `>`
-  before a regex, literal or pattern glued to a selector in any command, e.g.
-  `show fn:a>/re/` for `show fn:a/re/` (but not before `insert`'s text or
-  `sub`'s regex, which may follow the selector directly); the rest of the
-  command on a heredoc selector's line, before its body, e.g.
-  `replace <<END with TEXT`; `sub /re/ with TEXT` for sed's `sub /re/text/`; the
-  line range `N-M` for sed's `N,M`; otherwise the command's usage, e.g.
-  `usage: replace [all] SEL with TEXT`
+  between commands for a second selector, e.g. `show fn:a; show fn:b`, and for a
+  `,` the commands it separates when they take only selectors or levels
+  (`delete 3; delete 7`); `>` before a regex, literal or pattern glued to a
+  selector in any command, e.g. `show fn:a>/re/` for `show fn:a/re/` (but not
+  before `insert`'s text or `sub`'s regex, which may follow the selector
+  directly); the rest of the command on a heredoc selector's line, before its
+  body, e.g. `replace <<END with TEXT`; `sub /re/ with TEXT` for sed's
+  `sub /re/text/`; the line range `N-M` for sed's `N,M`; otherwise the command's
+  usage, e.g. `usage: replace [all] SEL with TEXT`
 - `check`, `rename`, `.refs` or `.def` after a `|`: Running it before the first
   `|`, or in a separate `ned` call
 - `all` in `sub` (`sub all /re/ with TEXT`, or after its regex or TEXT):
@@ -1865,7 +1870,10 @@ The fix each error suggests:
   literal that matches as escaped source text (`"\\n"` for `"\n"`); a literal
   match that differs only in case or spacing; a Markdown item's name without its
   `[ ]` checkbox (`item:done` for `item:"[x] done"`); a regex that matches with
-  `i`; for a nested search that matches across spans of the step before it
+  `i`; for a range whose end matches only where it starts before its start's
+  match ends (an item whose span takes in the doc comment the start matched),
+  where each is, and to start the range earlier or select the item alone; for a
+  nested search that matches across spans of the step before it
   (`import>"use a;\nuse b;"`), the selector without that step, or with an `A..B`
   of their items or a line range in its place; the spans a nested step searched;
   a `|` before the command, when the stage's earlier edits make it match; or
@@ -1918,8 +1926,10 @@ The fix each error suggests:
 - File not in the set, or a `file:GLOB` that matches none of it: The `file`
   command that adds it; correcting a glob no file on disk matches
 - Overlapping edits: Merging them, or a `|` between them
-- Missing file or empty glob: The working directory paths are relative to
-- No files to edit: `FILE` arguments or `file PATH`
+- Missing file or empty glob: The working directory paths are relative to; for a
+  `FILE` the script `create`s, dropping it
+- No files to read or edit: `FILE` arguments or `file PATH`; the `file` command
+  adding the files the script's `file:` steps name
 - `create` of a file that exists: `file PATH` to edit it
 - Session name with other characters: Letters, digits, `.`, `_` and `-`
 - `!!`, `history` or `undo` without a session: `-s NAME` or `NED_SESSION`, with
@@ -1970,9 +1980,9 @@ Exit codes:
   undo, undo of a file changed or removed since, undo merge overlap, a refused
   `--commit` (§1.3)
 - `2`: Usage error (bad flags or arguments, a command's name given as a `FILE`,
-  a subcommand after a flag, no script on a terminal, no files to edit, a bad
-  session name, no session, a bad `!!`, `--commit` with `-n` or outside a git
-  repository), script syntax error, invalid query, pattern or config, or no
+  a subcommand after a flag, no script on a terminal, no files to read or edit,
+  a bad session name, no session, a bad `!!`, `--commit` with `-n` or outside a
+  git repository), script syntax error, invalid query, pattern or config, or no
   language server
 - `3`: I/O error: unreadable or non-UTF-8 file, glob matched nothing, write
   failure, language server failure, an unsafe or unknown-version session store,

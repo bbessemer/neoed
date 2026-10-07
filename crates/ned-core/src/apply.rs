@@ -2,6 +2,7 @@
 //! the edits with language servers, committing them, and rendering the result
 //! (command-language spec §6.3-§6.5, §1.3).
 
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::buffer::Buffer;
@@ -92,6 +93,16 @@ pub fn finish(
                 ));
             }
             Outcome::Failed(failure) => messages.push(format!("note: {}", failure.note())),
+            Outcome::Formatted { name, text } if !change.created => {
+                let outside = diff::outside(&change.old, &change.new, text);
+                if !outside.is_empty() {
+                    messages.push(format!(
+                        "note: {name} also changed {} outside the edit, at {}",
+                        change.path,
+                        line_list(&outside)
+                    ));
+                }
+            }
             Outcome::Unchanged | Outcome::Formatted { .. } => {}
         }
     }
@@ -130,6 +141,25 @@ pub fn finish(
     }
     finished.checked = Some(checked);
     Ok(finished)
+}
+
+/// `line 3`, or `lines 3, 7-9`, for ranges of line numbers; at most five.
+fn line_list(ranges: &[Range<usize>]) -> String {
+    let mut list: Vec<String> = ranges
+        .iter()
+        .take(5)
+        .map(|r| match r.len() {
+            0 | 1 => r.start.to_string(),
+            _ => format!("{}-{}", r.start, r.end - 1),
+        })
+        .collect();
+    if ranges.len() > 5 {
+        list.push("...".into());
+    }
+    match ranges {
+        [r] if r.len() <= 1 => format!("line {}", list[0]),
+        _ => format!("lines {}", list.join(", ")),
+    }
 }
 
 /// Whether `change` introduced `failure`: its formatter passes the text the

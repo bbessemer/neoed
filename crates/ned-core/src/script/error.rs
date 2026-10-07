@@ -14,6 +14,10 @@ pub struct ParseError {
 pub enum ParseErrorKind {
     #[error("unexpected character `{0}`; {hint}", hint = quote_hint(*.0))]
     UnexpectedChar(char),
+    /// A comma, with the commands it separates when the line is a list of
+    /// one command's selectors.
+    #[error("unexpected character `,`; {}", comma_hint(.0.as_deref()))]
+    Comma(Option<String>),
     #[error(
         "unterminated string; close it with `\"` on the same line (use \\n or a heredoc for multi-line text)"
     )]
@@ -222,6 +226,35 @@ fn quote_hint(c: char) -> &'static str {
         '-' => "ranges between selectors are written SEL..SEL, e.g. /a/../b/",
         _ => "quote literal text: \"...\"",
     }
+}
+
+fn comma_hint(split: Option<&str>) -> String {
+    let hint = "a command takes no comma lists; separate commands with `;` or a new line";
+    match split {
+        Some(split) => format!("{hint}: {split}"),
+        None => hint.to_string(),
+    }
+}
+
+/// For a comma at byte `at` of `src`, the commands its line means, as
+/// `delete 3; delete 7`, when the command takes only selectors or levels.
+pub fn comma_split(src: &str, at: usize) -> Option<String> {
+    let start = src[..at].rfind(['\n', ';']).map_or(0, |i| i + 1);
+    let before = src[start..at].trim();
+    let verb = before.split_whitespace().next()?;
+    let lists = ["show", "outline", "check", "delete", "allow"];
+    if !lists.contains(&verb) || before == verb {
+        return None;
+    }
+    let mut commands = vec![before.to_string()];
+    for arg in src[at + 1..].split(['\n', ';']).next()?.split(',') {
+        let arg = arg.trim();
+        if arg.is_empty() {
+            return None;
+        }
+        commands.push(format!("{verb} {arg}"));
+    }
+    Some(commands.join("; "))
 }
 
 fn whole_file_insert(position: &str) -> &'static str {

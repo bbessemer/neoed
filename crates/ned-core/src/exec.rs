@@ -140,6 +140,49 @@ pub fn kinds_named(paths: &[String], options: &Options, name: &str) -> Vec<&'sta
     kinds
 }
 
+/// `err`, from opening the starting file set, with a fix when it names a
+/// missing file that `script` creates (§7).
+fn created(script: &Script, mut err: ExecError) -> ExecError {
+    if let ExecErrorKind::Io { path, message } = &mut err.kind
+        && message.starts_with("no such file")
+        && script
+            .commands
+            .iter()
+            .any(|c| matches!(&c.kind, CommandKind::Create { path: p, .. } if same_path(p, path)))
+    {
+        message.push_str(&format!(
+            "; drop it from the files given: `create {path}` adds it to the file set"
+        ));
+    }
+    err
+}
+
+/// The fix for a `script` run on no files whose selectors start with `file:`
+/// steps naming files, not globs: the `file` command adding them (§7).
+fn file_steps(script: &Script) -> String {
+    let mut paths: Vec<&str> = Vec::new();
+    let steps = script
+        .commands
+        .iter()
+        .flat_map(|c| c.kind.selectors())
+        .filter_map(|s| s.steps.first());
+    for step in steps {
+        if let Primary::File(path) = &step.primary
+            && !path.contains(['*', '?', '[', '{'])
+            && !paths.contains(&path.as_str())
+        {
+            paths.push(path);
+        }
+    }
+    match paths.is_empty() {
+        true => String::new(),
+        false => format!(
+            "; add the files its `file:` steps name: file {}",
+            paths.join(" ")
+        ),
+    }
+}
+
 struct Loaded {
     file: SourceFile,
     edits: EditSet,
@@ -215,7 +258,7 @@ impl<'s> Executor<'s> {
 
     fn run(&mut self, script: &Script, initial: Initial) -> Result<Vec<Change>, ExecError> {
         self.set = match initial {
-            Initial::Files(paths) => self.open(paths, None)?,
+            Initial::Files(paths) => self.open(paths, None).map_err(|e| created(script, e))?,
             Initial::Workspace(root) => {
                 let cwd = std::env::current_dir().unwrap_or_default();
                 let paths = with_unwritten(
@@ -240,7 +283,10 @@ impl<'s> Executor<'s> {
             if script.stages.contains(&index) {
                 self.commit()?;
             }
-            if let Err(e) = self.command(index, command) {
+            if let Err(mut e) = self.command(index, command) {
+                if let ExecErrorKind::NoFiles { hint, .. } = &mut e.kind {
+                    *hint = file_steps(script);
+                }
                 return Err(self.pipe_hint(index, command, e));
             }
         }
@@ -528,7 +574,18 @@ impl<'s> Executor<'s> {
                 }
                 return Ok(());
             }
-            _ if self.set.is_empty() => return Err(error(ExecErrorKind::NoFiles)),
+            _ if self.set.is_empty() => {
+                let verb = match command.kind {
+                    CommandKind::Show { .. }
+                    | CommandKind::Outline(_)
+                    | CommandKind::Check { .. } => "read",
+                    _ => "edit",
+                };
+                return Err(error(ExecErrorKind::NoFiles {
+                    verb,
+                    hint: String::new(),
+                }));
+            }
             _ => {}
         }
         match &command.kind {
@@ -2843,8 +2900,9 @@ pub enum ExecErrorKind {
         "edit overlaps command {command} at {location}; merge the two edits, or put a `|` between them"
     )]
     Overlap { command: usize, location: String },
-    #[error("no files to edit; pass FILE arguments or use `file PATH`")]
-    NoFiles,
+    /// `verb` is `read` or `edit`; `hint` is empty, or `; ` and a fix.
+    #[error("no files to {verb}; pass FILE arguments or use `file PATH`{hint}")]
+    NoFiles { verb: &'static str, hint: String },
     #[error("cannot read {path}: {message}")]
     Io { path: String, message: String },
     #[error(
@@ -2959,7 +3017,7 @@ impl ExecErrorKind {
             | ExecErrorKind::Outside { .. }
             | ExecErrorKind::ReadOnly { .. }
             | ExecErrorKind::AmbiguousLocated { .. } => 1,
-            ExecErrorKind::NoFiles
+            ExecErrorKind::NoFiles { .. }
             | ExecErrorKind::InvalidQuery { .. }
             | ExecErrorKind::InvalidPattern { .. }
             | ExecErrorKind::DuplicateCapture { .. }
@@ -4633,7 +4691,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             err.render("show 1"),
-            "error: script:1:1: no files to edit; pass FILE arguments or use `file PATH`"
+            "error: script:1:1: no files to read; pass FILE arguments or use `file PATH`"
         );
     }
 
@@ -6588,7 +6646,7 @@ fn main() {}
     fn an_empty_workspace_has_no_files() {
         let dir = tempfile::tempdir().unwrap();
         let out = in_workspace(&dir.path().canonicalize().unwrap(), "show 1");
-        assert!(out.error().contains("no files to edit"), "{}", out.error());
+        assert!(out.error().contains("no files to read"), "{}", out.error());
     }
 
     #[test]

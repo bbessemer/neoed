@@ -138,6 +138,10 @@ impl<'a> Lexer<'a> {
                 self.syntax(start, "*")?
             }
             '*' => return Err(ParseError::new(E::BareStar, start..start + 1)),
+            ',' => {
+                let split = super::error::comma_split(self.src, start);
+                return Err(ParseError::new(E::Comma(split), start..start + 1));
+            }
             c if c.is_ascii_alphabetic() || c == '_' => self.word()?,
             c => {
                 return Err(ParseError::new(
@@ -862,9 +866,27 @@ mod tests {
         }
         assert_eq!(error("show 10,20").span, 7..10);
         // Not a range: a `,` before anything but a line number keeps its error.
-        assert_eq!(error("3, 4").kind, E::UnexpectedChar(','));
-        assert_eq!(error("3,a").kind, E::UnexpectedChar(','));
-        assert_eq!(error("3,").kind, E::UnexpectedChar(','));
+        assert_eq!(error("3, 4").kind, E::Comma(None));
+        assert_eq!(error("3,a").kind, E::Comma(None));
+        assert_eq!(error("3,").kind, E::Comma(None));
+        let hint = "a command takes no comma lists; separate commands with `;` or a new line";
+        for (src, split) in [
+            ("show 31-35, 118-124", ": show 31-35; show 118-124"),
+            (
+                "x; delete 3, fn:a , 9\nshow 1",
+                ": delete 3; delete fn:a; delete 9",
+            ),
+            ("allow errors, warnings", ": allow errors; allow warnings"),
+            // Text isn't a list of selectors.
+            ("insert after 1 \"x\", \"y\"", ""),
+            ("show 1,", ""),
+        ] {
+            assert!(
+                error(src).to_string().ends_with(&format!("{hint}{split}")),
+                "{src}: {}",
+                error(src)
+            );
+        }
     }
 
     #[test]
