@@ -778,7 +778,17 @@ impl Parser<'_> {
         else {
             return error;
         };
-        let Some((text, flags, len)) = sed_tail(&self.src[regex.end..]) else {
+        let rest = &self.src[regex.end..];
+        // sed's text follows the regex's `/` directly; `with` after a space
+        // is `sub`'s own form.
+        let with = rest.starts_with(char::is_whitespace)
+            && rest.trim_start().strip_prefix("with").is_some_and(|r| {
+                r.is_empty() || r.starts_with(|c: char| c.is_whitespace() || matches!(c, '"' | '<'))
+            });
+        if with {
+            return error;
+        }
+        let Some((text, flags, len)) = sed_tail(rest) else {
             return error;
         };
         let end = regex.end + len;
@@ -2293,6 +2303,11 @@ mod tests {
         assert_eq!(error("show /a/b/").kind, E::UnknownRegexFlag('b'));
         assert_eq!(error("sub 1 /a/b c").kind, E::UnknownRegexFlag('b'));
         assert_eq!(error("sub 1 /a/b/c/").kind, E::UnknownRegexFlag('b'));
+        // `with` after the regex is `sub`'s own form, whatever TEXT holds.
+        assert_eq!(
+            error(r#"sub 1 /a/ with 'x = 1/ with "y"'"#).kind,
+            E::UnexpectedChar('\'')
+        );
     }
 
     #[test]
