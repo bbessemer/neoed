@@ -36,6 +36,8 @@ impl<'a> Context<'a> {
         let root = tree.root_node();
         let node = match container {
             Some(c) => {
+                // A Python body's lines take in indentation its block doesn't.
+                let c = trim(text, &c);
                 // The outermost node spanning it: a Python block of one
                 // statement spans what the statement does.
                 let mut node = root

@@ -2885,6 +2885,16 @@ mod tests {
             select_in("delete class:A>`def g(self):\n    pass`", "a.py", text),
             ["def g(self):\n        pass"]
         );
+        // Statements that are only part of the body match as a run of them.
+        let text = "def f():\n    z = 0\n    a = 1\n    b = 2\n    return a + b\n";
+        assert_eq!(
+            select_in("delete fn:f>`a = 1\nb = 2`", "a.py", text),
+            ["a = 1\n    b = 2"]
+        );
+        assert_eq!(
+            select_in("delete fn:f.body>`z = 0\na = 1`", "a.py", text),
+            ["z = 0\n    a = 1"]
+        );
     }
 
     #[test]
