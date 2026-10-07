@@ -387,7 +387,7 @@ fn help_prints_the_summary_or_a_topic() {
         ],
     );
     let summary = text(&results[0]);
-    assert_eq!(summary, ned_core::help::Frontend::Mcp.summary());
+    assert_eq!(summary, ned_core::hint::Frontend::Mcp.summary());
     assert_ne!(summary, ws.printed(&["help"]));
     assert_eq!(text(&results[1]), ws.printed(&["help", "show"]));
     assert!(failed(&results[2]));

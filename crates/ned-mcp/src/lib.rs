@@ -4,7 +4,7 @@
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use ned_core::help;
+use ned_core::hint;
 use ned_core::invoke::{self, Failure, Invocation, Output};
 use ned_core::lang::Language;
 use ned_core::lsp::Lsp;
@@ -176,7 +176,7 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
                 let dir = args.required("dir")?;
                 self.cd(&dir, &mut transcript)
             }
-            "help" => match help::Frontend::Mcp.text(args.string("topic")?.as_deref()) {
+            "help" => match hint::Frontend::Mcp.text(args.string("topic")?.as_deref()) {
                 Ok(text) => {
                     transcript.out(&text);
                     0
@@ -222,7 +222,7 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             lang: self.lang,
             context: self.context,
             commit: args.string("commit")?,
-            frontend: help::Frontend::Mcp,
+            frontend: hint::Frontend::Mcp,
             style: Style::Plain,
             comment: args
                 .string("comment")?
@@ -476,11 +476,11 @@ fn tools() -> Value {
                 "annotations": { "readOnlyHint": read_only },
             })
         };
-    let topics: Vec<&str> = help::Frontend::Mcp.topics().collect();
+    let topics: Vec<&str> = hint::Frontend::Mcp.topics().collect();
     json!([
         tool(
             "ned",
-            &help::Frontend::Mcp.summary(),
+            &hint::Frontend::Mcp.summary(),
             false,
             json!({
                 "script": {
@@ -854,7 +854,7 @@ mod tests {
     fn the_ned_tool_is_described_by_the_help_summary() {
         assert_eq!(
             tool("ned")["description"],
-            ned_core::help::Frontend::Mcp.summary()
+            ned_core::hint::Frontend::Mcp.summary()
         );
     }
 
@@ -867,7 +867,7 @@ mod tests {
         let check = call("check");
         assert_eq!(
             check["content"][0]["text"],
-            ned_core::help::Frontend::Mcp.text(Some("check")).unwrap()
+            ned_core::hint::Frontend::Mcp.text(Some("check")).unwrap()
         );
         assert_eq!(call("repl")["isError"], true);
         let topic = &tool("help")["inputSchema"]["properties"]["topic"]["description"];
@@ -879,7 +879,7 @@ mod tests {
 
     #[test]
     fn the_help_texts_fit_their_budgets() {
-        let frontend = ned_core::help::Frontend::Mcp;
+        let frontend = ned_core::hint::Frontend::Mcp;
         assert!(
             frontend.summary().len() <= 3200,
             "{} bytes",

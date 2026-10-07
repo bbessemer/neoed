@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::apply::{self, Committed, Finished, Render, Settings};
 use crate::exec::{self, Change, Initial, Options};
 use crate::git::Repo;
-use crate::help::Frontend;
+use crate::hint::Frontend;
 use crate::lang::Language;
 use crate::lsp::Lsp;
 use crate::session::{self, Entry, FileChange, Session, SessionError, UncommittedError, UndoError};
@@ -413,7 +413,7 @@ pub fn repeat(
     };
     let summary = session::script_summary(&script);
     let without = match without {
-        None => "",
+        None | Some(Frontend::Repl) => "",
         Some(Frontend::Cli) => " without flags",
         Some(Frontend::Mcp) => " without arguments",
     };

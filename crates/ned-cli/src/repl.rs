@@ -21,7 +21,7 @@ use ned_core::lang::{self, Language};
 use ned_core::lsp::{Document, Lsp};
 use ned_core::session::{self, Entry, FileChange, Follower, Session};
 use ned_core::style::Role;
-use ned_core::{fs, help, script, workspace};
+use ned_core::{fs, hint, script, workspace};
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, ExternalPrinter};
 
@@ -832,7 +832,7 @@ impl Repl {
 
 /// `:help [TOPIC]`.
 fn help(args: &[&str]) -> Result<(), String> {
-    out!("{}", help::Frontend::Cli.text(args.first().copied())?);
+    out!("{}", hint::Frontend::Cli.text(args.first().copied())?);
     Ok(())
 }
 

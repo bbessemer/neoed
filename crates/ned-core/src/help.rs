@@ -1,16 +1,7 @@
 //! `ned help [TOPIC]` (command-language spec, §1) and the MCP server's `help`
-//! tool (§1.5).
-//!
-//! Each frontend renders the same texts in its own terms: `{KEY}` is an option
-//! named in `OPTIONS`, and `{cli:TEXT}` and `{mcp:TEXT}` are TEXT for that
-//! frontend alone.
+//! tool (§1.5), rendered in each frontend's terms (`hint::Frontend::render`).
 
-/// Who reads the help.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Frontend {
-    Cli,
-    Mcp,
-}
+use crate::hint::Frontend;
 
 /// Every frontend's topics, by name, in the order they're listed.
 const SHARED: &[(&str, &str)] = &[
@@ -47,16 +38,6 @@ const MCP: &[(&str, &str)] = &[("session", include_str!("../help/mcp/session.txt
 
 const SUMMARY: &str = include_str!("../help/summary.txt");
 
-/// Each option's placeholder key, then what the CLI and the MCP server call it.
-const OPTIONS: &[(&str, &str, &str)] = &[
-    ("-w", "-w", "`workspace`"),
-    ("--force", "--force", "`force`"),
-    ("--no-check", "--no-check", "`no_check`"),
-    ("--no-fmt", "--no-fmt", "`no_fmt`"),
-    ("the FILE arguments", "the FILE arguments", "`files`"),
-    ("ned help", "ned help", "`help`"),
-];
-
 impl Frontend {
     /// The topics' names, in the order they're listed.
     pub fn topics(self) -> impl Iterator<Item = &'static str> {
@@ -88,44 +69,17 @@ impl Frontend {
 
     fn texts(self) -> impl Iterator<Item = (&'static str, &'static str)> {
         let own = match self {
-            Frontend::Cli => CLI,
+            Frontend::Cli | Frontend::Repl => CLI,
             Frontend::Mcp => MCP,
         };
         SHARED.iter().chain(own).copied()
-    }
-
-    /// `text` with its placeholders replaced.
-    fn render(self, mut text: &str) -> String {
-        let (mine, other) = match self {
-            Frontend::Cli => ("{cli:", "{mcp:"),
-            Frontend::Mcp => ("{mcp:", "{cli:"),
-        };
-        let mut out = String::with_capacity(text.len());
-        while let Some(start) = text.find('{') {
-            let Some(len) = text[start..].find('}') else {
-                break;
-            };
-            out.push_str(&text[..start]);
-            let placeholder = &text[start..=start + len];
-            let option = OPTIONS
-                .iter()
-                .find(|(key, ..)| *key == &placeholder[1..len]);
-            if let Some((_, cli, mcp)) = option {
-                out.push_str(if self == Frontend::Cli { cli } else { mcp });
-            } else if let Some(only) = placeholder[..len].strip_prefix(mine) {
-                out.push_str(only);
-            } else if !placeholder.starts_with(other) {
-                out.push_str(placeholder);
-            }
-            text = &text[start + len + 1..];
-        }
-        out + text
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hint::OPTIONS;
 
     const FRONTENDS: [Frontend; 2] = [Frontend::Cli, Frontend::Mcp];
 
@@ -211,7 +165,9 @@ mod tests {
         for frontend in FRONTENDS {
             for (topic, text) in texts(frontend) {
                 assert!(
-                    !text.contains("{cli:") && !text.contains("{mcp:"),
+                    !["{cli:", "{mcp:", "{repl:"]
+                        .iter()
+                        .any(|p| text.contains(p)),
                     "{frontend:?} {topic}"
                 );
                 for (key, ..) in OPTIONS {
@@ -232,13 +188,5 @@ mod tests {
                 panic!("{topic} names {:?}:\n{text}", found.as_str());
             }
         }
-    }
-
-    #[test]
-    fn braces_that_arent_placeholders_are_kept() {
-        assert_eq!(
-            Frontend::Mcp.render("{path} {-w} {"),
-            "{path} `workspace` {"
-        );
     }
 }

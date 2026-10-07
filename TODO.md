@@ -119,6 +119,9 @@ of either kind.
       starts with `{` and ends with the matching `}` nests a second pair: note
       it, and suggest dropping the braces from `TEXT` or replacing the whole
       item
+- [ ] `impl:NAME` that names a trait matches nothing, and the hint suggests an
+      item of the trait (`trait:NAME>fn:f`); suggest the trait's impls instead
+      (`impl:"NAME for TYPE"`)
 
 ## Bugs
 
@@ -129,6 +132,13 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       the statements are in `f`'s body (the Rust equivalent matches). It breaks
       the tutorial's pattern step (`tutorial.mdx`, the `fn:total>` `replace`),
       and the output after it.
+- [ ] A part after a range's end applies to the whole range:
+      `show /^const X/..fn:f.doc` fails with ".doc needs a syntax item, e.g.
+      fn:NAME.doc", though `fn:f.doc` alone matches. Either bind the part to the
+      end step or say that a part can't follow a range, with the fix.
+- [ ] The MCP server's `!!` error for a dry-run entry says "add -n to preview it
+      again", the CLI's flag; it should name `dry_run`. Fix it as part of the
+      move onto `hint`.
 
 ## Future improvements
 

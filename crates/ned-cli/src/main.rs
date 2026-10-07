@@ -39,7 +39,7 @@ use ned_core::invoke::{self, Failure, Invocation, Output};
 use ned_core::lang::{self, Language};
 use ned_core::style::{Depth, Style, When};
 use ned_core::theme::Theme;
-use ned_core::{help, script, workspace};
+use ned_core::{hint, script, workspace};
 
 /// A `--lang` value, `None` for text. Clap would read `Option<Option<_>>` as a
 /// flag whose value is optional.
@@ -111,7 +111,7 @@ enum Command {
     Mcp(mcp::McpArgs),
     /// Print a summary of the command language, or details of one topic.
     Help {
-        #[arg(value_parser = PossibleValuesParser::new(help::Frontend::Cli.topics()))]
+        #[arg(value_parser = PossibleValuesParser::new(hint::Frontend::Cli.topics()))]
         topic: Option<String>,
     },
     /// Manage the language-server daemon for the workspace containing DIR.
@@ -255,7 +255,7 @@ fn main() -> ExitCode {
         Some(Command::Help { topic }) => {
             out!(
                 "{}",
-                help::Frontend::Cli
+                hint::Frontend::Cli
                     .text(topic.as_deref())
                     .expect("clap checks the topic")
             );
@@ -331,7 +331,7 @@ fn main() -> ExitCode {
         lang: cli.lang,
         context: cli.context,
         commit: cli.commit,
-        frontend: help::Frontend::Cli,
+        frontend: hint::Frontend::Cli,
         style: crate::styles().0,
         comment: None,
     };
