@@ -2551,7 +2551,7 @@ fn starts_line(t: &str, offset: usize) -> bool {
 /// `offset` anchors to (§5.2).
 fn list_anchor<'f>(f: &'f SourceFile, offset: usize, new: &Text) -> Option<&'f Item> {
     let first = new.value.lines().map(str::trim).find(|l| !l.is_empty())?;
-    list_marker(first)
+    text::list_marker(first)
         .is_some()
         .then(|| list_item(f, offset))
         .flatten()
@@ -2570,19 +2570,6 @@ fn list_item(f: &SourceFile, offset: usize) -> Option<&Item> {
     (item.kind == "item" && t[line..item.range.start].trim().is_empty()).then_some(item)
 }
 
-/// The length of the list marker (`-`, `*`, `+`, `1.` or `1)`) that `line`
-/// starts with.
-fn list_marker(line: &str) -> Option<usize> {
-    let digits = line.len() - line.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-    let marker = match digits {
-        0 => line.strip_prefix(['-', '*', '+']),
-        1..=9 => line[digits..].strip_prefix(['.', ')']),
-        _ => None,
-    }?;
-    (marker.is_empty() || marker.starts_with(char::is_whitespace))
-        .then(|| line.len() - marker.len())
-}
-
 /// The indentation for the later lines of one paragraph of prose `new` placed
 /// on the line holding `offset` (§5.2): in a Markdown list item, that of the
 /// item's text, or of the line when it continues the item.
@@ -2596,7 +2583,7 @@ fn hang_indent(f: &SourceFile, offset: usize, new: &Text) -> Option<String> {
         && body.lines().map(str::trim_start).all(|l| {
             let heading = l.trim_start_matches('#');
             !l.is_empty()
-                && list_marker(l).is_none()
+                && text::list_marker(l).is_none()
                 && !(heading.len() < l.len()
                     && (heading.is_empty() || heading.starts_with([' ', '\t'])))
                 && !l.starts_with("```")
@@ -2610,7 +2597,7 @@ fn hang_indent(f: &SourceFile, offset: usize, new: &Text) -> Option<String> {
     }
     let indent = text::indent_at(t, line);
     let rest = &t[line + indent.len()..];
-    let marker = list_marker(rest)?;
+    let marker = text::list_marker(rest)?;
     let spaces = rest[marker..].len() - rest[marker..].trim_start_matches(' ').len();
     Some(format!("{indent}{}", " ".repeat(marker + spaces.max(1))))
 }

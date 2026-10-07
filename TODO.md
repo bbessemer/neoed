@@ -132,9 +132,6 @@ None open.
 Re-basing changes are patches, since the spec leaves their details open; the `|`
 change is a minor, because it lifts a documented error.
 
-- [ ] Smarter indent conversion in re-basing: normalize space widths (e.g.
-      2-space text into a 4-space file), detect alignment (continuation lines
-      aligned to a delimiter rather than indented by levels) and preserve it
 - [ ] `check`, `rename`, `.refs` and `.def` after a `|`: send the daemon each
       changed file's stage text instead of relying on the files on disk, and
       lift the syntax error

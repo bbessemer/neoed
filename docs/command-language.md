@@ -1458,9 +1458,16 @@ and `"x\n\n"` adds it and a blank line.
 Every line-oriented `TEXT` is re-based, except a `<<'TAG'` heredoc.
 
 1. **Strip** the common leading whitespace of the text's non-blank lines.
-2. **Convert** the indent style if the text and the file differ (spaces vs
-   tabs). One indent level in the text is its smallest non-zero indentation.
-   Each level becomes one level of the file's indent unit.
+2. **Convert** the indentation if the text's indent level differs from the
+   file's indent unit, in style (spaces vs tabs) or width (2-space text in a
+   4-space file). One indent level in the text is the smallest non-zero
+   indentation of its lines that aren't aligned. Each level becomes one level of
+   the file's indent unit. An aligned line keeps its offset from the line it
+   aligns to: a continuation aligned to the text after an unclosed bracket
+   (`f(a,` then `  b)`), a block comment's `*` line, a list item's continuation
+   under its text (and lines level with it), or a line of a fenced code block. A
+   line that starts inside a `"` string an earlier line opens is kept as
+   written, and counts toward no level.
 3. **Prefix** every non-blank line with the target indentation:
 
    - `replace`, `insert before`, `move` (before): indentation of the target
