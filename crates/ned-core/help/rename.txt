@@ -2,7 +2,7 @@ rename SEL to NAME
 
 Renames the symbol at SEL (the start of its .name, for a syntax item) wherever
 the workspace's language server finds it. SEL must be one span. The edits may
-reach only the file set, or with -w any workspace file; they apply with the
+reach only the file set, or with {-w} any workspace file; they apply with the
 script's other edits, then are formatted and checked. Starts the daemon if need
 be; the first rename in a workspace waits for the server to index.
 

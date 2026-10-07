@@ -21,11 +21,13 @@ ned session delete NAME... [-w DIR]
 `ned help` prints a summary of the language, sized to fit in an agent's context.
 `ned help TOPIC` details one verb (`show`, `outline`, `check`, `allow`,
 `replace`, `insert`, `delete`, `sub`, `move`, `rename`, `file`, `create`), or
-`selectors`, `text`, `config`, `session`, `repl` or `mcp`. An unknown topic is a
-usage error that lists the topics. A subcommand (`repl`, `mcp`, `help`,
-`daemon`, `history`, `undo`, `session`) must be the first argument; write a file
-with one of those names as `./help`, say. One after a flag (`ned -s x undo`) is
-a usage error suggesting it first, with the flags it takes (`ned undo -s x`).
+`selectors`, `text`, `config`, `session`, `repl` or `mcp`. The texts name the
+CLI's flags and arguments; the MCP server's `help` tool (§1.5) has its own. An
+unknown topic is a usage error that lists the topics. A subcommand (`repl`,
+`mcp`, `help`, `daemon`, `history`, `undo`, `session`) must be the first
+argument; write a file with one of those names as `./help`, say. One after a
+flag (`ned -s x undo`) is a usage error suggesting it first, with the flags it
+takes (`ned undo -s x`).
 
 - `-e SCRIPT` may be repeated; the scripts are joined with newlines, in order.
 - Without `-e`, the script is read from stdin. If stdin is a terminal, `ned`
@@ -551,9 +553,12 @@ script may be `!!` (§1.2), which repeats on the last script's file set unless
 the call gives `files` or `workspace`. `comment` says what the call is for, for
 following the session: it is recorded in the call's entry, and a REPL attached
 to the session prints it with the call's edits (§1.4); an empty one is none. The
-`ned` tool's description is the `ned help` summary, so an agent has the language
-without asking; `outline`, `show`, `history`, `help` and `cd` are marked
-read-only.
+`ned` tool's description is the `help` tool's summary, so an agent has the
+language without asking. The `help` tool's texts are `ned help`'s, but they name
+tools and their arguments (`workspace`, `force`) where `ned help` names commands
+and flags (`-w`, `--force`), and leave out what only the CLI has: its usage,
+`-e` and stdin, and the `repl` and `mcp` topics. `session` is about the server's
+session. `outline`, `show`, `history`, `help` and `cd` are marked read-only.
 
 `cd` moves the server, for the rest of its life, as if it had been started in
 `dir` (relative to its working directory): `dir` becomes its working directory,

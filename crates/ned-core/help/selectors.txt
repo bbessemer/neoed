@@ -17,11 +17,11 @@ Syntax: kind:name, * a wildcard (fn is fn:*); quote others: import:"a.b".
   and const:f.
 Parts: .body .params (inside delimiters) .name .sig .doc .attrs .ret .type
   .value .whole (with docs); .lines (each line), .lines:2 (2nd), .lines:$.
-  Via the language server, any step: .refs (each use), .def (the defining
-  item): all fn:parse.refs, "helper(".def. With -w they reach every file.
+  Via the language server, any step: .refs (uses), .def (definition):
+  all fn:parse.refs, "helper(".def; any file, edited in the set or {-w}.
 Nest with > (no spaces): impl:Parser>fn:new>"x". Scope: 40-80>fn:new,
 file:src/*.rs>fn:new. Raw: query{(node) @sel}.
 Range: A..B, whole lines from a match of A to the next B: /^## 6/../^## 7/,
 fn:a..fn:c. `..` binds tighter than `>`: class:Server>fn:start..fn:run.
-Filter: fn[.name ~= /^test_/] (ned help filters). Ambiguity is an error listing
+Filter: fn[.name ~= /^test_/] ({ned help} filters). Ambiguity is an error listing
 selectors to paste; `all SEL` takes every match.

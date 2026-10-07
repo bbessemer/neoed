@@ -111,7 +111,7 @@ enum Command {
     Mcp(mcp::McpArgs),
     /// Print a summary of the command language, or details of one topic.
     Help {
-        #[arg(value_parser = PossibleValuesParser::new(help::TOPICS.iter().map(|(name, _)| name)))]
+        #[arg(value_parser = PossibleValuesParser::new(help::Frontend::Cli.topics()))]
         topic: Option<String>,
     },
     /// Manage the language-server daemon for the workspace containing DIR.
@@ -255,7 +255,9 @@ fn main() -> ExitCode {
         Some(Command::Help { topic }) => {
             out!(
                 "{}",
-                help::text(topic.as_deref()).expect("clap checks the topic")
+                help::Frontend::Cli
+                    .text(topic.as_deref())
+                    .expect("clap checks the topic")
             );
             return ExitCode::SUCCESS;
         }

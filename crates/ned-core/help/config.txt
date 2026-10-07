@@ -3,7 +3,7 @@ config
 Each changed file is formatted after the edit, its changes shown under
 `fmt NAME`. A missing formatter is skipped with a note, or the language
 server formats if a daemon runs. An edit that makes a formatter fail is
-rejected (--force: a note).
+rejected ({--force}: a note).
 Defaults: rustfmt, gofmt, ruff (then black), prettier (JS, TS, Markdown).
 Override them per language in .ned.toml (any directory above the file; nearer
 wins) or ~/.config/ned/config.toml:
@@ -13,7 +13,7 @@ wins) or ~/.config/ned/config.toml:
   python = false
 
 {path} is the file's absolute path; {edition} comes from Cargo.toml.
---no-fmt skips formatting.
+{--no-fmt} skips formatting.
 
 Language servers are set the same way, under [lsp]: rust-analyzer, gopls,
 pyright-langserver, typescript-language-server by default. [lsp] timeout =

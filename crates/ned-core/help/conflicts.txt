@@ -13,7 +13,7 @@ file, not only those in scope. Its parts are its sides' lines:
   .base     after ||||||| (diff3 style only; to get one, git checkout
             --conflict=diff3 -- FILE, or zdiff3, undoing edits since the merge)
   .theirs   after =======, up to >>>>>>>
-`outline` ends with one line per conflict. resolve keeps a side (ned help
+`outline` ends with one line per conflict. resolve keeps a side ({ned help}
 resolve); text replacing a conflict, or an empty side, is re-indented to
 its sides.
 

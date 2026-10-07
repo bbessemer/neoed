@@ -206,8 +206,9 @@ CLI shares; it records into a session, and `:attach` follows another session's
 log (`Follower`). An invocation (`invoke`: `!!`, run, write, commit, record, and
 `history`/`undo`) prints through `invoke::Output`, so `ned-mcp` (spec §1.5;
 JSON-RPC on stdio, behind `ned mcp`) runs the CLI's pipeline as tools; help
-texts are `ned-core/help/`. MIT-licensed; README has install and usage; CI
-(`.github/workflows/`) gates PRs.
+texts are `ned-core/help/`, shared but for `cli/` and `mcp/`, with placeholders
+each frontend renders in its own terms. MIT-licensed; README has install and
+usage; CI (`.github/workflows/`) gates PRs.
 
 ## Key Documentation
 
