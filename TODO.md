@@ -135,15 +135,9 @@ change is a minor, because it lifts a documented error.
 - [ ] Smarter indent conversion in re-basing: normalize space widths (e.g.
       2-space text into a 4-space file), detect alignment (continuation lines
       aligned to a delimiter rather than indented by levels) and preserve it
-- [ ] Re-basing keeps block-quote prefixes (`> `): inserted lines take the
-      target line's `>` markers, not just its whitespace
 - [ ] `check`, `rename`, `.refs` and `.def` after a `|`: send the daemon each
       changed file's stage text instead of relying on the files on disk, and
       lift the syntax error
-- [ ] Re-basing keeps a Markdown list item's hanging indent for verbatim text: a
-      multi-line string replacing part of an item gives its later lines the
-      item's continuation indent, as line-oriented text gets (§5.2), not the
-      indentation of the line the span starts on (column 0 for a top-level item)
 - [ ] Compact session logs, which keep each written file's whole text before and
       after: diffs against the previous entry, or pruning old entries (a log
       format change, so a minor)

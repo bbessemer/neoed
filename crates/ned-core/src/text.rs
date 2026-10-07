@@ -124,9 +124,20 @@ fn prefix(lines: &[String], indent: &str) -> String {
 /// Verbatim text for a partial-line span (§5.1): the first line as written,
 /// the rest re-based to `indent`, the indentation of the span's line.
 pub fn rebase_tail(text: &str, indent: &str, unit: &str) -> String {
+    rebase_hanging(text, indent, unit, str::to_string)
+}
+
+/// `text` with its first line placed by `first` and the rest re-based to
+/// `hang`, apart from it (§5.2: prose in a Markdown list item).
+pub fn rebase_hanging(
+    text: &str,
+    hang: &str,
+    unit: &str,
+    first: impl Fn(&str) -> String,
+) -> String {
     match text.split_once('\n') {
-        Some((first, rest)) => format!("{first}\n{}", rebase(rest, indent, unit)),
-        None => text.to_string(),
+        Some((head, rest)) => format!("{}\n{}", first(head), rebase(rest, hang, unit)),
+        None => first(text),
     }
 }
 

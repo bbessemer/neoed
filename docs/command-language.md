@@ -1502,6 +1502,21 @@ wrapped lines and nested items included, and `insert before` goes before its
 first line. So a new item next to a wrapped item's continuation line becomes its
 sibling. `<<'TAG'` text is placed the same way but not re-based.
 
+One paragraph of Markdown prose (no blank, list item, heading or fence lines)
+placed in a list item puts its later lines under the item's text: after the
+marker and its spaces when the target is the marker's line, else at the target
+line's indentation. Their indentation relative to the first line is dropped,
+since it means nothing inside a paragraph. Prose inserted before an item's first
+line goes outside the item.
+
+In a Markdown block quote, the target indentation includes the line's `>`
+markers, and `TEXT`'s blank lines take the bare markers. `TEXT` whose lines are
+all quoted loses one level of `>` first, so it isn't quoted twice.
+
+`insert` of `TEXT` whose first line starts a `case` or `default` clause
+(`switch` in Go and JavaScript, `match` in Python), next to a line of another
+clause, takes that clause's indentation, so the new clause goes beside it.
+
 The file's **indent unit** is measured on its non-blank lines, skipping those
 that start inside a string or comment. Its style is tabs or spaces, whichever
 indents more of those lines (the language default's on a tie), and it is the
