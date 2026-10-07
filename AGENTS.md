@@ -82,10 +82,12 @@ in this section unless explicitly told to.
 **Use `ned` for all work on this project.** Read code with `ned outline` and
 `ned show`, make every edit to an existing file with the installed `ned` (usage:
 the project skill, `.claude/skills/ned`, and `ned help`), not the Edit tool, sed
-or inline Python, and create new files with `ned`'s `create`. If `ned` can't
+or inline Python, and create new files with `ned`'s `create`. When ned's MCP
+server is connected, call its tools rather than the `ned` CLI. If `ned` can't
 make an edit, makes it wrongly, or gives an unhelpful error, fall back for that
 edit only and report the gap to the engineer. After changing `ned`, reinstall
-it: `cargo install --path crates/ned-cli`.
+it: `cargo install --path crates/ned-cli`; a running MCP server keeps the old
+build until it restarts.
 
 **Branches.** Only `release/X.Y` (major or minor) and `patch/X.Y.Z` branches
 merge into `main`. Each such PR raises `[workspace.package] version` (which part

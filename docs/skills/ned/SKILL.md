@@ -9,7 +9,7 @@ description:
   one all-or-nothing call that prints a diff; find a symbol's references or
   definition, rename it across the workspace, and check language-server
   diagnostics without a build. Use it instead of grep, sed, cat, inline Python
-  or str_replace.
+  or str_replace, through its MCP tools when they're connected.
 ---
 
 # Reading, searching and editing files with ned
@@ -33,7 +33,18 @@ screen, and `ned help TOPIC` for one verb.
 
 ## Invocation
 
-Pass the script on stdin with a quoted heredoc, so the shell leaves it alone:
+When ned's MCP server is connected (`ned mcp`; its tools are named `ned`,
+`show`, `outline` and so on), use it rather than the shell. Its `ned` tool runs
+a script: `script` is the script, `files` the files (or `workspace: true` for
+`-w`), and `dry_run`, `commit` and the other flags are arguments; `comment` says
+what the call is for, for a human following the session. Its `outline`, `show`,
+`history`, `undo` and `help` tools do what those commands do, and `cd` moves the
+server to another directory (a git worktree, say) for the rest of the session,
+so `files` can be relative to it. The examples below are shell commands; their
+files and script carry over to the tools unchanged.
+
+Without the MCP server, pass the script on stdin with a quoted heredoc, so the
+shell leaves it alone:
 
 ```sh
 ned src/parser.rs <<'EOF'
@@ -45,14 +56,6 @@ Short scripts with no `'` in them can use `-e`:
 `ned src/parser.rs -e 'delete fn:debug_dump'`. Don't escape a `'` into an `-e`
 script: `ned`'s heredocs read no escapes, so a `\x27` in one goes in as written.
 Add `-n` to preview without writing.
-
-With ned's MCP server connected (`ned mcp`), call its `ned` tool instead of the
-shell: `script` is the script, `files` the files (or `workspace: true` for
-`-w`), and `dry_run`, `commit` and the other flags are arguments; `comment` says
-what the call is for, for a human following the session. Its `outline`, `show`,
-`history`, `undo` and `help` tools do what those commands do, and `cd` moves the
-server to another directory (a git worktree, say) for the rest of the session,
-so `files` can be relative to it.
 
 Search with `show all` instead of grep. It prints each match's line with its
 number, under the file's name, across a glob or the whole workspace (`-w`, which
