@@ -124,7 +124,11 @@ of either kind.
 
 Each fix is a patch; a fix that changes documented behaviour is a minor.
 
-None open.
+- [ ] In Python, a syntax pattern of several statements matches at top level but
+      not as a nested step: ``show fn:f>`a = 0\nb = 1` `` matches nothing where
+      the statements are in `f`'s body (the Rust equivalent matches). It breaks
+      the tutorial's pattern step (`tutorial.mdx`, the `fn:total>` `replace`),
+      and the output after it.
 
 ## Future improvements
 
