@@ -53,7 +53,7 @@ type LangFlag = Option<Language>;
     args_conflicts_with_subcommands = true,
     disable_help_subcommand = true,
     // clap leaves a user-defined `help` subcommand out of the usage.
-    override_usage = "ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...\n       ned repl [OPTIONS] [FILES... | -w [DIR]]    (edit interactively)\n       ned mcp [OPTIONS]    (serve agents over MCP)\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]\n       ned history|undo [-s NAME] [-w DIR]\n       ned session list|delete"
+    override_usage = include_str!("usage.txt").trim_ascii_end()
 )]
 struct Cli {
     #[command(subcommand)]
