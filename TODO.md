@@ -115,31 +115,29 @@ Version: minor when a first plugin can load; the spike releases nothing.
 Hints and relaxed errors: each is a patch, and they batch into the next release
 of either kind.
 
-None open.
+- [ ] Replacing a braced `.body` (which leaves out the braces) with `TEXT` that
+      starts with `{` and ends with the matching `}` nests a second pair: note
+      it, and suggest dropping the braces from `TEXT` or replacing the whole
+      item
 
 ## Bugs
 
 Each fix is a patch; a fix that changes documented behaviour is a minor.
 
-None open.
+- [ ] In Python, a syntax pattern of several statements matches at top level but
+      not as a nested step: ``show fn:f>`a = 0\nb = 1` `` matches nothing where
+      the statements are in `f`'s body (the Rust equivalent matches). It breaks
+      the tutorial's pattern step (`tutorial.mdx`, the `fn:total>` `replace`),
+      and the output after it.
 
 ## Future improvements
 
 Re-basing changes are patches, since the spec leaves their details open; the `|`
 change is a minor, because it lifts a documented error.
 
-- [ ] Smarter indent conversion in re-basing: normalize space widths (e.g.
-      2-space text into a 4-space file), detect alignment (continuation lines
-      aligned to a delimiter rather than indented by levels) and preserve it
-- [ ] Re-basing keeps block-quote prefixes (`> `): inserted lines take the
-      target line's `>` markers, not just its whitespace
 - [ ] `check`, `rename`, `.refs` and `.def` after a `|`: send the daemon each
       changed file's stage text instead of relying on the files on disk, and
       lift the syntax error
-- [ ] Re-basing keeps a Markdown list item's hanging indent for verbatim text: a
-      multi-line string replacing part of an item gives its later lines the
-      item's continuation indent, as line-oriented text gets (§5.2), not the
-      indentation of the line the span starts on (column 0 for a top-level item)
 - [ ] Compact session logs, which keep each written file's whole text before and
       after: diffs against the previous entry, or pruning old entries (a log
       format change, so a minor)
@@ -151,3 +149,31 @@ change is a minor, because it lifts a documented error.
       alone: match arms, `case` clauses, dict and object entries, a decorator
       without its definition (lost with `builders.scm`). A minor, since §3.10
       changes
+- [ ] A `FILE` argument (MCP `files`) that the script `create`s joins the set
+      when it's made, instead of being an error at once (a minor: lifts a
+      documented error; 0.8.1 only names the fix)
+- [ ] With no files given, a script whose selectors all start with `file:PATH`
+      steps runs on those files (a minor: `file:` never adds to the set today;
+      0.8.1 names the `file` command)
+- [ ] Several selectors in one `show`: `show 31-35, 118-124` (a minor; 0.8.1
+      suggests `show 31-35; show 118-124`)
+- [ ] `undo FILE...` reverts only those files of the last edit, so one bad file
+      of a multi-file call needn't undo the rest: undo entries record the paths
+      they revert, and `history` marks an entry partly undone (a minor, with a
+      session log change)
+- [ ] Go formatting runs goimports when it's installed, then gofmt, adding the
+      imports an edit needs; goimports also drops unused ones, so an import
+      added before its first use would go (a minor: the documented default)
+- [ ] Keep only the formatter's changes that touch the edit, for formatters that
+      rewrite the whole file (prettier rewriting an unrelated YAML example);
+      opt-in per formatter or flag. 0.8.1 notes the lines outside the edit (a
+      minor)
+- [ ] The session log records an invocation's flags, so `!!` can keep the
+      output-affecting ones (`--no-fmt`, MCP `no_fmt`) or name those it drops (a
+      minor: a log field; 0.8.1 notes a repeat runs without flags)
+- [ ] `A..B` where `B`'s span holds `A`'s end, as an item whose doc comment `A`
+      matched: the range runs from `A` to `B`'s end, rather than matching
+      nothing (a minor: §3.7 says `B` starts after `A`; 0.8.1 explains it)
+- [ ] Single-quoted strings, SQL-style: `'text'` reads no escapes, and `''`
+      stands for one `'`, so text full of `"` or `\` needs no escaping (a minor:
+      new syntax; today `'` is an error saying strings use double quotes)

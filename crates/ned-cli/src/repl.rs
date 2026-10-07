@@ -346,6 +346,7 @@ impl Repl {
             &mut workspace,
             &mut root,
             true,
+            None,
             &mut Terminal,
         );
         let src = match repeated {
@@ -831,7 +832,7 @@ impl Repl {
 
 /// `:help [TOPIC]`.
 fn help(args: &[&str]) -> Result<(), String> {
-    out!("{}", help::text(args.first().copied())?);
+    out!("{}", help::Frontend::Cli.text(args.first().copied())?);
     Ok(())
 }
 

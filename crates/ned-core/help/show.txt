@@ -17,4 +17,5 @@ Examples:
     show /TODO/ +3
     show all /TODO/
     show 10-30
+    show 10-30; show 80-90
     show raw fn:parse

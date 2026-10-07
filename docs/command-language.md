@@ -21,11 +21,13 @@ ned session delete NAME... [-w DIR]
 `ned help` prints a summary of the language, sized to fit in an agent's context.
 `ned help TOPIC` details one verb (`show`, `outline`, `check`, `allow`,
 `replace`, `insert`, `delete`, `sub`, `move`, `rename`, `file`, `create`), or
-`selectors`, `text`, `config`, `session`, `repl` or `mcp`. An unknown topic is a
-usage error that lists the topics. A subcommand (`repl`, `mcp`, `help`,
-`daemon`, `history`, `undo`, `session`) must be the first argument; write a file
-with one of those names as `./help`, say. One after a flag (`ned -s x undo`) is
-a usage error suggesting it first, with the flags it takes (`ned undo -s x`).
+`selectors`, `text`, `config`, `session`, `repl` or `mcp`. The texts name the
+CLI's flags and arguments; the MCP server's `help` tool (§1.5) has its own. An
+unknown topic is a usage error that lists the topics. A subcommand (`repl`,
+`mcp`, `help`, `daemon`, `history`, `undo`, `session`) must be the first
+argument; write a file with one of those names as `./help`, say. One after a
+flag (`ned -s x undo`) is a usage error suggesting it first, with the flags it
+takes (`ned undo -s x`).
 
 - `-e SCRIPT` may be repeated; the scripts are joined with newlines, in order.
 - Without `-e`, the script is read from stdin. If stdin is a terminal, `ned`
@@ -230,7 +232,7 @@ $ export NED_SESSION=agent
 $ ned src/parser.rs -e 'replace fn:prase>"end" with "end of input"'
 error: script:1:9: fn:prase matches nothing in src/parser.rs; did you mean fn:parse (14-17)?
 $ ned -e '!!:s/prase/parse/'
-note: repeating 1: replace fn:parse>"end" with "end of input"
+note: repeating 1 without flags: replace fn:parse>"end" with "end of input"
 src/parser.rs: 1 edit, +1 -1
 ...
 ```
@@ -238,11 +240,12 @@ src/parser.rs: 1 edit, +1 -1
 The repeat runs on the last script's file set — its `FILE` arguments, relative
 to the directory they were given in, or its `-w` workspace — unless the new
 invocation gives `FILE` arguments or `-w`. Flags (`-n`, `--force`, ...) are not
-repeated, so a repeat of a dry run without `-n` would apply what was only
-previewed: it is a usage error saying to send the script again to apply it, or
-to add `-n` to preview it again. `!!` without a session, with no earlier script
-in it, or with an `OLD` the script doesn't contain is a usage error; the last
-says what the script is.
+repeated (its note says `without flags`, or `without arguments` from the MCP
+server, when the invocation gives none), so a repeat of a dry run without `-n`
+would apply what was only previewed: it is a usage error saying to send the
+script again to apply it, or to add `-n` to preview it again. `!!` without a
+session, with no earlier script in it, or with an `OLD` the script doesn't
+contain is a usage error; the last says what the script is.
 
 `history` and `undo` take the session from `-s` or `NED_SESSION` like a script
 does; with neither, or a session the workspace has no log for, they're a usage
@@ -551,9 +554,12 @@ script may be `!!` (§1.2), which repeats on the last script's file set unless
 the call gives `files` or `workspace`. `comment` says what the call is for, for
 following the session: it is recorded in the call's entry, and a REPL attached
 to the session prints it with the call's edits (§1.4); an empty one is none. The
-`ned` tool's description is the `ned help` summary, so an agent has the language
-without asking; `outline`, `show`, `history`, `help` and `cd` are marked
-read-only.
+`ned` tool's description is the `help` tool's summary, so an agent has the
+language without asking. The `help` tool's texts are `ned help`'s, but they name
+tools and their arguments (`workspace`, `force`) where `ned help` names commands
+and flags (`-w`, `--force`), and leave out what only the CLI has: its usage,
+`-e` and stdin, and the `repl` and `mcp` topics. `session` is about the server's
+session. `outline`, `show`, `history`, `help` and `cd` are marked read-only.
 
 `cd` moves the server, for the rest of its life, as if it had been started in
 `dir` (relative to its working directory): `dir` becomes its working directory,
@@ -959,9 +965,9 @@ The kinds each language supports, and the items they cover there:
   start of the step's `.name` (for a syntax item) or of its span, so they work
   on any step: `fn:parse.refs`, `fn:main>"helper(".def`. Their spans may be in
   other files: in the file set, or with `-w` in any workspace file, which then
-  joins it; any other file is an error. Only `.lines` may follow them in the
-  same step, and later steps search inside their spans. They spawn the daemon if
-  need be.
+  joins it; any other file, such as a library's source, can be shown but not
+  edited. Only `.lines` may follow them in the same step, and later steps search
+  inside their spans. They spawn the daemon if need be.
 - A part the item doesn't have (e.g. `.body` on a Rust `const`) is an error.
   Parts other than `.lines` need a syntax item, and `.ours`, `.theirs` and
   `.base` a conflict (§3.8): `/x/.body` is an error, and so is a part after
@@ -1433,6 +1439,10 @@ and regex matches are not.
 - **Partial-line target:** `TEXT` is inserted **verbatim** at the span.
   - If `TEXT` has several lines, the first is inserted as-is. The rest are
     re-based relative to the line the span starts on.
+  - `replace` of a span that takes in some of its line's indentation
+    (`/^\s*let/`) and text after it gives the first line that indentation back,
+    unless that line starts with its own; and when the span ends with a line
+    ending, a heredoc's last line ends with one too.
   - Exception: `insert before|after` with heredoc `TEXT` widens a partial-line
     target to its whole lines, so `insert after /re/ <<END` adds lines after the
     match's line. A target that ends in an item part (any part but `.lines`,
@@ -1449,9 +1459,16 @@ and `"x\n\n"` adds it and a blank line.
 Every line-oriented `TEXT` is re-based, except a `<<'TAG'` heredoc.
 
 1. **Strip** the common leading whitespace of the text's non-blank lines.
-2. **Convert** the indent style if the text and the file differ (spaces vs
-   tabs). One indent level in the text is its smallest non-zero indentation.
-   Each level becomes one level of the file's indent unit.
+2. **Convert** the indentation if the text's indent level differs from the
+   file's indent unit, in style (spaces vs tabs) or width (2-space text in a
+   4-space file). One indent level in the text is the smallest non-zero
+   indentation of its lines that aren't aligned. Each level becomes one level of
+   the file's indent unit. An aligned line keeps its offset from the line it
+   aligns to: a continuation aligned to the text after an unclosed bracket
+   (`f(a,` then `  b)`), a block comment's `*` line, a list item's continuation
+   under its text (and lines level with it), or a line of a fenced code block. A
+   line that starts inside a `"` string an earlier line opens is kept as
+   written, and counts toward no level.
 3. **Prefix** every non-blank line with the target indentation:
 
    - `replace`, `insert before`, `move` (before): indentation of the target
@@ -1492,6 +1509,21 @@ column, `insert after` (and `move ... after`) goes after the whole item, its
 wrapped lines and nested items included, and `insert before` goes before its
 first line. So a new item next to a wrapped item's continuation line becomes its
 sibling. `<<'TAG'` text is placed the same way but not re-based.
+
+One paragraph of Markdown prose (no blank, list item, heading or fence lines)
+placed in a list item puts its later lines under the item's text: after the
+marker and its spaces when the target is the marker's line, else at the target
+line's indentation. Their indentation relative to the first line is dropped,
+since it means nothing inside a paragraph. Prose inserted before an item's first
+line goes outside the item.
+
+In a Markdown block quote, the target indentation includes the line's `>`
+markers, and `TEXT`'s blank lines take the bare markers. `TEXT` whose lines are
+all quoted loses one level of `>` first, so it isn't quoted twice.
+
+`insert` of `TEXT` whose first line starts a `case` or `default` clause
+(`switch` in Go and JavaScript, `match` in Python), next to a line of another
+clause, takes that clause's indentation, so the new clause goes beside it.
 
 The file's **indent unit** is measured on its non-blank lines, skipping those
 that start inside a string or comment. Its style is tabs or spaces, whichever
@@ -1613,6 +1645,10 @@ formatted.
 - A file that still has merge conflicts (§3.3) isn't formatted, by its formatter
   or a language server, since formatting may rewrite its marker lines:
   `note: skipped formatting src/a.rs: it has merge conflicts`.
+- A formatter that changes lines away from the edit's own (not next to them), as
+  one that formats the whole file may, adds a note naming them, so the changes
+  the script didn't ask for are not missed:
+  `note: prettier also changed README.md outside the edit, at lines 40-44`.
 - `--dry-run` still runs formatters, on in-memory copies.
 
 When no formatter for the language is installed and a daemon is running (§6.5),
@@ -1807,28 +1843,37 @@ The fix each error suggests:
   dotted name (`KIND:App>fn:handle`, or a Go method's `fn:"App.handle"`); `\\`
   for a backslash in a string; a selector for `insert end`, or `insert after $`;
   `show SEL +M` for `+N..+M`, and `show SEL +N` for `-N` (or the line range
-  `show N-M`, after a line number); `all` before the selector, not after it,
-  e.g. `show all /re/`; `;` or a new line between commands for a second
-  selector, e.g. `show fn:a; show fn:b`; `>` before a regex, literal or pattern
-  glued to a selector in any command, e.g. `show fn:a>/re/` for `show fn:a/re/`
-  (but not before `insert`'s text or `sub`'s regex, which may follow the
-  selector directly); the rest of the command on a heredoc selector's line,
-  before its body, e.g. `replace <<END with TEXT`; `sub /re/ with TEXT` for
-  sed's `sub /re/text/`; the line range `N-M` for sed's `N,M`; otherwise the
-  command's usage, e.g. `usage: replace [all] SEL with TEXT`
+  `show N-M`, after a line number); for a bare name with a part or step after
+  it, `*:NAME`, or the kind of the item with that name in the `FILE` set
+  (`enum:GitError.body` for `GitError.body`); after a heredoc that ended at a
+  line of its text holding only its tag, where it ended, and another tag; `all`
+  before the selector, not after it, e.g. `show all /re/`; `;` or a new line
+  between commands for a second selector, e.g. `show fn:a; show fn:b`, and for a
+  `,` the commands it separates when they take only selectors or levels
+  (`delete 3; delete 7`); `>` before a regex, literal or pattern glued to a
+  selector in any command, e.g. `show fn:a>/re/` for `show fn:a/re/` (but not
+  before `insert`'s text or `sub`'s regex, which may follow the selector
+  directly); the rest of the command on a heredoc selector's line, before its
+  body, e.g. `replace <<END with TEXT`; `sub /re/ with TEXT` for sed's
+  `sub /re/text/`; the line range `N-M` for sed's `N,M`; otherwise the command's
+  usage, e.g. `usage: replace [all] SEL with TEXT`
 - `check`, `rename`, `.refs` or `.def` after a `|`: Running it before the first
   `|`, or in a separate `ned` call
 - `all` in `sub` (`sub all /re/ with TEXT`, or after its regex or TEXT):
   Dropping `all`, since `sub` replaces every match
 - A literal in `sub` (`sub 3 "- [ ]" with "- [x]"`): The `replace` it means,
   every match kept: `replace all 3>"- [ ]" with "- [x]"`
-- Selector matches nothing: The same name under another kind; a close syntax
-  name, or the name without its generic arguments and paths (`impl:Log` for
-  `impl:"Log<'_>"`); for `P>"a"..P>"b"`, `P>"a".."b"`; a string literal that
-  matches as escaped source text (`"\\n"` for `"\n"`); a literal match that
-  differs only in case or spacing; a Markdown item's name without its `[ ]`
-  checkbox (`item:done` for `item:"[x] done"`); a regex that matches with `i`;
-  for a nested search that matches across spans of the step before it
+- Selector matches nothing: The same name under another kind; where the name is
+  written in code that doesn't parse, its line and the broken construct's; a
+  close syntax name, or the name without its generic arguments and paths
+  (`impl:Log` for `impl:"Log<'_>"`); for `P>"a"..P>"b"`, `P>"a".."b"`; a string
+  literal that matches as escaped source text (`"\\n"` for `"\n"`); a literal
+  match that differs only in case or spacing; a Markdown item's name without its
+  `[ ]` checkbox (`item:done` for `item:"[x] done"`); a regex that matches with
+  `i`; for a range whose end matches only where it starts before its start's
+  match ends (an item whose span takes in the doc comment the start matched),
+  where each is, and to start the range earlier or select the item alone; for a
+  nested search that matches across spans of the step before it
   (`import>"use a;\nuse b;"`), the selector without that step, or with an `A..B`
   of their items or a line range in its place; the spans a nested step searched;
   a `|` before the command, when the stage's earlier edits make it match; or
@@ -1874,14 +1919,17 @@ The fix each error suggests:
 - Language server failure: Installing the server or fixing its `[lsp]` setting,
   or rerunning once it has indexed
 - Server can't rename there: Selecting the name itself
-- Rename, `.refs` or `.def` reaching a file outside the set: `-w`; outside the
-  workspace, a regex (`sub`, for a rename)
+- Rename reaching a file outside the set: `-w`; outside the workspace, `sub`
+- Editing a file `.refs` or `.def` found outside the set: `-w`; outside the
+  workspace, `file` with its path
 - Ambiguous `.refs` or `.def` result: `all`, with the matches' locations
 - File not in the set, or a `file:GLOB` that matches none of it: The `file`
   command that adds it; correcting a glob no file on disk matches
 - Overlapping edits: Merging them, or a `|` between them
-- Missing file or empty glob: The working directory paths are relative to
-- No files to edit: `FILE` arguments or `file PATH`
+- Missing file or empty glob: The working directory paths are relative to; for a
+  `FILE` the script `create`s, dropping it
+- No files to read or edit: `FILE` arguments or `file PATH`; the `file` command
+  adding the files the script's `file:` steps name
 - `create` of a file that exists: `file PATH` to edit it
 - Session name with other characters: Letters, digits, `.`, `_` and `-`
 - `!!`, `history` or `undo` without a session: `-s NAME` or `NED_SESSION`, with
@@ -1889,7 +1937,11 @@ The fix each error suggests:
 - `!!` with no earlier script: Writing the script out
 - `!!` without `-n` after a dry run: Sending the script again to apply it, or
   `-n` to preview it again
-- `!!:s/OLD/NEW/` whose `OLD` the script doesn't contain: The script
+- `!!:s/OLD/NEW/` whose `OLD` the script doesn't contain: The script, and
+  another delimiter when the script holds `OLD` with `\` before each delimiter
+  in it (`!!:s|a\/b|NEW|`)
+- Text after a `!!` modifier: `\` before a delimiter in `NEW`, or another
+  delimiter
 - Malformed `!!` modifier: `usage: !![:s/OLD/NEW/][:gs/OLD/NEW/]...`
 - Nothing to undo: `ned history`
 - Undo of a file changed since: `--force`, to merge the undo into it
@@ -1906,7 +1958,7 @@ error: script:1:8: fn:new matches 2 items; add `all` or use one of:
 
 error: script:1:8: fn:prase matches nothing in src/parser.rs; did you mean fn:parse (14-17)?
 
-error: script:3:1: edit overlaps command 1 at src/parser.rs:14-17
+error: script:3:1: edit overlaps command 1 at src/parser.rs:14-17; merge the two edits, or put a `|` between them
 
 error: src/parser.rs:15:31: edit introduces a syntax error (use --force to apply anyway)
 15:        let tok = (self.next();
@@ -1923,13 +1975,14 @@ Exit codes:
 - `1`: Edit rejected: no match, ambiguous match, overlap, missing part, unknown
   kind, text file, line past the end, file not in the set, `create` of an
   existing file, parse-error guard, introduced diagnostics, an introduced
-  formatter failure, move into its own source, rename refused, reaching outside
-  the file set, ambiguous `.refs`/`.def` result, nothing to undo, undo of a file
-  changed or removed since, undo merge overlap, a refused `--commit` (§1.3)
+  formatter failure, move into its own source, rename refused, reaching or
+  editing outside the file set, ambiguous `.refs`/`.def` result, nothing to
+  undo, undo of a file changed or removed since, undo merge overlap, a refused
+  `--commit` (§1.3)
 - `2`: Usage error (bad flags or arguments, a command's name given as a `FILE`,
-  a subcommand after a flag, no script on a terminal, no files to edit, a bad
-  session name, no session, a bad `!!`, `--commit` with `-n` or outside a git
-  repository), script syntax error, invalid query, pattern or config, or no
+  a subcommand after a flag, no script on a terminal, no files to read or edit,
+  a bad session name, no session, a bad `!!`, `--commit` with `-n` or outside a
+  git repository), script syntax error, invalid query, pattern or config, or no
   language server
 - `3`: I/O error: unreadable or non-UTF-8 file, glob matched nothing, write
   failure, language server failure, an unsafe or unknown-version session store,

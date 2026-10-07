@@ -53,7 +53,7 @@ type LangFlag = Option<Language>;
     args_conflicts_with_subcommands = true,
     disable_help_subcommand = true,
     // clap leaves a user-defined `help` subcommand out of the usage.
-    override_usage = "ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...\n       ned repl [OPTIONS] [FILES... | -w [DIR]]    (edit interactively)\n       ned mcp [OPTIONS]    (serve agents over MCP)\n       ned help [TOPIC]    (the command language)\n       ned daemon start|status|stop [DIR]\n       ned history|undo [-s NAME] [-w DIR]\n       ned session list|delete"
+    override_usage = include_str!("usage.txt").trim_ascii_end()
 )]
 struct Cli {
     #[command(subcommand)]
@@ -111,7 +111,7 @@ enum Command {
     Mcp(mcp::McpArgs),
     /// Print a summary of the command language, or details of one topic.
     Help {
-        #[arg(value_parser = PossibleValuesParser::new(help::TOPICS.iter().map(|(name, _)| name)))]
+        #[arg(value_parser = PossibleValuesParser::new(help::Frontend::Cli.topics()))]
         topic: Option<String>,
     },
     /// Manage the language-server daemon for the workspace containing DIR.
@@ -255,7 +255,9 @@ fn main() -> ExitCode {
         Some(Command::Help { topic }) => {
             out!(
                 "{}",
-                help::text(topic.as_deref()).expect("clap checks the topic")
+                help::Frontend::Cli
+                    .text(topic.as_deref())
+                    .expect("clap checks the topic")
             );
             return ExitCode::SUCCESS;
         }
@@ -329,6 +331,7 @@ fn main() -> ExitCode {
         lang: cli.lang,
         context: cli.context,
         commit: cli.commit,
+        frontend: help::Frontend::Cli,
         style: crate::styles().0,
         comment: None,
     };

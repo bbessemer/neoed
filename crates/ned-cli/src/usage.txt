@@ -1,0 +1,7 @@
+ned [OPTIONS] [FILES... | -w [DIR]] [-e SCRIPT]...
+       ned repl [OPTIONS] [FILES... | -w [DIR]]    (edit interactively)
+       ned mcp [OPTIONS]    (serve agents over MCP)
+       ned help [TOPIC]    (the command language)
+       ned daemon start|status|stop [DIR]
+       ned history|undo [-s NAME] [-w DIR]
+       ned session list|delete

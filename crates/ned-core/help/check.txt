@@ -13,7 +13,7 @@ are printed after its diff, and introduced errors reject it (`[check] block`).
 Add `allow errors` to the script to apply it anyway, e.g. for unfinished work.
 Once an edit is written, checks run on save (`cargo check`) report what it
 introduced, without rejecting it.
---no-check skips checking; --force applies the edit anyway.
+{--no-check} skips checking; {--force} applies the edit anyway.
 
   src/parser.rs:15:9: error: mismatched types [rust-analyzer E0308]
 

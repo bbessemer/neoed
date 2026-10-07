@@ -631,7 +631,28 @@ fn repeating_a_script_leaves_piped_stdin_alone() {
     parser.rs:2
     2:
     --- stderr
-    note: repeating 1: show 2
+    note: repeating 1 without flags: show 2
+    ");
+}
+
+#[test]
+fn a_bare_item_name_suggests_its_kind() {
+    let dir = dir_with(&[("a.rs", "enum GitError {\n    A,\n}\n")]);
+    assert_snapshot!(ned(dir.path(), &["a.rs", "-e", "show GitError.body"], ""), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:6: expected a selector, found `GitError`; select the enum by name: enum:GitError.body
+    1:show GitError.body
+           ^
+    ");
+    assert_snapshot!(ned(dir.path(), &["a.rs", "-e", "delete GitError"], ""), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:8: expected a selector, found `GitError`; select the enum by name: enum:GitError
+    1:delete GitError
+             ^
     ");
 }
 
@@ -867,14 +888,57 @@ fn unsupported_feature_exits_2() {
 
 #[test]
 fn no_files_exits_2() {
-    let dir = dir_with(&[]);
-    let out = ned(dir.path(), &["-e", "show"], "");
-    assert_snapshot!(out, @r"
+    let dir = dir_with(&[("a.rs", "fn a() {}\n")]);
+    assert_snapshot!(ned(dir.path(), &["-e", "show"], ""), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:1: no files to read; pass FILE arguments or use `file PATH`
+    ");
+    assert_snapshot!(ned(dir.path(), &["-e", "delete 1"], ""), @r"
     exit: 2
     --- stdout
     --- stderr
     error: script:1:1: no files to edit; pass FILE arguments or use `file PATH`
     ");
+    // `file:` steps don't add to the set, but they name what to add.
+    assert_snapshot!(ned(dir.path(), &["-e", "show file:a.rs>1; delete file:b.rs>2"], ""), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:1:1: no files to read; pass FILE arguments or use `file PATH`; add the files its `file:` steps name: file a.rs b.rs
+    ");
+}
+
+#[test]
+fn a_created_file_given_as_a_file_argument_is_named() {
+    let dir = dir_with(&[]);
+    let out = ned(
+        dir.path(),
+        &["new.rs", "-e", "create new.rs \"fn a() {}\""],
+        "",
+    );
+    assert!(
+        out.contains("; drop it from the files given: `create new.rs` adds it to the file set"),
+        "{out}"
+    );
+}
+
+#[test]
+fn formatting_outside_the_edit_is_noted() {
+    let dir = dir_with(&[
+        ("a.rs", "fn a() {}\n\n// old\n"),
+        (".ned.toml", "[format]\nrust = [\"sed\", \"s/old/new/\"]\n"),
+    ]);
+    let out = ned(
+        dir.path(),
+        &["a.rs", "-e", "replace 1 with \"fn b() {}\""],
+        "",
+    );
+    assert!(
+        out.contains("note: sed also changed a.rs outside the edit, at line 3\n"),
+        "{out}"
+    );
 }
 
 #[test]

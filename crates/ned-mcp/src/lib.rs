@@ -176,9 +176,9 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
                 let dir = args.required("dir")?;
                 self.cd(&dir, &mut transcript)
             }
-            "help" => match help::text(args.string("topic")?.as_deref()) {
+            "help" => match help::Frontend::Mcp.text(args.string("topic")?.as_deref()) {
                 Ok(text) => {
-                    transcript.out(text);
+                    transcript.out(&text);
                     0
                 }
                 Err(error) => {
@@ -222,6 +222,7 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             lang: self.lang,
             context: self.context,
             commit: args.string("commit")?,
+            frontend: help::Frontend::Mcp,
             style: Style::Plain,
             comment: args
                 .string("comment")?
@@ -475,11 +476,11 @@ fn tools() -> Value {
                 "annotations": { "readOnlyHint": read_only },
             })
         };
-    let topics: Vec<&str> = help::TOPICS.iter().map(|(name, _)| *name).collect();
+    let topics: Vec<&str> = help::Frontend::Mcp.topics().collect();
     json!([
         tool(
             "ned",
-            help::SUMMARY,
+            &help::Frontend::Mcp.summary(),
             false,
             json!({
                 "script": {
@@ -851,7 +852,43 @@ mod tests {
 
     #[test]
     fn the_ned_tool_is_described_by_the_help_summary() {
-        assert_eq!(tool("ned")["description"], ned_core::help::SUMMARY);
+        assert_eq!(
+            tool("ned")["description"],
+            ned_core::help::Frontend::Mcp.summary()
+        );
+    }
+
+    #[test]
+    fn the_help_tool_gives_the_servers_texts() {
+        let call = |topic: &str| {
+            let params = json!({"name": "help", "arguments": {"topic": topic}});
+            serve(request(json!(1), "tools/call", params)).remove(0)["result"].clone()
+        };
+        let check = call("check");
+        assert_eq!(
+            check["content"][0]["text"],
+            ned_core::help::Frontend::Mcp.text(Some("check")).unwrap()
+        );
+        assert_eq!(call("repl")["isError"], true);
+        let topic = &tool("help")["inputSchema"]["properties"]["topic"]["description"];
+        assert!(
+            topic.as_str().unwrap().ends_with(" config session"),
+            "{topic}"
+        );
+    }
+
+    #[test]
+    fn the_help_texts_fit_their_budgets() {
+        let frontend = ned_core::help::Frontend::Mcp;
+        assert!(
+            frontend.summary().len() <= 3200,
+            "{} bytes",
+            frontend.summary().len()
+        );
+        for topic in frontend.topics() {
+            let text = frontend.text(Some(topic)).unwrap();
+            assert!(text.len() <= 1600, "{topic}: {} bytes", text.len());
+        }
     }
 
     #[test]

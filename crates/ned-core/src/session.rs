@@ -197,8 +197,18 @@ pub enum RepeatError {
         "`!!` would apply entry {0}, a dry run; send the script again to apply it, or add -n to preview it again"
     )]
     DryRun(u64),
-    #[error("`{old}` isn't in the last script, which is:\n{script}")]
-    NotFound { old: String, script: String },
+    /// `hint` is empty, or `; ` and a fix.
+    #[error("`{old}` isn't in the last script{hint}; the script is:\n{script}")]
+    NotFound {
+        old: String,
+        script: String,
+        hint: String,
+    },
+    /// Text after a `:s` modifier that doesn't start another.
+    #[error(
+        "`{rest}` follows the `!!` modifiers; NEW ends at its first unescaped `{delimiter}`: write `\\{delimiter}` for a literal one, or use another delimiter"
+    )]
+    Trailing { rest: String, delimiter: char },
     #[error("malformed `!!` modifier `{0}`; usage: !![:s/OLD/NEW/][:gs/OLD/NEW/]...")]
     Malformed(String),
 }
@@ -229,11 +239,19 @@ pub fn repeat<'a>(
         return Some(Err(RepeatError::DryRun(entry.id)));
     }
     let mut script = entry.script.clone().unwrap_or_default();
+    // The delimiter of the modifier before, if any.
+    let mut previous = None;
     while !rest.is_empty() {
         let modifier = rest;
         let malformed = || RepeatError::Malformed(modifier.to_string());
         let Some(body) = modifier.strip_prefix(':') else {
-            return Some(Err(malformed()));
+            return Some(Err(match previous {
+                Some(delimiter) => RepeatError::Trailing {
+                    rest: modifier.to_string(),
+                    delimiter,
+                },
+                None => malformed(),
+            }));
         };
         let (global, body) = match body.strip_prefix("gs") {
             Some(body) => (true, body),
@@ -252,15 +270,35 @@ pub fn repeat<'a>(
         }
         let (new, after, _) = field(after, delimiter);
         if !script.contains(&old) {
-            return Some(Err(RepeatError::NotFound { old, script }));
+            let hint = not_found_hint(&old, &script, delimiter);
+            return Some(Err(RepeatError::NotFound { old, script, hint }));
         }
         script = match global {
             true => script.replace(&old, &new),
             false => script.replacen(&old, &new, 1),
         };
         rest = after;
+        previous = Some(delimiter);
     }
     Some(Ok((entry, script)))
+}
+
+/// The fix for a `!!` modifier whose `old`, read with `delimiter`, isn't in
+/// `script`: when the script has it with `\` before each delimiter, which
+/// the modifier read as escapes, another delimiter.
+fn not_found_hint(old: &str, script: &str, delimiter: char) -> String {
+    let escaped = old.replace(delimiter, &format!("\\{delimiter}"));
+    if escaped == old || !script.contains(&escaped) {
+        return "; OLD must match its text exactly, spacing and escapes included".into();
+    }
+    let other = ['|', '#', ',', '@', '%']
+        .into_iter()
+        .find(|&c| c != delimiter && !escaped.contains(c))
+        .unwrap_or('#');
+    format!(
+        "; it has `{escaped}`, and `\\{delimiter}` in a modifier stands for `{delimiter}`: \
+         use another delimiter, as in !!:s{other}{escaped}{other}NEW{other}"
+    )
 }
 
 /// Whether `entry`'s script failed or has a command that isn't a read, so `!!`
@@ -1865,7 +1903,8 @@ mod tests {
             err,
             RepeatError::NotFound {
                 old: "x".into(),
-                script: "show 1\nshow 2".into()
+                script: "show 1\nshow 2".into(),
+                hint: "; OLD must match its text exactly, spacing and escapes included".into(),
             }
         );
     }
@@ -1885,6 +1924,35 @@ mod tests {
             let err = expand(src, &["a"]).unwrap().unwrap_err();
             assert!(matches!(err, RepeatError::Malformed(_)), "{src}: {err}");
             assert!(err.to_string().contains("usage: !!"), "{err}");
+        }
+    }
+
+    #[test]
+    fn modifier_errors_say_how_to_fix_them() {
+        let err = expand(r"!!:s/a\/b/c/", &[r"show /a\/b/"])
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "`a/b` isn't in the last script; it has `a\\/b`, and `\\/` in a modifier stands for `/`: \
+             use another delimiter, as in !!:s|a\\/b|NEW|; the script is:\nshow /a\\/b/"
+        );
+        let err = expand("!!:s/zz/b/", &["show 1"]).unwrap().unwrap_err();
+        assert!(
+            err.to_string()
+                .starts_with("`zz` isn't in the last script; OLD must match its text exactly"),
+            "{err}"
+        );
+        for (src, rest) in [("!!:s|a|| a|", " a|"), ("!!:s/a/b/x", "x")] {
+            let err = expand(src, &["show a"]).unwrap().unwrap_err();
+            assert_eq!(
+                err,
+                RepeatError::Trailing {
+                    rest: rest.into(),
+                    delimiter: src.as_bytes()[4] as char
+                },
+                "{src}"
+            );
         }
     }
 }

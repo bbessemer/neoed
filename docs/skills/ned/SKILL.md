@@ -9,7 +9,7 @@ description:
   one all-or-nothing call that prints a diff; find a symbol's references or
   definition, rename it across the workspace, and check language-server
   diagnostics without a build. Use it instead of grep, sed, cat, inline Python
-  or str_replace.
+  or str_replace, through its MCP tools when they're connected.
 ---
 
 # Reading, searching and editing files with ned
@@ -33,7 +33,18 @@ screen, and `ned help TOPIC` for one verb.
 
 ## Invocation
 
-Pass the script on stdin with a quoted heredoc, so the shell leaves it alone:
+When ned's MCP server is connected (`ned mcp`; its tools are named `ned`,
+`show`, `outline` and so on), use it rather than the shell. Its `ned` tool runs
+a script: `script` is the script, `files` the files (or `workspace: true` for
+`-w`), and `dry_run`, `commit` and the other flags are arguments; `comment` says
+what the call is for, for a human following the session. Its `outline`, `show`,
+`history`, `undo` and `help` tools do what those commands do, and `cd` moves the
+server to another directory (a git worktree, say) for the rest of the session,
+so `files` can be relative to it. The examples below are shell commands; their
+files and script carry over to the tools unchanged.
+
+Without the MCP server, pass the script on stdin with a quoted heredoc, so the
+shell leaves it alone:
 
 ```sh
 ned src/parser.rs <<'EOF'
@@ -45,14 +56,6 @@ Short scripts with no `'` in them can use `-e`:
 `ned src/parser.rs -e 'delete fn:debug_dump'`. Don't escape a `'` into an `-e`
 script: `ned`'s heredocs read no escapes, so a `\x27` in one goes in as written.
 Add `-n` to preview without writing.
-
-With ned's MCP server connected (`ned mcp`), call its `ned` tool instead of the
-shell: `script` is the script, `files` the files (or `workspace: true` for
-`-w`), and `dry_run`, `commit` and the other flags are arguments; `comment` says
-what the call is for, for a human following the session. Its `outline`, `show`,
-`history`, `undo` and `help` tools do what those commands do, and `cd` moves the
-server to another directory (a git worktree, say) for the rest of the session,
-so `files` can be relative to it.
 
 Search with `show all` instead of grep. It prints each match's line with its
 number, under the file's name, across a glob or the whole workspace (`-w`, which
@@ -74,10 +77,11 @@ make new files with `create` (see `ned help create`).
 If `NED_SESSION` is set (or with `-s NAME`), each call is recorded. Fix a failed
 call by repeating it with a correction instead of resending the script: `!!` is
 the last script that edited or failed (skipping any `show` or `outline` since),
-`:s/OLD/NEW/` replaces the first `OLD` in it and `:gs/OLD/NEW/` every one, and
-the repeat runs on the same files, but without the flags (after `-n`, resend the
-script to apply it). `ned undo` reverts the last edit (`--force` if the file
-changed since), and `ned history` lists the calls:
+`:s/OLD/NEW/` replaces the first `OLD` in it and `:gs/OLD/NEW/` every one (any
+punctuation can stand for `/`: `:s|a/b|c|` when `OLD` holds one), and the repeat
+runs on the same files, but without the flags (after `-n`, resend the script to
+apply it). `ned undo` reverts the last edit (`--force` if the file changed
+since), and `ned history` lists the calls:
 
 ```sh
 ned src/parser.rs -e 'replace fn:prase>"end" with "end of input"'
@@ -175,7 +179,8 @@ rename impl:Parser>fn:new to create
 ```
 
 Find a symbol's uses, or read its definition, with the `.refs` and `.def` parts.
-They work on any step, and reach every workspace file with `-w`:
+They work on any step and show any file they find, but edit only files in the
+set, or the workspace with `-w`:
 
 ```ned
 show all fn:parse.refs

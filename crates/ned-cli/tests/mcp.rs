@@ -317,7 +317,7 @@ fn bang_bang_repeats_the_last_script_on_its_files() {
     );
     assert!(failed(&results[0]) && !failed(&results[1]));
     assert!(
-        text(&results[1]).contains("note: repeating 1: "),
+        text(&results[1]).contains("note: repeating 1 without arguments: "),
         "{}",
         text(&results[1])
     );
@@ -386,7 +386,9 @@ fn help_prints_the_summary_or_a_topic() {
             ("help", json!({ "topic": "nope" })),
         ],
     );
-    assert_eq!(text(&results[0]), ws.printed(&["help"]));
+    let summary = text(&results[0]);
+    assert_eq!(summary, ned_core::help::Frontend::Mcp.summary());
+    assert_ne!(summary, ws.printed(&["help"]));
     assert_eq!(text(&results[1]), ws.printed(&["help", "show"]));
     assert!(failed(&results[2]));
     assert!(text(&results[2]).starts_with("error: unknown topic `nope`; topics are show "));

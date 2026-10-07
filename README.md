@@ -99,23 +99,25 @@ You can change either per language in `.ned.toml` (see `ned help config`).
 
 ## Use it from an agent
 
-**Claude Code:** copy the skill into your skills directory:
+**MCP (preferred):** `ned mcp` serves the same scripts as tools (`ned`,
+`outline`, `show`, `history`, `undo`, `help`, and `cd` to move it) over the
+Model Context Protocol; an agent that has it connected should use it rather than
+its shell. It records every call in a session, so `undo` and `!!` work there
+too:
+
+```sh
+claude mcp add ned -- ned mcp
+```
+
+**Claude Code:** also copy the skill into your skills directory:
 
 ```sh
 git clone https://github.com/bbessemer/neoed
 cp -r neoed/docs/skills/ned ~/.claude/skills/
 ```
 
-Claude then uses ned when it reads, searches or edits files.
-
-**MCP:** `ned mcp` serves the same scripts as tools (`ned`, `outline`, `show`,
-`history`, `undo`, `help`, and `cd` to move it) over the Model Context Protocol,
-for agents without a shell. It records every call in a session, so `undo` and
-`!!` work there too:
-
-```sh
-claude mcp add ned -- ned mcp
-```
+Claude then uses ned when it reads, searches or edits files: through its MCP
+tools when they're connected, or from its shell.
 
 To let each conversation undo its own edits and repeat a failed command with a
 fix, give it a session with a `SessionStart` hook; the

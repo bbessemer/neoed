@@ -1137,6 +1137,36 @@ fn range_precedence(selector: &Selector, src: &str) -> Option<String> {
     })
 }
 
+/// The hint for a range `from..to` that matched nothing because `to` matches
+/// only where it starts before `from` ends, as an item whose span takes in
+/// the doc comment `from` matched does.
+fn backwards_range(
+    from: &Primary,
+    to: &Primary,
+    files: &[&SourceFile],
+    parents: &[Match],
+) -> Option<String> {
+    let from = Matcher::new(from, files, parents, &[], false).ok()?;
+    let to = Matcher::new(to, files, parents, &[], false).ok()?;
+    parents.iter().enumerate().find_map(|(p, parent)| {
+        let f = files[parent.file];
+        let mut skipped = Vec::new();
+        let ends = to.find(f, p, parent.range.clone(), &mut skipped);
+        let starts = from.find(f, p, parent.range.clone(), &mut skipped);
+        starts.iter().find_map(|(start, _)| {
+            let (end, _) = ends
+                .iter()
+                .find(|(e, _)| e.start < start.end && e.end > start.end)?;
+            let line = f.buffer.byte_to_line(start.end.saturating_sub(1)).ok()? + 1;
+            Some(format!(
+                "; its end matches only at {}, starting before its start's match ends, on line {line}: {}",
+                line_numbers(&f.buffer, end),
+                "an item's span takes in its doc comments and attributes, so start the range on an earlier line, or select the item alone"
+            ))
+        })
+    })
+}
+
 /// The fix for a `step` that matched nothing within `parents` (§7): its name
 /// under another kind, a close syntax name, a literal match ignoring case and
 /// spacing, a case-insensitive regex match, the spans a nested step searched,
@@ -1149,6 +1179,7 @@ pub(crate) fn hint(
     at: usize,
 ) -> String {
     if let Some(hint) = other_kind(step, files, parents, selector, at)
+        .or_else(|| unparsed_name(step, files, parents))
         .or_else(|| close_name(step, files, parents, selector, at))
     {
         return hint;
@@ -1195,6 +1226,11 @@ pub(crate) fn hint(
                     "; it matches case-insensitively at {} (add the i flag)",
                     location(&m)
                 );
+            }
+        }
+        Primary::Range { from, to } => {
+            if let Some(hint) = backwards_range(from, to, files, parents) {
+                return hint;
             }
         }
         Primary::Conflict(n) => {
@@ -1507,6 +1543,48 @@ fn other_kind(
         file,
         item,
     ))
+}
+
+/// `; NAME is at line N, in code that doesn't parse as LANG (lines A-B)`, for
+/// a syntax `step` whose name is written inside `parents` only where the
+/// grammar found an error, so no item holds it.
+fn unparsed_name(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Option<String> {
+    let Primary::Syntax { name, .. } = &step.primary else {
+        return None;
+    };
+    let word = name.rsplit(['.', ':']).next()?;
+    if word.is_empty() || !word.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    parents.iter().find_map(|p| {
+        let f = files[p.file];
+        let lang = f.lang?;
+        let root = f.tree()?.root_node();
+        f.text[p.range.clone()]
+            .match_indices(word)
+            .find_map(|(i, _)| {
+                let start = p.range.start + i;
+                let end = start + word.len();
+                let bounded =
+                    !f.text[..start].ends_with(is_word) && !f.text[end..].starts_with(is_word);
+                let node = root
+                    .descendant_for_byte_range(start, end)
+                    .filter(|_| bounded)?;
+                let ancestors = std::iter::successors(Some(node), |n| n.parent());
+                ancestors.clone().find(|n| n.is_error())?;
+                // The outermost construct the error breaks, not the error alone.
+                let broken = ancestors
+                    .filter(|n| n.has_error() && n.parent().is_some())
+                    .last()?;
+                Some(format!(
+                    "; {word} is at line {}, inside {lang} code that doesn't parse ({}): {}",
+                    line_numbers(&f.buffer, &(start..end)),
+                    line_numbers(&f.buffer, &broken.byte_range()),
+                    "fix it first, or select lines",
+                ))
+            })
+    })
 }
 
 /// `; did you mean SEL (LINES)?`: `selector` with the first `written` from
@@ -3260,6 +3338,30 @@ fn main() {
             )
             .ends_with("did you mean mod:m>struct:S (2)?")
         );
+    }
+
+    #[test]
+    fn a_name_in_code_that_does_not_parse_is_pointed_out() {
+        let text = "package x\n\nfunc a() {\n\tif true {\n\nfunc TestX() {\n}\n";
+        let err = error("delete fn:TestX", &[("a.go", text)]);
+        assert!(
+            err.ends_with("; TestX is at line 6, inside go code that doesn't parse (3-7): fix it first, or select lines"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_range_whose_end_starts_before_its_start_ends_says_so() {
+        let text =
+            "package x\n\n// eventBinding reads x.\ntype eventBinding struct {\n\tA int\n}\n";
+        let err = error(
+            r"delete /^\/\/ eventBinding reads/..struct:eventBinding",
+            &[("a.go", text)],
+        );
+        assert!(
+        err.ends_with("; its end matches only at 3-6, starting before its start's match ends, on line 3: an item's span takes in its doc comments and attributes, so start the range on an earlier line, or select the item alone"),
+        "{err}"
+    );
     }
 
     #[test]

@@ -25,7 +25,8 @@ prompt snippet, and every call is recorded in a session without any setup. In
 Claude Code: `claude mcp add ned -- ned mcp`; other clients take the same
 command (`ned` with the argument `mcp`). Its `ned` tool takes a script, with
 `files` (or `workspace` for `-w`) and the flags as arguments, and its
-description is `ned help`. `outline`, `show`, `history`, `undo` and `help` are
+description is the help summary, naming those arguments (`dry_run`, `force`)
+where the CLI's names flags. `outline`, `show`, `history`, `undo` and `help` are
 tools too, `cd` moves the server to another directory for the rest of the
 session, and each result is what `ned` would print. A `ned` call's `comment`
 says what it is for: it's recorded in the session, and a REPL attached to it
@@ -33,8 +34,9 @@ says what it is for: it's recorded in the session, and a REPL attached to it
 into `NED_SESSION`'s session if it's set, or a new `mcp-N` otherwise
 (`ned help mcp`).
 
-**Claude Code skill.** To have Claude run `ned` from its shell instead, copy the
-skill directory into a skills directory:
+**Claude Code skill.** The skill teaches Claude when and how to use `ned`,
+through the MCP tools when they're connected or from its shell otherwise. Copy
+the skill directory into a skills directory:
 
 - all projects: `cp -r docs/skills/ned ~/.claude/skills/`
 - one project: `cp -r docs/skills/ned .claude/skills/`

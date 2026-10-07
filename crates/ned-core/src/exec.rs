@@ -92,19 +92,7 @@ pub fn run<'s, 'l: 's>(
     options: &'s Options<'s>,
     lsp: Option<&'s mut (dyn Lsp + 'l)>,
 ) -> Run {
-    let mut executor = Executor {
-        src,
-        options,
-        lsp: lsp.map(|lsp| -> &'s mut dyn Lsp { lsp }),
-        allow: None,
-        named: Vec::new(),
-        workspace: None,
-        files: Vec::new(),
-        set: Vec::new(),
-        output: String::new(),
-        notes: Vec::new(),
-        unknown: BTreeSet::new(),
-    };
+    let mut executor = Executor::new(src, options, lsp.map(|lsp| -> &'s mut dyn Lsp { lsp }));
     let result = executor.run(script, initial).map_err(|mut e| {
         if let (Some(None), ExecErrorKind::NoLanguage { selector, .. })
         | (Some(None), ExecErrorKind::NoCodeLanguage { selector, .. }) = (options.lang, &e.kind)
@@ -130,6 +118,71 @@ pub fn run<'s, 'l: 's>(
     }
 }
 
+/// The kinds of the items named `name` in the files `paths` name, most likely
+/// first, for a hint (§7).
+pub fn kinds_named(paths: &[String], options: &Options, name: &str) -> Vec<&'static str> {
+    let mut executor = Executor::new("", options, None);
+    let Ok(set) = executor.open(paths, None) else {
+        return Vec::new();
+    };
+    executor.set = set;
+    let Ok(files) = executor.read(|_| true) else {
+        return Vec::new();
+    };
+    let mut kinds: Vec<&'static str> = files
+        .iter()
+        .flat_map(|&i| executor.files[i].file.items().unwrap_or_default())
+        .filter(|item| syntax::item_matches(name, item))
+        .map(|item| item.kind)
+        .collect();
+    kinds.sort_by_key(|kind| syntax::rank(kind));
+    kinds.dedup();
+    kinds
+}
+
+/// `err`, from opening the starting file set, with a fix when it names a
+/// missing file that `script` creates (§7).
+fn created(script: &Script, mut err: ExecError) -> ExecError {
+    if let ExecErrorKind::Io { path, message } = &mut err.kind
+        && message.starts_with("no such file")
+        && script
+            .commands
+            .iter()
+            .any(|c| matches!(&c.kind, CommandKind::Create { path: p, .. } if same_path(p, path)))
+    {
+        message.push_str(&format!(
+            "; drop it from the files given: `create {path}` adds it to the file set"
+        ));
+    }
+    err
+}
+
+/// The fix for a `script` run on no files whose selectors start with `file:`
+/// steps naming files, not globs: the `file` command adding them (§7).
+fn file_steps(script: &Script) -> String {
+    let mut paths: Vec<&str> = Vec::new();
+    let steps = script
+        .commands
+        .iter()
+        .flat_map(|c| c.kind.selectors())
+        .filter_map(|s| s.steps.first());
+    for step in steps {
+        if let Primary::File(path) = &step.primary
+            && !path.contains(['*', '?', '[', '{'])
+            && !paths.contains(&path.as_str())
+        {
+            paths.push(path);
+        }
+    }
+    match paths.is_empty() {
+        true => String::new(),
+        false => format!(
+            "; add the files its `file:` steps name: file {}",
+            paths.join(" ")
+        ),
+    }
+}
+
 struct Loaded {
     file: SourceFile,
     edits: EditSet,
@@ -140,6 +193,9 @@ struct Loaded {
     sig_end: Option<char>,
     /// Made by `create`: its original text is what `create` gave it.
     created: bool,
+    /// Outside the file set and the workspace, found by `.refs` or `.def`: shown,
+    /// but not edited (§3.4).
+    outside: bool,
     /// The text before the first `|` changed it (§2.3), and the edits
     /// applied at each `|` since.
     original: Option<String>,
@@ -183,10 +239,26 @@ struct Executor<'s> {
     workspace: Option<Vec<String>>,
 }
 
-impl Executor<'_> {
+impl<'s> Executor<'s> {
+    fn new(src: &'s str, options: &'s Options<'s>, lsp: Option<&'s mut dyn Lsp>) -> Self {
+        Executor {
+            src,
+            options,
+            lsp,
+            allow: None,
+            named: Vec::new(),
+            workspace: None,
+            files: Vec::new(),
+            set: Vec::new(),
+            output: String::new(),
+            notes: Vec::new(),
+            unknown: BTreeSet::new(),
+        }
+    }
+
     fn run(&mut self, script: &Script, initial: Initial) -> Result<Vec<Change>, ExecError> {
         self.set = match initial {
-            Initial::Files(paths) => self.open(paths, None)?,
+            Initial::Files(paths) => self.open(paths, None).map_err(|e| created(script, e))?,
             Initial::Workspace(root) => {
                 let cwd = std::env::current_dir().unwrap_or_default();
                 let paths = with_unwritten(
@@ -211,7 +283,10 @@ impl Executor<'_> {
             if script.stages.contains(&index) {
                 self.commit()?;
             }
-            if let Err(e) = self.command(index, command) {
+            if let Err(mut e) = self.command(index, command) {
+                if let ExecErrorKind::NoFiles { hint, .. } = &mut e.kind {
+                    *hint = file_steps(script);
+                }
                 return Err(self.pipe_hint(index, command, e));
             }
         }
@@ -338,6 +413,7 @@ impl Executor<'_> {
             original: None,
             applied: 0,
             created: true,
+            outside: false,
         });
         self.named.push(path.into());
         self.set.push(Member {
@@ -465,6 +541,7 @@ impl Executor<'_> {
             original: None,
             applied: 0,
             created: false,
+            outside: false,
         });
         self.files.len() - 1
     }
@@ -487,6 +564,9 @@ impl Executor<'_> {
             }
             CommandKind::File(paths) => {
                 self.set = self.open(paths, Some(span))?;
+                for file in self.set.iter().filter_map(|m| m.file) {
+                    self.files[file].outside = false;
+                }
                 for member in &self.set {
                     if !self.named.iter().any(|n| same_path(n, &member.path)) {
                         self.named.push(member.path.clone());
@@ -494,7 +574,18 @@ impl Executor<'_> {
                 }
                 return Ok(());
             }
-            _ if self.set.is_empty() => return Err(error(ExecErrorKind::NoFiles)),
+            _ if self.set.is_empty() => {
+                let verb = match command.kind {
+                    CommandKind::Show { .. }
+                    | CommandKind::Outline(_)
+                    | CommandKind::Check { .. } => "read",
+                    _ => "edit",
+                };
+                return Err(error(ExecErrorKind::NoFiles {
+                    verb,
+                    hint: String::new(),
+                }));
+            }
             _ => {}
         }
         match &command.kind {
@@ -838,7 +929,7 @@ impl Executor<'_> {
             }
         }
         let paths: Vec<&Path> = locations.iter().map(|l| l.path.as_path()).collect();
-        let files = self.reach(&paths, what, span)?;
+        let files = self.reach(&paths, false, span)?;
         let mut found: Vec<Match> = locations
             .iter()
             .zip(files)
@@ -901,19 +992,21 @@ impl Executor<'_> {
     }
 
     /// Loads the files a server named, each by the path the script knows it
-    /// by, which must be in the file set or, under `-w`, the workspace (§3.4);
-    /// `what` names the feature, for errors.
+    /// by if it's in the file set or, under `-w`, the workspace (§3.4). Any
+    /// other file is loaded read-only, unless the caller `edits` it (`rename`),
+    /// which is an error.
     fn reach(
         &mut self,
         paths: &[&Path],
-        what: &str,
+        edits: bool,
         span: &Range<usize>,
     ) -> Result<Vec<usize>, ExecError> {
         let mut reached = Vec::new();
         let mut outside = Vec::new();
         for path in paths {
             match self.reachable(path) {
-                Ok(path) => reached.push(path),
+                Ok(path) => reached.push((path, false)),
+                Err(shown) if !edits => reached.push((shown, true)),
                 Err(shown) => outside.push(shown),
             }
         }
@@ -922,7 +1015,6 @@ impl Executor<'_> {
             let shown: Vec<&str> = outside.iter().map(String::as_str).collect();
             return Err(ExecError::new(
                 ExecErrorKind::Outside {
-                    what: what.into(),
                     files: select::file_list(&shown),
                     workspace: self.workspace.is_some(),
                 },
@@ -930,8 +1022,10 @@ impl Executor<'_> {
             ));
         }
         let mut files = Vec::new();
-        for path in reached {
-            files.push(self.load(&path, Some(span.clone()))?);
+        for (path, outside) in reached {
+            let file = self.load(&path, Some(span.clone()))?;
+            self.files[file].outside = outside;
+            files.push(file);
             if !self.named.iter().any(|n| same_path(n, &path)) {
                 self.named.push(path);
             }
@@ -947,7 +1041,15 @@ impl Executor<'_> {
         range: Range<usize>,
         text: String,
     ) -> Result<(), ExecError> {
+        let workspace = self.workspace.is_some();
         let loaded = &mut self.files[file];
+        if loaded.outside {
+            let path = loaded.file.path.clone();
+            return Err(ExecError::new(
+                ExecErrorKind::ReadOnly { path, workspace },
+                Some(span.clone()),
+            ));
+        }
         let edit = Edit {
             range,
             text,
@@ -1415,7 +1517,7 @@ impl Executor<'_> {
             Err(LspFailure(message)) => return Err(error(ExecErrorKind::Lsp(message))),
         };
         let paths: Vec<&Path> = files.iter().map(|f| f.path.as_path()).collect();
-        let reached = self.reach(&paths, "rename", span)?;
+        let reached = self.reach(&paths, true, span)?;
         for (file, f) in reached.into_iter().zip(files) {
             for edit in f.edits {
                 let buffer = &self.files[file].file.buffer;
@@ -1920,16 +2022,36 @@ fn replace(f: &SourceFile, range: Range<usize>, new: &Text, whole: bool) -> (Ran
         let full = text::full_lines(t, range);
         let indent = match list_anchor(f, full.start, new) {
             Some(item) => text::indent_at(t, item.range.start),
-            None => text::indent_at(t, full.start),
+            None => line_indent(f, full.start),
         };
-        let mut new = line_oriented(new, indent, unit, text::rebase_replacing);
+        let mut new = line_oriented_at(f, full.start, new, indent, true, text::rebase_replacing);
         if !t[..full.end].ends_with('\n') {
             new.pop();
         }
         (full, new)
     } else {
-        let indent = text::indent_at(t, range.start);
-        (range, verbatim(new, indent, unit))
+        let indent = line_indent(f, range.start);
+        let hang = hang_indent(f, range.start, new);
+        let mut out = verbatim(new, hang.as_deref().unwrap_or(indent), unit);
+        // A span that takes in part of its line's indentation, and text after it,
+        // keeps it, unless the text gives its own.
+        let lead = &t[text::line_start(t, range.start)..range.start];
+        let past_indent = t[range.clone()]
+            .lines()
+            .next()
+            .is_some_and(|l| !l.trim().is_empty());
+        if new.kind != TextKind::RawHeredoc
+            && past_indent
+            && !out.starts_with([' ', '\t'])
+            && let Some(missing) = indent.strip_prefix(lead).filter(|m| !m.is_empty())
+        {
+            out = format!("{missing}{out}");
+        }
+        // A heredoc's last line has no line ending to stand in for the span's.
+        if new.kind != TextKind::Str && t[..range.end].ends_with('\n') {
+            out.push('\n');
+        }
+        (range, out)
     }
 }
 
@@ -2365,7 +2487,12 @@ fn insert(
             Position::Before | Position::Start => range.start,
             Position::After | Position::End => range.end,
         };
-        return (at..at, verbatim(new, text::indent_at(t, range.start), unit));
+        let indent = line_indent(f, range.start);
+        let hang = hang_indent(f, range.start, new);
+        return (
+            at..at,
+            verbatim(new, hang.as_deref().unwrap_or(indent), unit),
+        );
     }
     let full = text::full_lines(t, range.clone());
     // List-item text next to a list item's line goes beside the whole item.
@@ -2375,7 +2502,7 @@ fn insert(
         Position::Start | Position::End => None,
     };
     let full = anchor.map_or(full, |item| text::full_lines(t, item.range.clone()));
-    let first = text::indent_at(t, full.start);
+    let first = line_indent(f, full.start);
     let inner = match text::first_indent(t, full.clone()) {
         Some(indent) => indent.to_string(),
         // A blank delimited body is filled like an empty one.
@@ -2388,22 +2515,29 @@ fn insert(
     let match_end = selector.steps.last().is_some_and(|s| {
         s.parts.is_empty() && matches!(s.primary, Primary::Regex(_) | Primary::Literal(_))
     });
-    let (at, indent) = match position {
-        Position::Before => (full.start, first),
-        Position::After => {
-            let indent = anchor.map_or_else(
-                || {
-                    let line = after_line(t, full.clone(), match_end);
-                    construct_indent(f, line).unwrap_or(text::indent_at(t, line))
-                },
-                |_| first,
-            );
-            (full.end, indent)
-        }
-        Position::Start => (full.start, inner.as_str()),
-        Position::End => (full.end, inner.as_str()),
+    let (at, line, indent) = match position {
+        Position::Before => (
+            full.start,
+            full.start,
+            clause_indent(f, full.start, new).unwrap_or(first),
+        ),
+        Position::After => match anchor {
+            Some(_) => (full.end, full.start, first),
+            None => {
+                let line = after_line(t, full.clone(), match_end);
+                let indent = clause_indent(f, line, new)
+                    .or_else(|| construct_indent(f, line))
+                    .unwrap_or(line_indent(f, line));
+                (full.end, line, indent)
+            }
+        },
+        Position::Start => (full.start, full.start, inner.as_str()),
+        Position::End => (full.end, full.start, inner.as_str()),
     };
-    let mut new = line_oriented(new, indent, unit, text::rebase);
+    // Text before an item's first line goes outside the item.
+    let hang = position != Position::Before
+        || list_item(f, line).is_none_or(|i| text::line_start(t, i.range.start) != line);
+    let mut new = line_oriented_at(f, line, new, indent, hang, text::rebase);
     if at == full.end && !full.is_empty() && !t[..at].ends_with('\n') {
         // The span's last line has no line ending; give it one instead.
         new.pop();
@@ -2428,7 +2562,7 @@ fn line_oriented(
     new: &Text,
     indent: &str,
     unit: &str,
-    rebase: fn(&str, &str, &str) -> String,
+    rebase: impl Fn(&str, &str, &str) -> String,
 ) -> String {
     let mut out = match new.kind {
         TextKind::RawHeredoc => new.value.clone(),
@@ -2497,27 +2631,175 @@ fn starts_line(t: &str, offset: usize) -> bool {
 }
 
 /// The Markdown list item that list-item `new` placed on the line holding
-/// `offset` anchors to (§5.2): the innermost item on that line, if it's a list
-/// item that isn't in a block quote.
+/// `offset` anchors to (§5.2).
 fn list_anchor<'f>(f: &'f SourceFile, offset: usize, new: &Text) -> Option<&'f Item> {
     let first = new.value.lines().map(str::trim).find(|l| !l.is_empty())?;
-    let digits = first.len() - first.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-    let marker = match digits {
-        0 => first.strip_prefix(['-', '*', '+']),
-        1..=9 => first[digits..].strip_prefix(['.', ')']),
-        _ => None,
-    };
-    if !marker.is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace)) {
-        return None;
-    }
+    text::list_marker(first)
+        .is_some()
+        .then(|| list_item(f, offset))
+        .flatten()
+}
+
+/// The innermost item on the line holding `offset`, if it's a Markdown list
+/// item that isn't in a block quote.
+fn list_item(f: &SourceFile, offset: usize) -> Option<&Item> {
     let t = &f.text;
     let item = f
         .items()?
         .iter()
         .filter(|i| text::full_lines(t, i.range.clone()).contains(&offset))
         .min_by_key(|i| i.range.len())?;
-    let line = t[..item.range.start].rfind('\n').map_or(0, |i| i + 1);
+    let line = text::line_start(t, item.range.start);
     (item.kind == "item" && t[line..item.range.start].trim().is_empty()).then_some(item)
+}
+
+/// The indentation for the later lines of one paragraph of prose `new` placed
+/// on the line holding `offset` (§5.2): in a Markdown list item, that of the
+/// item's text, or of the line when it continues the item.
+fn hang_indent(f: &SourceFile, offset: usize, new: &Text) -> Option<String> {
+    if f.lang != Some(Language::Markdown) || new.kind == TextKind::RawHeredoc {
+        return None;
+    }
+    // One paragraph: after a blank line, text needn't continue the item.
+    let body = new.value.trim_end_matches('\n');
+    let prose = !body.starts_with('\n')
+        && body.lines().map(str::trim_start).all(|l| {
+            let heading = l.trim_start_matches('#');
+            !l.is_empty()
+                && text::list_marker(l).is_none()
+                && !(heading.len() < l.len()
+                    && (heading.is_empty() || heading.starts_with([' ', '\t'])))
+                && !l.starts_with("```")
+                && !l.starts_with("~~~")
+        });
+    let item = list_item(f, offset).filter(|_| prose)?;
+    let t = &f.text;
+    let line = text::line_start(t, item.range.start);
+    if text::line_start(t, offset) != line {
+        return Some(text::indent_at(t, offset).to_string());
+    }
+    let indent = text::indent_at(t, line);
+    let rest = &t[line + indent.len()..];
+    let marker = text::list_marker(rest)?;
+    let spaces = rest[marker..].len() - rest[marker..].trim_start_matches(' ').len();
+    Some(format!("{indent}{}", " ".repeat(marker + spaces.max(1))))
+}
+
+/// The indentation of the line holding `offset`, with, in a Markdown block
+/// quote, its `>` markers (§5.2).
+fn line_indent(f: &SourceFile, offset: usize) -> &str {
+    let t = &f.text;
+    let line = text::line_start(t, offset);
+    let indent = text::indent_at(t, offset);
+    let marker = line + indent.len();
+    if f.lang != Some(Language::Markdown) || !t[marker..].starts_with('>') {
+        return indent;
+    }
+    let quoted = f
+        .tree()
+        .and_then(|tree| {
+            tree.root_node()
+                .descendant_for_byte_range(marker, marker + 1)
+        })
+        .is_some_and(|n| {
+            std::iter::successors(Some(n), |n| n.parent()).any(|n| n.kind() == "block_quote")
+        });
+    if !quoted {
+        return indent;
+    }
+    let len = t[line..].len() - t[line..].trim_start_matches([' ', '\t', '>']).len();
+    &t[line..line + len]
+}
+
+/// Line-oriented `new` for the line holding `at`, re-based to `indent` by
+/// `rebase`, as Markdown list items and block quotes need (§5.2): quoted text
+/// loses one level of `>` going into a quote, whose markers its blank lines
+/// take, and prose's later lines take a list item's hanging indent, if `hang`.
+fn line_oriented_at(
+    f: &SourceFile,
+    at: usize,
+    new: &Text,
+    indent: &str,
+    hang: bool,
+    rebase: fn(&str, &str, &str) -> String,
+) -> String {
+    let unit = f.indent_unit();
+    let marker = indent.trim_end();
+    if new.kind == TextKind::RawHeredoc || !marker.ends_with('>') {
+        return match hang_indent(f, at, new).filter(|_| hang) {
+            Some(hang) => line_oriented(new, indent, unit, |t, i, u| {
+                text::rebase_hanging(t, &hang, u, |head| rebase(head, i, u))
+            }),
+            None => line_oriented(new, indent, unit, rebase),
+        };
+    }
+    let quoted = new
+        .value
+        .lines()
+        .map(str::trim_start)
+        .all(|l| l.is_empty() || l.starts_with('>'));
+    let new = match quoted {
+        true => &Text {
+            value: new
+                .value
+                .split('\n')
+                .map(|l| {
+                    let l = l.trim_start();
+                    let l = l.strip_prefix('>').unwrap_or(l);
+                    l.strip_prefix(' ').unwrap_or(l)
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            kind: new.kind,
+        },
+        false => new,
+    };
+    line_oriented(new, indent, unit, rebase)
+        .split_inclusive('\n')
+        .map(|l| match l.trim().is_empty() {
+            true => format!("{marker}\n"),
+            false => l.to_string(),
+        })
+        .collect()
+}
+
+/// The indentation of the `case` or `default` clause around the line starting
+/// at `line`, for `new` that starts with one (§5.2), so a clause placed next to
+/// a line of another goes beside it.
+fn clause_indent<'f>(f: &'f SourceFile, line: usize, new: &Text) -> Option<&'f str> {
+    let python = f.lang == Some(Language::Python);
+    // Python's soft keyword starts statements too (`case: int = 1`), and
+    // `default` is no keyword there.
+    let opens = |s: &str| {
+        let line = s.lines().next().unwrap_or("");
+        ["case", "default"].iter().any(|w| {
+            line.strip_prefix(w).is_some_and(|r| {
+                !r.starts_with(|c: char| c.is_alphanumeric() || c == '_')
+                    && (!python
+                        || *w == "case"
+                            && !r.trim_start().starts_with([':', '=', '.', ','])
+                            && line.trim_end().ends_with(':'))
+            })
+        })
+    };
+    let first = new
+        .value
+        .lines()
+        .map(str::trim_start)
+        .find(|l| !l.is_empty())?;
+    if f.lang == Some(Language::Markdown) || !opens(first) {
+        return None;
+    }
+    let t = &f.text;
+    let token = line + text::indent_at(t, line).len();
+    let node = f
+        .tree()?
+        .root_node()
+        .descendant_for_byte_range(token, token)?;
+    std::iter::successors(Some(node), |n| n.parent())
+        .map(|n| n.start_byte())
+        .find(|&start| starts_line(t, start) && opens(&t[start..]))
+        .map(|start| text::indent_at(t, start))
 }
 
 /// `new` inserted into a partial line: later lines re-based (unless raw).
@@ -2618,8 +2900,9 @@ pub enum ExecErrorKind {
         "edit overlaps command {command} at {location}; merge the two edits, or put a `|` between them"
     )]
     Overlap { command: usize, location: String },
-    #[error("no files to edit; pass FILE arguments or use `file PATH`")]
-    NoFiles,
+    /// `verb` is `read` or `edit`; `hint` is empty, or `; ` and a fix.
+    #[error("no files to {verb}; pass FILE arguments or use `file PATH`{hint}")]
+    NoFiles { verb: &'static str, hint: String },
     #[error("cannot read {path}: {message}")]
     Io { path: String, message: String },
     #[error(
@@ -2650,18 +2933,19 @@ pub enum ExecErrorKind {
     /// `message` ends with a fix.
     #[error("cannot rename at {location}: {message}")]
     RenameRefused { location: String, message: String },
-    /// `what` is `rename` or a selector; `workspace`: under `-w`, where the
-    /// boundary is the workspace.
+    /// `rename`'s; `workspace`: under `-w`, where the boundary is the workspace.
     #[error(
-        "{what} reaches files outside the {}: {files}; {}",
+        "rename reaches files outside the {}: {files}; {}",
         if *workspace { "workspace" } else { "file set" },
         if *workspace { "these are ignored or outside the root; use a regex there instead" } else { "add them to the file set, or use -w" }
     )]
-    Outside {
-        what: String,
-        files: String,
-        workspace: bool,
-    },
+    Outside { files: String, workspace: bool },
+    /// `workspace`: under `-w`, where the boundary is the workspace.
+    #[error(
+        "cannot edit {path}: it is {}",
+        if *workspace { "ignored or outside the workspace root; name it in a `file` command" } else { "outside the file set; add it to the file set, or use -w" }
+    )]
+    ReadOnly { path: String, workspace: bool },
     /// `locations` lists where the matches are.
     #[error("{selector} matches {total} spans, at {locations}; add `all` to take every one")]
     AmbiguousLocated {
@@ -2731,8 +3015,9 @@ impl ExecErrorKind {
             | ExecErrorKind::FileExists { .. }
             | ExecErrorKind::RenameRefused { .. }
             | ExecErrorKind::Outside { .. }
+            | ExecErrorKind::ReadOnly { .. }
             | ExecErrorKind::AmbiguousLocated { .. } => 1,
-            ExecErrorKind::NoFiles
+            ExecErrorKind::NoFiles { .. }
             | ExecErrorKind::InvalidQuery { .. }
             | ExecErrorKind::InvalidPattern { .. }
             | ExecErrorKind::DuplicateCapture { .. }
@@ -3332,6 +3617,56 @@ mod tests {
         assert_eq!(
             edited(TEXT, "replace \"2\" with \"vec![\\n1,\\n]\""),
             TEXT.replace("2;", "vec![\n    1,\n    ];")
+        );
+    }
+
+    #[test]
+    fn replace_partial_span_ending_in_a_newline_with_a_heredoc_keeps_the_line_break() {
+        let text = "// x reads.\nfn a() {}\n";
+        let want = "// y\nz.\nfn a() {}\n";
+        assert_eq!(
+            edited(text, "replace \"x reads.\\n\" with <<END\ny\nz.\nEND"),
+            want
+        );
+        assert_eq!(
+            edited(text, "replace \"x reads.\\n\" with <<'END'\ny\nz.\nEND"),
+            want
+        );
+        // A string's line endings are its own.
+        assert_eq!(
+            edited(text, "replace \"x reads.\\n\" with \"y\\n\""),
+            "// y\nfn a() {}\n"
+        );
+    }
+
+    #[test]
+    fn replace_partial_span_taking_in_indentation_keeps_it() {
+        assert_eq!(
+            edited(TEXT, r#"replace /^\s*let x = 1/ with "let y = 1""#),
+            TEXT.replace("let x = 1;", "let y = 1;")
+        );
+        assert_eq!(
+            edited(TEXT, r#"replace /^  \s*let x = 1/ with "let y = 1""#),
+            TEXT.replace("let x = 1;", "let y = 1;")
+        );
+        // Text with its own indentation, or a span of indentation alone,
+        // changes it.
+        assert_eq!(
+            edited(TEXT, r#"replace /^    let x = 1/ with "  let x = 1""#),
+            TEXT.replace("    let x = 1;", "  let x = 1;")
+        );
+        assert_eq!(
+            edited(TEXT, r#"replace all /^    / with "\t""#),
+            TEXT.replace("    ", "\t")
+        );
+        assert_eq!(
+            edited(TEXT, r#"replace all /^ +/ with """#),
+            TEXT.replace("    ", "")
+        );
+        // Text that begins on the span's own line is placed as written.
+        assert_eq!(
+            edited(TEXT, r#"replace /let x = 1/ with "let y = 1""#),
+            TEXT.replace("let x = 1;", "let y = 1;")
         );
     }
 
@@ -4048,6 +4383,115 @@ mod tests {
     }
 
     #[test]
+    fn later_lines_of_prose_in_a_list_item_take_its_hanging_indent() {
+        // Replacing a continuation line: the text's own offset is dropped.
+        assert_eq!(
+            md(
+                "- a: b\n  off. A number is\n  milliseconds.\n- c\n",
+                "replace \"off. A number is\\n  milliseconds.\" with \"off. A number\\n  is ms.\""
+            ),
+            "- a: b\n  off. A number\n  is ms.\n- c\n"
+        );
+        // Part of the marker line: later lines go under the item's text.
+        assert_eq!(
+            md("- a b\n- c\n", "replace \"a b\" with \"a\\nb\""),
+            "- a\n  b\n- c\n"
+        );
+        assert_eq!(
+            md("1. a b\n", "replace \"a b\" with \"a\\nb\""),
+            "1. a\n   b\n"
+        );
+        assert_eq!(
+            md(WRAPPED, "insert after 2 <<END\nmore\n  words\nEND\n"),
+            "- [ ] One item\n      wrapped here\n      more\n      words\n- [ ] Two\n"
+        );
+        // Inline code, and a `#` that starts no heading, are prose.
+        assert_eq!(
+            md("- a b\n", "replace \"a b\" with \"`a`\\n#b\""),
+            "- `a`\n  #b\n"
+        );
+        // Text before the item's first line is outside it.
+        assert_eq!(
+            md("# T\n\n- a\n- b\n", "insert before 3 \"Intro\\ntext\""),
+            "# T\n\nIntro\ntext\n- a\n- b\n"
+        );
+        // Code keeps its own indentation.
+        assert_eq!(
+            md(WRAPPED, "insert after 2 <<END\n```\n  x\n```\nEND\n"),
+            "- [ ] One item\n      wrapped here\n      ```\n        x\n      ```\n- [ ] Two\n"
+        );
+    }
+
+    #[test]
+    fn text_placed_in_a_block_quote_takes_its_markers() {
+        assert_eq!(
+            md("> a\n> b\n\nc\n", "insert after 2 <<END\nx\n\ny\nEND\n"),
+            "> a\n> b\n> x\n>\n> y\n\nc\n"
+        );
+        // Quoted text isn't quoted twice.
+        assert_eq!(
+            md("> a\n> b\n", "insert after 1 <<END\n> x\nEND\n"),
+            "> a\n> x\n> b\n"
+        );
+        assert_eq!(
+            md("> a\n> b\n", "insert after 1 \"> x\\n\\n\""),
+            "> a\n> x\n>\n> b\n"
+        );
+        assert_eq!(md("> a\n> b\n", "replace 2 with \"c\""), "> a\n> c\n");
+        assert_eq!(md("> > a\n", "insert before 1 \"b\""), "> > b\n> > a\n");
+        assert_eq!(
+            md("> a b\n", "replace \"a b\" with \"a\\nb\""),
+            "> a\n> b\n"
+        );
+        // A `>` in code is no quote.
+        assert_eq!(
+            md("```\n> a\n```\n", "insert after 2 \"b\""),
+            "```\n> a\nb\n```\n"
+        );
+    }
+
+    #[test]
+    fn a_clause_inserted_next_to_a_line_of_another_goes_beside_it() {
+        let go = "package x\n\nfunc f(x int) int {\n\tswitch x {\n\tcase 1:\n\t\treturn 1\n\t}\n\treturn 0\n}\n";
+        assert_eq!(
+            edited_in(
+                "a.go",
+                go,
+                "insert after /return 1/ <<END\ncase 2:\n\treturn 2\nEND\n"
+            ),
+            go.replace("return 1\n", "return 1\n\tcase 2:\n\t\treturn 2\n")
+        );
+        assert_eq!(
+            edited_in("a.go", go, "insert after 6 \"default:\\n\\treturn 2\""),
+            go.replace("return 1\n", "return 1\n\tdefault:\n\t\treturn 2\n")
+        );
+        let py = "def f(x):\n    match x:\n        case 1:\n            return 1\n    return 0\n";
+        assert_eq!(
+            edited_in(
+                "a.py",
+                py,
+                "insert after 4 <<END\ncase 2:\n    return 2\nEND\n"
+            ),
+            py.replace(
+                "return 1\n",
+                "return 1\n        case 2:\n            return 2\n"
+            )
+        );
+        // Neither is a word that only starts with `case`, or a statement that
+        // starts with one.
+        assert_eq!(
+            edited_in("a.py", py, "insert after 4 \"cases = 2\""),
+            py.replace("return 1\n", "return 1\n            cases = 2\n")
+        );
+        for s in ["default = None", "case: int = 2", "case.x = 2"] {
+            assert_eq!(
+                edited_in("a.py", py, &format!("insert after 4 \"{s}\"")),
+                py.replace("return 1\n", &format!("return 1\n            {s}\n"))
+            );
+        }
+    }
+
+    #[test]
     fn sub_inserts_text_verbatim() {
         assert_eq!(
             edited(TEXT, "sub /1;\\n/ with <<END\n1;\n  // one\nEND\n"),
@@ -4247,7 +4691,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             err.render("show 1"),
-            "error: script:1:1: no files to edit; pass FILE arguments or use `file PATH`"
+            "error: script:1:1: no files to read; pass FILE arguments or use `file PATH`"
         );
     }
 
@@ -6202,7 +6646,7 @@ fn main() {}
     fn an_empty_workspace_has_no_files() {
         let dir = tempfile::tempdir().unwrap();
         let out = in_workspace(&dir.path().canonicalize().unwrap(), "show 1");
-        assert!(out.error().contains("no files to edit"), "{}", out.error());
+        assert!(out.error().contains("no files to read"), "{}", out.error());
     }
 
     #[test]
@@ -6779,7 +7223,7 @@ fn main() {}
     }
 
     #[test]
-    fn refs_reach_only_the_file_set_or_workspace() {
+    fn refs_show_files_outside_the_file_set_but_do_not_edit_them() {
         let out = served(
             &FOO_FILES,
             Some(1),
@@ -6787,14 +7231,46 @@ fn main() {}
             &mut foo_server(),
         );
         assert_eq!(
-            out.error(),
-            "error: script:1:10: fn:foo.refs reaches files outside the file set: b.rs; add them to the file set, or use -w"
-        );
-        let script = "file {dir}/a.rs\nshow all fn:foo.refs";
-        let out = served(&FOO_FILES, None, script, &mut foo_server());
-        assert_eq!(
             out.output,
             "a.rs:3\n3:    foo();\nb.rs:2\n2:    crate::foo();\n"
+        );
+        let out = served(
+            &FOO_FILES,
+            Some(1),
+            "insert after 1 \"// x\"\nreplace all fn:foo.refs with \"bar\"",
+            &mut foo_server(),
+        );
+        assert_eq!(
+            out.error(),
+            "error: script:2:1: cannot edit b.rs: it is outside the file set; add it to the file set, or use -w"
+        );
+        let script = "file {dir}/a.rs\nreplace all fn:foo.refs with \"bar\"";
+        let out = served(&FOO_FILES, None, script, &mut foo_server());
+        assert_eq!(paths(&out), ["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn naming_a_file_refs_found_outside_the_set_makes_it_editable() {
+        let script = "show all fn:foo.refs\nfile {dir}/a.rs {dir}/b.rs\nreplace all fn:foo.refs with \"bar\"";
+        let out = served(&FOO_FILES, Some(1), script, &mut foo_server());
+        assert_eq!(paths(&out), ["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn with_w_def_shows_ignored_files_but_does_not_edit_them() {
+        let files = [
+            ("a.rs", "fn main() {\n    foo();\n}\n"),
+            (".gitignore", "gen.rs\n"),
+            ("gen.rs", "fn foo() {}\n"),
+        ];
+        let mut lsp = ServerLsp::new(vec![]);
+        lsp.def = vec![("gen.rs", edit(0, 3, 6, ""))];
+        let out = served(&files, None, "show fn:main>\"foo\".def", &mut lsp);
+        assert_eq!(out.output, "gen.rs:1\n1:fn foo() {}\n");
+        let out = served(&files, None, "delete fn:main>\"foo\".def", &mut lsp);
+        assert_eq!(
+            out.error(),
+            "error: script:1:1: cannot edit gen.rs: it is ignored or outside the workspace root; name it in a `file` command"
         );
     }
 

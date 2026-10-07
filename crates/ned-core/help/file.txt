@@ -1,8 +1,9 @@
 file PATH...
 
-Sets the file set for the commands that follow; it starts as the FILE
-arguments, or every workspace file with -w. Globs (* ? [..] **) are expanded
-by ned, relative to the working directory, so quote them on the command line.
+Sets the file set for the commands that follow; it starts as
+{the FILE arguments}, or every workspace file with {-w}. Globs (* ? [..] **)
+are expanded by ned, relative to the working directory{cli:, so quote them on
+the command line}.
 A glob matching nothing, or a missing file, is an error. Selectors search
 every file in the set; use a file:PATH step to narrow one to a single file,
 or file:GLOB to the set's files the glob matches (file:src/*.rs>fn:new).

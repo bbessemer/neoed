@@ -10,6 +10,7 @@ is a better place to start.
 ```text
 ned [OPTIONS] [FILE... | -w [DIR]] [-e SCRIPT]...
 ned repl [OPTIONS] [FILE... | -w [DIR]] [--attach NAME]
+ned mcp [-w DIR] [-s NAME] [--lang LANG] [--context N]
 ned help [TOPIC]
 ned daemon start|status|stop [DIR]
 ned history [-s NAME] [-w DIR] [--all]
@@ -65,11 +66,13 @@ way, and tints the code on changed lines toward red or green.
   With a topic, it explains that topic in detail. The topics are the commands
   (`show`, `outline`, `check`, `allow`, `replace`, `insert`, `delete`, `sub`,
   `move`, `rename`, `resolve`, `file`, `create`) and `selectors`, `filters`,
-  `patterns`, `conflicts`, `text`, `config`, `session` and `repl`.
+  `patterns`, `conflicts`, `text`, `config`, `session`, `repl` and `mcp`.
 - **`ned daemon start|status|stop [DIR]`** manages the
   [language-server daemon](#language-servers) for the workspace containing
   `DIR`, or the current directory.
 - **`ned repl`** starts [the REPL](#the-repl), an interactive editor.
+- **`ned mcp`** serves ned to an agent over the Model Context Protocol; see
+  [Using ned with AI agents](/agents#mcp-server).
 - **`ned history`**, **`ned undo`** and **`ned session`** work with
   [sessions](#sessions).
 
@@ -376,7 +379,9 @@ Some details:
   line, but counts from the start of the file.
 - `.refs` and `.def` work on any selector. On an item, they look up the symbol
   at its name; otherwise, the symbol at the start of the span, as in
-  `fn:main>"helper(".def`.
+  `fn:main>"helper(".def`. They can show results in any file, such as a
+  library's source, but editing a file outside the file set needs `-w`, or
+  `file PATH` in the script.
 - An item that doesn't have a part, such as a Rust function that returns nothing
   and so has no `.ret`, gives an error that lists the parts it does have. A part
   can't follow another part.
@@ -749,7 +754,9 @@ selectors and `.lines` are whole-line. Most literal and regex matches aren't.
   `insert after` adds new lines after the target's last line.
 - On a **partial** target, the text goes in exactly where the span is. If it has
   several lines, the first is inserted as it is and the rest are indented
-  relative to the target's line.
+  relative to the target's line. `replace` of a span that starts inside the
+  line's indentation (`/^\s*let/`) gives the first line that indentation back,
+  and a heredoc keeps the line break of a span that ends with one.
 
 There's one exception: `insert before` or `after` with heredoc text widens a
 partial target to its whole lines, so `insert after /re/ <<END` adds lines after
@@ -764,8 +771,10 @@ one line and `"x\n\n"` adds a line and a blank line.
 
 Text written as a string or a `<<TAG` heredoc is re-indented whenever it's
 inserted on lines of its own. ned removes the indentation that the text's lines
-have in common, converts between tabs and spaces if the text and the file
-differ, and then indents every line to the target's level:
+have in common, converts its indentation to the file's in style (tabs or spaces)
+and width (two spaces to four), keeping aligned lines such as bracket
+continuations and a block comment's `*` lines at their offset, and then indents
+every line to the target's level:
 
 | Edit                                        | Indented to match                                                                 |
 | ------------------------------------------- | --------------------------------------------------------------------------------- |
@@ -776,7 +785,10 @@ differ, and then indents every line to the target's level:
 So you can write inserted code at column 0, and only its relative indentation
 matters. When `insert after` targets the last line of a statement that spans
 several lines, the text lines up with the start of the statement. In Markdown, a
-new list item next to an existing one lines up with its marker.
+new list item next to an existing one lines up with its marker, prose inserted
+into a list item gets the item's hanging indent, and text inserted in a block
+quote takes its `>` markers. A new `case` or `default` clause goes beside the
+clause it's inserted next to.
 
 A file's indentation unit (four spaces, two spaces, a tab…) is measured from its
 existing lines. In an empty file, it's four spaces, two in Markdown, or a tab in
@@ -821,7 +833,8 @@ unformatted, and still succeeds, unless the formatter succeeds on the file as it
 was before the edit: then the edit made it fail, and ned rejects it (`--force`
 writes it anyway). If no formatter is installed but the
 [daemon](#language-servers) is running, the language server formats the file
-instead. Files that still contain merge conflicts aren't formatted.
+instead. Files that still contain merge conflicts aren't formatted. When a
+formatter changes lines away from the edit, ned prints a note naming them.
 
 ## Configuration
 
@@ -1070,7 +1083,7 @@ an option to add.
 
 ```text
 error: script:1:8: fn:prase matches nothing in src/parser.rs; did you mean fn:parse (14-17)?
-error: script:3:1: edit overlaps command 1 at src/parser.rs:14-17
+error: script:3:1: edit overlaps command 1 at src/parser.rs:14-17; merge the two edits, or put a `|` between them
 error: src/parser.rs:15:31: edit introduces a syntax error (use --force to apply anyway)
 ```
 

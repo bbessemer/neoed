@@ -14,6 +14,10 @@ pub struct ParseError {
 pub enum ParseErrorKind {
     #[error("unexpected character `{0}`; {hint}", hint = quote_hint(*.0))]
     UnexpectedChar(char),
+    /// A comma, with the commands it separates when the line is a list of
+    /// one command's selectors.
+    #[error("unexpected character `,`; {}", comma_hint(.0.as_deref()))]
+    Comma(Option<String>),
     #[error(
         "unterminated string; close it with `\"` on the same line (use \\n or a heredoc for multi-line text)"
     )]
@@ -99,6 +103,25 @@ pub enum ParseErrorKind {
     MissingHeredocTag,
     #[error("unterminated heredoc <<{0} (started here); end it with a line holding only {0}")]
     UnterminatedHeredoc(String),
+    /// `error`, after a heredoc that ended at a line of its text holding only
+    /// its tag, so the script went on in what was meant as text.
+    #[error(
+        "{error}; the heredoc <<{tag} at line {opener} ended at line {end}, which holds only {tag}: pick a tag its text doesn't hold"
+    )]
+    EarlyHeredoc {
+        error: Box<ParseErrorKind>,
+        tag: String,
+        opener: usize,
+        end: usize,
+    },
+    /// A bare word where a selector is expected, followed by `rest` of the
+    /// selector; `kind` is that of an item with that name, if known.
+    #[error("expected a selector, found `{word}`; {}", bare_name_hint(word, rest, *kind))]
+    BareName {
+        word: String,
+        rest: String,
+        kind: Option<&'static str>,
+    },
     #[error("expected a name after `{0}:`, e.g. {0}:foo or {0}:*")]
     MissingName(String),
     #[error(
@@ -186,12 +209,52 @@ pub enum ParseErrorKind {
 pub const COMMANDS: &str =
     "show outline check replace insert delete sub move rename resolve file create allow";
 
+fn bare_name_hint(word: &str, rest: &str, kind: Option<&str>) -> String {
+    match kind {
+        Some(kind) => format!("select the {kind} by name: {kind}:{word}{rest}"),
+        // A lone word is more likely unquoted text than an item.
+        None if rest.is_empty() => format!("quote literal text: \"{word}\""),
+        None => {
+            format!("quote literal text: \"{word}\", or select an item by name: *:{word}{rest}")
+        }
+    }
+}
+
 fn quote_hint(c: char) -> &'static str {
     match c {
         '\'' => "strings use double quotes: \"...\"",
         '-' => "ranges between selectors are written SEL..SEL, e.g. /a/../b/",
         _ => "quote literal text: \"...\"",
     }
+}
+
+fn comma_hint(split: Option<&str>) -> String {
+    let hint = "a command takes no comma lists; separate commands with `;` or a new line";
+    match split {
+        Some(split) => format!("{hint}: {split}"),
+        None => hint.to_string(),
+    }
+}
+
+/// For a comma at byte `at` of `src`, the commands its line means, as
+/// `delete 3; delete 7`, when the command takes only selectors or levels.
+pub fn comma_split(src: &str, at: usize) -> Option<String> {
+    let start = src[..at].rfind(['\n', ';']).map_or(0, |i| i + 1);
+    let before = src[start..at].trim();
+    let verb = before.split_whitespace().next()?;
+    let lists = ["show", "outline", "check", "delete", "allow"];
+    if !lists.contains(&verb) || before == verb {
+        return None;
+    }
+    let mut commands = vec![before.to_string()];
+    for arg in src[at + 1..].split(['\n', ';']).next()?.split(',') {
+        let arg = arg.trim();
+        if arg.is_empty() {
+            return None;
+        }
+        commands.push(format!("{verb} {arg}"));
+    }
+    Some(commands.join("; "))
 }
 
 fn whole_file_insert(position: &str) -> &'static str {

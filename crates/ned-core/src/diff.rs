@@ -149,6 +149,27 @@ fn overlaps(a: &Range<usize>, b: &Range<usize>) -> bool {
     }
 }
 
+/// The lines of `new`, an edit of `old`, that `formatted`, `new` formatted,
+/// changed away from the edit's own changes: ranges of line numbers (from 1)
+/// in `new`.
+pub fn outside(old: &str, new: &str, formatted: &str) -> Vec<Range<usize>> {
+    let (old, new, formatted) = (lines(old), lines(new), lines(formatted));
+    let edits: Vec<Range<usize>> = changes(&old, &new)
+        .iter()
+        .map(|c| c.at..c.at + c.lines.len())
+        .collect();
+    // A change next to an edit's lines is its, as a reflow of them is.
+    changes(&new, &formatted)
+        .into_iter()
+        .filter(|c| {
+            !edits
+                .iter()
+                .any(|e| overlaps(e, &c.base) || e.end == c.base.start || c.base.end == e.start)
+        })
+        .map(|c| c.at + 1..c.at + c.lines.len() + 1)
+        .collect()
+}
+
 /// One text of a diff and its language. In colour, `hunks` parses it the first
 /// time a hunk needs it, and only once, though it is in two diffs.
 pub struct Side<'a> {
@@ -264,6 +285,17 @@ impl fmt::Display for HunkRange {
 mod tests {
     use super::*;
     use crate::style::shown;
+
+    #[test]
+    fn outside_finds_formatting_away_from_the_edit() {
+        let (old, new) = ("a\nb\nc\nd\ne\nf\ng\n", "a\nB\nc\nd\ne\nf\ng\n");
+        assert!(outside(old, new, new).is_empty());
+        // Next to the edit's lines counts as the edit's.
+        assert!(outside(old, new, "A\nB\nC\nd\ne\nf\ng\n").is_empty());
+        assert_eq!(outside(old, new, "a\nB\nc\nD\ne\nF\nG\n"), [4..5, 6..8]);
+        // Lines numbered as written, after the formatter's other changes.
+        assert_eq!(outside(old, new, "a\nB\nc\nd\nd2\ne\nF\ng\n"), [5..6, 7..8]);
+    }
 
     const PARSER: &str = "\
 impl Parser {

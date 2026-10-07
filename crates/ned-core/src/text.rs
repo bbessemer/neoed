@@ -90,21 +90,65 @@ pub fn rebase_replacing(text: &str, indent: &str, unit: &str) -> String {
     prefix(&lines, &indent[..indent.len().saturating_sub(first.len())])
 }
 
-/// `text`'s lines with its common indentation stripped, its indent style
-/// converted to `unit`'s, and blank lines emptied.
+/// `text`'s lines with its common indentation stripped, its indent level (the
+/// smallest non-zero indentation of the lines not aligned) converted to
+/// `unit`, keeping aligned lines at their offset and lines that start inside a
+/// string as written, and blank lines emptied.
 fn relative(text: &str, unit: &str) -> Vec<String> {
     let lines = strip_indent(text);
+    let aligned = alignments(&lines);
+    let quoted = in_string(&lines);
     let level = lines
         .iter()
-        .map(|l| leading_whitespace(l))
+        .zip(aligned.iter().zip(&quoted))
+        .filter(|(_, (a, q))| a.is_none() && !**q)
+        .map(|(l, _)| leading_whitespace(l))
         .filter(|w| !w.is_empty())
         .min_by_key(|w| w.len());
-    let convert = level.filter(|level| !unit.starts_with(&level[..1]));
+    let Some(level) = level.filter(|&level| level != unit) else {
+        return lines;
+    };
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    for ((line, aligned), quoted) in lines.iter().zip(&aligned).zip(quoted) {
+        out.push(match aligned {
+            _ if line.is_empty() => String::new(),
+            _ if quoted => line.clone(),
+            Some((anchor, offset)) => format!(
+                "{}{}{}",
+                leading_whitespace(&out[*anchor]),
+                " ".repeat(*offset),
+                line.trim_start()
+            ),
+            None => convert_indent(line, level, unit),
+        });
+    }
+    out
+}
+
+/// For each of `lines`, whether it starts inside a `"` string (a Python `"""`
+/// one too) that an earlier line opens.
+fn in_string(lines: &[String]) -> Vec<bool> {
+    let mut quoted = false;
     lines
         .iter()
-        .map(|line| match convert {
-            Some(level) if !line.is_empty() => convert_indent(line, level, unit),
-            _ => line.clone(),
+        .map(|line| {
+            let starts = quoted;
+            let mut chars = line.chars().peekable();
+            let mut prev = None;
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => {
+                        chars.next();
+                    }
+                    // A character literal.
+                    '"' if prev == Some('\'') && chars.peek() == Some(&'\'') => {}
+                    '"' => quoted = !quoted,
+                    '/' if !quoted && chars.peek() == Some(&'/') => break,
+                    _ => {}
+                }
+                prev = Some(c);
+            }
+            starts
         })
         .collect()
 }
@@ -124,9 +168,20 @@ fn prefix(lines: &[String], indent: &str) -> String {
 /// Verbatim text for a partial-line span (§5.1): the first line as written,
 /// the rest re-based to `indent`, the indentation of the span's line.
 pub fn rebase_tail(text: &str, indent: &str, unit: &str) -> String {
+    rebase_hanging(text, indent, unit, str::to_string)
+}
+
+/// `text` with its first line placed by `first` and the rest re-based to
+/// `hang`, apart from it (§5.2: prose in a Markdown list item).
+pub fn rebase_hanging(
+    text: &str,
+    hang: &str,
+    unit: &str,
+    first: impl Fn(&str) -> String,
+) -> String {
     match text.split_once('\n') {
-        Some((first, rest)) => format!("{first}\n{}", rebase(rest, indent, unit)),
-        None => text.to_string(),
+        Some((head, rest)) => format!("{}\n{}", first(head), rebase(rest, hang, unit)),
+        None => first(text),
     }
 }
 
@@ -283,6 +338,96 @@ fn leading_whitespace(line: &str) -> &str {
     &line[..line.len() - line.trim_start_matches([' ', '\t']).len()]
 }
 
+/// The length of the list marker (`-`, `*`, `+`, `1.` or `1)`) that `line`
+/// starts with.
+pub fn list_marker(line: &str) -> Option<usize> {
+    let digits = line.len() - line.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let marker = match digits {
+        0 => line.strip_prefix(['-', '*', '+']),
+        1..=9 => line[digits..].strip_prefix(['.', ')']),
+        _ => None,
+    }?;
+    (marker.is_empty() || marker.starts_with(char::is_whitespace))
+        .then(|| line.len() - marker.len())
+}
+
+/// For each of `lines` (stripped of their common indentation) that is aligned
+/// rather than indented by levels, the line it aligns to and its offset from
+/// that line's indentation: a continuation aligned to the text after an
+/// unclosed bracket, a block comment's ` * ` line, a list item's continuation
+/// under its text, or a line of a fenced code block.
+fn alignments(lines: &[String]) -> Vec<Option<(usize, usize)>> {
+    let indent = |i: usize| leading_whitespace(&lines[i]).len();
+    let mut out = vec![None; lines.len()];
+    // Each unclosed bracket's line and the column of the text after it.
+    let mut open: Vec<(usize, Option<usize>)> = Vec::new();
+    let mut fence = None;
+    let mut prev: Option<usize> = None;
+    for (i, line) in lines.iter().enumerate() {
+        let text = line.trim_start();
+        if text.is_empty() {
+            continue;
+        }
+        let at = indent(i);
+        let fenced = text.starts_with("```") || text.starts_with("~~~");
+        if let Some(f) = fence {
+            out[i] = Some((f, at.saturating_sub(indent(f))));
+            fence = (!fenced).then_some(f);
+            prev = Some(i);
+            continue;
+        }
+        let aligned = prev.and_then(|p| {
+            let above = lines[p].trim_start();
+            let offset = at.checked_sub(indent(p))?;
+            let item =
+                list_marker(above).map(|m| m + above[m..].len() - above[m..].trim_start().len());
+            let bracket = open
+                .last()
+                .and_then(|&(l, c)| (c == Some(at)).then(|| (l, at - indent(l))));
+            // A comment's ` * ` lines align to its `/*` line.
+            let comment = match text.starts_with('*') {
+                true if above.starts_with("/*") && offset == 1 => Some((p, 1)),
+                true if above.starts_with('*') && offset == 0 => out[p],
+                _ => None,
+            };
+            bracket
+                .or(comment)
+                .or_else(|| (item == Some(offset)).then_some((p, offset)))
+                // A line level with an item's continuation continues it.
+                .or_else(|| {
+                    out[p].filter(|&(a, _)| {
+                        offset == 0 && list_marker(lines[a].trim_start()).is_some()
+                    })
+                })
+        });
+        out[i] = aligned;
+        if fenced {
+            fence = Some(i);
+            prev = Some(i);
+            continue;
+        }
+        let mut quoted = false;
+        for (col, c) in line.char_indices() {
+            match c {
+                '"' => quoted = !quoted,
+                '(' | '[' | '{' if !quoted => {
+                    let after = &line[col + 1..];
+                    let text = after.trim_start();
+                    let column =
+                        (!text.is_empty()).then(|| line[..line.len() - text.len()].chars().count());
+                    open.push((i, column));
+                }
+                ')' | ']' | '}' if !quoted => {
+                    open.pop();
+                }
+                _ => {}
+            }
+        }
+        prev = Some(i);
+    }
+    out
+}
+
 /// Replaces each whole `level` of `line`'s indentation with `unit`.
 fn convert_indent(line: &str, level: &str, unit: &str) -> String {
     let mut rest = line;
@@ -414,7 +559,7 @@ mod tests {
 
     #[test]
     fn rebase_strips_common_indentation() {
-        assert_eq!(rebase("    a\n      b", "", "    "), "a\n  b");
+        assert_eq!(rebase("    a\n      b", "", "    "), "a\n    b");
         assert_eq!(rebase("\t\ta\n\t\t\tb", "\t", "\t"), "\ta\n\t\tb");
     }
 
@@ -444,6 +589,84 @@ mod tests {
         assert_eq!(
             rebase("a\n  b\n    c\n     d", "\t", "\t"),
             "\ta\n\t\tb\n\t\t\tc\n\t\t\t d"
+        );
+    }
+
+    #[test]
+    fn rebase_converts_indent_widths() {
+        assert_eq!(
+            rebase("a {\n  b {\n    c\n  }\n}", "", "    "),
+            "a {\n    b {\n        c\n    }\n}"
+        );
+        assert_eq!(rebase("a\n    b", "", "  "), "a\n  b");
+        // A bracket ending its line opens a hanging indent, which is a level.
+        assert_eq!(rebase("f(\n  a,\n)", "", "    "), "f(\n    a,\n)");
+    }
+
+    #[test]
+    fn rebase_keeps_lines_aligned_to_a_bracket() {
+        assert_eq!(
+            rebase("f(a,\n  b) {\n  c\n}", "", "    "),
+            "f(a,\n  b) {\n    c\n}"
+        );
+        assert_eq!(
+            rebase("x = {\n  y: g(1,\n       2),\n}", "", "    "),
+            "x = {\n    y: g(1,\n         2),\n}"
+        );
+        assert_eq!(
+            rebase("if x {\n  f(a,\n    b)\n}", "", "\t"),
+            "if x {\n\tf(a,\n\t  b)\n}"
+        );
+        assert_eq!(
+            rebase("def f(a,\n      b):\n  return a", "", "    "),
+            "def f(a,\n      b):\n    return a"
+        );
+        // Brackets in strings don't count.
+        let text = "f(a,\n  \")\",\n  b)";
+        assert_eq!(rebase(text, "", "    "), text);
+        assert_eq!(
+            rebase("if y {\n  let ü = g(a,\n            b);\n}", "", "    "),
+            "if y {\n    let ü = g(a,\n              b);\n}"
+        );
+    }
+
+    #[test]
+    fn rebase_keeps_comment_and_list_continuations_aligned() {
+        assert_eq!(
+            rebase("/**\n * doc\n */\nfn f() {\n  x\n}", "", "    "),
+            "/**\n * doc\n */\nfn f() {\n    x\n}"
+        );
+        let list = "1. one\n   more\n2. two\n   - x\n     y";
+        assert_eq!(rebase(list, "", "    "), list);
+        // A fence in an item is aligned like its paragraphs.
+        let list = "- c\n\n  para\n\n  ```\n  code\n  ```";
+        assert_eq!(rebase(list, "", "    "), list);
+    }
+
+    #[test]
+    fn rebase_keeps_fenced_code_as_written() {
+        let text = "Text:\n\n```\nif x:\n    y\n```\n\n- a\n  b";
+        assert_eq!(rebase(text, "", "  "), text);
+    }
+
+    #[test]
+    fn rebase_keeps_lines_in_strings_as_written() {
+        assert_eq!(
+            rebase("fn t() {\n    let s = \"\n  hi\";\n    x();\n}", "", "  "),
+            "fn t() {\n  let s = \"\n  hi\";\n  x();\n}"
+        );
+        assert_eq!(
+            rebase(
+                "def f():\n    s = \"\"\"\n  hi\n\"\"\"\n    return s",
+                "",
+                "  "
+            ),
+            "def f():\n  s = \"\"\"\n  hi\n\"\"\"\n  return s"
+        );
+        // Quotes in character literals and comments open no string.
+        assert_eq!(
+            rebase("a {\n  b('\"');\n  c // 5\" wide\n  d\n}", "", "    "),
+            "a {\n    b('\"');\n    c // 5\" wide\n    d\n}"
         );
     }
 

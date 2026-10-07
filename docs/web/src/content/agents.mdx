@@ -36,9 +36,11 @@ this:
 ```
 
 The `ned` tool takes a script, with the files (or `workspace`, for the whole
-workspace) and ned's flags as arguments. `outline`, `show`, `history`, `undo`
-and `help` are tools too, and `cd` moves the server to another directory. Each
-result is exactly what ned would print in a terminal.
+workspace) and ned's flags as arguments (`dry_run`, `force`, `no_fmt`, ...).
+`outline`, `show`, `history`, `undo` and `help` are tools too, and `cd` moves
+the server to another directory. Each result is exactly what ned would print in
+a terminal, and the tools' descriptions and `help` texts name these arguments
+where the CLI's name flags.
 
 A `ned` call can carry a `comment` saying what it's for. The server records
 every call in a session (named by `-s NAME` or `NED_SESSION`, or a new `mcp-N`),
@@ -48,9 +50,10 @@ its edits.
 
 ## Claude Code skill
 
-If you'd rather Claude ran ned from its shell, install the skill instead. It
-teaches Claude how to read, search and edit files with ned, and Claude loads it
-whenever one of those comes up. Copy it into your skills directory:
+The skill teaches Claude when and how to read, search and edit files with ned,
+and Claude loads it whenever one of those comes up. With the MCP server
+connected, Claude calls its tools; without it, Claude runs ned from its shell.
+Copy it into your skills directory:
 
 ```sh
 git clone https://github.com/bbessemer/neoed
