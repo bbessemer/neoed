@@ -193,8 +193,8 @@ ned was designed around these failures:
   `insert start fn:index` names the place to edit without quoting what's there,
   so the agent writes only the new text.
 - **Whitespace doesn't have to match.** Inserted code is written at column 0 and
-  re-indented to the file's style, tabs or spaces, so the agent never has to
-  count spaces, even in Python.
+  re-indented to the file's style (tabs or spaces, at any width), so the agent
+  never has to count spaces, even in Python.
 - **Nothing happens silently.** A selector that matches nothing, or more than
   one thing, is an error that names candidates, and the agent can paste one
   back.
@@ -204,7 +204,8 @@ ned was designed around these failures:
   anything is written, and with `ned daemon start`, edits that introduce compile
   errors are too.
 - **Line numbers stay valid within a script,** because every selector resolves
-  against the file as it was when the script started.
+  against the file as it was when the script (or its stage, after a `|`)
+  started.
 
 Measured with the repository's benchmark, the ned command for a common edit is
 roughly half the size of the alternatives, before counting the read-back that

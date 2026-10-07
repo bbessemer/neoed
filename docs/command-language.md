@@ -1958,7 +1958,7 @@ error: script:1:8: fn:new matches 2 items; add `all` or use one of:
 
 error: script:1:8: fn:prase matches nothing in src/parser.rs; did you mean fn:parse (14-17)?
 
-error: script:3:1: edit overlaps command 1 at src/parser.rs:14-17
+error: script:3:1: edit overlaps command 1 at src/parser.rs:14-17; merge the two edits, or put a `|` between them
 
 error: src/parser.rs:15:31: edit introduces a syntax error (use --force to apply anyway)
 15:        let tok = (self.next();
