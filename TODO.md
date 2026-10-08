@@ -136,7 +136,7 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       `show /^const X/..fn:f.doc` fails with ".doc needs a syntax item, e.g.
       fn:NAME.doc", though `fn:f.doc` alone matches. Either bind the part to the
       end step or say that a part can't follow a range, with the fix.
-- [ ] The MCP server's `!!` error for a dry-run entry says "add -n to preview it
+- [x] The MCP server's `!!` error for a dry-run entry says "add -n to preview it
       again", the CLI's flag; it should name `dry_run`. Fix it as part of the
       move onto `hint`.
 

@@ -50,7 +50,7 @@ pub fn open_session(name: Option<&str>, root: &Path) -> Result<Session, Failure>
         Some(name) => invoke::open(name, root),
         None => session::state_dir()
             .and_then(|state| session::next_free(&state, root, "mcp"))
-            .map_err(invoke::failure),
+            .map_err(|err| invoke::failure(err, hint::Frontend::Mcp)),
     }
 }
 

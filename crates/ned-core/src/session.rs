@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::diff;
+use crate::hint::{Error, Fix, Hint, verbatim};
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 /// The log format version, in the header's `ned_session` field.
 pub const FORMAT: u64 = 1;
@@ -61,35 +61,55 @@ struct Header {
     workspace: PathBuf,
 }
 
-#[derive(Debug, Error)]
-pub enum SessionError {
-    #[error(
-        "{}: {source}; check its permissions, or set XDG_STATE_HOME to another directory",
-        path.display()
-    )]
+pub type SessionError = Error<SessionErrorKind>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum SessionErrorKind {
+    #[error("{}: {source}", path.display())]
     Io { path: PathBuf, source: io::Error },
-    #[error("{0}; remove it, or set XDG_STATE_HOME to a private directory")]
-    Dir(#[from] crate::fs::PrivateDirError),
-    #[error("no directory for sessions; set XDG_STATE_HOME or HOME")]
+    #[error("{0}")]
+    Dir(crate::fs::PrivateDirError),
+    #[error("no directory for sessions")]
     NoStateDir,
-    #[error(
-        "invalid session name `{0}`; use letters, digits, `.`, `_` and `-`, not starting with `.`"
-    )]
+    #[error("invalid session name `{0}`")]
     BadName(String),
     #[error(
-        "{}: session log format {version} is unknown to this ned; use another session name",
+        "{}: session log format {version} is unknown to this ned",
         path.display()
     )]
     UnknownFormat { path: PathBuf, version: u64 },
-    #[error(
-        "{}:{line}: malformed session log ({message}); use another session name",
-        path.display()
-    )]
+    #[error("{}:{line}: malformed session log ({message})", path.display())]
     Malformed {
         path: PathBuf,
         line: usize,
         message: String,
     },
+}
+
+impl Hint for SessionErrorKind {
+    fn exit_code(&self) -> u8 {
+        match self {
+            SessionErrorKind::BadName(_) => 2,
+            _ => 3,
+        }
+    }
+    fn fix(&self) -> Option<Fix> {
+        Some(Fix::from(match self {
+            SessionErrorKind::Io { .. } => {
+                "check its permissions, or set XDG_STATE_HOME to another directory".to_string()
+            }
+            SessionErrorKind::Dir(_) => {
+                "remove it, or set XDG_STATE_HOME to a private directory".to_string()
+            }
+            SessionErrorKind::NoStateDir => "set XDG_STATE_HOME or HOME".to_string(),
+            SessionErrorKind::BadName(_) => {
+                "use letters, digits, `.`, `_` and `-`, not starting with `.`".to_string()
+            }
+            SessionErrorKind::UnknownFormat { .. } | SessionErrorKind::Malformed { .. } => {
+                "use another session ({-s NAME})".into()
+            }
+        }))
+    }
 }
 
 /// The directory sessions live in: `$XDG_STATE_HOME/ned`, else
@@ -102,7 +122,7 @@ pub fn state_dir() -> Result<PathBuf, SessionError> {
     };
     let state = absolute("XDG_STATE_HOME")
         .or_else(|| Some(absolute("HOME")?.join(".local/state")))
-        .ok_or(SessionError::NoStateDir)?;
+        .ok_or(SessionErrorKind::NoStateDir)?;
     Ok(state.join("ned"))
 }
 
@@ -114,14 +134,14 @@ pub fn sessions(state_dir: &Path, root: &Path) -> Result<Vec<String>, SessionErr
 /// The names of the sessions with a log in `dir`, a workspace's directory,
 /// sorted.
 fn names_in(dir: &Path) -> Result<Vec<String>, SessionError> {
-    let io_error = |source| SessionError::Io {
+    let io_error = |source| SessionErrorKind::Io {
         path: dir.to_path_buf(),
         source,
     };
     let read = match fs::read_dir(dir) {
         Ok(read) => read,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(io_error(err)),
+        Err(err) => return Err(io_error(err).into()),
     };
     let mut names = Vec::new();
     for item in read {
@@ -139,14 +159,14 @@ fn names_in(dir: &Path) -> Result<Vec<String>, SessionError> {
 /// none can be read.
 pub fn workspaces(state_dir: &Path) -> Result<Vec<(PathBuf, Vec<String>)>, SessionError> {
     let sessions = state_dir.join("sessions");
-    let io_error = |source| SessionError::Io {
+    let io_error = |source| SessionErrorKind::Io {
         path: sessions.clone(),
         source,
     };
     let read = match fs::read_dir(&sessions) {
         Ok(read) => read,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(io_error(err)),
+        Err(err) => return Err(io_error(err).into()),
     };
     let mut workspaces = Vec::new();
     for item in read {
@@ -189,28 +209,38 @@ pub fn next_free(state_dir: &Path, root: &Path, prefix: &str) -> Result<Session,
     unreachable!("there are always more names")
 }
 
-#[derive(Debug, PartialEq, Eq, Error)]
-pub enum RepeatError {
-    #[error("`!!` repeats the session's last script, but it has none; write the script out")]
+pub type RepeatError = Error<RepeatErrorKind>;
+
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum RepeatErrorKind {
+    #[error("`!!` repeats the session's last script, but it has none")]
     NoScript,
-    #[error(
-        "`!!` would apply entry {0}, a dry run; send the script again to apply it, or add -n to preview it again"
-    )]
+    #[error("`!!` would apply entry {0}, a dry run")]
     DryRun(u64),
-    /// `hint` is empty, or `; ` and a fix.
-    #[error("`{old}` isn't in the last script{hint}; the script is:\n{script}")]
-    NotFound {
-        old: String,
-        script: String,
-        hint: String,
-    },
+    /// A `:s` modifier's OLD that isn't in the script.
+    #[error("`{0}` isn't in the last script")]
+    NotFound(String),
     /// Text after a `:s` modifier that doesn't start another.
-    #[error(
-        "`{rest}` follows the `!!` modifiers; NEW ends at its first unescaped `{delimiter}`: write `\\{delimiter}` for a literal one, or use another delimiter"
-    )]
-    Trailing { rest: String, delimiter: char },
-    #[error("malformed `!!` modifier `{0}`; usage: !![:s/OLD/NEW/][:gs/OLD/NEW/]...")]
+    #[error("`{0}` follows the `!!` modifiers")]
+    Trailing(String),
+    #[error("malformed `!!` modifier `{0}`")]
     Malformed(String),
+}
+
+impl Hint for RepeatErrorKind {
+    fn exit_code(&self) -> u8 {
+        2
+    }
+    fn fix(&self) -> Option<Fix> {
+        Some(Fix::from(match self {
+            RepeatErrorKind::NoScript => "write the script out",
+            RepeatErrorKind::DryRun(_) => {
+                "send the script again to apply it{cli:, or add -n to preview it again}{mcp:, or give `dry_run` to preview it again}"
+            }
+            RepeatErrorKind::Malformed(_) => "usage: !![:s/OLD/NEW/][:gs/OLD/NEW/]...",
+            RepeatErrorKind::NotFound(_) | RepeatErrorKind::Trailing(_) => return None,
+        }))
+    }
 }
 
 /// Whether `src` is a `!!` script, which [`repeat`] expands.
@@ -233,23 +263,25 @@ pub fn repeat<'a>(
         .find(|entry| edits_or_failed(entry))
         .or_else(|| scripts().next())
     else {
-        return Some(Err(RepeatError::NoScript));
+        return Some(Err(RepeatErrorKind::NoScript.into()));
     };
     if entry.dry_run && !dry_run {
-        return Some(Err(RepeatError::DryRun(entry.id)));
+        return Some(Err(RepeatErrorKind::DryRun(entry.id).into()));
     }
     let mut script = entry.script.clone().unwrap_or_default();
     // The delimiter of the modifier before, if any.
-    let mut previous = None;
+    let mut previous: Option<char> = None;
     while !rest.is_empty() {
         let modifier = rest;
-        let malformed = || RepeatError::Malformed(modifier.to_string());
+        let malformed = || Error::new(RepeatErrorKind::Malformed(modifier.to_string()));
         let Some(body) = modifier.strip_prefix(':') else {
             return Some(Err(match previous {
-                Some(delimiter) => RepeatError::Trailing {
-                    rest: modifier.to_string(),
-                    delimiter,
-                },
+                Some(delimiter) => {
+                    let d = verbatim(&delimiter.to_string());
+                    Error::new(RepeatErrorKind::Trailing(modifier.to_string())).with_fix(format!(
+                        "NEW ends at its first unescaped `{d}`: write `\\{d}` for a literal one, or use another delimiter"
+                    ))
+                }
                 None => malformed(),
             }));
         };
@@ -270,8 +302,9 @@ pub fn repeat<'a>(
         }
         let (new, after, _) = field(after, delimiter);
         if !script.contains(&old) {
-            let hint = not_found_hint(&old, &script, delimiter);
-            return Some(Err(RepeatError::NotFound { old, script, hint }));
+            let fix = not_found_fix(&old, &script, delimiter);
+            let fix = Fix::new(format!("{fix}; the script is:")).then(script);
+            return Some(Err(Error::new(RepeatErrorKind::NotFound(old)).with_fix(fix)));
         }
         script = match global {
             true => script.replace(&old, &new),
@@ -286,17 +319,18 @@ pub fn repeat<'a>(
 /// The fix for a `!!` modifier whose `old`, read with `delimiter`, isn't in
 /// `script`: when the script has it with `\` before each delimiter, which
 /// the modifier read as escapes, another delimiter.
-fn not_found_hint(old: &str, script: &str, delimiter: char) -> String {
+fn not_found_fix(old: &str, script: &str, delimiter: char) -> String {
     let escaped = old.replace(delimiter, &format!("\\{delimiter}"));
     if escaped == old || !script.contains(&escaped) {
-        return "; OLD must match its text exactly, spacing and escapes included".into();
+        return "OLD must match its text exactly, spacing and escapes included".into();
     }
     let other = ['|', '#', ',', '@', '%']
         .into_iter()
         .find(|&c| c != delimiter && !escaped.contains(c))
         .unwrap_or('#');
+    let (escaped, d) = (verbatim(&escaped), verbatim(&delimiter.to_string()));
     format!(
-        "; it has `{escaped}`, and `\\{delimiter}` in a modifier stands for `{delimiter}`: \
+        "it has `{escaped}`, and `\\{d}` in a modifier stands for `{d}`: \
          use another delimiter, as in !!:s{other}{escaped}{other}NEW{other}"
     )
 }
@@ -416,27 +450,46 @@ pub fn uncommitted(
         .map(|(id, change)| (change.path.as_path(), (*id, &change.after)))
         .collect();
     for (path, (id, after)) in last {
-        let current = read(path).map_err(|source| UncommittedError::Io {
+        let current = read(path).map_err(|source| UncommittedErrorKind::Io {
             path: path.to_path_buf(),
             source,
         })?;
         if current != *after {
             let path = path.to_path_buf();
-            return Err(UncommittedError::Changed { path, id });
+            return Err(UncommittedErrorKind::Changed { path, id }.into());
         }
     }
     Ok(changes)
 }
 
-#[derive(Debug, Error)]
-pub enum UncommittedError {
-    #[error("{}: {source}; check its permissions, then rerun", path.display())]
+pub type UncommittedError = Error<UncommittedErrorKind>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum UncommittedErrorKind {
+    #[error("{}: {source}", path.display())]
     Io { path: PathBuf, source: io::Error },
     #[error(
-        "{} changed since session entry {id} wrote it, so the session's edits can't be committed; put back what entry {id} wrote, or start a new session (-s NAME) to commit only the edits from then on",
+        "{} changed since session entry {id} wrote it, so the session's edits can't be committed",
         path.display()
     )]
     Changed { path: PathBuf, id: u64 },
+}
+
+impl Hint for UncommittedErrorKind {
+    fn exit_code(&self) -> u8 {
+        match self {
+            UncommittedErrorKind::Io { .. } => 3,
+            UncommittedErrorKind::Changed { .. } => 1,
+        }
+    }
+    fn fix(&self) -> Option<Fix> {
+        Some(Fix::from(match self {
+            UncommittedErrorKind::Io { .. } => "check its permissions, then rerun".to_string(),
+            UncommittedErrorKind::Changed { id, .. } => format!(
+                "put back what entry {id} wrote, or start a new session ({{-s NAME}}) to commit only the edits from then on"
+            ),
+        }))
+    }
 }
 
 /// What `ned undo` writes: the files of entry `id`, restored. Each change's
@@ -448,27 +501,48 @@ pub struct Undo {
     pub changes: Vec<FileChange>,
 }
 
-#[derive(Debug, Error)]
-pub enum UndoError {
-    #[error("nothing to undo; `ned history` lists the session's entries")]
+pub type UndoError = Error<UndoErrorKind>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum UndoErrorKind {
+    #[error("nothing to undo")]
     Nothing,
-    #[error("{}: {source}; check its permissions, then run `ned undo` again", path.display())]
+    #[error("{}: {source}", path.display())]
     Io { path: PathBuf, source: io::Error },
-    #[error(
-        "{} changed since entry {id} wrote it; use --force to merge the undo into its current text",
-        path.display()
-    )]
+    #[error("{} changed since entry {id} wrote it", path.display())]
     Changed { path: PathBuf, id: u64 },
     #[error(
-        "{} was removed since entry {id} wrote it, so it can't be undone; restore it by hand (`ned history` lists the entries)",
+        "{} was removed since entry {id} wrote it, so it can't be undone",
         path.display()
     )]
     Removed { path: PathBuf, id: u64 },
     #[error(
-        "{}:{line}: undoing entry {id} conflicts with a later change; edit the file by hand",
+        "{}:{line}: undoing entry {id} conflicts with a later change",
         path.display()
     )]
     Conflict { path: PathBuf, line: usize, id: u64 },
+}
+
+impl Hint for UndoErrorKind {
+    fn exit_code(&self) -> u8 {
+        match self {
+            UndoErrorKind::Io { .. } => 3,
+            _ => 1,
+        }
+    }
+    fn fix(&self) -> Option<Fix> {
+        Some(Fix::from(match self {
+            UndoErrorKind::Nothing => "{ned history} lists the session's entries".into(),
+            UndoErrorKind::Io { .. } => "check its permissions, then run {ned undo} again".into(),
+            UndoErrorKind::Changed { .. } => {
+                "use {--force} to merge the undo into its current text".to_string()
+            }
+            UndoErrorKind::Removed { .. } => {
+                "restore it by hand ({ned history} lists the entries)".into()
+            }
+            UndoErrorKind::Conflict { .. } => "edit the file by hand".to_string(),
+        }))
+    }
 }
 
 impl UndoError {
@@ -479,26 +553,27 @@ impl UndoError {
                 .map(Path::to_path_buf)
                 .unwrap_or(path)
         };
-        match self {
-            UndoError::Nothing => UndoError::Nothing,
-            UndoError::Io { path, source } => UndoError::Io {
+        let kind = match self.kind {
+            UndoErrorKind::Nothing => UndoErrorKind::Nothing,
+            UndoErrorKind::Io { path, source } => UndoErrorKind::Io {
                 path: relative(path),
                 source,
             },
-            UndoError::Changed { path, id } => UndoError::Changed {
+            UndoErrorKind::Changed { path, id } => UndoErrorKind::Changed {
                 path: relative(path),
                 id,
             },
-            UndoError::Removed { path, id } => UndoError::Removed {
+            UndoErrorKind::Removed { path, id } => UndoErrorKind::Removed {
                 path: relative(path),
                 id,
             },
-            UndoError::Conflict { path, line, id } => UndoError::Conflict {
+            UndoErrorKind::Conflict { path, line, id } => UndoErrorKind::Conflict {
                 path: relative(path),
                 line,
                 id,
             },
-        }
+        };
+        UndoError { kind, ..self }
     }
 }
 
@@ -516,28 +591,28 @@ pub fn undo(
         .iter()
         .rev()
         .find(|e| e.undoes.is_none() && !e.changes.is_empty() && !undone.contains(&e.id))
-        .ok_or(UndoError::Nothing)?;
+        .ok_or(UndoErrorKind::Nothing)?;
     let id = target.id;
     let mut changes = Vec::new();
     for change in &target.changes {
         let path = change.path.clone();
-        let current = read(&path).map_err(|source| UndoError::Io {
+        let current = read(&path).map_err(|source| UndoErrorKind::Io {
             path: path.clone(),
             source,
         })?;
         let restored = if current == change.after {
             change.before.clone()
         } else if current.is_none() {
-            return Err(UndoError::Removed { path, id });
+            return Err(UndoErrorKind::Removed { path, id }.into());
         } else if !force {
-            return Err(UndoError::Changed { path, id });
+            return Err(UndoErrorKind::Changed { path, id }.into());
         } else {
             let merged = diff::merge(
                 change.after.as_deref().unwrap_or_default(),
                 current.as_deref().unwrap_or_default(),
                 change.before.as_deref().unwrap_or_default(),
             )
-            .map_err(|line| UndoError::Conflict {
+            .map_err(|line| UndoErrorKind::Conflict {
                 path: path.clone(),
                 line,
                 id,
@@ -588,9 +663,9 @@ fn valid_name(name: &str) -> bool {
 
 fn private_dir(dir: &Path) -> Result<(), SessionError> {
     #[cfg(unix)]
-    crate::fs::private_dir(dir)?;
+    crate::fs::private_dir(dir).map_err(SessionErrorKind::Dir)?;
     #[cfg(not(unix))]
-    fs::create_dir_all(dir).map_err(|source| SessionError::Io {
+    fs::create_dir_all(dir).map_err(|source| SessionErrorKind::Io {
         path: dir.to_path_buf(),
         source,
     })?;
@@ -611,10 +686,10 @@ impl Session {
     /// directories under `state_dir` private to the user.
     pub fn new(state_dir: &Path, root: &Path, name: &str) -> Result<Session, SessionError> {
         if !valid_name(name) {
-            return Err(SessionError::BadName(name.to_string()));
+            return Err(Error::new(SessionErrorKind::BadName(name.to_string())));
         }
         if let Some(parent) = state_dir.parent() {
-            fs::create_dir_all(parent).map_err(|source| SessionError::Io {
+            fs::create_dir_all(parent).map_err(|source| SessionErrorKind::Io {
                 path: parent.to_path_buf(),
                 source,
             })?;
@@ -642,7 +717,7 @@ impl Session {
 
     /// Waits for the session's lock, which the [`Log`] holds until dropped.
     pub fn lock(&self) -> Result<Log<'_>, SessionError> {
-        let io_error = |source| SessionError::Io {
+        let io_error = |source| SessionErrorKind::Io {
             path: self.lock.clone(),
             source,
         };
@@ -664,7 +739,7 @@ impl Session {
     pub fn delete(self) -> Result<(), SessionError> {
         let held = self.lock()?;
         for path in [&self.log, &self.lock] {
-            fs::remove_file(path).map_err(|source| SessionError::Io {
+            fs::remove_file(path).map_err(|source| SessionErrorKind::Io {
                 path: path.clone(),
                 source,
             })?;
@@ -706,14 +781,14 @@ impl Log<'_> {
     /// Creates the log with just its header, unless it exists: whether it did.
     fn create(&self) -> Result<bool, SessionError> {
         let path = &self.session.log;
-        let io_error = |source| SessionError::Io {
+        let io_error = |source| SessionErrorKind::Io {
             path: path.clone(),
             source,
         };
         let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
-            Err(err) => return Err(io_error(err)),
+            Err(err) => return Err(io_error(err).into()),
         };
         file.write_all(self.header().as_bytes()).map_err(io_error)?;
         Ok(true)
@@ -741,7 +816,7 @@ impl Log<'_> {
     /// entries hold whole files.
     pub fn append(&mut self, entry: Entry) -> Result<u64, SessionError> {
         let path = &self.session.log;
-        let io_error = |source| SessionError::Io {
+        let io_error = |source| SessionErrorKind::Io {
             path: path.clone(),
             source,
         };
@@ -812,10 +887,11 @@ impl Log<'_> {
         match fs::read_to_string(path) {
             Ok(text) => Ok(Some(text)),
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(source) => Err(SessionError::Io {
+            Err(source) => Err(SessionErrorKind::Io {
                 path: path.clone(),
                 source,
-            }),
+            }
+            .into()),
         }
     }
 
@@ -867,14 +943,14 @@ pub struct Follower {
 impl Follower {
     /// The entries appended since the last poll, oldest first.
     pub fn poll(&mut self) -> Result<Vec<Entry>, SessionError> {
-        let io_error = |source| SessionError::Io {
+        let io_error = |source| SessionErrorKind::Io {
             path: self.log.clone(),
             source,
         };
         let mut file = match File::open(&self.log) {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(err) => return Err(io_error(err)),
+            Err(err) => return Err(io_error(err).into()),
         };
         let metadata = file.metadata().map_err(io_error)?;
         // A log deleted and recorded in again is read from its start.
@@ -919,17 +995,18 @@ fn parse(log: &Path, text: &str, first: usize) -> Result<Vec<Entry>, SessionErro
 fn check_header(log: &Path, line: &str) -> Result<(), SessionError> {
     let header: Header = serde_json::from_str(line).map_err(|err| malformed(log, 0, &err))?;
     if header.ned_session != FORMAT {
-        return Err(SessionError::UnknownFormat {
+        return Err(SessionErrorKind::UnknownFormat {
             path: log.to_path_buf(),
             version: header.ned_session,
-        });
+        }
+        .into());
     }
     Ok(())
 }
 
 /// The error for line `index` (from 0) of the log at `log`.
-fn malformed(log: &Path, index: usize, err: &serde_json::Error) -> SessionError {
-    SessionError::Malformed {
+fn malformed(log: &Path, index: usize, err: &serde_json::Error) -> SessionErrorKind {
+    SessionErrorKind::Malformed {
         path: log.to_path_buf(),
         line: index + 1,
         message: err.to_string(),
@@ -944,6 +1021,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::hint::Frontend;
 
     fn entry(script: &str) -> Entry {
         Entry {
@@ -1045,14 +1123,31 @@ mod tests {
         let log = session.lock().unwrap();
         let err = log.entries().unwrap_err();
         assert!(
-            matches!(err, SessionError::UnknownFormat { version: 2, .. }),
-            "{err}"
+            matches!(err.kind, SessionErrorKind::UnknownFormat { version: 2, .. }),
+            "{err:?}"
         );
-        assert!(err.to_string().contains("another session name"), "{err}");
+        let fix = |frontend| {
+            err.render(frontend, None)
+                .split_once("; ")
+                .unwrap()
+                .1
+                .to_string()
+        };
+        assert_eq!(
+            fix(Frontend::Cli),
+            "use another session (-s NAME or NED_SESSION)"
+        );
+        assert_eq!(
+            fix(Frontend::Mcp),
+            "use another session (restart the server with -s NAME)"
+        );
         drop(log);
         assert!(matches!(
             session.lock().unwrap().append(entry("show 2")),
-            Err(SessionError::UnknownFormat { .. })
+            Err(Error {
+                kind: SessionErrorKind::UnknownFormat { .. },
+                ..
+            })
         ));
     }
 
@@ -1069,8 +1164,8 @@ mod tests {
 
         let err = session.lock().unwrap().entries().unwrap_err();
         assert!(
-            matches!(err, SessionError::Malformed { line: 3, .. }),
-            "{err}"
+            matches!(err.kind, SessionErrorKind::Malformed { line: 3, .. }),
+            "{err:?}"
         );
     }
 
@@ -1140,8 +1235,8 @@ mod tests {
         fs::write(&path, text).unwrap();
         let err = session.lock().unwrap().append(entry("show 2")).unwrap_err();
         assert!(
-            matches!(err, SessionError::Malformed { line: 3, .. }),
-            "{err}"
+            matches!(err.kind, SessionErrorKind::Malformed { line: 3, .. }),
+            "{err:?}"
         );
     }
 
@@ -1154,7 +1249,10 @@ mod tests {
         }
         for name in ["", ".hidden", "..", "a/b", "a b", "ä"] {
             let err = Session::new(&state, Path::new("/src/proj"), name).unwrap_err();
-            assert!(matches!(err, SessionError::BadName(_)), "{name}: {err}");
+            assert!(
+                matches!(err.kind, SessionErrorKind::BadName(_)),
+                "{name}: {err:?}"
+            );
         }
     }
 
@@ -1313,12 +1411,15 @@ mod tests {
         let err = Session::new(&state, Path::new("/src/proj"), "default").unwrap_err();
         assert!(
             matches!(
-                err,
-                SessionError::Dir(crate::fs::PrivateDirError::Unsafe { .. })
+                err.kind,
+                SessionErrorKind::Dir(crate::fs::PrivateDirError::Unsafe { .. })
             ),
-            "{err}"
+            "{err:?}"
         );
-        assert!(err.to_string().contains("XDG_STATE_HOME"), "{err}");
+        assert!(
+            err.render(Frontend::Cli, None).contains("XDG_STATE_HOME"),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -1542,7 +1643,10 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         fs::write(&path, format!("{text}not json\n")).unwrap();
         match follower.poll() {
-            Err(SessionError::Malformed { line: 3, .. }) => {}
+            Err(Error {
+                kind: SessionErrorKind::Malformed { line: 3, .. },
+                ..
+            }) => {}
             other => panic!("{other:?}"),
         }
     }
@@ -1617,14 +1721,20 @@ mod tests {
         ];
         let on_disk = |path: &Path| Ok((path != Path::new("/a")).then(|| "2".to_string()));
         match uncommitted(&entries, on_disk) {
-            Err(UncommittedError::Changed { path, id }) => {
+            Err(Error {
+                kind: UncommittedErrorKind::Changed { path, id },
+                ..
+            }) => {
                 assert_eq!((path, id), (PathBuf::from("/a"), 2));
             }
             other => panic!("{other:?}"),
         }
         let reverted = |_: &Path| Ok(Some("1".to_string()));
         match uncommitted(&entries, reverted) {
-            Err(UncommittedError::Changed { path, id }) => {
+            Err(Error {
+                kind: UncommittedErrorKind::Changed { path, id },
+                ..
+            }) => {
                 assert_eq!((path, id), (PathBuf::from("/a"), 2));
             }
             other => panic!("{other:?}"),
@@ -1714,17 +1824,32 @@ mod tests {
         entries.push(undo_of(4, 1, &[("/p/a.rs", Some("a1\n"), Some("a0\n"))]));
         assert!(matches!(
             plan(&entries, &[("/p/a.rs", "a0\n")], false),
-            Err(UndoError::Nothing)
+            Err(Error {
+                kind: UndoErrorKind::Nothing,
+                ..
+            })
         ));
     }
 
     #[test]
     fn nothing_to_undo_without_an_entry_that_wrote_files() {
-        assert!(matches!(plan(&[], &[], false), Err(UndoError::Nothing)));
+        assert!(matches!(
+            plan(&[], &[], false),
+            Err(Error {
+                kind: UndoErrorKind::Nothing,
+                ..
+            })
+        ));
         let mut dry = recorded(2, Some("delete fn:a"), 0, 0);
         dry.dry_run = true;
         let entries = [recorded(1, Some("show 1"), 0, 0), dry];
-        assert!(matches!(plan(&entries, &[], true), Err(UndoError::Nothing)));
+        assert!(matches!(
+            plan(&entries, &[], true),
+            Err(Error {
+                kind: UndoErrorKind::Nothing,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1735,8 +1860,14 @@ mod tests {
         )];
         let disk = [("/p/a.rs", "A\nb\nC\n")];
         let err = plan(&entries, &disk, false).unwrap_err();
-        assert!(matches!(err, UndoError::Changed { id: 1, .. }), "{err}");
-        assert!(err.to_string().contains("--force"), "{err}");
+        assert!(
+            matches!(err.kind, UndoErrorKind::Changed { id: 1, .. }),
+            "{err:?}"
+        );
+        assert!(
+            err.render(Frontend::Cli, None).contains("--force"),
+            "{err:?}"
+        );
 
         let undo = plan(&entries, &disk, true).unwrap();
         assert_eq!(
@@ -1750,8 +1881,8 @@ mod tests {
         let entries = [edit(1, &[("/p/a.rs", Some("a\nb\n"), Some("A\nb\n"))])];
         let err = plan(&entries, &[("/p/a.rs", "x\nA2\nb\n")], true).unwrap_err();
         assert!(
-            matches!(err, UndoError::Conflict { line: 1, id: 1, .. }),
-            "{err}"
+            matches!(err.kind, UndoErrorKind::Conflict { line: 1, id: 1, .. }),
+            "{err:?}"
         );
     }
 
@@ -1760,7 +1891,10 @@ mod tests {
         let entries = [edit(1, &[("/p/a.rs", Some("a\n"), Some("b\n"))])];
         for force in [false, true] {
             let err = plan(&entries, &[], force).unwrap_err();
-            assert!(matches!(err, UndoError::Removed { id: 1, .. }), "{err}");
+            assert!(
+                matches!(err.kind, UndoErrorKind::Removed { id: 1, .. }),
+                "{err:?}"
+            );
         }
     }
 
@@ -1770,25 +1904,32 @@ mod tests {
         let undo = plan(&entries, &[("/p/c.rs", "c\n")], true).unwrap();
         assert_eq!(undo.changes, [change("/p/c.rs", Some("c\n"), None)]);
         let err = plan(&entries, &[("/p/c.rs", "c\nlater\n")], true).unwrap_err();
-        assert!(matches!(err, UndoError::Conflict { line: 2, .. }), "{err}");
+        assert!(
+            matches!(err.kind, UndoErrorKind::Conflict { line: 2, .. }),
+            "{err:?}"
+        );
     }
 
     #[test]
     fn undo_errors_name_paths_relative_to_a_dir() {
-        let err = UndoError::Changed {
+        let err = Error::new(UndoErrorKind::Changed {
             path: PathBuf::from("/p/src/a.rs"),
             id: 3,
-        };
+        });
         let err = err.relative_to(Path::new("/p"));
-        assert!(err.to_string().starts_with("src/a.rs changed"), "{err}");
-        let err = UndoError::Removed {
+        assert!(
+            err.render(Frontend::Cli, None)
+                .starts_with("error: src/a.rs changed"),
+            "{err:?}"
+        );
+        let err = Error::new(UndoErrorKind::Removed {
             path: PathBuf::from("/q/a.rs"),
             id: 3,
-        };
+        });
         assert!(
             err.relative_to(Path::new("/p"))
-                .to_string()
-                .starts_with("/q/a.rs ")
+                .render(Frontend::Cli, None)
+                .starts_with("error: /q/a.rs ")
         );
     }
 
@@ -1873,11 +2014,17 @@ mod tests {
 
     #[test]
     fn repeat_without_an_earlier_script_is_an_error() {
-        assert_eq!(expand("!!", &[]), Some(Err(RepeatError::NoScript)));
+        assert_eq!(
+            expand("!!", &[]),
+            Some(Err(Error::new(RepeatErrorKind::NoScript)))
+        );
         let entries = [undo_of(1, 1, &[])];
         assert!(matches!(
             repeat("!!", &entries, false),
-            Some(Err(RepeatError::NoScript))
+            Some(Err(Error {
+                kind: RepeatErrorKind::NoScript,
+                ..
+            }))
         ));
     }
 
@@ -1888,7 +2035,7 @@ mod tests {
         let entries = [recorded(1, Some("show 1"), 0, 0), dry];
         assert_eq!(
             repeat("!!:s/a/b/", &entries, false),
-            Some(Err(RepeatError::DryRun(2)))
+            Some(Err(Error::new(RepeatErrorKind::DryRun(2))))
         );
         let (entry, script) = repeat("!!:s/a/b/", &entries, true).unwrap().unwrap();
         assert_eq!((entry.id, script.as_str()), (2, "delete fn:b"));
@@ -1899,14 +2046,38 @@ mod tests {
         let err = expand("!!:s/x/y/", &["show 1\nshow 2"])
             .unwrap()
             .unwrap_err();
+        assert_eq!(err.kind, RepeatErrorKind::NotFound("x".into()));
         assert_eq!(
-            err,
-            RepeatError::NotFound {
-                old: "x".into(),
-                script: "show 1\nshow 2".into(),
-                hint: "; OLD must match its text exactly, spacing and escapes included".into(),
-            }
+            err.render(Frontend::Cli, None),
+            "error: `x` isn't in the last script; OLD must match its text exactly, spacing and escapes included; the script is:\nshow 1\nshow 2"
         );
+    }
+
+    #[test]
+    fn user_text_in_a_substitution_error_is_printed_as_written() {
+        let script = "replace fn:a with \"{--force} {mcp:x} {-w}\"";
+        let err = expand("!!:s/zz/b/", &[script]).unwrap().unwrap_err();
+        for frontend in [Frontend::Cli, Frontend::Mcp, Frontend::Repl] {
+            let rendered = err.render(frontend, None);
+            assert!(
+                rendered.ends_with(&format!("; the script is:\n{script}")),
+                "{rendered}"
+            );
+        }
+        let err = expand(r"!!:s/{-w}\/x/y/", &[r"show /{-w}\/x/"])
+            .unwrap()
+            .unwrap_err();
+        let trailing = expand("!!:s{a{b{x", &["show a"]).unwrap().unwrap_err();
+        for frontend in [Frontend::Cli, Frontend::Mcp, Frontend::Repl] {
+            assert!(
+                err.render(frontend, None).contains(r"it has `{-w}\/x`, and `\/` in a modifier stands for `/`: use another delimiter, as in !!:s|{-w}\/x|NEW|"),
+                "{err:?}"
+            );
+            assert!(
+                trailing.render(frontend, None).ends_with("NEW ends at its first unescaped `{`: write `\\{` for a literal one, or use another delimiter"),
+                "{trailing:?}"
+            );
+        }
     }
 
     #[test]
@@ -1922,8 +2093,14 @@ mod tests {
             "!!:s a b ",
         ] {
             let err = expand(src, &["a"]).unwrap().unwrap_err();
-            assert!(matches!(err, RepeatError::Malformed(_)), "{src}: {err}");
-            assert!(err.to_string().contains("usage: !!"), "{err}");
+            assert!(
+                matches!(err.kind, RepeatErrorKind::Malformed(_)),
+                "{src}: {err:?}"
+            );
+            assert!(
+                err.render(Frontend::Cli, None).contains("usage: !!"),
+                "{err:?}"
+            );
         }
     }
 
@@ -1933,25 +2110,26 @@ mod tests {
             .unwrap()
             .unwrap_err();
         assert_eq!(
-            err.to_string(),
-            "`a/b` isn't in the last script; it has `a\\/b`, and `\\/` in a modifier stands for `/`: \
+            err.render(Frontend::Cli, None),
+            "error: `a/b` isn't in the last script; it has `a\\/b`, and `\\/` in a modifier stands for `/`: \
              use another delimiter, as in !!:s|a\\/b|NEW|; the script is:\nshow /a\\/b/"
         );
         let err = expand("!!:s/zz/b/", &["show 1"]).unwrap().unwrap_err();
         assert!(
-            err.to_string()
-                .starts_with("`zz` isn't in the last script; OLD must match its text exactly"),
-            "{err}"
+            err.render(Frontend::Cli, None).starts_with(
+                "error: `zz` isn't in the last script; OLD must match its text exactly"
+            ),
+            "{err:?}"
         );
         for (src, rest) in [("!!:s|a|| a|", " a|"), ("!!:s/a/b/x", "x")] {
             let err = expand(src, &["show a"]).unwrap().unwrap_err();
+            assert_eq!(err.kind, RepeatErrorKind::Trailing(rest.into()), "{src}");
+            let delimiter = src.as_bytes()[4] as char;
             assert_eq!(
-                err,
-                RepeatError::Trailing {
-                    rest: rest.into(),
-                    delimiter: src.as_bytes()[4] as char
-                },
-                "{src}"
+                err.fix.unwrap().text,
+                format!(
+                    "NEW ends at its first unescaped `{delimiter}`: write `\\{delimiter}` for a literal one, or use another delimiter"
+                )
             );
         }
     }

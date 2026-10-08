@@ -5,6 +5,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
+use ned_core::hint::Frontend;
 use ned_core::invoke::{self, Failure};
 use ned_core::{session, workspace};
 
@@ -38,16 +39,20 @@ pub fn run(action: Action) -> Result<(), Failure> {
 }
 
 fn list(all: bool) -> Result<(), Failure> {
-    let state_dir = session::state_dir().map_err(invoke::failure)?;
+    let state_dir = session::state_dir().map_err(|err| invoke::failure(err, Frontend::Cli))?;
     if all {
-        for (root, names) in session::workspaces(&state_dir).map_err(invoke::failure)? {
+        for (root, names) in
+            session::workspaces(&state_dir).map_err(|err| invoke::failure(err, Frontend::Cli))?
+        {
             outln!("{}", root.display());
             for name in names {
                 outln!("  {name}");
             }
         }
     } else {
-        for name in session::sessions(&state_dir, &here(None)?.1).map_err(invoke::failure)? {
+        for name in session::sessions(&state_dir, &here(None)?.1)
+            .map_err(|err| invoke::failure(err, Frontend::Cli))?
+        {
             outln!("{name}");
         }
     }
@@ -64,7 +69,9 @@ fn delete(mut names: Vec<String>, dir: Option<PathBuf>) -> Result<(), Failure> {
         .collect::<Result<Vec<_>, _>>()?;
     for session in sessions {
         let name = session.name().to_string();
-        session.delete().map_err(invoke::failure)?;
+        session
+            .delete()
+            .map_err(|err| invoke::failure(err, Frontend::Cli))?;
         outln!("{name}: deleted");
     }
     Ok(())

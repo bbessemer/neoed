@@ -325,6 +325,31 @@ fn bang_bang_repeats_the_last_script_on_its_files() {
 }
 
 #[test]
+fn bang_bang_of_a_dry_run_names_dry_run() {
+    let ws = Workspace::new(&[("a.rs", AB)]);
+    let script = r#"replace fn:a.name with "c""#;
+    let results = ws.calls(
+        &[],
+        &[
+            (
+                "ned",
+                json!({ "script": script, "files": ["a.rs"], "dry_run": true }),
+            ),
+            ("ned", json!({ "script": "!!" })),
+        ],
+    );
+    assert!(failed(&results[1]));
+    assert!(
+        text(&results[1]).starts_with(
+            "error: `!!` would apply entry 1, a dry run; send the script again to apply it, or give `dry_run` to preview it again\n"
+        ),
+        "{}",
+        text(&results[1])
+    );
+    assert_eq!(ws.read("a.rs"), AB);
+}
+
+#[test]
 fn outline_and_show_run_their_verbs() {
     let ws = Workspace::new(&[("a.rs", AB)]);
     let results = ws.calls(

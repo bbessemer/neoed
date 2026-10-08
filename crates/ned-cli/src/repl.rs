@@ -187,7 +187,10 @@ impl Follow {
             Err(_) if self.failed => return Default::default(),
             Err(err) => {
                 self.failed = true;
-                let note = format!("note: stopped following session {}: {err}\n", self.name);
+                let note = hint::Note::from(err)
+                    .context(format!("stopped following session {}", self.name))
+                    .render(hint::Frontend::Repl)
+                    + "\n";
                 return (String::new(), styles().1.message(&note).into_owned());
             }
         };
@@ -267,7 +270,7 @@ impl Repl {
             Some(name) => invoke::open(&name, &root)?,
             None => session::state_dir()
                 .and_then(|dir| session::next_free(&dir, &root, "repl"))
-                .map_err(invoke::failure)?,
+                .map_err(|err| invoke::failure(err, hint::Frontend::Repl))?,
         };
         Ok(Repl {
             session,
@@ -346,6 +349,7 @@ impl Repl {
             &mut workspace,
             &mut root,
             true,
+            hint::Frontend::Repl,
             None,
             &mut Terminal,
         );
@@ -536,7 +540,8 @@ impl Repl {
         message: &str,
         messages: &mut Vec<String>,
     ) -> Result<Committed, String> {
-        let prior = invoke::uncommitted(self.recording()).map_err(|(error, _)| error)?;
+        let prior = invoke::uncommitted(self.recording(), hint::Frontend::Repl)
+            .map_err(|(error, _)| error)?;
         let head = Repo::discover(&self.root).ok();
         let finals: Vec<&str> = changes.iter().map(|c| c.new.as_str()).collect();
         let commit = apply::commit(
@@ -556,7 +561,7 @@ impl Repl {
         };
         let names = session::state_dir()
             .and_then(|dir| session::sessions(&dir, &self.root))
-            .map_err(|err| format!("error: {err}"))?;
+            .map_err(|err| err.render(hint::Frontend::Repl, None))?;
         if !names.iter().any(|n| n == name) {
             let known = match names.is_empty() {
                 true => "it has none".to_string(),
@@ -570,7 +575,7 @@ impl Repl {
         let (entries, follower) = attached
             .lock()
             .and_then(|log| log.follow())
-            .map_err(|err| format!("error: {err}"))?;
+            .map_err(|err| err.render(hint::Frontend::Repl, None))?;
         out!("{}", session::history(&entries, false));
         *self.follow.lock().unwrap() = Some(Follow {
             name: name.to_string(),
@@ -745,7 +750,7 @@ impl Repl {
             .recording()
             .lock()
             .and_then(|log| log.entries())
-            .map_err(|err| format!("error: {err}"))?;
+            .map_err(|err| err.render(hint::Frontend::Repl, None))?;
         out!("{}", session::history(&entries, all));
         Ok(())
     }

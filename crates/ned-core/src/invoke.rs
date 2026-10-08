@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use crate::apply::{self, Committed, Finished, Render, Settings};
 use crate::exec::{self, Change, Initial, Options};
 use crate::git::Repo;
-use crate::hint::Frontend;
+use crate::hint::{Frontend, Note};
 use crate::lang::Language;
 use crate::lsp::Lsp;
-use crate::session::{self, Entry, FileChange, Session, SessionError, UncommittedError, UndoError};
+use crate::session::{self, Entry, FileChange, Session, SessionError};
 use crate::style::Style;
 use crate::{fs, script};
 
@@ -114,13 +114,13 @@ pub fn invoke<L: Lsp>(
     let flags = *dry_run || *quiet || *force || *no_fmt || *no_check || lang || commit.is_some();
     let without = (!flags).then_some(*frontend);
     let src = match repeat(
-        session, src, cwd, files, workspace, root, *dry_run, without, out,
+        session, src, cwd, files, workspace, root, *dry_run, *frontend, without, out,
     ) {
         Ok(src) => src,
         Err(failure) => return fail(failure, out),
     };
     let prior = match (&invocation.commit, session) {
-        (Some(_), Some(session)) => match uncommitted(session) {
+        (Some(_), Some(session)) => match uncommitted(session, invocation.frontend) {
             Ok(prior) => prior,
             Err(failure) => return fail(failure, out),
         },
@@ -371,7 +371,8 @@ pub fn session_name(flag: Option<String>) -> Option<String> {
 
 /// Session `name` of the workspace at `root`.
 pub fn open(name: &str, root: &Path) -> Result<Session, Failure> {
-    Session::new(&session::state_dir().map_err(failure)?, root, name).map_err(failure)
+    let state_dir = session::state_dir().map_err(|err| failure(err, Frontend::Cli))?;
+    Session::new(&state_dir, root, name).map_err(|err| failure(err, Frontend::Cli))
 }
 
 /// Appends `entry` to `session`, returning its id; a failure is only a note,
@@ -380,8 +381,11 @@ pub fn record(session: &Session, entry: Entry, out: &mut dyn Output) -> Option<u
     match session.lock().and_then(|mut log| log.append(entry)) {
         Ok(id) => Some(id),
         Err(err) => {
-            let name = session.name();
-            out.message(&format!("note: not recorded in session {name}: {err}"));
+            out.message(
+                &Note::from(err)
+                    .context(format!("not recorded in session {}", session.name()))
+                    .render(Frontend::Cli),
+            );
             None
         }
     }
@@ -389,15 +393,14 @@ pub fn record(session: &Session, entry: Entry, out: &mut dyn Output) -> Option<u
 
 /// The changes `--commit` commits in `session` besides the invocation's own,
 /// each with its entry's id (spec §1.3).
-pub fn uncommitted(session: &Session) -> Result<Vec<(u64, FileChange)>, Failure> {
+pub fn uncommitted(
+    session: &Session,
+    frontend: Frontend,
+) -> Result<Vec<(u64, FileChange)>, Failure> {
     let entries = session.lock().and_then(|log| log.entries());
-    session::uncommitted(&entries.map_err(failure)?, fs::read).map_err(|err| {
-        let code = match err {
-            UncommittedError::Io { .. } => 3,
-            UncommittedError::Changed { .. } => 1,
-        };
-        (format!("error: {err}"), code)
-    })
+    let entries = entries.map_err(|err| failure(err, frontend))?;
+    session::uncommitted(&entries, fs::read)
+        .map_err(|err| (err.render(frontend, None), err.exit_code()))
 }
 
 /// Expands a `!!` script from `session`'s log, printing a note of what it
@@ -414,6 +417,7 @@ pub fn repeat(
     workspace: &mut bool,
     root: &mut PathBuf,
     dry_run: bool,
+    frontend: Frontend,
     without: Option<Frontend>,
     out: &mut dyn Output,
 ) -> Result<String, Failure> {
@@ -425,10 +429,10 @@ pub fn repeat(
         return Err((error.to_string(), 2));
     };
     let entries = session.lock().and_then(|log| log.entries());
-    let entries = entries.map_err(failure)?;
+    let entries = entries.map_err(|err| failure(err, frontend))?;
     let (entry, script) = match session::repeat(&src, &entries, dry_run) {
         None => return Ok(src),
-        Some(result) => result.map_err(|err| (format!("error: {err}"), 2))?,
+        Some(result) => result.map_err(|err| (err.render(frontend, None), err.exit_code()))?,
     };
     let summary = session::script_summary(&script);
     let without = match without {
@@ -461,7 +465,10 @@ pub fn repeat(
 /// `ned history` of `session`.
 pub fn history(session: &Session, all: bool, out: &mut dyn Output) -> Result<(), Failure> {
     let entries = session.lock().and_then(|log| log.entries());
-    out.out(&session::history(&entries.map_err(failure)?, all));
+    out.out(&session::history(
+        &entries.map_err(|err| failure(err, Frontend::Cli))?,
+        all,
+    ));
     Ok(())
 }
 
@@ -474,14 +481,11 @@ pub fn undo(
     style: Style,
     out: &mut dyn Output,
 ) -> Result<(), Failure> {
-    let mut log = session.lock().map_err(failure)?;
-    let entries = log.entries().map_err(failure)?;
+    let mut log = session.lock().map_err(|err| failure(err, Frontend::Cli))?;
+    let entries = log.entries().map_err(|err| failure(err, Frontend::Cli))?;
     let undo = session::undo(&entries, fs::read, force).map_err(|err| {
-        let code = match err {
-            UndoError::Io { .. } => 3,
-            _ => 1,
-        };
-        (format!("error: {}", err.relative_to(&cwd)), code)
+        let err = err.relative_to(&cwd);
+        (err.render(Frontend::Cli, None), err.exit_code())
     })?;
 
     let mut writes = Vec::new();
@@ -524,16 +528,15 @@ pub fn undo(
         comment: None,
     };
     if let Err(err) = log.append(entry) {
-        let name = session.name();
-        out.message(&format!("note: not recorded in session {name}: {err}"));
+        out.message(
+            &Note::from(err)
+                .context(format!("not recorded in session {}", session.name()))
+                .render(Frontend::Cli),
+        );
     }
     Ok(())
 }
 
-pub fn failure(err: SessionError) -> Failure {
-    let code = match err {
-        SessionError::BadName(_) => 2,
-        _ => 3,
-    };
-    (format!("error: {err}"), code)
+pub fn failure(err: SessionError, frontend: Frontend) -> Failure {
+    (err.render(frontend, None), err.exit_code())
 }
