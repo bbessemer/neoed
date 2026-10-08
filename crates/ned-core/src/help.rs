@@ -81,7 +81,7 @@ mod tests {
     use super::*;
     use crate::hint::OPTIONS;
 
-    const FRONTENDS: [Frontend; 2] = [Frontend::Cli, Frontend::Mcp];
+    const FRONTENDS: [Frontend; 3] = [Frontend::Cli, Frontend::Mcp, Frontend::Repl];
 
     /// The summary and every topic's text.
     fn texts(frontend: Frontend) -> Vec<(String, String)> {
@@ -188,5 +188,38 @@ mod tests {
                 panic!("{topic} names {:?}:\n{text}", found.as_str());
             }
         }
+    }
+
+    #[test]
+    fn the_repl_has_the_clis_topics_in_its_own_terms() {
+        assert!(Frontend::Repl.topics().eq(Frontend::Cli.topics()));
+        let summary = Frontend::Repl.summary();
+        assert!(!summary.contains("ned [FLAGS]"), "{summary}");
+        assert!(
+            summary.contains("\nEach line at the prompt is a script"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("\nFlags are given when the REPL starts: "),
+            "{summary}"
+        );
+        assert!(summary.ends_with(" config session repl mcp\n"), "{summary}");
+        let outline = Frontend::Repl.text(Some("outline")).unwrap();
+        assert!(
+            outline.contains("are skipped (start the REPL with --lang).\n"),
+            "{outline}"
+        );
+        let text = Frontend::Repl.text(Some("text")).unwrap();
+        assert!(
+            text.contains("stays four characters, so type the character itself"),
+            "{text}"
+        );
+        let selectors = Frontend::Repl.text(Some("selectors")).unwrap();
+        assert!(selectors.contains("(:help filters)"), "{selectors}");
+        let check = Frontend::Repl.text(Some("check")).unwrap();
+        assert!(
+            check.contains("`ned repl --no-check` skips checking"),
+            "{check}"
+        );
     }
 }

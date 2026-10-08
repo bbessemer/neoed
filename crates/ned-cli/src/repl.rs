@@ -863,7 +863,7 @@ impl Repl {
 
 /// `:help [TOPIC]`.
 fn help(args: &[&str]) -> Result<(), String> {
-    out!("{}", hint::Frontend::Cli.text(args.first().copied())?);
+    out!("{}", hint::Frontend::Repl.text(args.first().copied())?);
     Ok(())
 }
 
