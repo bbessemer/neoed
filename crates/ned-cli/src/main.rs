@@ -22,6 +22,7 @@ macro_rules! errln {
 }
 
 mod daemon;
+mod error;
 mod mcp;
 mod repl;
 mod session;
@@ -40,6 +41,8 @@ use ned_core::lang::{self, Language};
 use ned_core::style::{Depth, Style, When};
 use ned_core::theme::Theme;
 use ned_core::{hint, script, workspace};
+
+use crate::error::UsageError;
 
 /// A `--lang` value, `None` for text. Clap would read `Option<Option<_>>` as a
 /// flag whose value is optional.
@@ -204,8 +207,7 @@ fn main() -> ExitCode {
             if err.use_stderr()
                 && let Some(err) = misplaced_subcommand(&args)
             {
-                errln!("error: {err}");
-                return ExitCode::from(2);
+                return fail(err);
             }
             let terminal = match err.use_stderr() {
                 true => io::stderr().is_terminal(),
@@ -245,8 +247,7 @@ fn main() -> ExitCode {
         }
         Err(err) => {
             let _ = STYLES.set(styles);
-            errln!("{}", err.render(hint::Frontend::Cli, None));
-            return ExitCode::from(2);
+            return fail(err);
         }
     }
     match cli.command {
@@ -278,15 +279,11 @@ fn main() -> ExitCode {
     if cli.scripts.is_empty() && io::stdin().is_terminal() && usage_error(&cli).is_none() {
         return match repl::ReplArgs::from_cli(cli) {
             Ok(args) => repl::run(args),
-            Err(err) => {
-                errln!("error: {err}");
-                ExitCode::from(2)
-            }
+            Err(err) => fail(err),
         };
     }
     if let Some(err) = usage_error(&cli) {
-        errln!("error: {err}");
-        return ExitCode::from(2);
+        return fail(err);
     }
     let mut scripts = cli.scripts.clone();
     if scripts.is_empty() {
@@ -295,19 +292,15 @@ fn main() -> ExitCode {
     if let Some(script) = scripts.iter_mut().find(|script| *script == "-") {
         script.clear();
         if let Err(err) = io::stdin().read_to_string(script) {
-            errln!("error: cannot read the script from stdin: {err}");
-            return ExitCode::from(2);
+            return fail(UsageError::Stdin(err));
         }
     }
     let src = scripts.join("\n");
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let root = match &cli.workspace {
-        Some(Some(dir)) => match dir.canonicalize() {
+        Some(Some(dir)) => match error::canonical(dir) {
             Ok(dir) => dir,
-            Err(err) => {
-                errln!("error: cannot read {}: {err}", dir.display());
-                return ExitCode::from(3);
-            }
+            Err(err) => return fail(err),
         },
         _ => workspace::root(&cwd).unwrap_or(cwd.clone()),
     };
@@ -367,16 +360,21 @@ impl Output for Terminal {
 fn finish(result: Result<(), Failure>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err((error, code)) => {
-            errln!("{error}");
-            ExitCode::from(code)
-        }
+        Err(failure) => ExitCode::from(invoke::fail(failure, &mut Terminal)),
     }
+}
+
+/// The exit code of an error found before a script or subcommand runs,
+/// printing it.
+fn fail(errors: impl Into<hint::Errors>) -> ExitCode {
+    let errors = errors.into();
+    errln!("{}", errors.render(hint::Frontend::Cli, None));
+    ExitCode::from(errors.exit_code())
 }
 
 /// A usage error for a subcommand after a flag in `args` (spec §1), with the
 /// arguments it takes moved after it.
-fn misplaced_subcommand(args: &[String]) -> Option<String> {
+fn misplaced_subcommand(args: &[String]) -> Option<hint::Error<UsageError>> {
     let mut ned = Cli::command();
     ned.build();
     let is_subcommand =
@@ -481,15 +479,13 @@ fn misplaced_subcommand(args: &[String]) -> Option<String> {
         }
     }
     line.extend(args[i..].iter().map(String::as_str));
-    Some(format!(
-        "`{name}` is a subcommand, not a file; give it first: {}",
-        line.join(" ")
-    ))
+    let fix = format!("give it first: {}", hint::verbatim(&line.join(" ")));
+    Some(hint::Error::new(UsageError::Subcommand(name.to_string())).with_fix(fix))
 }
 
 /// A usage error found before the script is read (spec §1): a subcommand after
 /// a flag, or a command's name given as a FILE.
-fn usage_error(cli: &Cli) -> Option<String> {
+fn usage_error(cli: &Cli) -> Option<hint::Error<UsageError>> {
     let args: Vec<_> = std::env::args_os()
         .skip(1)
         .map(|arg| arg.to_string_lossy().into_owned())
@@ -510,15 +506,16 @@ fn usage_error(cli: &Cli) -> Option<String> {
                 false => words.push(arg.as_str()),
             }
         }
-        return Some(format!(
-            "`{}` is a command, not a file; give the script with -e: ned {} -e '{}'",
-            cli.files[verb],
+        let fix = format!(
+            "give the script with -e: ned {} -e '{}'",
             files.join(" "),
             words.join(" ")
-        ));
+        );
+        let command = UsageError::Command(cli.files[verb].clone());
+        return Some(hint::Error::new(command).with_fix(hint::verbatim(&fix)));
     }
     if cli.scripts.iter().filter(|script| *script == "-").count() > 1 {
-        return Some("stdin holds one script; give `-e -` once".to_string());
+        return Some(UsageError::StdinTwice.into());
     }
     None
 }

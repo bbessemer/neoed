@@ -180,8 +180,8 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
                     0
                 }
                 Err(error) => {
-                    transcript.message(&error);
-                    2
+                    transcript.message(&error.render(hint::Frontend::Mcp, None));
+                    error.exit_code()
                 }
             },
             _ => {

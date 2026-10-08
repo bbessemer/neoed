@@ -279,7 +279,7 @@ fn history_without_a_session_lists_the_workspaces_sessions() {
     exit: 2
     --- stdout
     --- stderr
-    error: no session; give one with -s NAME or NED_SESSION (none recorded in this workspace yet)
+    error: no session; give one with -s NAME or NED_SESSION; none recorded in this workspace yet
     ");
     ws.ned(&["-s", "beta", "a.rs", "-e", "show 1"]);
     ws.ned(&["-s", "alpha", "a.rs", "-e", "show 1"]);
@@ -287,13 +287,13 @@ fn history_without_a_session_lists_the_workspaces_sessions() {
     exit: 2
     --- stdout
     --- stderr
-    error: no session; give one with -s NAME or NED_SESSION (sessions in this workspace: alpha, beta)
+    error: no session; give one with -s NAME or NED_SESSION; sessions in this workspace: alpha, beta
     ");
     assert_snapshot!(ws.report(&["history", "-s", "gamma"]), @r"
     exit: 2
     --- stdout
     --- stderr
-    error: no session `gamma` in this workspace; sessions in it: alpha, beta
+    error: no session `gamma`; sessions in this workspace: alpha, beta
     ");
 }
 
@@ -736,7 +736,7 @@ fn session_delete_deletes_the_named_sessions() {
     exit: 2
     --- stdout
     --- stderr
-    error: no session `alpha` in this workspace; none recorded in it yet
+    error: no session `alpha`; none recorded in this workspace yet
     ");
     assert_snapshot!(ws.report(&["session", "list", "--all"]), @r"
     exit: 0
@@ -789,7 +789,7 @@ fn session_delete_of_an_unknown_or_bad_name_deletes_nothing() {
     exit: 2
     --- stdout
     --- stderr
-    error: no session `delta` in this workspace; sessions in it: alpha, beta
+    error: no session `delta`; sessions in this workspace: alpha, beta
     ");
     assert_snapshot!(ws.report(&["session", "delete", "alpha", ".x"]), @r"
     exit: 2

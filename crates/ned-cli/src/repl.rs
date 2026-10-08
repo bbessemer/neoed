@@ -26,6 +26,7 @@ use ned_core::{fs, script, workspace};
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, ExternalPrinter};
 
+use crate::error::{self, UsageError};
 use crate::{Cli, LangFlag, Terminal, daemon, styles};
 
 /// The REPL's arguments: the file set and the flags it shares with scripts.
@@ -65,16 +66,14 @@ pub struct ReplArgs {
 impl ReplArgs {
     /// The REPL's arguments for bare `ned` on a terminal, or a usage error for
     /// a flag only scripts take.
-    pub fn from_cli(cli: Cli) -> Result<ReplArgs, String> {
+    pub fn from_cli(cli: Cli) -> Result<ReplArgs, hint::Error<UsageError>> {
         let script_only = [
             (cli.dry_run, "-n"),
             (cli.quiet, "-q"),
             (cli.commit.is_some(), "--commit"),
         ];
         if let Some((_, flag)) = script_only.iter().find(|(given, _)| *given) {
-            return Err(format!(
-                "{flag} is for scripts, not the REPL; give a script with -e SCRIPT"
-            ));
+            return Err(UsageError::ScriptOnly(flag).into());
         }
         Ok(ReplArgs {
             files: cli.files,
@@ -99,7 +98,10 @@ pub fn run(args: ReplArgs) -> ExitCode {
             return ExitCode::from(code);
         }
     };
-    errln!("note: recording in session {}", repl.session.name());
+    errln!(
+        "{}",
+        error::recording(repl.session.name()).render(Frontend::Repl)
+    );
     if let Some(name) = repl.args.attach.clone()
         && let Err(error) = repl.attach(&[name.as_str()])
     {
@@ -262,9 +264,9 @@ impl Repl {
     fn new(args: ReplArgs) -> Result<Repl, invoke::Failure> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let root = match &args.workspace {
-            Some(Some(dir)) => dir
-                .canonicalize()
-                .map_err(|err| (format!("error: cannot read {}: {err}", dir.display()), 3))?,
+            Some(Some(dir)) => {
+                invoke::report(error::canonical(dir), Frontend::Repl, None, &mut Terminal)?
+            }
             _ => workspace::root(&cwd).unwrap_or(cwd.clone()),
         };
         let session = match invoke::session_name(args.session.clone()) {
@@ -863,7 +865,9 @@ impl Repl {
 
 /// `:help [TOPIC]`.
 fn help(args: &[&str]) -> Result<(), String> {
-    out!("{}", hint::Frontend::Repl.text(args.first().copied())?);
+    let text = Frontend::Repl.text(args.first().copied());
+    let text = text.map_err(|error| error.render(Frontend::Repl, None))?;
+    out!("{text}");
     Ok(())
 }
 

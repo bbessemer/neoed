@@ -1,16 +1,16 @@
 //! `ned mcp` (command-language spec §1.5).
 
-use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::{fmt, io};
 
 use clap::Args;
-use ned_core::hint::Frontend;
+use ned_core::hint::{Fix, Frontend, Hint};
 use ned_core::invoke;
 use ned_core::workspace;
 use ned_mcp::Server;
 
-use crate::{LangFlag, daemon};
+use crate::{LangFlag, daemon, error};
 
 #[derive(Args)]
 pub struct McpArgs {
@@ -32,12 +32,9 @@ pub struct McpArgs {
 pub fn run(args: McpArgs) -> ExitCode {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let root = match &args.workspace {
-        Some(dir) => match dir.canonicalize() {
+        Some(dir) => match error::canonical(dir) {
             Ok(dir) => dir,
-            Err(err) => {
-                errln!("error: cannot read {}: {err}", dir.display());
-                return ExitCode::from(3);
-            }
+            Err(err) => return crate::fail(err),
         },
         None => workspace::root(&cwd).unwrap_or(cwd.clone()),
     };
@@ -45,12 +42,9 @@ pub fn run(args: McpArgs) -> ExitCode {
     let opened = ned_mcp::open_session(name.as_deref(), &root);
     let session = match invoke::report(opened, Frontend::Cli, None, &mut crate::Terminal) {
         Ok(session) => session,
-        Err((error, code)) => {
-            errln!("{error}");
-            return ExitCode::from(code);
-        }
+        Err(failure) => return crate::finish(Err(failure)),
     };
-    errln!("note: recording in session {}", session.name());
+    errln!("{}", error::recording(session.name()).render(Frontend::Cli));
     let mut server = Server {
         cwd,
         root,
@@ -63,9 +57,26 @@ pub fn run(args: McpArgs) -> ExitCode {
     };
     match server.serve(io::stdin().lock(), io::stdout().lock()) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            errln!("error: {err}");
-            ExitCode::from(3)
-        }
+        Err(err) => crate::fail(Disconnected(err)),
+    }
+}
+
+/// The client's stdin or stdout failed.
+#[derive(Debug)]
+struct Disconnected(io::Error);
+
+impl fmt::Display for Disconnected {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "cannot talk to the client: {}", self.0)
+    }
+}
+
+impl Hint for Disconnected {
+    fn exit_code(&self) -> u8 {
+        3
+    }
+
+    fn fix(&self) -> Option<Fix> {
+        Some("restart the server".into())
     }
 }

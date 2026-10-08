@@ -1,9 +1,11 @@
 //! `ned daemon` (command-language spec §1.1).
 
+use std::fmt;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Subcommand;
+use ned_core::hint::{AnyError, Fix, Hint};
 #[cfg(not(unix))]
 use ned_core::lsp::{
     Diagnosis, Document, Formatting, Locate, Located, LspFailure, Position, Renamed,
@@ -37,23 +39,20 @@ pub enum Action {
 pub fn run(action: Action) -> ExitCode {
     match daemon(action) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            errln!("error: {err:#}");
-            ExitCode::from(3)
-        }
+        Err(err) => crate::fail(err),
     }
 }
 
 #[cfg(unix)]
-fn daemon(action: Action) -> anyhow::Result<()> {
+fn daemon(action: Action) -> Result<(), AnyError> {
     use std::env;
     use std::time::Duration;
 
-    use anyhow::{Context, bail};
     use ned_core::config::{self, Config};
     use ned_daemon::protocol::{Request, Response};
     use ned_daemon::{Client, Paths, paths, server};
 
+    let runtime_dir = || paths::runtime_dir().map_err(DaemonError::Paths);
     let dir = match action {
         Action::Run { root, idle_timeout } => {
             let user_config = config::user_config();
@@ -63,28 +62,28 @@ fn daemon(action: Action) -> anyhow::Result<()> {
                     .idle_timeout(&root)?
                     .unwrap_or(DEFAULT_IDLE_TIMEOUT),
             };
-            let paths = Paths::new(&paths::runtime_dir()?, &root, VERSION);
+            let paths = Paths::new(&runtime_dir()?, &root, VERSION);
             server::serve(
                 &paths,
                 &root,
                 user_config,
                 Duration::from_secs(idle_timeout),
-            )?;
+            )
+            .map_err(DaemonError::Io)?;
             return Ok(());
         }
         Action::Start { ref dir } | Action::Status { ref dir } | Action::Stop { ref dir } => {
             dir.clone().unwrap_or_else(|| PathBuf::from("."))
         }
     };
-    let root = ned_core::workspace::root(&dir)
-        .with_context(|| format!("cannot read {}", dir.display()))?;
-    let paths = Paths::new(&paths::runtime_dir()?, &root, VERSION);
+    let root =
+        ned_core::workspace::root(&crate::error::canonical(&dir)?).map_err(DaemonError::Io)?;
+    let paths = Paths::new(&runtime_dir()?, &root, VERSION);
     let client = match action {
-        Action::Start { .. } => Some(Client::connect_or_spawn(
-            &paths,
-            &env::current_exe()?,
-            &root,
-        )?),
+        Action::Start { .. } => {
+            let exe = env::current_exe().map_err(DaemonError::Io)?;
+            Some(Client::connect_or_spawn(&paths, &exe, &root).map_err(DaemonError::Client)?)
+        }
         _ => Client::connect(&paths),
     };
     let shown = root.display();
@@ -96,7 +95,7 @@ fn daemon(action: Action) -> anyhow::Result<()> {
         Action::Stop { .. } => Request::Stop,
         _ => Request::Status,
     };
-    match client.request(&request)? {
+    match client.request(&request).map_err(DaemonError::Client)? {
         Response::Status(status) => out!("{}", status_text(&status)),
         Response::Opened
         | Response::Diagnosis(_)
@@ -106,16 +105,61 @@ fn daemon(action: Action) -> anyhow::Result<()> {
         | Response::Stopped => {
             outln!("stopped the daemon for {shown}")
         }
-        Response::Error(err) => {
-            bail!("the daemon refused the request: {err}; run `ned daemon stop`, then retry")
-        }
+        Response::Error(err) => return Err(DaemonError::Refused(err).into()),
     }
     Ok(())
 }
 
 #[cfg(not(unix))]
-fn daemon(_: Action) -> anyhow::Result<()> {
-    anyhow::bail!("the daemon is Unix-only for now")
+fn daemon(_: Action) -> Result<(), AnyError> {
+    Err(DaemonError::UnixOnly.into())
+}
+
+/// What stopped `ned daemon`; ned-daemon's errors carry their own fixes.
+#[derive(Debug)]
+enum DaemonError {
+    #[cfg(unix)]
+    Paths(ned_daemon::paths::PathsError),
+    #[cfg(unix)]
+    Client(ned_daemon::client::ClientError),
+    #[cfg(unix)]
+    Io(std::io::Error),
+    /// The daemon answered with an error.
+    #[cfg(unix)]
+    Refused(String),
+    #[cfg(not(unix))]
+    UnixOnly,
+}
+
+impl fmt::Display for DaemonError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            #[cfg(unix)]
+            DaemonError::Paths(err) => write!(f, "{err}"),
+            #[cfg(unix)]
+            DaemonError::Client(err) => write!(f, "{err}"),
+            #[cfg(unix)]
+            DaemonError::Io(err) => write!(f, "{err}"),
+            #[cfg(unix)]
+            DaemonError::Refused(err) => write!(f, "the daemon refused the request: {err}"),
+            #[cfg(not(unix))]
+            DaemonError::UnixOnly => f.write_str("the daemon is Unix-only for now"),
+        }
+    }
+}
+
+impl Hint for DaemonError {
+    fn exit_code(&self) -> u8 {
+        3
+    }
+
+    fn fix(&self) -> Option<Fix> {
+        match self {
+            #[cfg(unix)]
+            DaemonError::Refused(_) => Some("run `ned daemon stop`, then retry".into()),
+            _ => None,
+        }
+    }
 }
 
 /// The workspace's language servers, through its daemon.

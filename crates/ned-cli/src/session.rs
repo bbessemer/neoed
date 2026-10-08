@@ -2,14 +2,16 @@
 
 use std::collections::HashSet;
 use std::env;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
-use ned_core::hint::{Frontend, Report};
+use ned_core::hint::{self, AnyError, Fix, Frontend, Hint, Report};
 use ned_core::invoke::{self, Failure};
-use ned_core::{session, workspace};
+use ned_core::session::{self, Session, SessionErrorKind};
+use ned_core::workspace;
 
-use crate::Terminal;
+use crate::{Terminal, error};
 
 #[derive(Subcommand)]
 pub enum Action {
@@ -97,10 +99,7 @@ fn here(dir: Option<PathBuf>) -> Result<(PathBuf, PathBuf), Failure> {
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
     let cwd = cwd.canonicalize().unwrap_or(cwd);
     let root = match dir {
-        Some(dir) => dir.canonicalize().map_err(|err| {
-            let error = format!("error: cannot read {}: {err}", dir.display());
-            (error, 3)
-        })?,
+        Some(dir) => invoke::report(error::canonical(&dir), Frontend::Cli, None, &mut Terminal)?,
         None => workspace::root(&cwd).unwrap_or(cwd.clone()),
     };
     Ok((cwd, root))
@@ -108,34 +107,71 @@ fn here(dir: Option<PathBuf>) -> Result<(PathBuf, PathBuf), Failure> {
 
 /// The session `flag` or `NED_SESSION` names, which must have a log in the
 /// workspace at `root`.
-fn existing(flag: Option<String>, root: &Path) -> Result<session::Session, Failure> {
+fn existing(flag: Option<String>, root: &Path) -> Result<Session, Failure> {
+    invoke::report(logged(flag, root), Frontend::Cli, None, &mut Terminal)
+}
+
+fn logged(flag: Option<String>, root: &Path) -> Result<Session, AnyError> {
     let Some(name) = invoke::session_name(flag) else {
-        let listed = listing(root);
-        let error = format!("error: no session; give one with -s NAME or NED_SESSION ({listed})");
-        return Err((error, 2));
+        return Err(listed(MissingSession::Unnamed.into(), root).into());
     };
-    let opened = invoke::open(&name, root);
-    let session =
-        invoke::report(opened, Frontend::Cli, None, &mut Terminal).map_err(|(error, code)| {
-            match code {
-                // An invalid name: the fix is one of the workspace's sessions.
-                2 => (format!("{error}; {}", listing(root)), code),
-                _ => (error, code),
-            }
-        })?;
+    let session = invoke::open(&name, root).map_err(|err| match err.kind {
+        // An invalid name: the fix is also one of the workspace's sessions.
+        SessionErrorKind::BadName(_) => listed(err, root),
+        _ => err,
+    })?;
     if !session.exists() {
-        let listed = listing(root).replace(" in this workspace", " in it");
-        let error = format!("error: no session `{name}` in this workspace; {listed}");
-        return Err((error, 2));
+        return Err(listed(MissingSession::Unrecorded(name).into(), root).into());
     }
     Ok(session)
 }
 
-/// The workspace's sessions, for an error's fix.
-fn listing(root: &Path) -> String {
-    let names = session::state_dir().and_then(|dir| session::sessions(&dir, root));
-    match names.unwrap_or_default() {
-        names if names.is_empty() => "none recorded in this workspace yet".to_string(),
-        names => format!("sessions in this workspace: {}", names.join(", ")),
+/// A session `ned history`, `ned undo` or `ned session delete` can't act on.
+#[derive(Debug)]
+enum MissingSession {
+    Unnamed,
+    Unrecorded(String),
+}
+
+impl fmt::Display for MissingSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MissingSession::Unnamed => f.write_str("no session"),
+            MissingSession::Unrecorded(name) => write!(f, "no session `{name}`"),
+        }
     }
+}
+
+impl Hint for MissingSession {
+    fn exit_code(&self) -> u8 {
+        2
+    }
+
+    fn fix(&self) -> Option<Fix> {
+        match self {
+            MissingSession::Unnamed => Some("give one with {-s NAME}".into()),
+            MissingSession::Unrecorded(_) => None,
+        }
+    }
+}
+
+/// `error`, its fix followed by the workspace's sessions.
+fn listed<K: Hint>(mut error: hint::Error<K>, root: &Path) -> hint::Error<K> {
+    let fix = match error.fix.take() {
+        Some(fix) => fix.and(listing(root)),
+        None => listing(root),
+    };
+    error.with_fix(fix)
+}
+
+/// The workspace's sessions, as a fix.
+fn listing(root: &Path) -> Fix {
+    let names = session::state_dir().and_then(|dir| session::sessions(&dir, root));
+    Fix::new(match names.unwrap_or_default() {
+        names if names.is_empty() => "none recorded in this workspace yet".to_string(),
+        names => {
+            let names = hint::verbatim(&names.join(", "));
+            format!("sessions in this workspace: {names}")
+        }
+    })
 }

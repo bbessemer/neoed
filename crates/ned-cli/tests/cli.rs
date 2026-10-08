@@ -619,6 +619,25 @@ fn e_dash_reads_stdin_once() {
 }
 
 #[test]
+fn a_script_on_stdin_that_isnt_text_is_a_usage_error() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    fs::write(dir.path().join("script"), b"show \xff\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_ned"))
+        .current_dir(dir.path())
+        .env_remove("NED_SESSION")
+        .arg("parser.rs")
+        .stdin(fs::File::open(dir.path().join("script")).unwrap())
+        .output()
+        .unwrap();
+    assert_snapshot!(report(&out), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: cannot read the script from stdin: stream did not contain valid UTF-8; give it with -e SCRIPT
+    ");
+}
+
+#[test]
 fn repeating_a_script_leaves_piped_stdin_alone() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
     let state = tempfile::tempdir().unwrap();

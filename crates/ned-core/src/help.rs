@@ -1,7 +1,7 @@
 //! `ned help [TOPIC]` (command-language spec, §1) and the MCP server's `help`
 //! tool (§1.5), rendered in each frontend's terms (`hint::Frontend::render`).
 
-use crate::hint::Frontend;
+use crate::hint::{self, Fix, Frontend, Hint};
 
 /// Every frontend's topics, by name, in the order they're listed.
 const SHARED: &[(&str, &str)] = &[
@@ -36,6 +36,17 @@ const CLI: &[(&str, &str)] = &[
 /// The MCP server's own topics, listed after the shared ones.
 const MCP: &[(&str, &str)] = &[("session", include_str!("../help/mcp/session.txt"))];
 
+/// A topic the frontend's help doesn't have.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("unknown topic `{0}`")]
+pub struct UnknownTopic(String);
+
+impl Hint for UnknownTopic {
+    fn exit_code(&self) -> u8 {
+        2
+    }
+}
+
 const SUMMARY: &str = include_str!("../help/summary.txt");
 
 impl Frontend {
@@ -51,7 +62,7 @@ impl Frontend {
 
     /// The summary, or the text of the topic named whatever its case; or the
     /// error naming the topics.
-    pub fn text(self, topic: Option<&str>) -> Result<String, String> {
+    pub fn text(self, topic: Option<&str>) -> Result<String, hint::Error<UnknownTopic>> {
         let Some(topic) = topic else {
             return Ok(self.summary());
         };
@@ -59,11 +70,9 @@ impl Frontend {
             .texts()
             .find(|(name, _)| name.eq_ignore_ascii_case(topic));
         found.map(|(_, text)| self.render(text)).ok_or_else(|| {
-            let names: Vec<&str> = self.topics().collect();
-            format!(
-                "error: unknown topic `{topic}`; topics are {}",
-                names.join(" ")
-            )
+            let topics: Vec<&str> = self.topics().collect();
+            let fix = Fix::new(format!("topics are {}", topics.join(" ")));
+            hint::Error::new(UnknownTopic(topic.to_string())).with_fix(fix)
         })
     }
 
@@ -116,6 +125,8 @@ mod tests {
         assert_eq!(cli[..cli.len() - 2], mcp[..]);
         assert_eq!(cli[cli.len() - 3..], ["session", "repl", "mcp"]);
         let error = Frontend::Mcp.text(Some("repl")).unwrap_err();
+        assert_eq!(error.exit_code(), 2);
+        let error = error.render(Frontend::Mcp, None);
         assert!(
             error.starts_with("error: unknown topic `repl`; topics are show "),
             "{error}"
