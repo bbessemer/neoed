@@ -3,7 +3,7 @@
 use std::ops::Range;
 
 use crate::conflict::{Conflict, Side};
-use crate::exec::ExecErrorKind as E;
+use crate::exec::{ExecError, ExecErrorKind as E};
 use crate::script::ast::{Filter, LineNo, Op, Part, Value};
 use crate::select::part_name;
 use crate::syntax::{self, Item};
@@ -30,7 +30,7 @@ pub enum Of<'a> {
 impl<'a> Span<'a> {
     /// The spans `part` selects in `text`, the span's file. A part's spans
     /// are plain spans, not items. `.refs` and `.def` are the executor's.
-    pub fn part(&self, part: Part, text: &str) -> Result<Vec<Span<'a>>, E> {
+    pub fn part(&self, part: Part, text: &str) -> Result<Vec<Span<'a>>, ExecError> {
         let plain = |range| Span {
             range,
             of: Of::Plain,
@@ -67,19 +67,23 @@ impl<'a> Span<'a> {
                     })
                     .ok_or_else(|| missing_base(n))
             }
-            (Part::Ours | Part::Theirs | Part::Base, _) => Err(E::PartNeedsConflict {
-                part: part_name(part).into(),
-            }),
-            (part, Of::Plain | Of::Side | Of::Conflict(..)) => Err(E::PartNeedsItem {
-                part: part_name(part).into(),
-            }),
+            (Part::Ours | Part::Theirs | Part::Base, _) => {
+                let part = part_name(part).into();
+                Err(E::PartNeedsConflict { part }.into())
+            }
+            (part, Of::Plain | Of::Side | Of::Conflict(..)) => {
+                let part = part_name(part).into();
+                Err(E::PartNeedsItem { part }.into())
+            }
             (Part::Whole, Of::Item(item)) => Ok(vec![plain(item.range.clone())]),
             (part, Of::Item(item)) => syntax::part(item, part, text)
                 .map(|range| vec![plain(range)])
-                .ok_or_else(|| E::MissingPart {
-                    item: syntax::selector(item.kind, &item.name),
-                    part: part_name(part).into(),
-                    has: self.parts(),
+                .ok_or_else(|| {
+                    let kind = E::MissingPart {
+                        item: syntax::selector(item.kind, &item.name),
+                        part: part_name(part).into(),
+                    };
+                    ExecError::new(kind).with_fix(format!("it has {}", self.parts()))
                 }),
         }
     }
@@ -117,12 +121,16 @@ impl<'a> Span<'a> {
     }
 
     /// Whether every one of a step's `filters` holds for the span.
-    pub fn passes(&self, filters: &[(Filter, Range<usize>)], text: &str) -> Result<bool, E> {
+    pub fn passes(
+        &self,
+        filters: &[(Filter, Range<usize>)],
+        text: &str,
+    ) -> Result<bool, ExecError> {
         self.all_hold(filters.iter().map(|(filter, _)| filter), text)
     }
 
     /// Whether `filter` holds for the span (§3.9).
-    pub fn holds(&self, filter: &Filter, text: &str) -> Result<bool, E> {
+    pub fn holds(&self, filter: &Filter, text: &str) -> Result<bool, ExecError> {
         let (property, op, value) = match filter {
             Filter::Or(any) => {
                 for filter in any {
@@ -144,7 +152,7 @@ impl<'a> Span<'a> {
             None => Some(self.range.clone()),
             Some(part) => match self.part(part, text) {
                 Ok(spans) => spans.into_iter().next().map(|s| s.range),
-                Err(E::MissingPart { .. }) => None,
+                Err(e) if matches!(e.kind, E::MissingPart { .. }) => None,
                 Err(e) => return Err(e),
             },
         };
@@ -176,7 +184,7 @@ impl<'a> Span<'a> {
         &self,
         filters: impl IntoIterator<Item = &'f Filter>,
         text: &str,
-    ) -> Result<bool, E> {
+    ) -> Result<bool, ExecError> {
         for filter in filters {
             if !self.holds(filter, text)? {
                 return Ok(false);
@@ -188,14 +196,15 @@ impl<'a> Span<'a> {
 
 /// The error for the `.base` of conflict `n`, which git didn't write in
 /// diff3 style (§3.11).
-pub fn missing_base(n: usize) -> E {
-    E::MissingPart {
+pub fn missing_base(n: usize) -> ExecError {
+    let kind = E::MissingPart {
         item: format!("conflict:{n}"),
         part: "base".into(),
-        has: ".ours .theirs .lines; `git checkout --conflict=diff3 -- FILE` (or zdiff3) \
-              rewrites the file's conflicts with a base, undoing its edits since the merge"
-            .into(),
-    }
+    };
+    ExecError::new(kind).with_fix(
+        "it has .ours .theirs .lines; `git checkout --conflict=diff3 -- FILE` (or zdiff3) \
+         rewrites the file's conflicts with a base, undoing its edits since the merge",
+    )
 }
 
 /// Each whole line `range` touches, with its line ending.
@@ -252,7 +261,7 @@ mod tests {
         assert_eq!(lines(21..23), ["last"]);
     }
 
-    fn line(range: Range<usize>, n: LineNo) -> Result<Vec<&'static str>, E> {
+    fn line(range: Range<usize>, n: LineNo) -> Result<Vec<&'static str>, ExecError> {
         Ok(Span {
             range,
             of: Of::Plain,
@@ -290,7 +299,7 @@ mod tests {
         assert_eq!(span.parts(), ".lines");
         assert!(matches!(
             span.part(Part::Body, TEXT),
-            Err(E::PartNeedsItem { part }) if part == "body"
+            Err(ExecError { kind: E::PartNeedsItem { part }, .. }) if part == "body"
         ));
     }
 
@@ -351,7 +360,7 @@ mod tests {
         };
         assert!(matches!(
             span.holds(&filter(r#"[.name == ""]"#), TEXT),
-            Err(E::PartNeedsItem { part }) if part == "name"
+            Err(ExecError { kind: E::PartNeedsItem { part }, .. }) if part == "name"
         ));
     }
 }

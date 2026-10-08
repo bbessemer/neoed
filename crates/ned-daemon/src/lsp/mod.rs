@@ -538,10 +538,10 @@ impl Server {
                 method: "textDocument/rename".into(),
                 message,
             }),
-            Err(LspError::Failed { message, .. }) => Ok(Renamed::Refused(format!(
-                "{} can't rename there: {message}; select the name itself",
-                self.name
-            ))),
+            Err(LspError::Failed { message, .. }) => Ok(Renamed::Refused {
+                why: format!("{} can't rename there: {message}", self.name),
+                fix: "select the name itself".into(),
+            }),
             Err(LspError::Timeout { .. }) => Err(timed_out()),
             Err(err) => Err(err),
         }
@@ -832,9 +832,10 @@ fn convert(diagnostics: &Value) -> Vec<Diagnostic> {
 /// what's wrong with it.
 fn renamed(server: &str, edit: &Value) -> Result<Renamed, String> {
     if edit.is_null() {
-        return Ok(Renamed::Refused(format!(
-            "{server} found nothing to rename there; select the name itself"
-        )));
+        return Ok(Renamed::Refused {
+            why: format!("{server} found nothing to rename there"),
+            fix: "select the name itself".into(),
+        });
     }
     let mut files: BTreeMap<PathBuf, Vec<TextEdit>> = BTreeMap::new();
     let mut add = |uri: &str, edits: &Value| -> Result<(), String> {
@@ -847,9 +848,12 @@ fn renamed(server: &str, edit: &Value) -> Result<Renamed, String> {
     if let Some(changes) = edit["documentChanges"].as_array() {
         for change in changes {
             if change.get("kind").is_some() {
-                return Ok(Renamed::Refused(format!(
-                    "{server} would create, rename or delete files, which ned can't do; rename or move the file yourself, then rerun"
-                )));
+                return Ok(Renamed::Refused {
+                    why: format!(
+                        "{server} would create, rename or delete files, which ned can't do"
+                    ),
+                    fix: "rename or move the file yourself, then rerun".into(),
+                });
             }
             let uri = change["textDocument"]["uri"].as_str().unwrap_or_default();
             add(uri, &change["edits"])?;

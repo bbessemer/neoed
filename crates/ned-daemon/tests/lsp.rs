@@ -778,7 +778,9 @@ async fn rename_refusals_say_why() {
         let config = format!("[lsp]\nrust = [{FAKE:?}, {:?}, {flag:?}]\n", ws.log);
         fs::write(ws.dir.path().join(".ned.toml"), config).unwrap();
         match rename_foo(&ws).await {
-            Renamed::Refused(message) => assert!(message.contains(why), "{message}"),
+            Renamed::Refused { why: refused, .. } => {
+                assert!(refused.contains(why), "{refused}")
+            }
             other => panic!("{flag}: {other:?}"),
         }
     }
@@ -797,7 +799,7 @@ async fn rename_refusals_say_why() {
         .await
         .unwrap();
     match renamed {
-        Renamed::Refused(message) => assert!(message.contains("nothing to rename"), "{message}"),
+        Renamed::Refused { why, .. } => assert!(why.contains("nothing to rename"), "{why}"),
         other => panic!("{other:?}"),
     }
     let md = ws.doc("a.md", Language::Markdown, "# A\n");

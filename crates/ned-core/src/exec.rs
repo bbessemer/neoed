@@ -16,6 +16,7 @@ use crate::hint::{self, Fix, Hint};
 use crate::lang::{self, Language};
 use crate::lsp::{self, Document, Locate, Located, Lsp, LspFailure, Renamed, Severity, render};
 use crate::outline;
+use crate::pattern::PatternError;
 use crate::script::Script;
 use crate::script::ast::{
     Command, CommandKind, Keep, LineNo, Part, Pattern, Position, Primary, Selector, Step, Target,
@@ -681,7 +682,7 @@ impl<'s> Executor<'s> {
                     for &side in sides {
                         let lines = conflict
                             .side(side)
-                            .ok_or_else(|| ExecError::new(span::missing_base(n)).at(at()))?;
+                            .ok_or_else(|| span::missing_base(n).at(at()))?;
                         new.push_str(&f.text[lines]);
                     }
                     let t = &f.text;
@@ -822,8 +823,8 @@ impl<'s> Executor<'s> {
                                     captures: captures.clone(),
                                 }))
                             })
-                            .collect::<Result<Vec<_>, _>>()
-                            .map_err(|kind| ExecError::new(kind).at(span.clone()))?
+                            .collect::<Result<Vec<_>, ExecError>>()
+                            .map_err(|e| e.at(span.clone()))?
                             .into_iter()
                             .flatten()
                             .collect();
@@ -850,7 +851,7 @@ impl<'s> Executor<'s> {
                 let text = &self.files[m.file].file.text;
                 if plain
                     .passes(filters, text)
-                    .map_err(|kind| ExecError::new(kind).at(span.clone()))?
+                    .map_err(|e| e.at(span.clone()))?
                 {
                     kept.push(m);
                 }
@@ -907,8 +908,10 @@ impl<'s> Executor<'s> {
         for m in matches {
             let (document, position) = self.symbol(m, what, span)?;
             let Some(lsp) = self.lsp.as_deref_mut() else {
-                let message = "`.refs` and `.def` need the language-server daemon, which is Unix-only for now; select with a /regex/ or kind:NAME instead";
-                return Err(error(ExecErrorKind::Lsp(message.into())));
+                let kind = ExecErrorKind::NoDaemon {
+                    feature: "`.refs` and `.def` need",
+                };
+                return Err(error(kind).with_fix("select with a /regex/ or kind:NAME instead"));
             };
             match lsp.locate(kind, &document, position) {
                 Ok(Located::Locations(found)) => locations.extend(found),
@@ -1408,8 +1411,11 @@ impl<'s> Executor<'s> {
             })
             .collect::<Result<Vec<_>, ExecError>>()?;
         let Some(lsp) = self.lsp.as_deref_mut() else {
-            let message = "`check` needs the language-server daemon, which is Unix-only for now; run the project's build or linter";
-            return Err(error(ExecErrorKind::Lsp(message.into())));
+            let fix = "run the project's build or linter";
+            return Err(error(ExecErrorKind::NoDaemon {
+                feature: "`check` needs",
+            })
+            .with_fix(fix));
         };
         let mut diagnosis = lsp
             .diagnose(&documents, true)
@@ -1487,13 +1493,17 @@ impl<'s> Executor<'s> {
             file.text[line_start..m.range.start].chars().count() + 1
         );
         let Some(lsp) = self.lsp.as_deref_mut() else {
-            let message = r#"`rename` needs the language-server daemon, which is Unix-only for now; use sub /\bOLD\b/ with "NEW" over the files"#;
-            return Err(error(ExecErrorKind::Lsp(message.into())));
+            let fix = r#"use sub /\bOLD\b/ with "NEW" over the files"#;
+            return Err(error(ExecErrorKind::NoDaemon {
+                feature: "`rename` needs",
+            })
+            .with_fix(fix));
         };
         let files = match lsp.rename(&document, position, name) {
             Ok(Renamed::Edits(files)) => files,
-            Ok(Renamed::Refused(message)) => {
-                return Err(error(ExecErrorKind::RenameRefused { location, message }));
+            Ok(Renamed::Refused { why, fix }) => {
+                let kind = ExecErrorKind::RenameRefused { location, why };
+                return Err(error(kind).with_fix(fix));
             }
             Ok(Renamed::NoServer) => {
                 return Err(error(ExecErrorKind::NoServer {
@@ -1632,7 +1642,7 @@ impl<'s> Executor<'s> {
                 searched: None,
             })
             .at(span.clone())
-            .or_fix(|_| hint.strip_prefix("; ")));
+            .with_fix(hint));
         }
         Ok(())
     }
@@ -2802,13 +2812,8 @@ pub enum ExecErrorKind {
     },
     #[error("{selector} needs a language, but {files} has none")]
     NoLanguage { selector: String, files: String },
-    /// `has` lists the parts the item has, e.g. `.sig .name .lines`.
     #[error("{item} has no .{part}")]
-    MissingPart {
-        item: String,
-        part: String,
-        has: String,
-    },
+    MissingPart { item: String, part: String },
     #[error(".{part} needs a syntax item")]
     PartNeedsItem { part: String },
     #[error(".{part} needs a conflict")]
@@ -2817,8 +2822,11 @@ pub enum ExecErrorKind {
     NotAConflict { selector: String },
     #[error("invalid {lang} query: {message}")]
     InvalidQuery { lang: String, message: String },
-    #[error("{selector} {message}")]
-    InvalidPattern { selector: String, message: String },
+    #[error("{selector} {error}")]
+    InvalidPattern {
+        selector: String,
+        error: PatternError,
+    },
     #[error("`@{name}` is captured by two pattern steps")]
     DuplicateCapture { name: String },
     #[error("`@{name}` is nothing the target captured")]
@@ -2830,11 +2838,7 @@ pub enum ExecErrorKind {
     #[error("{selector} needs a language, but parsing is disabled")]
     ParsingDisabled { selector: String },
     #[error("{lang} has no `{kind}` items")]
-    UnknownKind {
-        kind: String,
-        lang: String,
-        kinds: String,
-    },
+    UnknownKind { kind: String, lang: String },
     #[error("{selector} matches {total} items")]
     Ambiguous { selector: String, total: usize },
     #[error("line {line} is past the end of {files}")]
@@ -2866,11 +2870,13 @@ pub enum ExecErrorKind {
     /// The message ends with its fix.
     #[error("{0}")]
     Lsp(String),
+    /// `feature` is what needs it, with its verb: "`check` needs".
+    #[error("{feature} the language-server daemon, which is Unix-only for now")]
+    NoDaemon { feature: &'static str },
     #[error("no language server for {langs}")]
     NoServer { langs: String },
-    /// `message` ends with a fix.
-    #[error("cannot rename at {location}: {message}")]
-    RenameRefused { location: String, message: String },
+    #[error("cannot rename at {location}: {why}")]
+    RenameRefused { location: String, why: String },
     /// `rename`'s; `workspace`: under `-w`, where the boundary is the workspace.
     #[error(
         "rename reaches files outside the {}: {files}",
@@ -2896,8 +2902,8 @@ impl Hint for ExecErrorKind {
     fn fix(&self) -> Option<Fix> {
         use ExecErrorKind as E;
         let fix = match self {
+            E::InvalidPattern { error, .. } => return error.fix(),
             E::NoLanguage { .. } => "use {--lang}".into(),
-            E::MissingPart { has, .. } => format!("it has {has}"),
             E::PartNeedsItem { part } => format!("select one, e.g. fn:NAME.{part}"),
             E::PartNeedsConflict { part } => format!("select one, e.g. conflict:1.{part}"),
             E::NotAConflict { .. } => "select one with conflict:N, or use replace".into(),
@@ -2905,7 +2911,6 @@ impl Hint for ExecErrorKind {
             E::WildcardInText => "write `@@_` for a literal `@`".into(),
             E::NoCodeLanguage { .. } => "use a regex or literal, or {--lang}".into(),
             E::ParsingDisabled { .. } => "drop {cli:--lang text}{mcp:`--lang text` from `ned mcp`}{repl:`--lang text` from `ned repl`}, or use a regex or literal".into(),
-            E::UnknownKind { kinds, .. } => format!("use one of: {kinds}"),
             E::Ambiguous { .. } => "add `all`, or select longer text; matches on the same line can't be picked by scope".into(),
             E::LineOutOfRange { line, .. } if line != "$" => "use `$` for the last line".into(),
             E::Overlap { .. } => "merge the two edits, or put a `|` between them".into(),
@@ -2922,9 +2927,10 @@ impl Hint for ExecErrorKind {
             E::ReadOnly { workspace: false, .. } => "add it to the file set, or use {-w}".into(),
             E::AmbiguousLocated { .. } => "add `all` to take every one".into(),
             E::NoMatch { .. }
+            | E::MissingPart { .. }
+            | E::UnknownKind { .. }
             | E::LineOutOfRange { .. }
             | E::InvalidQuery { .. }
-            | E::InvalidPattern { .. }
             | E::UnknownCapture { .. }
             | E::NotInFileSet { .. }
             | E::NoFileMatch { .. }
@@ -2932,6 +2938,7 @@ impl Hint for ExecErrorKind {
             | E::NoGlobMatch { .. }
             | E::SyntaxError { .. }
             | E::Lsp(_)
+            | E::NoDaemon { .. }
             | E::RenameRefused { .. } => return None,
         };
         Some(Fix::new(fix))
@@ -2939,6 +2946,7 @@ impl Hint for ExecErrorKind {
     /// The exit code for an error that rejected a script (spec §7).
     fn exit_code(&self) -> u8 {
         match self {
+            ExecErrorKind::InvalidPattern { error, .. } => error.exit_code(),
             ExecErrorKind::NoMatch { .. }
             | ExecErrorKind::Ambiguous { .. }
             | ExecErrorKind::LineOutOfRange { .. }
@@ -2962,14 +2970,14 @@ impl Hint for ExecErrorKind {
             | ExecErrorKind::AmbiguousLocated { .. } => 1,
             ExecErrorKind::NoFiles { .. }
             | ExecErrorKind::InvalidQuery { .. }
-            | ExecErrorKind::InvalidPattern { .. }
             | ExecErrorKind::DuplicateCapture { .. }
             | ExecErrorKind::UnknownCapture { .. }
             | ExecErrorKind::WildcardInText
             | ExecErrorKind::NoServer { .. } => 2,
             ExecErrorKind::Io { .. }
             | ExecErrorKind::NoGlobMatch { .. }
-            | ExecErrorKind::Lsp(_) => 3,
+            | ExecErrorKind::Lsp(_)
+            | ExecErrorKind::NoDaemon { .. } => 3,
         }
     }
 }
@@ -5217,6 +5225,16 @@ fn main() {}
     }
 
     #[test]
+    fn a_suggestions_path_prints_as_written() {
+        let out = exec_with(&[("{-w}.rs", TEXT), ("b.txt", "x\n")], 2, "show fn:aa");
+        assert!(
+            out.error().contains("did you mean fn:a ({-w}.rs:1-4)?"),
+            "{}",
+            out.error()
+        );
+    }
+
+    #[test]
     fn guard_points_at_the_edited_text() {
         let text = "fn a() {\n    let x = (1;\n}\n\nfn b() {\n    let y = 2;\n}\n";
         let out = guarded("a.rs", text, "replace \"let y = 2;\" with \"let y = [2;\"");
@@ -7015,7 +7033,10 @@ fn main() {}
     #[test]
     fn a_refused_rename_says_where_and_why() {
         let mut lsp = ServerLsp::new(vec![]);
-        lsp.answer = Renamed::Refused("fake can't rename a keyword; select the name itself".into());
+        lsp.answer = Renamed::Refused {
+            why: "fake can't rename a keyword".into(),
+            fix: "select the name itself".into(),
+        };
         let out = served(
             &[("a.rs", FOO_A)],
             Some(1),

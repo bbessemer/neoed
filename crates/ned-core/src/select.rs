@@ -370,7 +370,7 @@ fn no_match(
         files: file_list(&files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>()),
         searched: last.then(|| searched(step, parents)).flatten(),
     };
-    ExecError::new(kind).or_fix(|_| hint.strip_prefix("; ").map(String::from))
+    ExecError::new(kind).with_fix(hint)
 }
 
 /// The fix for a search `step` of `target`, the one at `failed`, that matched
@@ -385,7 +385,7 @@ fn spanning(
     parents: &[Match],
     start: &[Match],
     src: &str,
-) -> Option<String> {
+) -> Option<Fix> {
     let selector = &target.selector;
     let step = &selector.steps[failed];
     if !matches!(step.primary, Primary::Regex(_) | Primary::Literal(_)) {
@@ -455,10 +455,12 @@ fn spanning(
     } else {
         lines
     };
-    Some(format!(
-        "; it matches across {} spans at {location}: did you mean {fixed}?",
+    let (location, fixed) = (hint::verbatim(&location), hint::verbatim(&fixed));
+    let fix = format!(
+        "it matches across {} spans at {location}: did you mean {fixed}?",
         last - first + 1
-    ))
+    );
+    Some(fix.into())
 }
 
 /// For a search `step` (a regex, literal or heredoc) that matched nothing
@@ -538,11 +540,11 @@ fn resolve_step(
             Some(Primary::Syntax { .. }) if !side => {}
             _ if side => {
                 let part = part_name(part).into();
-                return Err(ExecError::new(E::PartNeedsConflict { part }));
+                return Err(E::PartNeedsConflict { part }.into());
             }
             _ => {
                 let part = part_name(part).into();
-                return Err(ExecError::new(E::PartNeedsItem { part }));
+                return Err(E::PartNeedsItem { part }.into());
             }
         }
         primary = None;
@@ -579,7 +581,7 @@ fn resolve_step(
             for &part in &step.parts {
                 let mut picked = Vec::new();
                 for s in &spans {
-                    let parts = s.part(part, &f.text).map_err(ExecError::new)?;
+                    let parts = s.part(part, &f.text)?;
                     if let Part::Line(n) = part
                         && parts.is_empty()
                     {
@@ -591,10 +593,7 @@ fn resolve_step(
             }
             let line = spans.len() > 1;
             for span in spans {
-                if !span
-                    .passes(&step.filters, &f.text)
-                    .map_err(ExecError::new)?
-                {
+                if !span.passes(&step.filters, &f.text)? {
                     continue;
                 }
                 let m = Match {
@@ -659,8 +658,7 @@ impl<'a> Matcher<'a> {
         Ok(match primary {
             Primary::Lines { start, end } => {
                 let end = end.unwrap_or(*start);
-                check_lines(*start, if cut { *start } else { end }, files, parents)
-                    .map_err(ExecError::new)?;
+                check_lines(*start, if cut { *start } else { end }, files, parents)?;
                 Matcher::Lines {
                     start: *start,
                     end,
@@ -687,15 +685,11 @@ impl<'a> Matcher<'a> {
             }
             Primary::Conflict(n) => Matcher::Conflict(*n),
             Primary::Syntax { kind, name } => {
-                check_syntax(kind, name, files, parents).map_err(ExecError::new)?;
+                check_syntax(kind, name, files, parents)?;
                 Matcher::Syntax { kind, name }
             }
-            Primary::Query(source) => {
-                Matcher::Query(compile_query(source, files, parents).map_err(ExecError::new)?)
-            }
-            Primary::Code(code) => {
-                compile_pattern(code, files, parents, scopes).map_err(ExecError::new)?
-            }
+            Primary::Query(source) => Matcher::Query(compile_query(source, files, parents)?),
+            Primary::Code(code) => compile_pattern(code, files, parents, scopes)?,
             Primary::Range { from, to } => Matcher::Range(
                 Box::new(Matcher::new(from, files, parents, scopes, false)?),
                 Box::new(Matcher::new(to, files, parents, scopes, false)?),
@@ -925,7 +919,12 @@ fn check_lines(
 /// (of any kind, for `*`);
 /// files whose language lacks them are skipped. The error is the first such
 /// file's, or `NoLanguage` if no searched file has a language.
-fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]) -> Result<(), E> {
+fn check_syntax(
+    kind: &str,
+    name: &str,
+    files: &[&SourceFile],
+    parents: &[Match],
+) -> Result<(), ExecError> {
     let mut searched: Vec<usize> = parents.iter().map(|m| m.file).collect();
     searched.dedup();
     let mut first_error = None;
@@ -935,10 +934,13 @@ fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]
         if kinds.contains(&kind) || kind == "*" && !kinds.is_empty() {
             return Ok(());
         }
-        first_error.get_or_insert(E::UnknownKind {
-            kind: kind.into(),
-            lang: lang.to_string(),
-            kinds: kinds.join(", "),
+        first_error.get_or_insert_with(|| {
+            let lang = lang.to_string();
+            let unknown = E::UnknownKind {
+                kind: kind.into(),
+                lang,
+            };
+            ExecError::new(unknown).with_fix(format!("use one of: {}", kinds.join(", ")))
         });
     }
     match first_error {
@@ -952,7 +954,8 @@ fn check_syntax(kind: &str, name: &str, files: &[&SourceFile], parents: &[Match]
                     .map(|&i| files[i].path.as_str())
                     .collect::<Vec<_>>(),
             ),
-        }),
+        }
+        .into()),
     }
 }
 
@@ -972,7 +975,7 @@ fn compile_query(
     source: &str,
     files: &[&SourceFile],
     parents: &[Match],
-) -> Result<Vec<(Language, Query)>, E> {
+) -> Result<Vec<(Language, Query)>, ExecError> {
     let mut searched: Vec<usize> = parents.iter().map(|m| m.file).collect();
     searched.dedup();
     let mut queries: Vec<(Language, Query)> = Vec::new();
@@ -981,9 +984,10 @@ fn compile_query(
         if queries.iter().any(|(l, _)| *l == lang) {
             continue;
         }
-        let query = Query::new(&lang.grammar(), source).map_err(|err| E::InvalidQuery {
-            lang: lang.to_string(),
-            message: query_error(&err, &lang.grammar()),
+        let query = Query::new(&lang.grammar(), source).map_err(|err| {
+            let (message, fix) = query_error(&err, &lang.grammar());
+            let lang = lang.to_string();
+            ExecError::new(E::InvalidQuery { lang, message }).with_fix(fix)
         })?;
         queries.push((lang, query));
     }
@@ -995,7 +999,8 @@ fn compile_query(
                 .map(|&i| files[i].path.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
-        });
+        }
+        .into());
     }
     Ok(queries)
 }
@@ -1051,10 +1056,7 @@ fn compile_pattern<'a>(
         return Ok(Matcher::Code { patterns, of });
     }
     match failed {
-        Some(e) => Err(E::InvalidPattern {
-            selector,
-            message: e.to_string(),
-        }),
+        Some(error) => Err(E::InvalidPattern { selector, error }),
         None => {
             let mut searched: Vec<&str> = parents
                 .iter()
@@ -1078,7 +1080,8 @@ fn fenced(code: &str) -> String {
     format!("{fence}{pad}{code}{pad}{fence}")
 }
 
-fn query_error(err: &QueryError, grammar: &tree_sitter::Language) -> String {
+/// What's wrong with a query, where, and the fix, if there's one.
+fn query_error(err: &QueryError, grammar: &tree_sitter::Language) -> (String, Option<Fix>) {
     let message = &err.message;
     let closest = |wanted: &str, names: Vec<&str>| {
         let limit = (wanted.chars().count() / 3).max(2);
@@ -1087,9 +1090,9 @@ fn query_error(err: &QueryError, grammar: &tree_sitter::Language) -> String {
             .map(|n| (syntax::distance(wanted, n), n))
             .filter(|(d, _)| *d <= limit)
             .min()
-            .map_or(String::new(), |(_, n)| format!("; did you mean `{n}`?"))
+            .map(|(_, n)| format!("did you mean `{n}`?"))
     };
-    let hint = match err.kind {
+    let fix = match err.kind {
         QueryErrorKind::NodeType => {
             let kinds = (0..grammar.node_kind_count() as u16)
                 .filter(|&id| grammar.node_kind_is_named(id) && grammar.node_kind_is_visible(id))
@@ -1103,9 +1106,9 @@ fn query_error(err: &QueryError, grammar: &tree_sitter::Language) -> String {
                 .collect();
             closest(message.trim_matches('"'), fields)
         }
-        QueryErrorKind::Predicate => "; predicates look like (#eq? @capture \"text\")".into(),
-        QueryErrorKind::Language => String::new(),
-        _ => "; queries look like (node field: (child) @sel)".into(),
+        QueryErrorKind::Predicate => Some("predicates look like (#eq? @capture \"text\")".into()),
+        QueryErrorKind::Language => None,
+        _ => Some("queries look like (node field: (child) @sel)".into()),
     };
     let what = match err.kind {
         QueryErrorKind::NodeType => format!("unknown node type `{}`", message.trim_matches('"')),
@@ -1114,15 +1117,18 @@ fn query_error(err: &QueryError, grammar: &tree_sitter::Language) -> String {
         QueryErrorKind::Predicate => "bad predicate".into(),
         QueryErrorKind::Structure => "impossible pattern".into(),
         QueryErrorKind::Syntax => "syntax error".into(),
-        QueryErrorKind::Language => return message.clone(),
+        QueryErrorKind::Language => return (message.clone(), None),
     };
-    format!("{what} at column {}{hint}", err.column + 1)
+    (
+        format!("{what} at column {}", err.column + 1),
+        fix.map(Fix::new),
+    )
 }
 
-/// The hint for a range whose end repeats the steps before it, as in
+/// The fix for a range whose end repeats the steps before it, as in
 /// `P>"a"..P>"b"`: `..` binds tighter than `>`, so that's a range from `"a"`
 /// to `P` followed by the step `"b"`, and `P>"a".."b"` was meant.
-fn range_precedence(selector: &Selector, src: &str) -> Option<String> {
+fn range_precedence(selector: &Selector, src: &str) -> Option<Fix> {
     let steps = &selector.steps;
     let text = |range: &Range<usize>| src.get(range.clone());
     (0..steps.len()).find_map(|i| {
@@ -1147,13 +1153,12 @@ fn range_precedence(selector: &Selector, src: &str) -> Option<String> {
             text(&(selector.span.start..steps[i].span.start))?,
             text(&(steps[k].span.start..selector.span.end))?
         );
-        Some(format!(
-            "; `..` binds tighter than `>`: did you mean {fixed}?"
-        ))
+        let fixed = hint::verbatim(&fixed);
+        Some(format!("`..` binds tighter than `>`: did you mean {fixed}?").into())
     })
 }
 
-/// The hint for a range `from..to` that matched nothing because `to` matches
+/// The fix for a range `from..to` that matched nothing because `to` matches
 /// only where it starts before `from` ends, as an item whose span takes in
 /// the doc comment `from` matched does.
 fn backwards_range(
@@ -1161,7 +1166,7 @@ fn backwards_range(
     to: &Primary,
     files: &[&SourceFile],
     parents: &[Match],
-) -> Option<String> {
+) -> Option<Fix> {
     let from = Matcher::new(from, files, parents, &[], false).ok()?;
     let to = Matcher::new(to, files, parents, &[], false).ok()?;
     parents.iter().enumerate().find_map(|(p, parent)| {
@@ -1174,11 +1179,12 @@ fn backwards_range(
                 .iter()
                 .find(|(e, _)| e.start < start.end && e.end > start.end)?;
             let line = f.buffer.byte_to_line(start.end.saturating_sub(1)).ok()? + 1;
-            Some(format!(
-                "; its end matches only at {}, starting before its start's match ends, on line {line}: {}",
+            let fix = format!(
+            "its end matches only at {}, starting before its start's match ends, on line {line}: {}",
                 line_numbers(&f.buffer, end),
                 "an item's span takes in its doc comments and attributes, so start the range on an earlier line, or select the item alone"
-            ))
+            );
+            Some(fix.into())
         })
     })
 }
@@ -1193,7 +1199,7 @@ pub(crate) fn hint(
     parents: &[Match],
     selector: &str,
     at: usize,
-) -> String {
+) -> Fix {
     if let Some(hint) = other_kind(step, files, parents, selector, at)
         .or_else(|| unparsed_name(step, files, parents))
         .or_else(|| close_name(step, files, parents, selector, at))
@@ -1204,7 +1210,7 @@ pub(crate) fn hint(
         let f = files[m.file];
         let lines = line_numbers(&f.buffer, &m.range);
         if files.len() > 1 {
-            format!("{}:{lines}", f.path)
+            hint::verbatim(&format!("{}:{lines}", f.path))
         } else {
             lines
         }
@@ -1223,25 +1229,24 @@ pub(crate) fn hint(
             if text.kind == TextKind::Str
                 && let Some((escaped, m)) = escaped_literal(&text.value, files, &scopes)
             {
-                let quoted = escaped.replace('\\', "\\\\").replace('"', "\\\"");
-                return format!(
-                    "; as source text it matches at {}: \"{quoted}\"",
+                let quoted = hint::verbatim(&escaped.replace('\\', "\\\\").replace('"', "\\\""));
+                let fix = format!(
+                    "as source text it matches at {}: \"{quoted}\"",
                     location(&m)
                 );
+                return fix.into();
             }
             if let Some(m) = near_literal(&text.value, files, &scopes) {
-                return format!(
-                    "; ignoring case and spacing, it matches at {}",
-                    location(&m)
-                );
+                return format!("ignoring case and spacing, it matches at {}", location(&m)).into();
             }
         }
         Primary::Regex(pattern) if !pattern.flags.case_insensitive => {
             if let Some(m) = case_insensitive_match(pattern, files, &scopes) {
-                return format!(
-                    "; it matches case-insensitively at {} (add the i flag)",
+                let fix = format!(
+                    "it matches case-insensitively at {} (add the i flag)",
                     location(&m)
                 );
+                return fix.into();
             }
         }
         Primary::Range { from, to } => {
@@ -1250,18 +1255,19 @@ pub(crate) fn hint(
             }
         }
         Primary::Conflict(n) => {
-            if let Some(parent) = selector[..at].strip_suffix('>')
+            if let Some(parent) = selector[..at].strip_suffix('>').map(hint::verbatim)
                 && let Some((i, conflict, p)) = overlapping_conflict(*n, files, parents, &scopes)
             {
                 let lines = |m: &Match| match location(m) {
                     l if files.len() > 1 => l,
                     l => format!("lines {l}"),
                 };
-                return format!(
-                    "; conflict:{i} ({}) is not inside {parent} ({}); show it with `show conflict:{i}`",
+                let fix = format!(
+                    "conflict:{i} ({}) is not inside {parent} ({}); show it with `show conflict:{i}`",
                     lines(&conflict),
                     lines(p)
                 );
+                return fix.into();
             }
             let mut searched: Vec<&SourceFile> = parents.iter().map(|p| files[p.file]).collect();
             searched.dedup_by_key(|f| &f.path);
@@ -1273,14 +1279,16 @@ pub(crate) fn hint(
                     let n = f.conflicts().len();
                     let names: Vec<String> = (1..=n).map(|i| format!("conflict:{i}")).collect();
                     let noun = if n == 1 { "conflict" } else { "conflicts" };
-                    format!("{} has {n} {noun} ({})", f.path, names.join(", "))
+                    let path = hint::verbatim(&f.path);
+                    format!("{path} has {n} {noun} ({})", names.join(", "))
                 })
                 .collect();
-            return match searched[..] {
-                _ if !conflicted.is_empty() => format!("; {}", conflicted.join("; ")),
-                [f] => format!("; {} has no merge conflicts", f.path),
-                _ => "; no searched file has merge conflicts".into(),
+            let fix = match searched[..] {
+                _ if !conflicted.is_empty() => conflicted.join("; "),
+                [f] => format!("{} has no merge conflicts", hint::verbatim(&f.path)),
+                _ => "no searched file has merge conflicts".into(),
             };
+            return fix.into();
         }
         _ => {}
     }
@@ -1292,11 +1300,11 @@ pub(crate) fn hint(
         if parents.len() > 3 {
             searched.push("...".into());
         }
-        return format!("; it searched {}", searched.join(", "));
+        return format!("it searched {}", searched.join(", ")).into();
     }
     match step.primary {
-        Primary::Syntax { .. } => "; `outline` lists the items".into(),
-        _ => "; `show` prints the text to match against".into(),
+        Primary::Syntax { .. } => "`outline` lists the items".into(),
+        _ => "`show` prints the text to match against".into(),
     }
 }
 
@@ -1424,7 +1432,7 @@ fn fold(text: &str) -> (String, Vec<usize>) {
     (folded, offsets)
 }
 
-/// `; did you mean SEL (LINES)?`, naming the item a syntax `step` that matched
+/// `did you mean SEL (LINES)?`, naming the item a syntax `step` that matched
 /// nothing within `parents` names once its leading checkbox (`[ ] `) is
 /// dropped, or else the item closest in name, if one is close.
 fn close_name(
@@ -1433,7 +1441,7 @@ fn close_name(
     parents: &[Match],
     selector: &str,
     at: usize,
-) -> Option<String> {
+) -> Option<Fix> {
     let Primary::Syntax { kind, name } = &step.primary else {
         return None;
     };
@@ -1521,7 +1529,7 @@ fn bare_name(name: &str) -> String {
         .join(" ")
 }
 
-/// `; did you mean SEL (LINES)?`, naming an item of another kind with the name
+/// `did you mean SEL (LINES)?`, naming an item of another kind with the name
 /// of a syntax `step` that matched nothing within `parents`, taking kinds in
 /// their order in `KINDS`.
 fn other_kind(
@@ -1530,7 +1538,7 @@ fn other_kind(
     parents: &[Match],
     selector: &str,
     at: usize,
-) -> Option<String> {
+) -> Option<Fix> {
     let Primary::Syntax { kind, name } = &step.primary else {
         return None;
     };
@@ -1561,10 +1569,10 @@ fn other_kind(
     ))
 }
 
-/// `; NAME is at line N, in code that doesn't parse as LANG (lines A-B)`, for
+/// `NAME is at line N, in code that doesn't parse as LANG (lines A-B)`, for
 /// a syntax `step` whose name is written inside `parents` only where the
 /// grammar found an error, so no item holds it.
-fn unparsed_name(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Option<String> {
+fn unparsed_name(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Option<Fix> {
     let Primary::Syntax { name, .. } = &step.primary else {
         return None;
     };
@@ -1593,17 +1601,19 @@ fn unparsed_name(step: &Step, files: &[&SourceFile], parents: &[Match]) -> Optio
                 let broken = ancestors
                     .filter(|n| n.has_error() && n.parent().is_some())
                     .last()?;
-                Some(format!(
-                    "; {word} is at line {}, inside {lang} code that doesn't parse ({}): {}",
+                let word = hint::verbatim(word);
+                let fix = format!(
+                    "{word} is at line {}, inside {lang} code that doesn't parse ({}): {}",
                     line_numbers(&f.buffer, &(start..end)),
                     line_numbers(&f.buffer, &broken.byte_range()),
                     "fix it first, or select lines",
-                ))
+                );
+                Some(fix.into())
             })
     })
 }
 
-/// `; did you mean SEL (LINES)?`: `selector` with the first `written` from
+/// `did you mean SEL (LINES)?`: `selector` with the first `written` from
 /// byte `at`, the failing step, replaced by `fixed`, which selects `item` in
 /// `files[file]`.
 fn did_you_mean(
@@ -1614,7 +1624,7 @@ fn did_you_mean(
     files: &[&SourceFile],
     file: usize,
     item: &Item,
-) -> String {
+) -> Fix {
     let suggestion = match selector[at..].find(written).map(|i| at + i) {
         Some(i) => format!(
             "{}{fixed}{}",
@@ -1630,7 +1640,8 @@ fn did_you_mean(
     } else {
         lines
     };
-    format!("; did you mean {suggestion} ({location})?")
+    let (suggestion, location) = (hint::verbatim(&suggestion), hint::verbatim(&location));
+    format!("did you mean {suggestion} ({location})?").into()
 }
 
 /// The index of line `n` in a file of `count` lines whose `$` is `last`.

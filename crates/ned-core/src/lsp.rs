@@ -100,8 +100,11 @@ pub struct FileEdits {
 #[serde(rename_all = "snake_case")]
 pub enum Renamed {
     Edits(Vec<FileEdits>),
-    /// Why the server can't rename there; the message ends with a fix.
-    Refused(String),
+    /// Why the server can't rename there, and the fix.
+    Refused {
+        why: String,
+        fix: String,
+    },
     /// The document's language has no server.
     NoServer,
 }
