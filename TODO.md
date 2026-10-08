@@ -115,14 +115,14 @@ Version: minor when a first plugin can load; the spike releases nothing.
 Hints and relaxed errors: each is a patch, and they batch into the next release
 of either kind.
 
-- [ ] Replacing a braced `.body` (which leaves out the braces) with `TEXT` that
+- [x] Replacing a braced `.body` (which leaves out the braces) with `TEXT` that
       starts with `{` and ends with the matching `}` nests a second pair: note
       it, and suggest dropping the braces from `TEXT` or replacing the whole
       item
 - [ ] `impl:NAME` that names a trait matches nothing, and the hint suggests an
       item of the trait (`trait:NAME>fn:f`); suggest the trait's impls instead
       (`impl:"NAME for TYPE"`)
-- [ ] Replacing an item keeps its attributes, so `TEXT` that brings its own
+- [x] Replacing an item keeps its attributes, so `TEXT` that brings its own
       `#[derive(...)]` (or starts with another item, then the attributes) leaves
       them twice, which the guard misses until a later edit breaks the build:
       note it, and suggest `ITEM.whole`

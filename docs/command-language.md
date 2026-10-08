@@ -1367,6 +1367,17 @@ Notes:
     starts with what precedes the span on its first line, ignoring whitespace
     and line breaks (`TEXT` may re-wrap them). On a single-line span, the note
     suggests selecting its line with `.lines`.
+- A `replace` of a braced `.body`, which leaves out the braces, gets a note when
+  `TEXT` starts with the opening brace and ends with the one that matches it,
+  which would nest a second pair (braces in strings and comments don't count);
+  the note suggests dropping them from `TEXT` or replacing the whole item.
+- A `replace` of a syntax item that keeps its doc comments and attributes gets a
+  note when an item of `TEXT`, not nested in another, has its own, as when
+  `TEXT` starts with another item or a plain comment and then the attributes:
+  they would be there twice, or the kept ones would move to `TEXT`'s first item.
+  When `TEXT` has an item of the replaced one's kind and name, only that item's
+  own count: a documented item added beside it gets no note. The note suggests
+  `ITEM.whole`.
 - **Blank-line tidy.** Deleting a whole-line span (§5.1) also removes blank
   lines beside it. Between two remaining lines, as many blank lines remain as
   the larger of the two gaps around the span, so a file's own spacing survives

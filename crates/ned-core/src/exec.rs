@@ -596,6 +596,9 @@ impl<'s> Executor<'s> {
             CommandKind::Replace { target, text } => {
                 let last = target.selector.steps.last().and_then(|s| s.parts.last());
                 let whole = last == Some(&Part::Whole);
+                let item = target.selector.steps.last().is_some_and(|s| {
+                    s.parts.is_empty() && matches!(s.primary, Primary::Syntax { .. })
+                });
                 let patterns = target
                     .selector
                     .steps
@@ -622,9 +625,13 @@ impl<'s> Executor<'s> {
                         continue;
                     }
                     let selector = &self.src[target.selector.span.clone()];
-                    if let Some(note) = off_by_one(f, &m.range, text, selector) {
-                        self.notes.push(note);
-                    }
+                    let notes = [
+                        off_by_one(f, &m.range, text, selector),
+                        nested_braces(f, &m.range, text, selector),
+                        item.then(|| kept_twice(f, &m.range, text, selector))
+                            .flatten(),
+                    ];
+                    self.notes.extend(notes.into_iter().flatten());
                     let after = f.text[m.range.end..].trim_start_matches([' ', '\t']);
                     let sig_end = after.chars().next().filter(|&c| {
                         last == Some(&Part::Sig)
@@ -2247,6 +2254,98 @@ fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) 
         return None;
     };
     Some(Note { text, fix })
+}
+
+/// A note when replacing a delimited `.body`, `range`, with `new` would nest a
+/// second pair of its delimiters (§4.2).
+fn nested_braces(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) -> Option<Note> {
+    let item = body_of(f, range).filter(|i| !i.undelimited)?;
+    let delimited = item.body.clone()?;
+    let t = &f.text;
+    let (open, close) = (
+        t[delimited.start..].chars().next()?,
+        t[..delimited.end].chars().next_back()?,
+    );
+    let start = new.value.len() - new.value.trim_start().len();
+    let end = new.value.trim_end().len();
+    // The delimiter that starts the text must be a token, not part of a string
+    // or comment, whose pair closes at the end, not before a second pair.
+    let tree = f.lang?.parse(&new.value);
+    let first = tree.root_node().descendant_for_byte_range(start, start)?;
+    let parent = first.parent()?;
+    let last = parent.child(parent.child_count().checked_sub(1)?)?;
+    let token = |n: tree_sitter::Node, c: char| n.child_count() == 0 && n.kind() == c.to_string();
+    if !token(first, open) || !token(last, close) || last.end_byte() != end {
+        return None;
+    }
+    let line = f.buffer.byte_to_line(range.start).map_or(0, |l| l + 1);
+    let text = format!(
+        "{}:{line}: the new text starts with `{open}` and ends with the matching `{close}`, which \
+         {selector} leaves out, so they would nest",
+        f.path
+    );
+    let fix = match selector.strip_suffix(".body") {
+        Some(item) => format!(
+            "drop them from the new text, or replace {}",
+            hint::verbatim(item)
+        ),
+        None => "drop them from the new text".to_string(),
+    };
+    Some(Note {
+        text,
+        fix: Some(Fix::new(fix)),
+    })
+}
+
+/// A note when replacing the item at `range` with `new` keeps the item's
+/// leading docs and attributes although an item of `new` has its own (§4.2).
+fn kept_twice(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) -> Option<Note> {
+    let kept = range.start..without_leading(f, range.clone(), new).start;
+    if kept.is_empty() {
+        return None;
+    }
+    let lang = f.lang?;
+    let replaced = f.items()?.iter().find(|i| i.range == *range)?;
+    let value = &new.value;
+    let mut end = 0;
+    // Items nested in another keep their own.
+    let outer: Vec<_> = syntax::items(lang.selectors(), &lang.parse(value), value)
+        .into_iter()
+        .filter(|i| {
+            let outer = i.range.start >= end;
+            end = end.max(i.range.end);
+            outer
+        })
+        .collect();
+    let same = |i: &syntax::Item| i.kind == replaced.kind && i.name == replaced.name;
+    // A documented item beside the replaced one, in text that keeps it, has
+    // docs of its own.
+    let renamed = !outer.iter().any(same);
+    let own = outer
+        .iter()
+        .find(|i| i.range.start < i.node.start && (renamed || same(i)))?
+        .range
+        .start;
+    let line_of = |offset: usize| f.buffer.byte_to_line(offset).map_or(0, |l| l + 1);
+    let lines = match (line_of(kept.start), line_of(kept.end - 1)) {
+        (a, b) if a == b => format!("line {a}"),
+        (a, b) => format!("lines {a}-{b}"),
+    };
+    let quote = value[own..].lines().next().unwrap_or_default().trim();
+    let text = format!(
+        "{}:{}: the new text has doc comments or attributes after its start (`{quote}`), and \
+         the replaced item keeps its own ({lines}) above it",
+        f.path,
+        line_of(range.start)
+    );
+    let fix = format!(
+        "to replace them too, select {}.whole",
+        hint::verbatim(selector)
+    );
+    Some(Note {
+        text,
+        fix: Some(Fix::new(fix)),
+    })
 }
 
 /// `new`, with a `,` appended if the item at `range` ends with one and `new`
@@ -4930,6 +5029,123 @@ mod tests {
                 "a.rs:1: the new text ends with `+ c;`, which already follows the \
               replaced text on its line"
             ]
+        );
+    }
+
+    #[test]
+    fn replacing_a_body_with_its_braces_leaves_a_note() {
+        let notes = |text: &str, script: &str| exec(text, script).notes;
+        let f = "fn f() {\n    let x = 1;\n}\n";
+        let note = "a.rs:2: the new text starts with `{` and ends with the matching `}`, which \
+                    fn:f.body leaves out, so they would nest; drop them from the new text, or \
+                    replace fn:f";
+        assert_eq!(
+            notes(
+                f,
+                "replace fn:f.body with <<END\n{\n    let y = 2;\n}\nEND\n"
+            ),
+            [note]
+        );
+        assert_eq!(
+            notes(f, "replace fn:f.body with \"{ let y = 2; }\""),
+            [note]
+        );
+        assert_eq!(
+            notes("fn f() {}\n", "replace fn:f.body with \"{ g() }\""),
+            [
+                "a.rs:1: the new text starts with `{` and ends with the matching `}`, which \
+                 fn:f.body leaves out, so they would nest; drop them from the new text, or \
+                 replace fn:f"
+            ]
+        );
+        assert_eq!(
+            notes(
+                "struct S {\n    a: u32,\n}\n",
+                "replace struct:S.body with \"{ b: u32 }\""
+            ),
+            [
+                "a.rs:2: the new text starts with `{` and ends with the matching `}`, which \
+                 struct:S.body leaves out, so they would nest; drop them from the new text, or \
+                 replace struct:S"
+            ]
+        );
+        // Braces in strings and character literals aren't delimiters.
+        for text in [r#""{ s(\"}{\") }""#, r#""{ let c = '}'; g() }""#] {
+            assert_eq!(notes(f, &format!("replace fn:f.body with {text}")), [note]);
+        }
+        assert!(notes(f, r#"replace fn:f.body with "{ a() } // }""#).is_empty());
+        // Two blocks, or braces inside, don't nest the body's.
+        assert!(notes(f, "replace fn:f.body with \"{ a() } { b() }\"").is_empty());
+        assert!(notes(f, "replace fn:f.body with \"if a { b() }\"").is_empty());
+        assert!(notes(f, "replace fn:f with \"fn f() { g() }\"").is_empty());
+        // A Python body has no braces to nest.
+        let py = "def f():\n    x = 1\n";
+        assert!(
+            exec_with(&[("a.py", py)], 1, "replace fn:f.body with \"{1}\"")
+                .notes
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn replacing_an_item_with_text_that_brings_attributes_later_leaves_a_note() {
+        let notes = |text: &str, script: &str| exec(text, script).notes;
+        let s = "/// Docs.\n#[derive(Debug)]\nstruct S {\n    a: u32,\n}\n";
+        assert_eq!(
+            notes(
+                s,
+                "replace struct:S with <<END\nstruct T;\n\n#[derive(Debug)]\nstruct S {\n    b: u32,\n}\nEND\n"
+            ),
+            [
+                "a.rs:1: the new text has doc comments or attributes after its start \
+                 (`#[derive(Debug)]`), and the replaced item keeps its own (lines 1-2) above it; \
+                 to replace them too, select struct:S.whole"
+            ]
+        );
+        assert_eq!(
+            notes(
+                "#[derive(Debug)]\nstruct S;\n",
+                "replace struct:S with <<END\n// Comment.\n#[derive(Debug, Clone)]\nstruct S;\nEND\n"
+            ),
+            [
+                "a.rs:1: the new text has doc comments or attributes after its start \
+                 (`#[derive(Debug, Clone)]`), and the replaced item keeps its own (line 1) above \
+                 it; to replace them too, select struct:S.whole"
+            ]
+        );
+        let alone = "replace struct:S with <<END\n#[derive(Clone)]\nstruct S;\nEND\n";
+        assert!(notes(s, alone).is_empty());
+        assert!(notes(s, "replace struct:S with \"struct S;\"").is_empty());
+        assert!(
+            notes(
+                s,
+                "replace struct:S.whole with <<END\nstruct T;\n\n#[derive(Debug)]\nstruct S;\nEND\n"
+            )
+            .is_empty()
+        );
+        // Nothing is kept from an item without docs or attributes.
+        assert!(
+            notes(
+                "fn f() {}\n",
+                "replace fn:f with <<END\nstruct T;\n\n#[derive(Debug)]\nstruct S;\nEND\n"
+            )
+            .is_empty()
+        );
+        // Attributes nested in the new item are its own.
+        assert!(
+            notes(
+                "#[cfg(test)]\nmod tests {\n    fn a() {}\n}\n",
+                "replace mod:tests with <<END\nmod tests {\n    #[test]\n    fn b() {}\n}\nEND\n"
+            )
+            .is_empty()
+        );
+        // A documented sibling after the replaced item has docs of its own.
+        assert!(
+            notes(
+                s,
+                "replace struct:S with <<END\nstruct S;\n\n/// Docs for T.\nstruct T;\nEND\n"
+            )
+            .is_empty()
         );
     }
 

@@ -1987,6 +1987,36 @@ fn an_off_by_one_replace_notes_it_on_stderr() {
 }
 
 #[test]
+fn replacing_a_body_with_braces_or_an_item_with_later_attributes_notes_it() {
+    let text = "#[derive(Debug)]\nstruct S {\n    a: u32,\n}\n\nfn f() {\n    g();\n}\n";
+    let dir = dir_with(&[("a.rs", text)]);
+    let out = ned(
+        dir.path(),
+        &["a.rs", "-q", "-n"],
+        "replace fn:f.body with \"{ h(); }\"\n",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    (dry run) a.rs: 1 edit, +1 -1
+    --- stderr
+    note: a.rs:7: the new text starts with `{` and ends with the matching `}`, which fn:f.body leaves out, so they would nest; drop them from the new text, or replace fn:f
+    ");
+    let out = ned(
+        dir.path(),
+        &["a.rs", "-q", "-n"],
+        "replace struct:S with <<END\nstruct T;\n\n#[derive(Clone)]\nstruct S;\nEND\n",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    (dry run) a.rs: 1 edit, +4 -3
+    --- stderr
+    note: a.rs:1: the new text has doc comments or attributes after its start (`#[derive(Clone)]`), and the replaced item keeps its own (line 1) above it; to replace them too, select struct:S.whole
+    ");
+}
+
+#[test]
 fn a_command_named_as_a_file_suggests_the_script_form() {
     let dir = dir_with(&[("a.rs", "fn a() {}\n")]);
     assert_snapshot!(ned(dir.path(), &["outline", "a.rs"], ""), @r"
