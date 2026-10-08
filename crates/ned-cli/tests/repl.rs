@@ -605,7 +605,7 @@ replace file:b.rs>fn:b.name with \"d\"
         "{out}"
     );
     assert!(
-        out.contains("error: nothing to commit: the session's edits leave every file as HEAD has it; edit a file, then `:commit MSG`\n"),
+        out.contains("error: nothing to commit: the edits leave every file as HEAD has it; edit a file, then `:commit MSG`\n"),
         "{out}"
     );
     assert_eq!(ws.git(&["log", "-1", "--format=%s"]), "Rename a and b\n");

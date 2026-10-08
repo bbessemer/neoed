@@ -14,7 +14,7 @@ use crate::buffer::{Buffer, LineEnding};
 use crate::conflict::{self, Conflict};
 use crate::exec::{ExecError, ExecErrorKind as E};
 use crate::fragment::Context;
-use crate::hint::{self, Candidates, Fix};
+use crate::hint::{self, Candidates, Fix, Note};
 use crate::lang::Language;
 use crate::pattern;
 use crate::script::ast::{
@@ -185,7 +185,7 @@ pub fn resolve(
     files: &[&SourceFile],
     src: &str,
     cut: bool,
-    notes: &mut Vec<String>,
+    notes: &mut Vec<Note>,
 ) -> Result<Vec<Match>, ExecError> {
     let whole = files
         .iter()
@@ -207,7 +207,7 @@ pub fn resolve_within(
     start: Vec<Match>,
     src: &str,
     cut: bool,
-    notes: &mut Vec<String>,
+    notes: &mut Vec<Note>,
 ) -> Result<Vec<Match>, ExecError> {
     let span = &target.selector.span;
     let error = |kind| ExecError::new(kind).at(span.clone());
@@ -265,18 +265,21 @@ pub fn resolve_within(
         notes.extend(
             short
                 .into_iter()
-                .map(|(n, count)| format!("{selector}: {}", skipped_spans(n, count))),
+                .map(|(n, count)| format!("{selector}: {}", skipped_spans(n, count)).into()),
         );
     }
     for (file, at, from) in skipped {
         let f = files[file];
         let line = |offset| line_numbers(&f.buffer, &(offset..offset));
-        notes.push(format!(
-            "{}:{}: {selector} also starts here, inside its range from line {}; narrow the end to pick one",
-            f.path,
-            line(at),
-            line(from)
-        ));
+        notes.push(Note {
+            text: format!(
+                "{}:{}: {selector} also starts here, inside its range from line {}",
+                f.path,
+                line(at),
+                line(from)
+            ),
+            fix: Some(Fix::new("narrow the end to pick one")),
+        });
     }
     match matches.len() {
         1 => Ok(matches),
@@ -2198,6 +2201,9 @@ mod tests {
         )
         .unwrap();
         notes
+            .iter()
+            .map(|n| n.render(hint::Frontend::Cli)["note: ".len()..].to_string())
+            .collect()
     }
 
     #[test]

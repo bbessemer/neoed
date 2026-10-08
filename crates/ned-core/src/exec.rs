@@ -12,7 +12,7 @@ use tree_sitter::{Node, QueryCursor, StreamingIterator, Tree};
 use crate::conflict::{Conflict, Side};
 use crate::edit::{Edit, EditError, EditSet};
 use crate::highlight;
-use crate::hint::{self, Fix, Hint};
+use crate::hint::{self, Fix, Hint, Note};
 use crate::lang::{self, Language};
 use crate::lsp::{self, Document, Locate, Located, Lsp, LspFailure, Renamed, Severity, render};
 use crate::outline;
@@ -50,7 +50,7 @@ pub struct Run {
     /// The script's most permissive `allow` (§4.4).
     pub allow: Option<Severity>,
     /// Notes for stderr, e.g. from `check`.
-    pub notes: Vec<String>,
+    pub notes: Vec<Note>,
 }
 
 /// A modified file, with the number of spans edited.
@@ -106,10 +106,13 @@ pub fn run<'s, 'l: 's>(
         });
     if !executor.unknown.is_empty() {
         let extensions: Vec<_> = executor.unknown.into_iter().collect();
-        executor.notes.push(format!(
-            "read {} files as text; syntax selectors skip them",
-            extensions.join(", ")
-        ));
+        executor.notes.push(
+            format!(
+                "read {} files as text; syntax selectors skip them",
+                extensions.join(", ")
+            )
+            .into(),
+        );
     }
     Run {
         output: executor.output,
@@ -228,7 +231,7 @@ struct Executor<'s> {
     /// The current file set, read as commands need it.
     set: Vec<Member>,
     output: String,
-    notes: Vec<String>,
+    notes: Vec<Note>,
     /// The unknown extensions of files read as text, for one note.
     unknown: BTreeSet<String>,
     /// The workspace's language servers, for `check`.
@@ -654,7 +657,7 @@ impl<'s> Executor<'s> {
                     if let Some(side) = empty_side(f, &m.range) {
                         let line = line_numbers(&f.buffer, &m.range);
                         self.notes
-                            .push(format!("{}:{line}: {side} is already empty", f.path));
+                            .push(format!("{}:{line}: {side} is already empty", f.path).into());
                         continue;
                     }
                     self.delete(index, span, m.file, m.range)?;
@@ -832,7 +835,7 @@ impl<'s> Executor<'s> {
                             && short > 0
                         {
                             let note = select::skipped_spans(*n, short);
-                            self.notes.push(format!("{what}: {note}"));
+                            self.notes.push(format!("{what}: {note}").into());
                         }
                         picked
                     }
@@ -1233,9 +1236,10 @@ impl<'s> Executor<'s> {
                             format!("{}-{}", first + 1, last + 1)
                         };
                         let path = &self.files[m.file].file.path;
-                        self.notes.push(format!(
-                            "{path} has {count} {unit}, so showed {showed}; use `$` for the last line"
-                        ));
+                        self.notes.push(Note {
+                            text: format!("{path} has {count} {unit}, so showed {showed}"),
+                            fix: Some(Fix::new("use `$` for the last line")),
+                        });
                     }
                     let empty = empty_side(&self.files[m.file].file, &m.range);
                     let context = if empty.is_some() { 0 } else { context };
@@ -1421,7 +1425,7 @@ impl<'s> Executor<'s> {
             .diagnose(&documents, true)
             .map_err(|LspFailure(message)| error(ExecErrorKind::Lsp(message)))?;
 
-        self.notes.append(&mut diagnosis.notes);
+        self.notes.extend(diagnosis.notes.drain(..).map(Note::from));
         if diagnosis.files.iter().all(Option::is_none) {
             let mut langs: Vec<&str> = documents.iter().map(|d| d.lang.name()).collect();
             langs.dedup();
@@ -2162,7 +2166,7 @@ fn only_leading(f: &SourceFile, text: &str) -> bool {
 /// A note when replacing `range` with `new` looks off by one (§4.2): `new`
 /// repeats the line just outside a whole-line span, or the rest of a partial
 /// span's line, which `selector.lines` would have replaced.
-fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) -> Option<String> {
+fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) -> Option<Note> {
     let t = &f.text;
     let counts = |s: &str| s.chars().any(char::is_alphanumeric);
     // `TEXT` may re-wrap what it repeats, so whitespace doesn't count either.
@@ -2188,10 +2192,13 @@ fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) 
             && counts(line)
             && lines.first() != Some(&line)
         {
-            return Some(format!(
-                "{at}: the new text starts with a copy of line {n} (`{line}`), just above \
-                 the replaced lines; the range may be off by one"
-            ));
+            return Some(
+                format!(
+                    "{at}: the new text starts with a copy of line {n} (`{line}`), just above \
+                     the replaced lines; the range may be off by one"
+                )
+                .into(),
+            );
         }
         if let Some((n, line)) = below
             && full.end < t.len()
@@ -2199,10 +2206,13 @@ fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) 
             && counts(line)
             && lines.last() != Some(&line)
         {
-            return Some(format!(
-                "{at}: the new text ends with a copy of line {n} (`{line}`), just below \
-                 the replaced lines; the range may be off by one"
-            ));
+            return Some(
+                format!(
+                    "{at}: the new text ends with a copy of line {n} (`{line}`), just below \
+                     the replaced lines; the range may be off by one"
+                )
+                .into(),
+            );
         }
         return None;
     }
@@ -2213,23 +2223,24 @@ fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) 
         t[range.end..line_end].trim(),
     );
     // Across lines, `.lines` would select each line.
-    let fix = match t[range.clone()].trim_end_matches('\n').contains('\n') {
-        true => String::new(),
-        false => format!("; to replace whole lines, select {selector}.lines"),
+    let fix = (!t[range.clone()].trim_end_matches('\n').contains('\n')).then(|| {
+        Fix::new(format!(
+            "to replace whole lines, select {}.lines",
+            hint::verbatim(selector)
+        ))
+    });
+    let text = if counts(after) && squash(value).ends_with(&squash(after)) {
+        format!(
+            "{at}: the new text ends with `{after}`, which already follows the replaced text on its line"
+        )
+    } else if counts(before) && squash(value).starts_with(&squash(before)) {
+        format!(
+            "{at}: the new text starts with `{before}`, which already precedes the replaced text on its line"
+        )
+    } else {
+        return None;
     };
-    if counts(after) && squash(value).ends_with(&squash(after)) {
-        return Some(format!(
-            "{at}: the new text ends with `{after}`, which already follows the replaced \
-             text on its line{fix}"
-        ));
-    }
-    if counts(before) && squash(value).starts_with(&squash(before)) {
-        return Some(format!(
-            "{at}: the new text starts with `{before}`, which already precedes the \
-             replaced text on its line{fix}"
-        ));
-    }
-    None
+    Some(Note { text, fix })
 }
 
 /// `new`, with a `,` appended if the item at `range` ends with one and `new`
@@ -3081,8 +3092,17 @@ mod tests {
                     .collect()),
                 Err(err) => Err(strip(&err.render(Frontend::Cli, Some(&src)))),
             },
-            notes: run.notes.iter().map(|n| strip(n)).collect(),
+            notes: run.notes.iter().map(|n| strip(&noted(n))).collect(),
         }
+    }
+
+    /// A note as the CLI prints it, without its `note: `.
+    fn noted(note: &Note) -> String {
+        let rendered = note.render(Frontend::Cli);
+        rendered
+            .strip_prefix("note: ")
+            .unwrap_or(&rendered)
+            .to_string()
     }
 
     fn exec(text: &str, script: &str) -> Outcome {
@@ -4891,6 +4911,41 @@ mod tests {
     }
 
     #[test]
+    fn a_notes_fix_comes_apart_from_its_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.rs");
+        fs::write(&path, "a\nb\n").unwrap();
+        let paths = [path.display().to_string()];
+        let src = "show 1-9";
+        let parsed = parse(src).unwrap();
+        let run = run(
+            &parsed,
+            src,
+            Initial::Files(&paths),
+            &Options::default(),
+            None,
+        );
+        assert_eq!(
+            run.notes,
+            [Note {
+                text: format!("{} has 2 lines, so showed 1-2", paths[0]),
+                fix: Some(Fix::new("use `$` for the last line")),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_selector_in_a_notes_fix_prints_as_written() {
+        let out = exec("let a = {-w};\n", "replace \"{-w}\" with \"let a = x\"");
+        assert_eq!(
+            out.notes,
+            [
+                "a.rs:1: the new text starts with `let a =`, which already precedes the replaced text on its line; to replace whole lines, select \"{-w}\".lines"
+            ]
+        );
+    }
+
+    #[test]
     fn rewrapping_the_rest_of_a_line_still_leaves_a_note() {
         let notes = |script: &str| exec("let a = f(b) + c(d);\n", script).notes;
         assert_eq!(
@@ -6427,7 +6482,7 @@ fn main() {}
                     .collect()),
                 Err(err) => Err(strip(&err.render(Frontend::Cli, Some(&src)))),
             },
-            notes: run.notes,
+            notes: run.notes.iter().map(noted).collect(),
         }
     }
 
@@ -6480,7 +6535,7 @@ fn main() {}
                     .collect()),
                 Err(err) => Err(strip(&err.render(Frontend::Cli, Some(&src)))),
             },
-            notes: run.notes,
+            notes: run.notes.iter().map(noted).collect(),
         }
     }
 
@@ -6864,7 +6919,7 @@ fn main() {}
                     .collect()),
                 Err(err) => Err(strip(&err.render(Frontend::Cli, Some(&src)))),
             },
-            notes: run.notes,
+            notes: run.notes.iter().map(noted).collect(),
         }
     }
 

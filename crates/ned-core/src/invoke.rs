@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::apply::{self, Committed, Finished, Render, Settings};
 use crate::exec::{self, Change, Initial, Options};
 use crate::git::Repo;
-use crate::hint::{Frontend, Note};
+use crate::hint::{Errors, Frontend, Note};
 use crate::lang::Language;
 use crate::lsp::Lsp;
 use crate::session::{self, Entry, FileChange, Session, SessionError};
@@ -74,6 +74,12 @@ impl Ran {
             changes: Vec::new(),
             commit: None,
         }
+    }
+
+    /// A run stopped by `errors`, printed in `frontend`'s terms.
+    fn stopped(errors: Errors, frontend: Frontend, out: &mut dyn Output) -> Ran {
+        let rendered: Vec<String> = errors.iter().map(|e| e.render(frontend, None)).collect();
+        Ran::failed(errors.exit_code(), rendered.join("\n"), out)
     }
 }
 
@@ -185,7 +191,7 @@ pub fn execute(
     let run = exec::run(&parsed, src, initial, options, Some(&mut *lsp));
     out.out(&run.output);
     for note in &run.notes {
-        out.message(&format!("note: {note}"));
+        out.message(&note.render(frontend));
     }
     let changes = match run.result {
         Ok(changes) => changes,
@@ -198,14 +204,14 @@ pub fn execute(
         }
     };
     let running: Option<&mut dyn Lsp> = lsp.running().then_some(lsp);
-    let mut messages = Vec::new();
-    let finished = apply::finish(&changes, run.allow, settings, running, &mut messages);
-    for message in messages {
-        out.message(&message);
+    let mut notes = Vec::new();
+    let finished = apply::finish(&changes, run.allow, settings, running, &mut notes);
+    for note in notes {
+        out.message(&note.render(frontend));
     }
     match finished {
         Ok(finished) => Ok(Edited { changes, finished }),
-        Err(rejected) => Err(Ran::failed(rejected.exit, rejected.message, out)),
+        Err(errors) => Err(Ran::stopped(errors, frontend, out)),
     }
 }
 
@@ -252,7 +258,7 @@ fn run(
         Err(ran) => return ran,
     };
     let mut lsp: Option<&mut dyn Lsp> = lsp.running().then_some(lsp);
-    let mut messages = Vec::new();
+    let mut notes = Vec::new();
     let finals = finished.finals(&changes);
 
     let committed = match &invocation.commit {
@@ -260,27 +266,17 @@ fn run(
             // A script that changes nothing has nothing to commit, whatever
             // the session's earlier edits (spec §1.3).
             let prior = if changes.is_empty() { &[][..] } else { prior };
-            let commit = apply::commit(
-                root,
-                before,
-                cwd,
-                prior,
-                &changes,
-                &finals,
-                message,
-                &mut messages,
-            );
+            let commit = apply::commit(root, before, cwd, prior, &changes, &finals, message);
             match commit {
                 Ok(committed) => Some(committed),
                 Err(err) => {
                     if let Some(lsp) = lsp.as_deref_mut() {
-                        apply::restore(lsp, &changes, &mut messages);
+                        apply::restore(lsp, &changes, &mut notes);
                     }
-                    for message in messages {
-                        out.message(&message);
+                    for note in notes {
+                        out.message(&note.render(invocation.frontend));
                     }
-                    let error = err.render(invocation.frontend, None);
-                    return Ran::failed(err.exit_code(), error, out);
+                    return Ran::stopped(err, invocation.frontend, out);
                 }
             }
         }
@@ -291,11 +287,11 @@ fn run(
         invocation.dry_run || invocation.no_check,
         lsp.as_deref_mut(),
     ) {
-        (false, Some(lsp)) => apply::before_save(lsp, &changes, &mut messages),
+        (false, Some(lsp)) => apply::before_save(lsp, &changes, &mut notes),
         _ => None,
     };
-    for message in messages.drain(..) {
-        out.message(&message);
+    for note in notes.drain(..) {
+        out.message(&note.render(invocation.frontend));
     }
     if !invocation.dry_run {
         let writes: Vec<(PathBuf, String)> = changes
@@ -337,10 +333,10 @@ fn run(
     out.out(&apply::render(&changes, &finished, how));
     if let (Some(before), Some(lsp)) = (before_save, lsp.as_deref_mut()) {
         let style = invocation.style;
-        let found = apply::after_save(lsp, before, &changes, &finished, style, &mut messages);
+        let found = apply::after_save(lsp, before, &changes, &finished, style, &mut notes);
         out.out(&found);
-        for message in messages.drain(..) {
-            out.message(&message);
+        for note in notes.drain(..) {
+            out.message(&note.render(invocation.frontend));
         }
     }
     if let Some(committed) = &committed {
@@ -351,9 +347,9 @@ fn run(
         && invocation.dry_run
         && let Some(lsp) = lsp
     {
-        apply::restore(lsp, &changes, &mut messages);
-        for message in messages {
-            out.message(&message);
+        apply::restore(lsp, &changes, &mut notes);
+        for note in notes {
+            out.message(&note.render(invocation.frontend));
         }
     }
     Ran {

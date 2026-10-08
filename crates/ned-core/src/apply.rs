@@ -6,12 +6,12 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::buffer::Buffer;
-use crate::config::{self, Config, ConfigError};
+use crate::config::{self, Config};
 use crate::diff::{self, DiffStat};
 use crate::exec::Change;
 use crate::format::{self, Failure, Outcome};
 use crate::git::{FileEdit, GitError, GitErrorKind, Prepared, Repo};
-use crate::hint::{self, Fix, Frontend, Hint};
+use crate::hint::{self, Errors, Fix, Hint, Note};
 use crate::lang::Language;
 use crate::lsp::{self, Checked, Diagnostic, Lsp, LspFailure, Severity};
 use crate::session::FileChange;
@@ -36,14 +36,7 @@ pub struct Finished {
     pub checked: Option<Checked>,
 }
 
-/// Why the edits can't be written: the message ends with a fix.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Rejected {
-    pub exit: u8,
-    pub message: String,
-}
-
-/// Why edits are rejected; a [`Rejected`] message joins these, rendered.
+/// Why edits are rejected.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 enum Rejection {
     #[error("{path}: edit makes {formatter} fail: {why}")]
@@ -87,65 +80,62 @@ impl Finished {
 }
 
 /// Formats `changes`, falling back to language servers when `lsp` (a running
-/// daemon's) is given, and checks them with it. `messages` gets the lines for
-/// stderr, each starting `note:` or `error:`. Edits that make a formatter fail,
-/// or blocked by the diagnostics they introduce, are rejected, after the
-/// servers are sent the original texts back.
+/// daemon's) is given, and checks them with it, adding to `notes` as it goes.
+/// Edits that make a formatter fail, or blocked by the diagnostics they
+/// introduce, are rejected, after the servers are sent the original texts
+/// back.
 pub fn finish(
     changes: &[Change],
     allow: Option<Severity>,
     settings: Settings,
     mut lsp: Option<&mut (dyn Lsp + '_)>,
-    messages: &mut Vec<String>,
-) -> Result<Finished, Rejected> {
+    notes: &mut Vec<Note>,
+) -> Result<Finished, Errors> {
     let mut outcomes = match settings.format {
         false => vec![Outcome::Unchanged; changes.len()],
         true => Config::new(config::user_config().as_deref())
-            .and_then(|mut config| format::run(changes, &mut config))
-            .map_err(|err: ConfigError| Rejected {
-                exit: 2,
-                message: err.render(Frontend::Cli, None),
-            })?,
+            .and_then(|mut config| format::run(changes, &mut config))?,
     };
     if let Some(lsp) = lsp.as_deref_mut() {
         format::fallback(changes, &mut outcomes, lsp);
     }
-    let mut introduced = Vec::new();
+    let mut introduced: Option<Errors> = None;
     for (change, outcome) in changes.iter().zip(&outcomes) {
         match outcome {
-            Outcome::NotFound(note) | Outcome::Skipped(note) => {
-                messages.push(format!("note: {note}"));
-            }
+            Outcome::NotFound(note) | Outcome::Skipped(note) => notes.push(note.clone().into()),
             Outcome::Failed(failure) if !settings.force && introduces(change, failure) => {
-                let rejection = Rejection::BreaksFormatter {
+                let rejection = hint::Error::new(Rejection::BreaksFormatter {
                     path: change.path.clone(),
                     formatter: failure.name.clone(),
                     why: failure.why.clone(),
-                };
-                introduced.push(hint::Error::new(rejection).render(Frontend::Cli, None));
+                });
+                match &mut introduced {
+                    Some(errors) => errors.push(rejection),
+                    None => introduced = Some(rejection.into()),
+                }
             }
-            Outcome::Failed(failure) => messages.push(format!("note: {}", failure.note())),
+            Outcome::Failed(failure) => notes.push(failure.note().into()),
             Outcome::Formatted { name, text } if !change.created => {
                 let outside = diff::outside(&change.old, &change.new, text);
                 if !outside.is_empty() {
-                    messages.push(format!(
-                        "note: {name} also changed {} outside the edit, at {}",
-                        change.path,
-                        line_list(&outside)
-                    ));
+                    notes.push(
+                        format!(
+                            "{name} also changed {} outside the edit, at {}",
+                            change.path,
+                            line_list(&outside)
+                        )
+                        .into(),
+                    );
                 }
             }
             Outcome::Unchanged | Outcome::Formatted { .. } => {}
         }
     }
-    if !introduced.is_empty() {
+    if let Some(errors) = introduced {
         if let Some(lsp) = lsp {
-            restore(lsp, changes, messages);
+            restore(lsp, changes, notes);
         }
-        return Err(Rejected {
-            exit: 1,
-            message: introduced.join("\n"),
-        });
+        return Err(errors);
     }
     let mut finished = Finished {
         outcomes,
@@ -159,17 +149,14 @@ pub fn finish(
         Ok(checked) => checked,
         Err(LspFailure(message)) => {
             let paths: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
-            messages.push(format!(
-                "note: {message}; skipped checking {}",
-                paths.join(", ")
-            ));
+            notes.push(format!("{message}; skipped checking {}", paths.join(", ")).into());
             return Ok(finished);
         }
     };
     if !checked.blocking.is_empty() {
-        let message = blocked(changes, &finals, &checked);
-        restore(lsp, changes, messages);
-        return Err(Rejected { exit: 1, message });
+        let error = blocked(changes, &finals, &checked);
+        restore(lsp, changes, notes);
+        return Err(error.into());
     }
     finished.checked = Some(checked);
     Ok(finished)
@@ -205,25 +192,25 @@ fn introduces(change: &Change, failure: &Failure) -> bool {
 }
 
 /// Sends the servers the original texts of `changes` back, after an edit that
-/// wasn't written, adding a note to `messages` if that fails.
-pub fn restore(lsp: &mut dyn Lsp, changes: &[Change], messages: &mut Vec<String>) {
+/// wasn't written, adding a note to `notes` if that fails.
+pub fn restore(lsp: &mut dyn Lsp, changes: &[Change], notes: &mut Vec<Note>) {
     if let Err(LspFailure(message)) = lsp::restore(lsp, changes) {
-        messages.push(format!("note: {message}"));
+        notes.push(message.into());
     }
 }
 
 /// Starts checking a write with the checks servers run on save (spec §6.5),
-/// before the files are written; `None`, with a note in `messages`, if that
+/// before the files are written; `None`, with a note in `notes`, if that
 /// failed.
 pub fn before_save(
     lsp: &mut dyn Lsp,
     changes: &[Change],
-    messages: &mut Vec<String>,
+    notes: &mut Vec<Note>,
 ) -> Option<lsp::BeforeSave> {
     match lsp::before_save(lsp, changes) {
         Ok(before) => Some(before),
         Err(LspFailure(message)) => {
-            messages.push(skipped_on_save(&message, changes));
+            notes.push(skipped_on_save(&message, changes));
             None
         }
     }
@@ -237,17 +224,17 @@ pub fn after_save(
     changes: &[Change],
     finished: &Finished,
     style: Style,
-    messages: &mut Vec<String>,
+    notes: &mut Vec<Note>,
 ) -> String {
     let finals = finished.finals(changes);
     let saved = match lsp::check_saved(lsp, before, changes, &finals, finished.checked.as_ref()) {
         Ok(saved) => saved,
         Err(LspFailure(message)) => {
-            messages.push(skipped_on_save(&message, changes));
+            notes.push(skipped_on_save(&message, changes));
             return String::new();
         }
     };
-    messages.extend(saved.notes.iter().map(|note| format!("note: {note}")));
+    notes.extend(saved.notes.into_iter().map(Note::from));
     let mut out = String::new();
     for ((change, text), found) in changes.iter().zip(&finals).zip(&saved.files) {
         out.push_str(&diagnostics(&change.path, text, found, style));
@@ -256,12 +243,13 @@ pub fn after_save(
 }
 
 /// The note for checks on save that failed.
-fn skipped_on_save(message: &str, changes: &[Change]) -> String {
+fn skipped_on_save(message: &str, changes: &[Change]) -> Note {
     let paths: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
     format!(
-        "note: {message}; skipped the checks run on save of {}",
+        "{message}; skipped the checks run on save of {}",
         paths.join(", ")
     )
+    .into()
 }
 
 /// `found`, diagnostics of the file at `path` holding `text`, in `check`'s
@@ -275,7 +263,7 @@ fn diagnostics(path: &str, text: &str, found: &[Diagnostic], style: Style) -> St
 }
 
 /// The error for an edit rejected by the diagnostics it introduces.
-fn blocked(changes: &[Change], finals: &[&str], checked: &Checked) -> String {
+fn blocked(changes: &[Change], finals: &[&str], checked: &Checked) -> hint::Error<Rejection> {
     let count = |severity| {
         checked
             .blocking
@@ -309,7 +297,6 @@ fn blocked(changes: &[Change], finals: &[&str], checked: &Checked) -> String {
     let fix = format!("fix {them}, or add `allow {allow}` to the script to apply it anyway");
     hint::Error::new(Rejection::Introduces(counts.join(" and ")))
         .with_fix(Fix::new(fix).then(listing))
-        .render(Frontend::Cli, None)
 }
 
 /// How finished edits are printed.
@@ -410,7 +397,7 @@ impl Committed {
 /// `HEAD` hasn't moved since `before`, the repository found as the run
 /// started. Paths in `changes` are relative to `cwd`; the repository is
 /// found from the first, or from `top` without one. If staging fails, `HEAD`
-/// is moved back, and a failure to do that goes to `messages`.
+/// is moved back, and a failure to do that follows the error.
 #[allow(clippy::too_many_arguments)]
 pub fn commit(
     top: &Path,
@@ -420,8 +407,7 @@ pub fn commit(
     changes: &[Change],
     finals: &[&str],
     message: &str,
-    messages: &mut Vec<String>,
-) -> Result<Committed, GitError> {
+) -> Result<Committed, Errors> {
     let paths: Vec<PathBuf> = changes.iter().map(|c| cwd.join(&c.path)).collect();
     let earlier = prior.iter().map(|(_, change)| FileEdit {
         path: &change.path,
@@ -444,17 +430,18 @@ pub fn commit(
     let found = Repo::discover(paths.first().map_or(top, PathBuf::as_path))?;
     let repo = before.filter(|b| b.top == found.top).unwrap_or(found);
     if edits.is_empty() {
-        return Err(GitErrorKind::NothingToCommit.into());
+        return Err(GitError::from(GitErrorKind::NothingToCommit).into());
     }
     let mut prepared = repo
         .prepare(&edits, message)
         .map_err(|err| in_session(err, prior))?;
     repo.advance(&prepared)?;
     if let Err(err) = repo.stage(&mut prepared) {
+        let mut errors = Errors::from(err);
         if let Err(git) = repo.retreat(&prepared) {
-            messages.push(git.render(Frontend::Cli, None));
+            errors.push(git);
         }
-        return Err(err);
+        return Err(errors);
     }
     Ok(Committed { repo, prepared })
 }
@@ -480,6 +467,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::hint::Frontend;
 
     /// A formatter that fails on text holding `bad`, and passes the rest.
     const FAILS_ON_BAD: &str = "[format]\nrust = [\"sh\", \"-c\", \"input=$(cat); case $input in *bad*) echo 'bad input' >&2; exit 1;; esac; printf '%s\\\\n' \\\"$input\\\"\"]\n";
@@ -490,7 +478,7 @@ mod tests {
         old: Option<&str>,
         new: &str,
         force: bool,
-    ) -> (Result<Finished, Rejected>, Vec<String>) {
+    ) -> (Result<Finished, (u8, String)>, Vec<String>) {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join(".ned.toml"), FAILS_ON_BAD).unwrap();
         let changes = [Change {
@@ -506,16 +494,19 @@ mod tests {
             check: false,
             force,
         };
-        let mut messages = Vec::new();
-        let finished = finish(&changes, None, settings, None, &mut messages);
+        let mut notes = Vec::new();
+        let finished = finish(&changes, None, settings, None, &mut notes);
         let dir = dir.path().to_str().unwrap();
         let unrooted = |s: &str| s.replace(dir, "DIR");
-        let messages = messages.iter().map(|m| unrooted(m)).collect();
-        let finished = finished.map_err(|r| Rejected {
-            exit: r.exit,
-            message: unrooted(&r.message),
+        let notes = notes
+            .iter()
+            .map(|n| unrooted(&n.render(Frontend::Cli)))
+            .collect();
+        let finished = finished.map_err(|errors| {
+            let rendered = errors.render(Frontend::Cli, None);
+            (errors.exit_code(), unrooted(&rendered))
         });
-        (finished, messages)
+        (finished, notes)
     }
 
     const NOTE: &str = "note: sh failed: bad input; skipped formatting DIR/a.rs";
@@ -525,10 +516,10 @@ mod tests {
         let (finished, messages) = finish_change(Some("fn f() {}\n"), "fn bad() {}\n", false);
         assert_eq!(
             finished,
-            Err(Rejected {
-                exit: 1,
-                message: "error: DIR/a.rs: edit makes sh fail: bad input; fix it, or use --force to apply anyway".into(),
-            })
+            Err((
+                1,
+                "error: DIR/a.rs: edit makes sh fail: bad input; fix it, or use --force to apply anyway".into(),
+            ))
         );
         assert!(messages.is_empty(), "{messages:?}");
     }
@@ -600,7 +591,7 @@ mod tests {
             files: vec![vec![diagnostic.clone()]],
             blocking: vec![(0, diagnostic)],
         };
-        let message = blocked(&[change], &["fn a() {}\n"], &checked);
+        let message = blocked(&[change], &["fn a() {}\n"], &checked).render(Frontend::Cli, None);
         assert!(
             message.starts_with(
                 "error: edit introduces 1 error; fix it, or add `allow errors` to the script to apply it anyway\n"

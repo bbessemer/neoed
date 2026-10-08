@@ -103,7 +103,7 @@ pub enum GitErrorKind {
     Overlap { path: String, line: usize },
     #[error("{0} isn't UTF-8 text in HEAD or the index")]
     NotUtf8(String),
-    #[error("nothing to commit: the script leaves every file as HEAD has it")]
+    #[error("nothing to commit: the edits leave every file as HEAD has it")]
     NothingToCommit,
     #[error("HEAD moved while ned ran")]
     HeadMoved,
@@ -140,7 +140,10 @@ impl Hint for GitErrorKind {
                     hint::verbatim(lock)
                 )
             }
-            K::NothingToCommit | K::Failed { .. } => return None,
+            K::NothingToCommit => {
+                "edit a file{cli:, or leave out --commit}{mcp:, or leave out `commit`}{repl:, then `:commit MSG`}".into()
+            }
+            K::Failed { .. } => return None,
         };
         Some(fix.into())
     }
@@ -1223,6 +1226,23 @@ mod tests {
                 "error: a merge is in progress; finish it with git commit, or leave out --commit",
                 "error: a merge is in progress; finish it with git commit, or leave out `commit`",
                 "error: a merge is in progress; finish it with git commit, or use `:write` in place of `:commit`",
+            ]
+        );
+    }
+
+    #[test]
+    fn nothing_to_commit_says_what_to_do_in_each_frontends_terms() {
+        use crate::hint::Frontend;
+
+        let error = GitError::new(K::NothingToCommit);
+        let rendered =
+            [Frontend::Cli, Frontend::Mcp, Frontend::Repl].map(|f| error.render(f, None));
+        assert_eq!(
+            rendered,
+            [
+                "error: nothing to commit: the edits leave every file as HEAD has it; edit a file, or leave out --commit",
+                "error: nothing to commit: the edits leave every file as HEAD has it; edit a file, or leave out `commit`",
+                "error: nothing to commit: the edits leave every file as HEAD has it; edit a file, then `:commit MSG`",
             ]
         );
     }

@@ -15,7 +15,7 @@ use ned_core::buffers::{Buffers, BuffersError, BuffersErrorKind};
 use ned_core::diff::{self, DiffStat};
 use ned_core::exec::{Change, Initial, Options};
 use ned_core::format::Outcome;
-use ned_core::git::{GitErrorKind, Repo};
+use ned_core::git::Repo;
 use ned_core::hint::{self, Frontend, Note};
 use ned_core::invoke::{self, Edited, Ran};
 use ned_core::lang::{self, Language};
@@ -443,14 +443,14 @@ impl Repl {
             return Ok(());
         }
         let changes: Vec<Change> = writes.iter().map(|w| self.change(w)).collect();
-        let mut messages = Vec::new();
+        let mut notes = Vec::new();
         let committed = match message {
             None => None,
-            Some(message) => Some(self.commit_writes(&changes, message, &mut messages)?),
+            Some(message) => Some(self.commit_writes(&changes, message)?),
         };
         let before = match self.args.no_check || !self.daemon.running() {
             true => None,
-            false => apply::before_save(&mut self.daemon, &changes, &mut messages),
+            false => apply::before_save(&mut self.daemon, &changes, &mut notes),
         };
         let files: Vec<(PathBuf, String)> = writes
             .iter()
@@ -487,15 +487,15 @@ impl Repl {
                 &changes,
                 &finished,
                 style,
-                &mut messages,
+                &mut notes,
             );
             out!("{found}");
         }
         if let Some(committed) = &committed {
             outln!("{}", committed.line(message.unwrap_or_default()));
         }
-        for message in messages {
-            errln!("{message}");
+        for note in notes {
+            errln!("{}", note.render(Frontend::Repl));
         }
         let written = writes
             .into_iter()
@@ -534,22 +534,20 @@ impl Repl {
 
     /// Commits `changes`, a write about to be made, after the session's edits
     /// since its last commit, as `--commit` does.
-    fn commit_writes(
-        &mut self,
-        changes: &[Change],
-        message: &str,
-        messages: &mut Vec<String>,
-    ) -> Result<Committed, String> {
+    fn commit_writes(&mut self, changes: &[Change], message: &str) -> Result<Committed, String> {
         let prior = invoke::uncommitted(self.recording(), hint::Frontend::Repl)
             .map_err(|(error, _)| error)?;
         let head = Repo::discover(&self.root).ok();
         let finals: Vec<&str> = changes.iter().map(|c| c.new.as_str()).collect();
         let commit = apply::commit(
-            &self.root, head, &self.cwd, &prior, changes, &finals, message, messages,
+            &self.root, head, &self.cwd, &prior, changes, &finals, message,
         );
-        commit.map_err(|err| match err.kind {
-            GitErrorKind::NothingToCommit => "error: nothing to commit: the session's edits leave every file as HEAD has it; edit a file, then `:commit MSG`".into(),
-            _ => err.render(hint::Frontend::Repl, None),
+        commit.map_err(|errors| {
+            let rendered: Vec<String> = errors
+                .iter()
+                .map(|e| e.render(Frontend::Repl, None))
+                .collect();
+            rendered.join("\n")
         })
     }
 
