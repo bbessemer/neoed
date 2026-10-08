@@ -173,12 +173,12 @@ selector (including `A..B` ranges, bare kinds and `[...]` filters) and verb
 formatting, `-w` (every workspace file; files are read lazily), and `ned help`.
 Every error ends with a fix; `hint` (`Error`, `Fix`, `Frontend`, whose
 placeholders name options in each frontend's terms; `Report` carries notes
-beside a result) is the type every error will move onto, unused so far.
-`ned-daemon` has the per-workspace daemon (socket, lock, lazy spawn, idle exit)
-behind `ned daemon`, and starts language servers (`lsp`, `servers`; `[lsp]`
-config in `ned-core`) for `open` requests and diagnostics, through the `Lsp`
-trait in `ned-core`: `check [SEL] [LEVEL]`, and edits checked while a daemon
-runs (introduced errors block unless `allow errors`), `rename`, and the
+beside a result) is the type every error will move onto; script parse errors use
+it so far. `ned-daemon` has the per-workspace daemon (socket, lock, lazy spawn,
+idle exit) behind `ned daemon`, and starts language servers (`lsp`, `servers`;
+`[lsp]` config in `ned-core`) for `open` requests and diagnostics, through the
+`Lsp` trait in `ned-core`: `check [SEL] [LEVEL]`, and edits checked while a
+daemon runs (introduced errors block unless `allow errors`), `rename`, and the
 `.refs`/`.def` parts (within the file set or `-w` workspace); the version names
 the build commit, and a daemon serves only its own build. With a daemon running,
 language servers format files whose formatters aren't installed, `check` also
@@ -317,3 +317,4 @@ a metadata-free version). Install a release:
 `curl -fsSL https://raw.githubusercontent.com/bbessemer/neoed/main/install.sh | sh`;
 from source:
 `cargo install --locked --git https://github.com/bbessemer/neoed ned-cli`; from
+a checkout, `cargo install --path crates/ned-cli`.

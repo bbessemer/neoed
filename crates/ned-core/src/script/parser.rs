@@ -5,6 +5,7 @@ use std::ops::Range;
 use super::ast::*;
 use super::error::{COMMANDS, ParseError, ParseErrorKind as E};
 use super::lexer::{Lexer, Token, TokenKind, is_ident_char, part_named};
+use crate::hint::{Fix, Hint, ResultExt, verbatim};
 use crate::lsp::Severity;
 use crate::syntax;
 
@@ -13,9 +14,12 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
     script(&mut parser).map_err(|err| ended_early(src, &parser.lexer.heredocs, err))
 }
 
-/// `err`, naming the heredoc that ended early when it follows one whose tag
-/// appears again later, alone on a line (§7).
+/// `err`, with the fix that names the heredoc that ended early when it
+/// follows one whose tag appears again later, alone on a line (§7).
 fn ended_early(src: &str, heredocs: &[(String, usize, usize)], err: ParseError) -> ParseError {
+    let Some(start) = err.span.as_ref().map(|s| s.start) else {
+        return err;
+    };
     if matches!(err.kind, E::UnterminatedHeredoc(_)) {
         return err;
     }
@@ -31,18 +35,17 @@ fn ended_early(src: &str, heredocs: &[(String, usize, usize)], err: ParseError) 
     let Some((tag, opener, end)) = heredocs
         .iter()
         .rev()
-        .find(|(tag, _, end)| *end <= err.span.start && again(tag, *end))
+        .find(|(tag, _, end)| *end <= start && again(tag, *end))
     else {
         return err;
     };
     let line = |offset: usize| src[..offset].matches('\n').count() + 1;
-    let kind = E::EarlyHeredoc {
-        error: Box::new(err.kind),
-        tag: tag.clone(),
-        opener: line(*opener),
-        end: line(*end),
-    };
-    ParseError::new(kind, err.span)
+    let heredoc = verbatim(&format!(
+        "the heredoc <<{tag} at line {} ended at line {}, which holds only {tag}: pick a tag its text doesn't hold",
+        line(*opener),
+        line(*end),
+    ));
+    err.and_fix(heredoc)
 }
 
 fn script(parser: &mut Parser) -> Result<Script, ParseError> {
@@ -57,21 +60,21 @@ fn script(parser: &mut Parser) -> Result<Script, ParseError> {
             }
             TokenKind::Pipe => {
                 if commands.len() == stages.last().copied().unwrap_or(0) {
-                    return Err(ParseError::new(E::EmptyStage, token.span.clone()));
+                    return Err(E::EmptyStage.at(token.span.clone()));
                 }
                 pipe = parser.bump()?.span;
                 stages.push(commands.len());
             }
             TokenKind::Eof => {
                 if stages.last() == Some(&commands.len()) {
-                    return Err(ParseError::new(E::EmptyStage, pipe));
+                    return Err(E::EmptyStage.at(pipe));
                 }
                 let later = stages.first().map_or(&[][..], |&first| &commands[first..]);
                 if let Some((what, command)) = later
                     .iter()
                     .find_map(|c| reads_disk(&c.kind).map(|what| (what, c)))
                 {
-                    return Err(ParseError::new(E::ReadsDisk(what), command.span.clone()));
+                    return Err(E::ReadsDisk(what).at(command.span.clone()));
                 }
                 return Ok(Script { commands, stages });
             }
@@ -82,20 +85,13 @@ fn script(parser: &mut Parser) -> Result<Script, ParseError> {
                     next.kind,
                     TokenKind::Newline | TokenKind::Semicolon | TokenKind::Pipe | TokenKind::Eof
                 ) {
-                    if let Some(err) = parser
-                        .trailing_all(&command, &next)
-                        .or_else(|| parser.glued_step(&next.span))
-                    {
-                        return Err(err);
-                    }
-                    let mut err = expected("end of command", &next);
-                    if let (E::Expected { hint, .. }, Some(split)) =
-                        (&mut err.kind, parser.one_selector_each(&command))
-                    {
-                        *hint = format!(
-                            "; one selector per command; separate commands with `;` or a new line: {split}"
-                        );
-                    }
+                    let err = expected("end of command", &next)
+                        .or_fix(|_| parser.trailing_all(&command, &next))
+                        .or_fix(|_| parser.glued_step(&next.span))
+                        .or_fix(|_| {
+                            let split = parser.one_selector_each(&command)?;
+                            Some(verbatim(&format!("one selector per command; separate commands with `;` or a new line: {split}")))
+                        });
                     return Err(err);
                 }
                 commands.push(command);
@@ -179,29 +175,27 @@ impl Parser<'_> {
         let verb = self.bump()?;
         self.command_start = verb.span.start;
         let TokenKind::Word(word) = &verb.kind else {
-            let mut err = expected("a command", &verb);
-            if let E::Expected { hint, .. } = &mut err.kind {
-                *hint = format!("; commands are {COMMANDS}");
-            }
-            return Err(err);
+            let fix = verbatim(&format!("commands are {COMMANDS}"));
+            return Err(expected("a command", &verb).with_fix(fix));
         };
-        let kind = self.command_kind(&verb, word).map_err(|mut err| {
-            if let Some(glued) = self.glued_step(&err.span) {
-                return glued;
+        let kind = self.command_kind(&verb, word).map_err(|err| {
+            let Some(span) = err.span.clone() else {
+                return err;
+            };
+            if let Some(glued) = self.glued_step(&span) {
+                return err.with_fix(glued);
             }
-            if let E::Expected { hint, .. } = &mut err.kind
-                && hint.is_empty()
-                && let Some(usage) = usage(word)
-            {
-                *hint = match (self.through_heredoc(&err.span), usage.rsplit_once("SEL")) {
+            err.or_fix(|kind| {
+                let usage = usage(word).filter(|_| matches!(kind, E::Expected { .. }))?;
+                let fix = match (self.through_heredoc(&span), usage.rsplit_once("SEL")) {
                     (Some(written), Some((_, rest))) => format!(
-                        "; a heredoc's body starts on the next line, so finish the command before it: {written}{}",
+                        "a heredoc's body starts on the next line, so finish the command before it: {written}{}",
                         rest.trim_start_matches(']'),
                     ),
-                    _ => format!("; usage: {usage}"),
+                    _ => format!("usage: {usage}"),
                 };
-            }
-            err
+                Some(Fix::new(verbatim(&fix)))
+            })
         })?;
         Ok(Command {
             kind,
@@ -241,10 +235,7 @@ impl Parser<'_> {
                     } else {
                         "end"
                     };
-                    return Err(ParseError::new(
-                        E::InsertNeedsSelector(word),
-                        verb.span.start..self.last_end,
-                    ));
+                    return Err(E::InsertNeedsSelector(word).at(verb.span.start..self.last_end));
                 }
                 CommandKind::Insert {
                     position,
@@ -269,10 +260,7 @@ impl Parser<'_> {
             "rename" => self.rename()?,
             "resolve" => self.resolve()?,
             _ => {
-                return Err(ParseError::new(
-                    E::UnknownCommand(word.into()),
-                    verb.span.clone(),
-                ));
+                return Err(E::UnknownCommand(word.into()).at(verb.span.clone()));
             }
         })
     }
@@ -285,21 +273,19 @@ impl Parser<'_> {
         let target = self.optional_target()?;
         let context = match self.peek()?.kind {
             TokenKind::Context(n) if target.is_some() => {
-                let start = self.bump()?.span.start;
+                self.bump()?;
                 if self.peek()?.kind == TokenKind::DotDot {
                     let dots = self.bump()?;
                     let next = self.peek()?;
                     let TokenKind::Context(m) = next.kind else {
                         return Err(expected("end of command", &dots));
                     };
-                    let end = next.span.end;
                     let target = target.as_ref().expect("matched a target");
                     let all = if target.all { "all " } else { "" };
                     let selector = &self.lexer.src[target.selector.span.clone()];
-                    return Err(ParseError::new(
-                        E::ContextRange(format!("show {all}{selector} +{m}")),
-                        start..end,
-                    ));
+                    return Err(expected("end of command", &dots).with_fix(verbatim(&format!(
+                        "`+N` is one count of lines around each span, not a range; write show {all}{selector} +{m}"
+                    ))));
                 }
                 n
             }
@@ -312,14 +298,18 @@ impl Parser<'_> {
         })
     }
 
-    /// Turns the error at the `-` of `show SEL -N` into the fix `show SEL +N`.
+    /// Fixes the error at the `-` of `show SEL -N` with `show SEL +N`.
     fn minus_context(&self, verb: &Token, err: ParseError) -> ParseError {
-        if err.kind != E::UnexpectedChar('-') {
+        let Some(span) = err
+            .span
+            .clone()
+            .filter(|_| err.kind == E::UnexpectedChar('-'))
+        else {
             return err;
-        }
+        };
         let src = self.lexer.src;
-        let shown = src[verb.span.end..err.span.start].trim_end();
-        let after = &src[err.span.end..];
+        let shown = src[verb.span.end..span.start].trim_end();
+        let after = &src[span.end..];
         let count =
             &after[..after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len()];
         let rest = after[count.len()..].trim_start_matches([' ', '\t']);
@@ -329,14 +319,14 @@ impl Parser<'_> {
         {
             return err;
         }
-        ParseError::new(
-            E::MinusContext(if shown.trim().bytes().all(|b| b.is_ascii_digit()) {
-                format!("show{shown} +{count}, or the line range show{shown}-{count}")
-            } else {
-                format!("show{shown} +{count}")
-            }),
-            err.span.start..err.span.end + count.len(),
-        )
+        let fix = if shown.trim().bytes().all(|b| b.is_ascii_digit()) {
+            format!("show{shown} +{count}, or the line range show{shown}-{count}")
+        } else {
+            format!("show{shown} +{count}")
+        };
+        err.with_fix(verbatim(&format!(
+            "context is written `+N`, not `-N`; write {fix}"
+        )))
     }
 
     /// The command up to a heredoc opener that ends its line just before
@@ -375,11 +365,13 @@ impl Parser<'_> {
                 let word = word.clone();
                 let token = self.bump()?;
                 let level = word.parse().map_err(|()| {
-                    let fix = match word.strip_suffix('s').map(str::parse::<Severity>) {
-                        Some(Ok(level)) => format!("did you mean `{level}`?"),
-                        _ => "levels are error warning info hint".into(),
-                    };
-                    ParseError::new(E::UnknownLevel { word, fix }, token.span)
+                    let error = E::UnknownLevel(word.clone()).at(token.span);
+                    match word.strip_suffix('s').map(str::parse::<Severity>) {
+                        Some(Ok(level)) => {
+                            error.with_fix(verbatim(&format!("did you mean `{level}`?")))
+                        }
+                        _ => error,
+                    }
                 })?;
                 Some(level)
             }
@@ -450,31 +442,31 @@ impl Parser<'_> {
         let lead = &self.src[self.command_start..selector.span.start];
         let written = &self.src[selector.span.clone()];
         if lead.split_whitespace().next() == Some("sub") {
-            let kind = match &selector.steps[..] {
+            let error = match &selector.steps[..] {
                 [
                     Step {
                         primary: Primary::Regex(_),
                         parts,
                         ..
                     },
-                ] if parts.is_empty() && self.peek_is_word("with")? => E::SubAll(written.into()),
-                _ => E::MissingSubPattern,
+                ] if parts.is_empty() && self.peek_is_word("with")? => sub_all(written, all),
+                _ => E::MissingSubPattern.at(all),
             };
-            return Ok(ParseError::new(kind, all));
+            return Ok(error);
         }
         let more = match self.peek()?.kind {
             TokenKind::Newline | TokenKind::Semicolon | TokenKind::Pipe | TokenKind::Eof => "",
             _ => " ...",
         };
-        Ok(ParseError::new(
-            E::AllAfterSelector(format!("{lead}all {written}{more}")),
-            all,
-        ))
+        let fix = verbatim(&format!(
+            "`all` goes before the selector; write {lead}all {written}{more}"
+        ));
+        Ok(E::AllNotAllowed.at(all).with_fix(fix))
     }
 
-    /// The error for `all` at the end of `command`, after its TEXT or another
+    /// The fix for `all` at the end of `command`, after its TEXT or another
     /// argument, instead of before its selector.
-    fn trailing_all(&self, command: &Command, next: &Token) -> Option<ParseError> {
+    fn trailing_all(&self, command: &Command, next: &Token) -> Option<String> {
         if !matches!(&next.kind, TokenKind::Word(word) if word == "all") {
             return None;
         }
@@ -499,16 +491,15 @@ impl Parser<'_> {
         }
         let lead = &self.src[command.span.start..target.selector.span.start];
         let written = &self.src[target.selector.span.clone()];
-        Some(ParseError::new(
-            E::AllAfterSelector(format!("{lead}all {written} ...")),
-            next.span.clone(),
-        ))
+        Some(verbatim(&format!(
+            "`all` goes before the selector; write {lead}all {written} ..."
+        )))
     }
 
-    /// The error for a search at `span` glued to the selector before it, which
-    /// `>` nests in the selector's last step; `None` if there's none there, or
-    /// if the command doesn't parse with the `>`.
-    fn glued_step(&self, span: &Range<usize>) -> Option<ParseError> {
+    /// The fix for a search at `span` glued to the selector before it, which `>`
+    /// nests in the selector's last step; `None` if there's none there, or if the
+    /// command doesn't parse with the `>`.
+    fn glued_step(&self, span: &Range<usize>) -> Option<String> {
         if self.glued.as_ref() != Some(span) {
             return None;
         }
@@ -519,7 +510,9 @@ impl Parser<'_> {
         );
         let command = Parser::new(&fixed).command().ok()?;
         let written = fixed[command.span].lines().next()?;
-        Some(ParseError::new(E::GluedStep(written.into()), span.clone()))
+        Some(verbatim(&format!(
+            "a search in a step goes after `>`; write {written}"
+        )))
     }
 
     /// `command`, a `show`, `outline` or `delete`, and the selector after it as
@@ -537,23 +530,25 @@ impl Parser<'_> {
             };
             let next = self.selector().ok()?;
             let verb = &self.src[command.span.start..target.selector.span.start];
-            Some(format!(
+            Some(verbatim(&format!(
                 "{}; {verb}{}",
                 &self.src[command.span.clone()],
                 &self.src[next.span]
-            ))
+            )))
         }
     }
 
     fn dest(&mut self) -> Result<Selector, ParseError> {
         if self.peek_is_word("all")? {
             let token = self.bump()?;
-            return Err(ParseError::new(E::AllNotAllowed, token.span));
+            let fix = "drop it: a `move` destination or a `rename` is a single span";
+            return Err(E::AllNotAllowed.at(token.span).with_fix(fix));
         }
         let dest = self.selector()?;
         if self.peek_is_word("all")? {
             let token = self.bump()?;
-            return Err(ParseError::new(E::AllNotAllowed, token.span));
+            let fix = "drop it: a `move` destination or a `rename` is a single span";
+            return Err(E::AllNotAllowed.at(token.span).with_fix(fix));
         }
         Ok(dest)
     }
@@ -571,13 +566,13 @@ impl Parser<'_> {
             let next = self.peek()?;
             match next.kind {
                 TokenKind::Gt | TokenKind::Part(_) | TokenKind::Filter(_) if next.space_before => {
-                    return Err(ParseError::new(E::SpaceInSelector, next.span.clone()));
+                    return Err(E::SpaceInSelector.at(next.span.clone()));
                 }
                 TokenKind::Part(part) => {
                     let token = self.bump()?;
                     if let Some(step) = steps.last_mut() {
                         if !step.filters.is_empty() {
-                            return Err(ParseError::new(E::PartAfterFilter, token.span));
+                            return Err(E::PartAfterFilter.at(token.span));
                         }
                         step.parts.push(part);
                         step.span.end = self.last_end;
@@ -594,14 +589,28 @@ impl Parser<'_> {
                     }
                 }
                 TokenKind::Gt => {
-                    self.bump()?;
+                    let gt = self.bump()?.span;
                     let token = self.bump()?;
                     if token.space_before {
-                        return Err(ParseError::new(E::SpaceInSelector, token.span));
+                        return Err(E::SpaceInSelector.at(token.span));
                     }
                     let step_start = token.span.start;
+                    let all = matches!(&token.kind, TokenKind::Word(word) if word == "all");
+                    let primary = self.range(token).ok_or_fix(|_| {
+                        all.then(|| {
+                            let lead = &self.src[self.command_start..start];
+                            let steps = &self.src[start..gt.start];
+                            let rest = match self.selector() {
+                                Ok(rest) => &self.src[rest.span],
+                                Err(_) => "...",
+                            };
+                            verbatim(&format!(
+                                "`all` goes before the selector; write {lead}all {steps}>{rest}"
+                            ))
+                        })
+                    })?;
                     steps.push(Step {
-                        primary: self.range(token)?,
+                        primary,
                         parts: Vec::new(),
                         filters: Vec::new(),
                         span: step_start..self.last_end,
@@ -630,12 +639,12 @@ impl Parser<'_> {
             return Ok(from);
         }
         if next.space_before {
-            return Err(ParseError::new(E::SpaceInSelector, next.span.clone()));
+            return Err(E::SpaceInSelector.at(next.span.clone()));
         }
         self.bump()?;
         let token = self.bump()?;
         if token.space_before {
-            return Err(ParseError::new(E::SpaceInSelector, token.span));
+            return Err(E::SpaceInSelector.at(token.span));
         }
         Ok(Primary::Range {
             from: Box::new(from),
@@ -688,7 +697,7 @@ impl Parser<'_> {
                     }),
                     true,
                 ) if parts.is_empty() => {
-                    return Err(ParseError::new(E::SubAll(self.src[span].into()), all));
+                    return Err(sub_all(&self.src[span], all));
                 }
                 (
                     false,
@@ -711,7 +720,7 @@ impl Parser<'_> {
                     let selector = self.src[span.clone()].to_string();
                     return Err(self.literal_sub(selector, span)?);
                 }
-                _ => return Err(ParseError::new(E::MissingSubPattern, span)),
+                _ => return Err(E::MissingSubPattern.at(span)),
             }
         } else {
             let token = self.bump()?;
@@ -726,12 +735,12 @@ impl Parser<'_> {
                 return Err(self.literal_sub(selector, token.span)?);
             }
             let TokenKind::Regex { pattern, flags } = token.kind else {
-                return Err(ParseError::new(E::MissingSubPattern, token.span));
+                return Err(E::MissingSubPattern.at(token.span));
             };
             written = first.selector.span.start..token.span.end;
             if self.peek_is_word("all")? {
                 let all = self.bump()?.span;
-                return Err(ParseError::new(E::SubAll(self.src[written].into()), all));
+                return Err(sub_all(&self.src[written], all));
             }
             (Some(first), validate_regex(pattern, flags, token.span)?)
         };
@@ -741,7 +750,7 @@ impl Parser<'_> {
         self.validate_groups(&pattern, &text, at)?;
         if self.peek_is_word("all")? {
             let all = self.bump()?.span;
-            return Err(ParseError::new(E::SubAll(self.src[written].into()), all));
+            return Err(sub_all(&self.src[written], all));
         }
         Ok(CommandKind::Sub {
             scope,
@@ -750,8 +759,8 @@ impl Parser<'_> {
         })
     }
 
-    /// The error for `selector`, a literal, before the `with` of a `sub`: the fix
-    /// is the `replace` that, like `sub`, replaces every match.
+    /// The error for `selector`, a literal, before the `with` of a `sub`, with the
+    /// fix that names the `replace` that, like `sub`, replaces every match.
     fn literal_sub(
         &mut self,
         selector: String,
@@ -767,12 +776,17 @@ impl Parser<'_> {
             }
             _ => "...".into(),
         };
-        let fix = format!("replace all {selector} with {text}");
-        Ok(ParseError::new(E::LiteralSub(fix), span))
+        let error = E::Expected {
+            expected: "a regex",
+            found: "a string".into(),
+        };
+        Ok(error.at(span).with_fix(verbatim(&format!(
+            "for a literal, write replace all {selector} with {text}"
+        ))))
     }
 
-    /// `error`, or, if it falls in sed's `text/flags` after the command's last
-    /// regex, the error that names the `sub` `/re/text/flags` means.
+    /// `error`, with the fix that names the `sub` sed's `/re/text/flags` means if
+    /// it falls in the `text/flags` after the command's last regex.
     fn sed_sub(&self, error: ParseError) -> ParseError {
         let Some(regex) = (self.lexer.last_regex.clone()).filter(|r| r.start >= self.command_start)
         else {
@@ -792,7 +806,11 @@ impl Parser<'_> {
             return error;
         };
         let end = regex.end + len;
-        if !(regex.end..end).contains(&error.span.start) {
+        if !error
+            .span
+            .as_ref()
+            .is_some_and(|s| (regex.end..end).contains(&s.start))
+        {
             return error;
         }
         let lead = self.src[self.command_start..regex.start].trim_end();
@@ -806,7 +824,9 @@ impl Parser<'_> {
             &self.src[regex.clone()],
             sed_text(text)
         );
-        ParseError::new(E::SedSub(fix), regex.start..end)
+        error.with_fix(verbatim(&format!(
+            "`sub` takes /re/ with TEXT, not sed's /re/text/; write {fix}"
+        )))
     }
 
     /// Checks that each `$` reference in `text`, read from the token at `at`,
@@ -836,7 +856,7 @@ impl Parser<'_> {
             TextKind::Heredoc | TextKind::RawHeredoc => at,
         };
         if name.is_empty() {
-            return Err(ParseError::new(E::EmptyGroup, span));
+            return Err(E::EmptyGroup.at(span));
         }
         let split = (!reference.starts_with("${"))
             .then(|| {
@@ -863,14 +883,12 @@ impl Parser<'_> {
                 )
             }
         };
-        Err(ParseError::new(
-            E::UnknownGroup {
-                reference: reference.into(),
-                name: name.into(),
-                fix,
-            },
-            span,
-        ))
+        Err(E::UnknownGroup {
+            reference: reference.into(),
+            name: name.into(),
+        }
+        .at(span)
+        .with_fix(verbatim(&fix)))
     }
 
     fn paths(&mut self) -> Result<Vec<String>, ParseError> {
@@ -914,9 +932,9 @@ fn primary(src: &str, token: Token) -> Result<Primary, ParseError> {
                 Ok(n) if n > 0 && name.bytes().all(|b| b.is_ascii_digit()) => {
                     Primary::Conflict(Some(n))
                 }
-                _ => return Err(ParseError::new(E::ConflictNumber(name), token.span)),
+                _ => return Err(E::ConflictNumber(name).at(token.span)),
             },
-            "refs" | "def" => return Err(ParseError::new(E::PartAsKind(kind), token.span)),
+            "refs" | "def" => return Err(E::PartAsKind(kind).at(token.span)),
             _ => Primary::Syntax { kind, name },
         },
         TokenKind::Word(word) if word == "conflict" => Primary::Conflict(None),
@@ -936,6 +954,15 @@ fn primary(src: &str, token: Token) -> Result<Primary, ParseError> {
             }
         },
     })
+}
+
+/// The error for `all` at `all` in a `sub` of `regex`, which replaces every
+/// match without it.
+fn sub_all(regex: &str, all: Range<usize>) -> ParseError {
+    let fix = verbatim(&format!(
+        "`sub` already replaces every match; drop `all`: sub {regex} with ..."
+    ));
+    E::AllNotAllowed.at(all).with_fix(fix)
 }
 
 /// For a bare word that starts a file path, such as `src/a.rs>fn:x`, an error
@@ -967,19 +994,17 @@ fn bare_path(src: &str, token: &Token) -> Option<ParseError> {
         };
         let file = format!("select the file with a `file:` step: file:{word}{tail}{rest}");
         // Without a `/` or a step after it, `self.x` may be unquoted text.
-        let hint = if tail.contains('/') || !rest.is_empty() {
-            format!("; {file}")
+        let fix = if tail.contains('/') || !rest.is_empty() {
+            file
         } else {
-            format!("; quote literal text: \"{word}{tail}\", or {file}")
+            format!("quote literal text: \"{word}{tail}\", or {file}")
         };
-        ParseError::new(
-            E::Expected {
-                expected: "a selector",
-                found: format!("`{word}{tail}`"),
-                hint,
-            },
-            token.span.start..token.span.end + tail.len(),
-        )
+        E::Expected {
+            expected: "a selector",
+            found: format!("`{word}{tail}`"),
+        }
+        .at(token.span.start..token.span.end + tail.len())
+        .with_fix(verbatim(&fix))
     })
 }
 
@@ -1010,9 +1035,8 @@ fn bare_name(src: &str, token: &Token) -> Option<ParseError> {
     let kind = E::BareName {
         word: word.clone(),
         rest,
-        kind: None,
     };
-    Some(ParseError::new(kind, token.span.clone()))
+    Some(kind.at(token.span.clone()))
 }
 
 /// The text of a string or heredoc token, or the token kind back if it is
@@ -1145,7 +1169,7 @@ pub(super) fn validate_regex(
             .lines()
             .find_map(|l| l.strip_prefix("error: "))
             .unwrap_or(&message);
-        ParseError::new(E::InvalidRegex(reason.into()), span)
+        E::InvalidRegex(reason.into()).at(span)
     })
 }
 
@@ -1194,36 +1218,34 @@ fn expected(what: &'static str, token: &Token) -> ParseError {
         TokenKind::Newline => "end of line".into(),
         TokenKind::Eof => "end of script".into(),
     };
-    let hint = match &token.kind {
+    let error = E::Expected {
+        expected: what,
+        found,
+    }
+    .at(token.span.clone());
+    match &token.kind {
         // A keyword out of place is a usage mistake, not unquoted text.
         TokenKind::Word(w)
             if (what == "a selector" || what.starts_with("text"))
                 && !KEYWORDS.contains(&w.as_str())
                 && usage(w).is_none() =>
         {
-            format!("; quote literal text: \"{w}\"")
+            error.with_fix(verbatim(&format!("quote literal text: \"{w}\"")))
         }
-        _ => String::new(),
-    };
-    ParseError::new(
-        E::Expected {
-            expected: what,
-            found,
-            hint,
-        },
-        token.span.clone(),
-    )
+        _ => error,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hint::Frontend;
     use crate::script::ParseErrorKind as E;
     use LineNo::{Last, Number as N};
 
     fn commands(src: &str) -> Vec<CommandKind> {
         parse(src)
-            .unwrap_or_else(|e| panic!("{}", e.render(src)))
+            .unwrap_or_else(|e| panic!("{}", e.render(Frontend::Cli, Some(src))))
             .commands
             .into_iter()
             .map(|c| unspan(c.kind))
@@ -1891,7 +1913,7 @@ mod tests {
         assert_eq!(target.selector.steps[0].filters[0].1, 7..17);
         assert_eq!(
             message("show fn [.len > 1]"),
-            E::SpaceInSelector.to_string()
+            "selectors can't contain spaces; write e.g. `impl:Parser>fn:new`"
         );
         assert_eq!(
             message("show fn[.len > 1].body"),
@@ -1953,7 +1975,7 @@ mod tests {
         assert_eq!(one("show fn:x+3"), show(3));
         assert_eq!(
             message("show fn:x +"),
-            "expected a line count after `+`, e.g. show fn:parse +3"
+            "expected a line count after `+`; write one, e.g. show fn:parse +3"
         );
         assert_eq!(
             message("show +3"),
@@ -1961,31 +1983,31 @@ mod tests {
         );
         assert_eq!(
             message("show /re/+0..+70"),
-            "`+N` is one count of lines around each span, not a range; write show /re/ +70"
+            "expected end of command, found `..`; `+N` is one count of lines around each span, not a range; write show /re/ +70"
         );
         let e = error(r#"show all "x" +2..+5"#);
         assert_eq!(
-            e.kind.to_string(),
-            r#"`+N` is one count of lines around each span, not a range; write show all "x" +5"#
+            rendered(&e),
+            r#"expected end of command, found `..`; `+N` is one count of lines around each span, not a range; write show all "x" +5"#
         );
-        assert_eq!(e.span, 13..19);
+        assert_eq!(e.span, Some(15..17));
         let e = error(r#"show all "x" -3"#);
         assert_eq!(
-            e.kind.to_string(),
-            r#"context is written `+N`, not `-N`; write show all "x" +3"#
+            rendered(&e),
+            r#"unexpected character `-`; context is written `+N`, not `-N`; write show all "x" +3"#
         );
-        assert_eq!(e.span, 13..15);
+        assert_eq!(e.span, Some(13..14));
         assert_eq!(
             message("show /re/-12 | show 1"),
-            "context is written `+N`, not `-N`; write show /re/ +12"
+            "unexpected character `-`; context is written `+N`, not `-N`; write show /re/ +12"
         );
         assert_eq!(
             message("show /re/ -2 # c"),
-            "context is written `+N`, not `-N`; write show /re/ +2"
+            "unexpected character `-`; context is written `+N`, not `-N`; write show /re/ +2"
         );
         assert_eq!(
             message("show 10 -20"),
-            "context is written `+N`, not `-N`; write show 10 +20, or the line range show 10-20"
+            "unexpected character `-`; context is written `+N`, not `-N`; write show 10 +20, or the line range show 10-20"
         );
         assert_eq!(
             message("show /re/ -3x"),
@@ -2045,7 +2067,7 @@ mod tests {
 
     fn stages(src: &str) -> Vec<usize> {
         parse(src)
-            .unwrap_or_else(|e| panic!("{}", e.render(src)))
+            .unwrap_or_else(|e| panic!("{}", e.render(Frontend::Cli, Some(src))))
             .stages
     }
 
@@ -2154,13 +2176,12 @@ mod tests {
         let e = error(src);
         assert_eq!(
             (e.kind.clone(), e.span.clone()),
-            (E::SpaceInSelector, 20..21)
+            (E::SpaceInSelector, Some(20..21))
         );
         assert_eq!(
-            e.render(src),
+            e.render(Frontend::Cli, Some(src)),
             format!(
-                "error: script:1:21: {}\n1:{src}\n{}^",
-                E::SpaceInSelector,
+                "error: script:1:21: selectors can't contain spaces; write e.g. `impl:Parser>fn:new`\n1:{src}\n{}^",
                 " ".repeat(22)
             )
         );
@@ -2173,7 +2194,7 @@ mod tests {
         let e = error("frobnicate 3");
         assert_eq!(
             (e.kind, e.span),
-            (E::UnknownCommand("frobnicate".into()), 0..10)
+            (E::UnknownCommand("frobnicate".into()), Some(0..10))
         );
         assert!(matches!(
             error("12").kind,
@@ -2229,10 +2250,10 @@ mod tests {
         let src = r#"sub all /x\/y/i with "z""#;
         let e = error(src);
         assert_eq!(
-            e.kind.to_string(),
-            r"`sub` already replaces every match; drop `all`: sub /x\/y/i with ..."
+            rendered(&e),
+            r"`all` can't be used here; `sub` already replaces every match; drop `all`: sub /x\/y/i with ..."
         );
-        assert_eq!(e.span, 4..7);
+        assert_eq!(e.span, Some(4..7));
     }
 
     #[test]
@@ -2259,14 +2280,18 @@ mod tests {
                 r#"replace all 1>"a" with ..."#,
             ),
         ] {
-            assert_eq!(error(src).kind, E::LiteralSub(fix.into()), "{src:?}");
+            assert_eq!(
+                fix_of(src),
+                format!("for a literal, write {fix}"),
+                "{src:?}"
+            );
         }
         let e = error(r#"show 1 ; sub 3-5 "a" with "b""#);
         assert_eq!(
-            e.kind.to_string(),
-            r#"`sub` takes a regex, not a literal; write replace all 3-5>"a" with "b""#
+            rendered(&e),
+            r#"expected a regex, found a string; for a literal, write replace all 3-5>"a" with "b""#
         );
-        assert_eq!(e.span, 17..20);
+        assert_eq!(e.span, Some(17..20));
         assert_eq!(error(r#"sub 1 "a" "b""#).kind, E::MissingSubPattern);
     }
 
@@ -2288,14 +2313,15 @@ mod tests {
                 r#"sub /(a)b/ with "${1}${0}$$/\"\n""#,
             ),
         ] {
-            assert_eq!(error(src).kind, E::SedSub(fix.into()), "{src:?}");
+            let fix = format!("`sub` takes /re/ with TEXT, not sed's /re/text/; write {fix}");
+            assert_eq!(fix_of(src), fix, "{src:?}");
         }
         let e = error("show /x/ ; sub 1 /a/b/");
         assert_eq!(
-            e.kind.to_string(),
-            r#"`sub` takes /re/ with TEXT, not sed's /re/text/; write sub 1 /a/ with "b""#
+            rendered(&e),
+            r#"unknown regex flag `b`; `sub` takes /re/ with TEXT, not sed's /re/text/; write sub 1 /a/ with "b""#
         );
-        assert_eq!(e.span, 17..22);
+        assert_eq!(e.span, Some(20..21));
     }
 
     #[test]
@@ -2317,12 +2343,13 @@ mod tests {
             (r#"sub 1,2 /a/ with "b""#, "1-2"),
             ("show 3,$", "3-$"),
         ] {
-            assert_eq!(error(src).kind, E::SedRange(fix.into()), "{src:?}");
+            let fix = format!("line ranges are written N-M, not sed's N,M; write {fix}");
+            assert_eq!(fix_of(src), fix, "{src:?}");
         }
         let e = error("show 10,20");
         assert_eq!(
-            e.kind.to_string(),
-            "line ranges are written N-M, not sed's N,M; write 10-20"
+            rendered(&e),
+            "unexpected character `,`; line ranges are written N-M, not sed's N,M; write 10-20"
         );
     }
 
@@ -2374,16 +2401,19 @@ mod tests {
     #[test]
     fn sub_reference_errors_point_at_the_reference() {
         let src = r#"sub /(a)/ with "\"\t$1 $2x""#;
-        assert_eq!(error(src).span, src.find("$2").unwrap()..src.len() - 1);
+        assert_eq!(
+            error(src).span,
+            Some(src.find("$2").unwrap()..src.len() - 1)
+        );
         let src = "sub /a/ with <<E\n$1\nE";
-        assert_eq!(error(src).span.start, src.find("<<").unwrap());
+        assert_eq!(error(src).span.unwrap().start, src.find("<<").unwrap());
     }
 
     #[test]
     fn regexes_are_validated() {
         let e = error("delete /(/");
         assert!(matches!(e.kind, E::InvalidRegex(_)), "{e:?}");
-        assert_eq!(e.span, 7..10);
+        assert_eq!(e.span, Some(7..10));
         assert!(matches!(
             error(r#"sub /x/ /[/ with "y""#).kind,
             E::InvalidRegex(_)
@@ -2391,7 +2421,18 @@ mod tests {
     }
 
     fn message(src: &str) -> String {
-        error(src).kind.to_string()
+        rendered(&error(src))
+    }
+
+    /// The error's problem and fix, as the CLI prints them after `error: `.
+    fn rendered(error: &ParseError) -> String {
+        let rendered = error.render(Frontend::Cli, None);
+        rendered.strip_prefix("error: ").unwrap().to_string()
+    }
+
+    /// The fix for `src`'s error, as the CLI prints it.
+    fn fix_of(src: &str) -> String {
+        Frontend::Cli.render(&error(src).fix.expect("a fix").text)
     }
 
     #[test]
@@ -2451,17 +2492,6 @@ mod tests {
         assert_eq!(
             message("delete GitError; show 1"),
             "expected a selector, found `GitError`; quote literal text: \"GitError\""
-        );
-        let kind = |src: &str| {
-            let mut err = parse(src).unwrap_err();
-            if let E::BareName { kind, .. } = &mut err.kind {
-                *kind = Some("enum");
-            }
-            err.kind.to_string()
-        };
-        assert_eq!(
-            kind("show GitError.body"),
-            "expected a selector, found `GitError`; select the enum by name: enum:GitError.body"
         );
     }
 
@@ -2560,7 +2590,7 @@ mod tests {
                 "{src:?}: {message}"
             );
         }
-        assert_eq!(error("show fn:a fn:b").span, 10..14);
+        assert_eq!(error("show fn:a fn:b").span, Some(10..14));
         assert_eq!(
             message("show 1 with"),
             "expected end of command, found `with`"
@@ -2599,12 +2629,12 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                message(src),
+                fix_of(src),
                 format!("a search in a step goes after `>`; write {nested}"),
                 "{src:?}"
             );
         }
-        assert_eq!(error("replace fn:y/z/ with \"a\"").span, 12..15);
+        assert_eq!(error("replace fn:y/z/ with \"a\"").span, Some(12..15));
         for src in ["show fn:y /z/", r#"show fn:y +3"x""#] {
             assert!(
                 message(src).contains("one selector per command"),
@@ -2635,22 +2665,43 @@ mod tests {
             ("resolve conflict all ours", "resolve all conflict ..."),
         ] {
             assert_eq!(
-                message(src),
+                fix_of(src),
                 format!("`all` goes before the selector; write {fix}"),
                 "{src:?}"
             );
         }
-        assert_eq!(error("show /x/ all").span, 9..12);
+        assert_eq!(error("show /x/ all").span, Some(9..12));
+    }
+
+    #[test]
+    fn all_after_a_step_goes_before_the_selector() {
+        for (src, fixed) in [
+            ("show file:a.rs>all /x/", "show all file:a.rs>/x/"),
+            (r#"delete fn:f>all "x""#, r#"delete all fn:f>"x""#),
+            ("show raw fn:f>all", "show raw all fn:f>..."),
+        ] {
+            let e = error(src);
+            let found = E::Expected {
+                expected: "a selector",
+                found: "`all`".into(),
+            };
+            assert_eq!(e.kind, found, "{src:?}");
+            assert_eq!(
+                fix_of(src),
+                format!("`all` goes before the selector; write {fixed}"),
+                "{src:?}"
+            );
+        }
     }
 
     #[test]
     fn sub_with_all_after_its_regex_suggests_dropping_all() {
         let e = error(r#"sub /x/i all with "y""#);
         assert_eq!(
-            e.kind.to_string(),
-            "`sub` already replaces every match; drop `all`: sub /x/i with ..."
+            rendered(&e),
+            "`all` can't be used here; `sub` already replaces every match; drop `all`: sub /x/i with ..."
         );
-        assert_eq!(e.span, 9..12);
+        assert_eq!(e.span, Some(9..12));
         assert_eq!(
             error(r#"sub fn:a all /x/ with "y""#).kind,
             E::MissingSubPattern
@@ -2666,16 +2717,16 @@ mod tests {
             ("check /x/ error all", "check all /x/ ..."),
         ] {
             assert_eq!(
-                message(src),
+                fix_of(src),
                 format!("`all` goes before the selector; write {fix}"),
                 "{src:?}"
             );
         }
-        assert_eq!(error(r#"replace 3 with "y" all"#).span, 19..22);
+        assert_eq!(error(r#"replace 3 with "y" all"#).span, Some(19..22));
         for src in [r#"sub 1 /e/ with "x" all"#, r#"sub 1 /e/ all with "x""#] {
             assert_eq!(
                 message(src),
-                "`sub` already replaces every match; drop `all`: sub 1 /e/ with ...",
+                "`all` can't be used here; `sub` already replaces every match; drop `all`: sub 1 /e/ with ...",
                 "{src:?}"
             );
         }
@@ -2694,7 +2745,7 @@ mod tests {
             "`insert start` needs a selector before the text, e.g. insert start fn:NAME TEXT; \
          insert before 1 TEXT adds to the top of the file"
         );
-        assert_eq!(error(r#"insert end "x"; show"#).span, 0..14);
+        assert_eq!(error(r#"insert end "x"; show"#).span, Some(0..14));
         // A selector that isn't text is still missing its text.
         assert_eq!(expected("insert end fn:x"), "text (a string or heredoc)");
         assert_eq!(
@@ -2847,5 +2898,20 @@ mod tests {
             "expected `errors` or `warnings`, found `maybe`; usage: allow errors|warnings"
         );
         assert!(matches!(error("allow").kind, E::Expected { .. }));
+    }
+
+    #[test]
+    fn script_text_in_a_fix_prints_as_written() {
+        for (src, written) in [
+            (r#"show "{-w} {{x}}" -3"#, r#"write show "{-w} {{x}}" +3"#),
+            (r#"show 1, "{mcp:y}""#, r#"show 1; show "{mcp:y}""#),
+            (r#"show fn:a"{-w}""#, r#"write show fn:a>"{-w}""#),
+        ] {
+            let err = parse(src).unwrap_err();
+            for frontend in [Frontend::Cli, Frontend::Mcp, Frontend::Repl] {
+                let rendered = err.render(frontend, Some(src));
+                assert!(rendered.contains(written), "{frontend:?}: {rendered}");
+            }
+        }
     }
 }

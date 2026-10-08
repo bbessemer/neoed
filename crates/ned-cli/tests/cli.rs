@@ -654,6 +654,16 @@ fn a_bare_item_name_suggests_its_kind() {
     1:delete GitError
              ^
     ");
+    // After a heredoc that ended early, the name was meant as its text.
+    let script = "insert after 1 <<END\nx\nEND\nshow GitError.body\nEND\n";
+    assert_snapshot!(ned(dir.path(), &["a.rs", "-e", script], ""), @r#"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:4:6: expected a selector, found `GitError`; quote literal text: "GitError", or select an item by name: *:GitError.body; the heredoc <<END at line 1 ended at line 3, which holds only END: pick a tag its text doesn't hold
+    4:show GitError.body
+           ^
+    "#);
 }
 
 #[test]

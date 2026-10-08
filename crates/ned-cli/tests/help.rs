@@ -3,6 +3,7 @@
 use std::process::Output;
 
 use assert_cmd::cargo::cargo_bin_cmd;
+use ned_core::hint::Frontend;
 use ned_core::script;
 
 /// Budgets that keep help cheap to read into an agent's context.
@@ -109,7 +110,10 @@ fn every_verb_topic_has_examples_and_they_parse() {
         assert!(!is_verb || !blocks.is_empty(), "{topic} has no examples");
         for block in blocks {
             if let Err(err) = script::parse(&block) {
-                panic!("{topic}: {}\n{block}", err.render(&block));
+                panic!(
+                    "{topic}: {}\n{block}",
+                    err.render(Frontend::Cli, Some(&block))
+                );
             }
         }
     }

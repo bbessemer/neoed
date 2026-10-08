@@ -400,6 +400,7 @@ impl Repl {
             initial,
             &options,
             settings,
+            hint::Frontend::Repl,
             &mut self.daemon,
             &mut Terminal,
         ) {
@@ -918,7 +919,7 @@ impl Input {
             other => return other,
         };
         while !src.trim_start().starts_with(':')
-            && script::parse(&src).is_err_and(|err| err.incomplete())
+            && script::parse(&src).is_err_and(|err| err.kind.incomplete())
         {
             match self.line(self.prompts.1) {
                 Read::Script(more) => {

@@ -163,18 +163,23 @@ pub fn execute(
     initial: Initial,
     options: &Options,
     settings: Settings,
+    frontend: Frontend,
     lsp: &mut dyn Lsp,
     out: &mut dyn Output,
 ) -> Result<Edited, Ran> {
     let parsed = match script::parse(src) {
         Ok(parsed) => parsed,
         Err(mut err) => {
-            if let (script::ParseErrorKind::BareName { word, kind, .. }, Initial::Files(paths)) =
-                (&mut err.kind, &initial)
+            if let (script::ParseErrorKind::BareName { word, rest }, Initial::Files(paths)) =
+                (&err.kind, &initial)
+                // After a heredoc that ended early, the fix names the heredoc,
+                // the cause, not the name.
+                && err.fix == Some(script::bare_name_fix(word, rest, None))
             {
-                *kind = exec::kinds_named(paths, options, word).first().copied();
+                let kind = exec::kinds_named(paths, options, word).first().copied();
+                err.fix = Some(script::bare_name_fix(word, rest, kind));
             }
-            return Err(Ran::failed(2, err.render(src), out));
+            return Err(Ran::failed(2, err.render(frontend, Some(src)), out));
         }
     };
     let run = exec::run(&parsed, src, initial, options, Some(&mut *lsp));
@@ -228,7 +233,15 @@ fn run(
         check: !invocation.no_check,
         force: invocation.force,
     };
-    let Edited { changes, finished } = match execute(src, initial, &options, settings, lsp, out) {
+    let Edited { changes, finished } = match execute(
+        src,
+        initial,
+        &options,
+        settings,
+        invocation.frontend,
+        lsp,
+        out,
+    ) {
         Ok(edited) => edited,
         Err(ran) => return ran,
     };

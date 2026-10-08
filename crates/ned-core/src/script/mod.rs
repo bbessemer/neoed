@@ -6,5 +6,6 @@ pub mod lexer;
 pub mod parser;
 
 pub use ast::Script;
+pub(crate) use error::bare_name_fix;
 pub use error::{ParseError, ParseErrorKind};
 pub use parser::parse;

@@ -1847,9 +1847,10 @@ The fix each error suggests:
   it, `*:NAME`, or the kind of the item with that name in the `FILE` set
   (`enum:GitError.body` for `GitError.body`); after a heredoc that ended at a
   line of its text holding only its tag, where it ended, and another tag; `all`
-  before the selector, not after it, e.g. `show all /re/`; `;` or a new line
-  between commands for a second selector, e.g. `show fn:a; show fn:b`, and for a
-  `,` the commands it separates when they take only selectors or levels
+  before the selector, not after it or after a `>` in it, e.g. `show all /re/`,
+  or `show all fn:a>/re/` for `show fn:a>all /re/`; `;` or a new line between
+  commands for a second selector, e.g. `show fn:a; show fn:b`, and for a `,` the
+  commands it separates when they take only selectors or levels
   (`delete 3; delete 7`); `>` before a regex, literal or pattern glued to a
   selector in any command, e.g. `show fn:a>/re/` for `show fn:a/re/` (but not
   before `insert`'s text or `sub`'s regex, which may follow the selector
