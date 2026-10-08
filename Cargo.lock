@@ -62,12 +62,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.104"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
-
-[[package]]
 name = "assert_cmd"
 version = "2.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -551,9 +545,8 @@ dependencies = [
 
 [[package]]
 name = "ned-cli"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
- "anyhow",
  "assert_cmd",
  "clap",
  "insta",
@@ -567,7 +560,7 @@ dependencies = [
 
 [[package]]
 name = "ned-core"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "glob",
  "ignore",
@@ -592,7 +585,7 @@ dependencies = [
 
 [[package]]
 name = "ned-daemon"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "libc",
  "lsp-types",
@@ -607,16 +600,17 @@ dependencies = [
 
 [[package]]
 name = "ned-mcp"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "ned-core",
  "serde_json",
  "tempfile",
+ "thiserror",
 ]
 
 [[package]]
 name = "ned-scheme"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "thiserror",
 ]

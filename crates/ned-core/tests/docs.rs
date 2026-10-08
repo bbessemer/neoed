@@ -3,6 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use ned_core::hint::Frontend;
 use ned_core::script;
 
 fn markdown_files(dir: &Path) -> Vec<PathBuf> {
@@ -34,7 +35,11 @@ fn ned_blocks_in_the_docs_parse() {
     for path in markdown_files(&docs) {
         for block in ned_blocks(&fs::read_to_string(&path).unwrap()) {
             if let Err(err) = script::parse(&block) {
-                panic!("{}: {}\n{block}", path.display(), err.render(&block));
+                panic!(
+                    "{}: {}\n{block}",
+                    path.display(),
+                    err.render(Frontend::Cli, Some(&block))
+                );
             }
         }
     }

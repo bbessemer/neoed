@@ -2,6 +2,7 @@
 //! token so that their operators and numbers stay out of the main grammar.
 
 use super::{Lexer, TokenKind, is_ident_char};
+use crate::hint::Hint;
 use crate::script::ast::{Filter, Op, Part, Property, Value};
 use crate::script::error::{ParseError, ParseErrorKind as E};
 use crate::script::parser::validate_regex;
@@ -75,7 +76,7 @@ impl Lexer<'_> {
                 true => E::CompareNumber { property: shown },
                 false => E::CompareText { property: shown },
             };
-            return Err(ParseError::new(kind, op_span));
+            return Err(kind.at(op_span));
         }
         Ok(Filter::Cond {
             property,
@@ -96,7 +97,7 @@ impl Lexer<'_> {
         let part = self.part()?;
         if matches!(part, Part::Lines | Part::Refs | Part::Def) {
             let name = self.src[start + 1..self.pos].to_string();
-            return Err(ParseError::new(E::NotAProperty(name), start..self.pos));
+            return Err(E::NotAProperty(name).at(start..self.pos));
         }
         let len = match self.peek() {
             Some('.') => self.measure().unwrap_or(false),
@@ -193,7 +194,7 @@ impl Lexer<'_> {
         let rest = &self.src[self.pos..];
         let len = match rest.chars().next() {
             None | Some('\n' | '\r') => {
-                return ParseError::new(E::UnterminatedFilter, open..self.pos);
+                return E::UnterminatedFilter.at(open..self.pos);
             }
             Some(c) if is_ident_char(c) => rest.find(|c| !is_ident_char(c)).unwrap_or(rest.len()),
             Some(c) if "=!~<>&|".contains(c) => {
@@ -201,13 +202,11 @@ impl Lexer<'_> {
             }
             Some(c) => c.len_utf8(),
         };
-        ParseError::new(
-            E::InFilter {
-                expected,
-                found: format!("`{}`", &rest[..len]),
-            },
-            self.pos..self.pos + len,
-        )
+        E::InFilter {
+            expected,
+            found: format!("`{}`", &rest[..len]),
+        }
+        .at(self.pos..self.pos + len)
     }
 }
 
@@ -340,7 +339,7 @@ mod tests {
     fn errors_suggest_fixes() {
         let e = error("[.len > 80");
         assert_eq!(e.kind, E::UnterminatedFilter);
-        assert_eq!(e.span.start, 0);
+        assert_eq!(e.span.unwrap().start, 0);
         assert_eq!(
             error("[.lines == \"\"]").kind,
             E::NotAProperty("lines".into())
@@ -372,7 +371,7 @@ mod tests {
                 property: ".body.len".into()
             }
         );
-        assert_eq!(e.span, 11..13);
+        assert_eq!(e.span, Some(11..13));
         let name = E::CompareText {
             property: ".name".into(),
         };

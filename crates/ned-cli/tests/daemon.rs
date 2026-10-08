@@ -158,6 +158,18 @@ fn an_unsafe_runtime_dir_is_refused() {
 }
 
 #[test]
+fn a_bad_config_is_a_usage_error() {
+    let ws = Workspace::new();
+    fs::write(ws.dir.path().join(".ned.toml"), "[daemon\n").unwrap();
+    let root = ws.root();
+    let output = ws.ned_in(".", &["run", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.starts_with("error: "), "{stderr}");
+    assert!(stderr.contains(".ned.toml"), "{stderr}");
+}
+
+#[test]
 fn a_runtime_dir_too_long_for_a_socket_is_refused_with_a_fix() {
     let ws = Workspace::new();
     let runtime = ws.runtime.path().join("r".repeat(120));

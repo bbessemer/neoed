@@ -75,14 +75,15 @@ pub fn indent_unit<'a>(lines: impl IntoIterator<Item = &'a str>, default: &str) 
 /// converts its indent style to `unit`'s, and prefixes each non-blank line
 /// with `indent`. Blank lines become empty. No final newline is added.
 pub fn rebase(text: &str, indent: &str, unit: &str) -> String {
-    prefix(&relative(text, unit), indent)
+    let lines = relative(text, unit, false);
+    prefix(&lines, indent)
 }
 
 /// Re-bases line-oriented `text` that replaces lines at `indent` (§5.2): as
 /// `rebase`, but when its first non-blank line is indented more than another,
 /// that line lands at `indent` and the rest shift with it, down to column 0.
 pub fn rebase_replacing(text: &str, indent: &str, unit: &str) -> String {
-    let lines = relative(text, unit);
+    let lines = relative(text, unit, false);
     let first = lines
         .iter()
         .find(|l| !l.is_empty())
@@ -92,12 +93,32 @@ pub fn rebase_replacing(text: &str, indent: &str, unit: &str) -> String {
 
 /// `text`'s lines with its common indentation stripped, its indent level (the
 /// smallest non-zero indentation of the lines not aligned) converted to
-/// `unit`, keeping aligned lines at their offset and lines that start inside a
-/// string as written, and blank lines emptied.
-fn relative(text: &str, unit: &str) -> Vec<String> {
-    let lines = strip_indent(text);
+/// `unit`, keeping aligned lines at their offset, and blank lines emptied. A
+/// line that starts inside a string (one already `open` at the start of
+/// `text`, or one an earlier line opens) counts toward neither the common
+/// indentation nor the level, loses at most its own indentation, and keeps its
+/// whitespace when blank.
+fn relative(text: &str, unit: &str, open: bool) -> Vec<String> {
+    let raw: Vec<&str> = text.split('\n').collect();
+    let quoted = in_string(&raw, open);
+    let unquoted: Vec<&str> = raw
+        .iter()
+        .zip(&quoted)
+        .filter(|(_, q)| !**q)
+        .map(|(l, _)| *l)
+        .collect();
+    let indent = common_indent(&unquoted);
+    let lines: Vec<String> = raw
+        .iter()
+        .zip(&quoted)
+        .map(|(l, q)| match () {
+            _ if l.trim().is_empty() && *q => l.to_string(),
+            _ if l.trim().is_empty() => String::new(),
+            _ if *q => l.strip_prefix(indent).unwrap_or(l.trim_start()).to_string(),
+            _ => l[indent.len()..].to_string(),
+        })
+        .collect();
     let aligned = alignments(&lines);
-    let quoted = in_string(&lines);
     let level = lines
         .iter()
         .zip(aligned.iter().zip(&quoted))
@@ -109,10 +130,10 @@ fn relative(text: &str, unit: &str) -> Vec<String> {
         return lines;
     };
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
-    for ((line, aligned), quoted) in lines.iter().zip(&aligned).zip(quoted) {
+    for ((line, aligned), &quoted) in lines.iter().zip(&aligned).zip(&quoted) {
         out.push(match aligned {
-            _ if line.is_empty() => String::new(),
             _ if quoted => line.clone(),
+            _ if line.is_empty() => String::new(),
             Some((anchor, offset)) => format!(
                 "{}{}{}",
                 leading_whitespace(&out[*anchor]),
@@ -126,9 +147,9 @@ fn relative(text: &str, unit: &str) -> Vec<String> {
 }
 
 /// For each of `lines`, whether it starts inside a `"` string (a Python `"""`
-/// one too) that an earlier line opens.
-fn in_string(lines: &[String]) -> Vec<bool> {
-    let mut quoted = false;
+/// one too) that an earlier line opens, or that is `open` before the first.
+fn in_string(lines: &[&str], open: bool) -> Vec<bool> {
+    let mut quoted = open;
     lines
         .iter()
         .map(|line| {
@@ -157,8 +178,8 @@ fn in_string(lines: &[String]) -> Vec<bool> {
 fn prefix(lines: &[String], indent: &str) -> String {
     lines
         .iter()
-        .map(|line| match line.is_empty() {
-            true => String::new(),
+        .map(|line| match line.trim().is_empty() {
+            true => line.clone(),
             false => format!("{indent}{line}"),
         })
         .collect::<Vec<_>>()
@@ -180,7 +201,11 @@ pub fn rebase_hanging(
     first: impl Fn(&str) -> String,
 ) -> String {
     match text.split_once('\n') {
-        Some((head, rest)) => format!("{}\n{}", first(head), rebase(rest, hang, unit)),
+        Some((head, rest)) => {
+            let open = in_string(&[head, ""], false)[1];
+            let lines = relative(rest, unit, open);
+            format!("{}\n{}", first(head), prefix(&lines, hang))
+        }
         None => first(text),
     }
 }
@@ -667,6 +692,35 @@ mod tests {
         assert_eq!(
             rebase("a {\n  b('\"');\n  c // 5\" wide\n  d\n}", "", "    "),
             "a {\n    b('\"');\n    c // 5\" wide\n    d\n}"
+        );
+    }
+
+    #[test]
+    fn rebase_shifts_lines_in_strings_with_the_code() {
+        let continued = "let s = \"a \\\n b\";";
+        assert_eq!(
+            rebase(continued, "        ", "    "),
+            "        let s = \"a \\\n         b\";"
+        );
+        assert_eq!(
+            rebase_replacing(continued, "        ", "    "),
+            "        let s = \"a \\\n         b\";"
+        );
+        // A string's lines don't lower the common indentation, and lose at
+        // most their own.
+        assert_eq!(rebase("    x(\"\n  hi\");", "", "    "), "x(\"\nhi\");");
+        // Whitespace inside one stays.
+        assert_eq!(
+            rebase("s = \"\n   \n\"", "  ", "    "),
+            "  s = \"\n   \n  \""
+        );
+    }
+
+    #[test]
+    fn rebase_tail_finds_a_string_its_first_line_opens() {
+        assert_eq!(
+            rebase_tail("\"a \\\n  b\",\nc", "    ", "    "),
+            "\"a \\\n      b\",\n    c"
         );
     }
 

@@ -994,6 +994,10 @@ The kinds each language supports, and the items they cover there:
 - `all SEL` applies the verb to every match. Zero matches is still an error.
 - An ambiguous `.refs` or `.def` result lists where its matches are instead of
   candidate selectors, since no scope picks one out; add `all`.
+- If a match of an ambiguous selector overlaps the edit of an earlier command in
+  the stage (§2.3), as when a `replace` of a match follows a `replace all` of
+  the same regex, the error says which command's, and suggests merging the two
+  commands or putting a `|` between them.
 - There is no nth-match syntax, except for conflicts (§3.11) and a span's lines
   (`.lines:N`, §3.4). To disambiguate, nest (`impl:Lexer>fn:new`), scope by
   lines (`40-80>fn:new`), or scope by file (`file:src/a.rs>fn:new`). Error
@@ -1297,7 +1301,9 @@ END
 - `delete SEL`: Removes each span.
 - `sub [SEL] /re/ with TEXT`: Replaces every match of `re` inside each span of
   `SEL` (default: each whole file in the set). `$1`, `${name}` and `$0` expand
-  to captures; `$$` is a literal `$`. Zero matches in total is an error.
+  to captures; `$$` is a literal `$`. A match can't start after a span's last
+  newline, so `/^/` and `/$/` match once on each line it covers. Zero matches in
+  total is an error.
 - `move SEL before|after|start|end DEST`: Deletes each span of `SEL` and inserts
   its text at `DEST`, which must resolve to one span. The destination may be in
   another file in the set. Moved text is re-based.
@@ -1365,6 +1371,17 @@ Notes:
     starts with what precedes the span on its first line, ignoring whitespace
     and line breaks (`TEXT` may re-wrap them). On a single-line span, the note
     suggests selecting its line with `.lines`.
+- A `replace` of a braced `.body`, which leaves out the braces, gets a note when
+  `TEXT` starts with the opening brace and ends with the one that matches it,
+  which would nest a second pair (braces in strings and comments don't count);
+  the note suggests dropping them from `TEXT` or replacing the whole item.
+- A `replace` of a syntax item that keeps its doc comments and attributes gets a
+  note when an item of `TEXT`, not nested in another, has its own, as when
+  `TEXT` starts with another item or a plain comment and then the attributes:
+  they would be there twice, or the kept ones would move to `TEXT`'s first item.
+  When `TEXT` has an item of the replaced one's kind and name, only that item's
+  own count: a documented item added beside it gets no note. The note suggests
+  `ITEM.whole`.
 - **Blank-line tidy.** Deleting a whole-line span (§5.1) also removes blank
   lines beside it. Between two remaining lines, as many blank lines remain as
   the larger of the two gaps around the span, so a file's own spacing survives
@@ -1401,10 +1418,15 @@ and `MISSING` nodes, and the matches of the language's
 such as an empty Python block, or a Rust macro call like `todo!()` with no `;`
 before another statement), before and after each stage's edits (§2.3). If the
 count rises, the script is rejected (exit 1) and the error shows the first new
-error node the edits touch, from where the text first changes if the node starts
-before that (an `ERROR` node can span the whole file). An error query's match
-may set a message saying what is wrong and how to fix it, which the error gives
-in place of the generic advice to use `--force`: for the Rust macro call,
+error node inside an edit's change, or failing that the nearest after one (a
+dropped `}` surfaces later, often at the end of the file), from where that
+change starts if the node starts before it (an `ERROR` node can span the whole
+file). When several commands edited the file in the stage, the error names the
+command whose change it is in or follows:
+`edit introduces a syntax error (command 2)`. An error query's match may set a
+`message` saying what is wrong, and a `fix` saying how to put it right, which
+the error gives in place of the generic advice to use `--force`: for the Rust
+macro call,
 `macro statement needs a ; before the next statement; add one after its closing bracket`.
 If the edits replace a `.sig` with text ending in the character that follows it
 (Python's `:`, or the `{` of a body), the error adds that `.sig` stops before
@@ -1467,8 +1489,11 @@ Every line-oriented `TEXT` is re-based, except a `<<'TAG'` heredoc.
    aligns to: a continuation aligned to the text after an unclosed bracket
    (`f(a,` then `  b)`), a block comment's `*` line, a list item's continuation
    under its text (and lines level with it), or a line of a fenced code block. A
-   line that starts inside a `"` string an earlier line opens is kept as
-   written, and counts toward no level.
+   line that starts inside a `"` string an earlier line opens (a Python
+   docstring's, say) counts toward neither the common indentation nor the level:
+   it loses at most its own indentation, keeps its indent style, and is prefixed
+   like the code around it. A blank one keeps its whitespace. Use a `<<'TAG'`
+   heredoc for a string whose lines must stay exactly as written.
 3. **Prefix** every non-blank line with the target indentation:
 
    - `replace`, `insert before`, `move` (before): indentation of the target
@@ -1847,16 +1872,19 @@ The fix each error suggests:
   it, `*:NAME`, or the kind of the item with that name in the `FILE` set
   (`enum:GitError.body` for `GitError.body`); after a heredoc that ended at a
   line of its text holding only its tag, where it ended, and another tag; `all`
-  before the selector, not after it, e.g. `show all /re/`; `;` or a new line
-  between commands for a second selector, e.g. `show fn:a; show fn:b`, and for a
-  `,` the commands it separates when they take only selectors or levels
+  before the selector, not after it or after a `>` in it, e.g. `show all /re/`,
+  or `show all fn:a>/re/` for `show fn:a>all /re/`; `;` or a new line between
+  commands for a second selector, e.g. `show fn:a; show fn:b`, and for a `,` the
+  commands it separates when they take only selectors or levels
   (`delete 3; delete 7`); `>` before a regex, literal or pattern glued to a
   selector in any command, e.g. `show fn:a>/re/` for `show fn:a/re/` (but not
   before `insert`'s text or `sub`'s regex, which may follow the selector
   directly); the rest of the command on a heredoc selector's line, before its
   body, e.g. `replace <<END with TEXT`; `sub /re/ with TEXT` for sed's
-  `sub /re/text/`; the line range `N-M` for sed's `N,M`; otherwise the command's
-  usage, e.g. `usage: replace [all] SEL with TEXT`
+  `sub /re/text/` (sed's `\1` and `&` as `${1}` and `${0}`, its `$1` and `$name`
+  as `${1}` and `${name}` when the regex has that group, and any other `$` as
+  `$$`); the line range `N-M` for sed's `N,M`; otherwise the command's usage,
+  e.g. `usage: replace [all] SEL with TEXT`
 - `check`, `rename`, `.refs` or `.def` after a `|`: Running it before the first
   `|`, or in a separate `ned` call
 - `all` in `sub` (`sub all /re/ with TEXT`, or after its regex or TEXT):
@@ -1870,14 +1898,17 @@ The fix each error suggests:
   literal that matches as escaped source text (`"\\n"` for `"\n"`); a literal
   match that differs only in case or spacing; a Markdown item's name without its
   `[ ]` checkbox (`item:done` for `item:"[x] done"`); a regex that matches with
-  `i`; for a range whose end matches only where it starts before its start's
-  match ends (an item whose span takes in the doc comment the start matched),
-  where each is, and to start the range earlier or select the item alone; for a
-  nested search that matches across spans of the step before it
-  (`import>"use a;\nuse b;"`), the selector without that step, or with an `A..B`
-  of their items or a line range in its place; the spans a nested step searched;
-  a `|` before the command, when the stage's earlier edits make it match; or
-  `outline`
+  `i`; for `impl:NAME` where `NAME` is a trait, its impls
+  (`impl:"NAME for TYPE"`); for a `<<TAG` block that matches only where its
+  first or last line is part of a source line, that a block matches whole lines,
+  and the whole line or a literal; for a range whose end matches only where it
+  starts before its start's match ends (an item whose span takes in the doc
+  comment the start matched), where each is, and to start the range earlier or
+  select the item alone; for a nested search that matches across spans of the
+  step before it (`import>"use a;\nuse b;"`), the selector without that step, or
+  with an `A..B` of their items or a line range in its place; the spans a nested
+  step searched; a `|` before the command, when the stage's earlier edits make
+  it match; or `outline`
 - A `conflict` step that matches nothing: The conflicts each searched file has
   (`a.rs has 2 conflicts (conflict:1, conflict:2)`), or that it has none; or a
   conflict that overlaps a searched span without lying inside it, with both
@@ -1887,8 +1918,12 @@ The fix each error suggests:
 - Subcommand after a flag: The arguments with the subcommand first, keeping the
   flags it takes
 - Ambiguous selector: Candidate selectors (§3.5), or longer text for matches
-  that share a line
-- Missing part, part on a non-syntax step: The parts the item has, or an example
+  that share a line; for a match an earlier command's edit overlaps, merging the
+  two edits or a `|` between them
+- Missing part, part on a non-syntax step: The parts the item has, or an
+  example; for a part after a range, that it applies to the whole range, and the
+  selector with the range's start left out (`impl:S>fn:f.doc` for
+  `impl:S>/^const X/..fn:f.doc`)
 - `.lines:N` that skipped every span as too short: How many it skipped, and
   `.lines:$` for the last line (dropping `.lines:N`, for spans with no lines); a
   number or `$` for `.lines:` with anything else; for another part followed by
@@ -1958,9 +1993,9 @@ error: script:1:8: fn:new matches 2 items; add `all` or use one of:
 
 error: script:1:8: fn:prase matches nothing in src/parser.rs; did you mean fn:parse (14-17)?
 
-error: script:3:1: edit overlaps command 1 at src/parser.rs:14-17; merge the two edits, or put a `|` between them
+error: script:3:1: command 3's edit overlaps command 1's at src/parser.rs:14-17; merge the two edits, or put a `|` between them
 
-error: src/parser.rs:15:31: edit introduces a syntax error (use --force to apply anyway)
+error: src/parser.rs:15:31: edit introduces a syntax error; use --force to apply it anyway
 15:        let tok = (self.next();
                                  ^
 

@@ -13,8 +13,9 @@ use crate::config::{Config, ConfigError, Entry, program};
 use crate::conflict::conflicts;
 use crate::edit::{Edit, EditSet};
 use crate::exec::Change;
+use crate::hint::{Fix, Note};
 use crate::lang::Language;
-use crate::lsp::{Document, Formatting, Lsp, LspFailure, TextEdit};
+use crate::lsp::{Document, Formatting, Lsp, TextEdit};
 
 const DEFAULT_EDITION: &str = "2015";
 
@@ -36,7 +37,7 @@ pub enum Outcome {
     /// The text from the formatter named `name`.
     Formatted { name: String, text: String },
     /// No formatter for the file is installed; the note says so.
-    NotFound(String),
+    NotFound(Note),
     /// The formatter wasn't run; the note says why.
     Skipped(String),
     /// The formatter failed on the text.
@@ -122,9 +123,14 @@ pub fn fallback(changes: &[Change], outcomes: &mut [Outcome], lsp: &mut dyn Lsp)
             Ok(Formatting::Edits { server, edits }) => match apply(&change.new, &edits) {
                 Some(text) if text == change.new => Outcome::Unchanged,
                 Some(text) => Outcome::Formatted { name: server, text },
-                None => Outcome::NotFound(format!("{note}; {server} sent overlapping edits")),
+                None => Outcome::NotFound(
+                    format!("{}; {server} sent overlapping edits", note.text).into(),
+                ),
             },
-            Err(LspFailure(reason)) => Outcome::NotFound(format!("{note}; {reason}")),
+            Err(failure) => Outcome::NotFound(Note {
+                text: format!("{}; {}", note.text, failure.problem),
+                fix: failure.fix.map(Fix::new),
+            }),
         };
     }
 }
@@ -257,7 +263,7 @@ impl Formatter {
                 Err(_) => failed(&name, "output is not UTF-8"),
             };
         }
-        Outcome::NotFound(format!("{missing} not found; skipped formatting {path}"))
+        Outcome::NotFound(format!("{missing} not found; skipped formatting {path}").into())
     }
 }
 
@@ -326,7 +332,7 @@ fn rust_edition(dir: &Path, written: &HashMap<PathBuf, &str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lsp::{Diagnosis, Locate, Located, Position, Renamed};
+    use crate::lsp::{Diagnosis, Locate, Located, LspFailure, Position, Renamed};
     use std::fs;
     use tempfile::TempDir;
 
@@ -489,9 +495,9 @@ mod tests {
     fn unknown_language() {
         let root = tree(&[(".ned.toml", "[format]\nruby = [\"rubocop\"]\n")]);
         let err = error(&root, None, "a.rs");
-        assert_eq!(err.location, format!("{}:2:1", at(&root, ".ned.toml")));
+        assert_eq!(err.kind.location, format!("{}:2:1", at(&root, ".ned.toml")));
         assert_eq!(
-            err.message,
+            err.kind.message,
             "unknown language `ruby`; expected one of rust, python, typescript, tsx, javascript, go, markdown"
         );
     }
@@ -501,11 +507,12 @@ mod tests {
         let root = tree(&[(".ned.toml", "[lint]\nrust = [\"clippy\"]\n")]);
         let err = error(&root, None, "a.rs");
         assert!(
-            err.location
+            err.kind
+                .location
                 .starts_with(&format!("{}:1:", at(&root, ".ned.toml"))),
-            "{err}"
+            "{err:?}"
         );
-        assert!(err.message.contains("unknown field `lint`"), "{err}");
+        assert!(err.kind.message.contains("unknown field `lint`"), "{err:?}");
     }
 
     #[test]
@@ -528,11 +535,11 @@ mod tests {
             let root = tree(&[(".ned.toml", &format!("[format]\nrust = {value}\n"))]);
             let err = error(&root, None, "a.rs");
             assert_eq!(
-                err.location,
+                err.kind.location,
                 format!("{}:2:8", at(&root, ".ned.toml")),
                 "{value}"
             );
-            assert_eq!(err.message, message, "{value}");
+            assert_eq!(err.kind.message, message, "{value}");
         }
     }
 
@@ -541,11 +548,12 @@ mod tests {
         let root = tree(&[(".ned.toml", "[format\n")]);
         let err = error(&root, None, "a.rs");
         assert!(
-            err.location
+            err.kind
+                .location
                 .starts_with(&format!("{}:1:", at(&root, ".ned.toml"))),
-            "{err}"
+            "{err:?}"
         );
-        assert!(!err.message.contains('\n'), "{err}");
+        assert!(!err.kind.message.contains('\n'), "{err:?}");
     }
 
     #[test]
@@ -553,9 +561,10 @@ mod tests {
         let root = tree(&[]);
         let err = error(&root, Some("format = 1\n"), "a.rs");
         assert!(
-            err.location
+            err.kind
+                .location
                 .starts_with(&format!("{}:1:", at(&root, "home/.config/ned/config.toml"))),
-            "{err}"
+            "{err:?}"
         );
     }
 
@@ -789,7 +798,7 @@ mod tests {
         let changes = [change(&root.path().join("a.rs"), Some(Language::Rust), "")];
         let err = run(&changes, &mut Config::new(None).unwrap()).unwrap_err();
         assert_eq!(
-            err.message,
+            err.kind.message,
             "`rust` must be a command (an array of strings) or false"
         );
     }
@@ -1041,10 +1050,17 @@ mod tests {
 
     #[test]
     fn a_server_failure_is_added_to_the_note() {
-        let mut lsp = serve(Err(LspFailure("rust-analyzer exited; retry".into())));
+        let failure = LspFailure {
+            problem: "rust-analyzer exited".into(),
+            fix: Some("retry".into()),
+        };
+        let mut lsp = serve(Err(failure));
         assert_eq!(
             fall_back("a\n", &mut lsp),
-            Outcome::NotFound(format!("{NOT_FOUND}; rust-analyzer exited; retry"))
+            Outcome::NotFound(Note {
+                text: format!("{NOT_FOUND}; rust-analyzer exited"),
+                fix: Some(Fix::new("retry")),
+            })
         );
     }
 
@@ -1053,7 +1069,7 @@ mod tests {
         let mut lsp = serve(edits(&[(0, 0, 0, 2, "x"), (0, 1, 0, 2, "y")]));
         assert_eq!(
             fall_back("abc\n", &mut lsp),
-            Outcome::NotFound(format!("{NOT_FOUND}; rust-analyzer sent overlapping edits"))
+            Outcome::NotFound(format!("{NOT_FOUND}; rust-analyzer sent overlapping edits").into())
         );
     }
 }

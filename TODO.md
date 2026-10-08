@@ -5,7 +5,7 @@ too large for one PR: they carry a checklist of coarse chunks to plan with the
 engineer before starting each one; a single-PR item has none, and moves to Done
 when it lands.
 
-Versions follow semver at 0.x (currently 0.8.0): a change to the command
+Versions follow semver at 0.x (currently 0.8.2): a change to the command
 language or any new user-visible feature bumps the minor version, and a release
 that only fixes bugs or adds hints bumps the patch version. Each item below says
 which it is. When to release 1.0 is TBD.
@@ -115,20 +115,15 @@ Version: minor when a first plugin can load; the spike releases nothing.
 Hints and relaxed errors: each is a patch, and they batch into the next release
 of either kind.
 
-- [ ] Replacing a braced `.body` (which leaves out the braces) with `TEXT` that
-      starts with `{` and ends with the matching `}` nests a second pair: note
-      it, and suggest dropping the braces from `TEXT` or replacing the whole
-      item
-
 ## Bugs
 
 Each fix is a patch; a fix that changes documented behaviour is a minor.
 
-- [ ] In Python, a syntax pattern of several statements matches at top level but
-      not as a nested step: ``show fn:f>`a = 0\nb = 1` `` matches nothing where
-      the statements are in `f`'s body (the Rust equivalent matches). It breaks
-      the tutorial's pattern step (`tutorial.mdx`, the `fn:total>` `replace`),
-      and the output after it.
+### Won't fix
+
+- Conflict-shaped text in a Markdown code fence is a merge conflict (§3.11, as
+  git counts it), so formatting skips the file: `tutorial.mdx` shows conflict
+  markers in its conflicts section, so it is never formatted.
 
 ## Future improvements
 

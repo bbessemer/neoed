@@ -181,7 +181,7 @@ fn input_that_ends_with_unwritten_edits_exits_1() {
     assert!(out.starts_with("exit: 1\n"), "{out}");
     assert!(
         out.ends_with(
-            "error: the input ended with unwritten edits to a.rs, which were discarded\n"
+            "error: the input ended with unwritten edits to a.rs, which were discarded; end it with `:write` to write them, or `:quit!` to discard them\n"
         ),
         "{out}"
     );
@@ -241,15 +241,23 @@ fn a_heredoc_continues_on_the_next_lines() {
 #[test]
 fn commands_take_any_unambiguous_prefix() {
     let ws = Workspace::new(&[("a.rs", AB)]);
-    let input = "replace fn:a.name with \"c\"\n:d\n:frob\n:wri\n:q\n";
+    let input = "replace fn:a.name with \"c\"\n:d\n:frob\n:files -x\n:attach\n:wri\n:q\n";
     let out = ws.repl(&["a.rs"], input);
     assert!(out.starts_with("exit: 0\n"), "{out}");
     assert!(
-        out.contains("error: `:d` could be :diff or :detach\n"),
+        out.contains("error: ambiguous command `:d`; write :diff or :detach\n"),
         "{out}"
     );
     assert!(
         out.contains("error: unknown command `:frob`; commands are :write :commit :undo :diff :reload :files :history :attach :detach :help :quit :wq\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("error: `:files` takes FILE... or -w, the REPL's workspace; start another REPL for a workspace other than "),
+        "{out}"
+    );
+    assert!(
+        out.contains("error: `:attach` takes a session's name; give one: `:attach NAME`\n"),
         "{out}"
     );
     assert_eq!(ws.read("a.rs"), "fn c() {}\nfn b() {}\n");
@@ -579,7 +587,7 @@ fn diff_shows_what_write_would_write() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("so this is what `:write!` writes"),
+        stderr.contains("since; this is what `:write!` writes"),
         "{stderr}"
     );
 }
@@ -605,7 +613,7 @@ replace file:b.rs>fn:b.name with \"d\"
         "{out}"
     );
     assert!(
-        out.contains("error: nothing to commit: the session's edits leave every file as HEAD has it; edit a file, then `:commit MSG`\n"),
+        out.contains("error: nothing to commit: the edits leave every file as HEAD has it; edit a file, then `:commit MSG`\n"),
         "{out}"
     );
     assert_eq!(ws.git(&["log", "-1", "--format=%s"]), "Rename a and b\n");
@@ -630,10 +638,31 @@ fn a_refused_commit_writes_nothing() {
     let input = "replace fn:a.name with \"c\"\n:commit\n:commit Rename\n:quit\n:quit!\n";
     let out = ws.repl(&["a.rs"], input);
     assert!(
-        out.contains("error: :commit needs a message: `:commit MSG`\n"),
+        out.contains("error: `:commit` needs a message; give one: `:commit MSG`\n"),
         "{out}"
     );
-    assert!(out.contains("isn't in one"), "{out}");
+    assert!(
+        out.contains(
+            "isn't in a git repository; run git init, or use `:write` in place of `:commit`"
+        ),
+        "{out}"
+    );
     assert!(out.contains("error: unwritten edits to a.rs"), "{out}");
     assert_eq!(ws.read("a.rs"), AB);
+}
+
+#[test]
+fn a_commit_names_a_changed_file_relative_to_the_repl() {
+    let ws = Workspace::repo(&[("a.rs", AB)]);
+    let out = ws.ned(
+        &["-s", "s1", "a.rs", "-e", "replace fn:a.name with \"c\""],
+        "",
+    );
+    assert!(out.status.success(), "{}", report(&out));
+    fs::write(ws.dir.path().join("a.rs"), AB).unwrap();
+    let out = ws.repl(&["-s", "s1"], ":commit Rename\n");
+    assert!(
+        out.contains("error: a.rs changed since session entry 1 wrote it"),
+        "{out}"
+    );
 }

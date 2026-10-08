@@ -171,15 +171,17 @@ external formatters with `.ned.toml` config (`format`). The CLI supports every
 selector (including `A..B` ranges, bare kinds and `[...]` filters) and verb
 (including `create`), `show +N`, globbed file sets, the parse-error guard,
 formatting, `-w` (every workspace file; files are read lazily), and `ned help`.
-Every error ends with a fix. `ned-daemon` has the per-workspace daemon (socket,
-lock, lazy spawn, idle exit) behind `ned daemon`, and starts language servers
-(`lsp`, `servers`; `[lsp]` config in `ned-core`) for `open` requests and
-diagnostics, through the `Lsp` trait in `ned-core`: `check [SEL] [LEVEL]`, and
-edits checked while a daemon runs (introduced errors block unless
-`allow errors`), `rename`, and the `.refs`/`.def` parts (within the file set or
-`-w` workspace); the version names the build commit, and a daemon serves only
-its own build. With a daemon running, language servers format files whose
-formatters aren't installed, `check` also waits for save-time checks
+Every error ends with a fix; `hint` (`Error`, `Fix`, `Frontend`, whose
+placeholders name options in each frontend's terms; `Report` carries notes
+beside a result) is every error's type. `ned-daemon` has the per-workspace
+daemon (socket, lock, lazy spawn, idle exit) behind `ned daemon`, and starts
+language servers (`lsp`, `servers`; `[lsp]` config in `ned-core`) for `open`
+requests and diagnostics, through the `Lsp` trait in `ned-core`:
+`check [SEL] [LEVEL]`, and edits checked while a daemon runs (introduced errors
+block unless `allow errors`), `rename`, and the `.refs`/`.def` parts (within the
+file set or `-w` workspace); the version names the build commit, and a daemon
+serves only its own build. With a daemon running, language servers format files
+whose formatters aren't installed, `check` also waits for save-time checks
 (`cargo check`), and written edits report what those checks find they
 introduced. §9 is done. Sessions (spec §1.2): `session` in `ned-core` keeps the
 per-workspace log, plans `undo` (`--force` merges with `diff::merge`) and
@@ -206,7 +208,8 @@ Scheme data) that plugins will be written in, is unused for now. The REPL (spec
 merging writes) through `exec`'s overlay and `apply`, the post-exec pipeline the
 CLI shares; it records into a session, and `:attach` follows another session's
 log (`Follower`). An invocation (`invoke`: `!!`, run, write, commit, record, and
-`history`/`undo`) prints through `invoke::Output`, so `ned-mcp` (spec §1.5;
+`history`/`undo`) prints through `invoke::Output`, its notes and errors rendered
+for the frontend at one point (`invoke::report`), so `ned-mcp` (spec §1.5;
 JSON-RPC on stdio, behind `ned mcp`) runs the CLI's pipeline as tools; help
 texts are `ned-core/help/`, shared but for `cli/` and `mcp/`, with placeholders
 each frontend renders in its own terms. MIT-licensed; README has install and
@@ -232,7 +235,7 @@ usage; CI (`.github/workflows/`) gates PRs.
 | `glob`, `ignore`                  | File-set globs; `-w` workspace walk         |
 | `similar`                         | Diff output                                 |
 | `serde` + `toml`                  | Config (`.ned.toml`)                        |
-| `thiserror` / `anyhow`            | Errors in core / CLI                        |
+| `thiserror`                       | Error kinds, made `hint` errors             |
 | `clap` (derive)                   | CLI arguments                               |
 | `tokio`, `serde_json`, `libc`     | Daemon, MCP: event loop, protocol, `getuid` |
 | `lsp-types`, `url`                | LSP messages and file URIs                  |
@@ -280,7 +283,8 @@ All logic lives in `ned-core` so frontends stay thin.
 ## Coding Conventions
 
 - `cargo fmt` defaults; `cargo clippy --all-targets -- -D warnings` clean.
-- `thiserror` error enums in `ned-core`; `anyhow` only in binaries.
+- Errors are kinds implementing `hint::Hint`; libraries derive their `Display`
+  with `thiserror`.
 - Unit tests beside code; CLI end-to-end tests in `crates/ned-cli/tests/` using
   `assert_cmd` + `insta` snapshots (review snapshots with `cargo insta review`).
 - Query files under `queries/` are code: every selector kind needs a test per

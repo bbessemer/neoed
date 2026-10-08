@@ -440,7 +440,7 @@ ned› replace fn:remove.name with "discard"; delete fn:remove
 ```
 
 ```text
-error: script:1:40: edit overlaps command 1 at shop/cart.py:20; merge the two edits, or put a `|` between them
+error: script:1:40: command 2's edit overlaps command 1's at shop/cart.py:20; merge the two edits, or put a `|` between them
 ```
 
 A `|` between commands starts a new **stage**, whose selectors see the edits
@@ -540,37 +540,33 @@ ned› move fn:with_tax before fn:apply_discount
 ```
 
 ```diff
-shop/pricing.py: 2 edits, +4 -4
-@@ -5,2 +5,6 @@
+shop/pricing.py: 2 edits, +5 -5
+@@ -5,2 +5,7 @@
 
 +def with_tax(price):
 +    """Return price with sales tax, rounded to cents."""
 +    return round(price * (1 + TAX_RATE), 2)
 +
++
  def apply_discount(price, percent):
-@@ -9,5 +13,1 @@
-
+@@ -8,6 +13,1 @@
+     return price * (1 - min(percent, 100) / 100)
+-
 -
 -def with_tax(price):
 -    """Return price with sales tax, rounded to cents."""
 -    return round(price * (1 + TAX_RATE), 2)
-fmt ruff: +1 -1
-@@ -9,2 +9,3 @@
-
-+
- def apply_discount(price, percent):
-@@ -12,2 +13,1 @@
-     return price * (1 - min(percent, 100) / 100)
--
 ```
 
-The section under `fmt ruff` is the work of a formatter. ned leaves one blank
-line between the moved function and its neighbour, and Python's style is two, so
-`ruff` fixed it. After every edit, ned runs the formatter it finds for the
-language: `rustfmt`, `gofmt`, `ruff` or `black`, or `prettier`. If you don't
-have one installed, ned prints a note and leaves the file as it is.
-`ned repl --no-fmt` turns formatting off, and a `.ned.toml` file can configure a
-different formatter for each language.
+ned keeps the file's spacing, so the moved function still has the two blank
+lines that Python's style puts between functions. After every edit, ned also
+runs the formatter it finds for the language: `rustfmt`, `gofmt`, `ruff` or
+`black`, or `prettier`. It fixes whatever else is left, and ned shows its
+changes as a `fmt` section after the diff, such as `fmt ruff: +1 -1`. Here,
+`ruff` had nothing to change. If you don't have a formatter installed, ned
+prints a note and leaves the file as it is. `ned repl --no-fmt` turns formatting
+off, and a `.ned.toml` file can configure a different formatter for each
+language.
 
 ## Syntax patterns
 
@@ -635,8 +631,8 @@ END
 ```
 
 ```diff
-shop/cart.py: 1 edit, +0 -6
-@@ -3,8 +3,2 @@
+shop/cart.py: 1 edit, +0 -7
+@@ -3,9 +3,2 @@
 
 -class Item:
 -    def __init__(self, name, price, quantity=1):
@@ -644,10 +640,6 @@ shop/cart.py: 1 edit, +0 -6
 -        self.price = price
 -        self.quantity = quantity
 -
-
-fmt ruff: +0 -1
-@@ -3,3 +3,2 @@
-
 -
  class Cart:
 tests/test_cart.py: 1 edit, +2 -1
@@ -715,7 +707,7 @@ ned› replace fn:with_tax>"2)" with "2"
 ```
 
 ```text
-error: shop/pricing.py:8:43: edit introduces a syntax error (use --force to apply anyway)
+error: shop/pricing.py:8:43: edit introduces a syntax error; use `ned repl --force` to apply it anyway
 8:    return round(price * (1 + TAX_RATE), 2
                                             ^
 ```
@@ -1005,7 +997,7 @@ shop/pricing.py
 4 const:TAX_RATE
 6 const:TAX_RATE
 10-12 fn:with_tax
-15-20 fn:discounted
+15-21 fn:discounted
 3-7 conflict:1
 17-21 conflict:2
 ```

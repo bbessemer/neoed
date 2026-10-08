@@ -4,7 +4,7 @@ Lists each file's syntax items as `START-END kind:name`, indented by nesting,
 so a line can be pasted back as a selector. Imports collapse to one line.
 Items inside functions are left out; fields and variants appear only when SEL
 is their parent. With SEL, lists the items inside each span of SEL.
-Files without a language are skipped{cli: (use --lang)}.
+Files without a language are skipped{cli: (use --lang)}{repl: (start the REPL with --lang)}.
 
 Examples:
     outline

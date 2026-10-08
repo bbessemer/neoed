@@ -619,6 +619,25 @@ fn e_dash_reads_stdin_once() {
 }
 
 #[test]
+fn a_script_on_stdin_that_isnt_text_is_a_usage_error() {
+    let dir = dir_with(&[("parser.rs", PARSER)]);
+    fs::write(dir.path().join("script"), b"show \xff\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_ned"))
+        .current_dir(dir.path())
+        .env_remove("NED_SESSION")
+        .arg("parser.rs")
+        .stdin(fs::File::open(dir.path().join("script")).unwrap())
+        .output()
+        .unwrap();
+    assert_snapshot!(report(&out), @r"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: cannot read the script from stdin: stream did not contain valid UTF-8; give it with -e SCRIPT
+    ");
+}
+
+#[test]
 fn repeating_a_script_leaves_piped_stdin_alone() {
     let dir = dir_with(&[("parser.rs", PARSER)]);
     let state = tempfile::tempdir().unwrap();
@@ -654,6 +673,16 @@ fn a_bare_item_name_suggests_its_kind() {
     1:delete GitError
              ^
     ");
+    // After a heredoc that ended early, the name was meant as its text.
+    let script = "insert after 1 <<END\nx\nEND\nshow GitError.body\nEND\n";
+    assert_snapshot!(ned(dir.path(), &["a.rs", "-e", script], ""), @r#"
+    exit: 2
+    --- stdout
+    --- stderr
+    error: script:4:6: expected a selector, found `GitError`; quote literal text: "GitError", or select an item by name: *:GitError.body; the heredoc <<END at line 1 ended at line 3, which holds only END: pick a tag its text doesn't hold
+    4:show GitError.body
+           ^
+    "#);
 }
 
 #[test]
@@ -853,7 +882,7 @@ fn overlapping_edits_exit_1() {
     exit: 1
     --- stdout
     --- stderr
-    error: script:2:1: edit overlaps command 1 at parser.rs:15; merge the two edits, or put a `|` between them
+    error: script:2:1: command 2's edit overlaps command 1's at parser.rs:15; merge the two edits, or put a `|` between them
     ");
     assert_eq!(read(&dir, "parser.rs"), PARSER);
 }
@@ -893,20 +922,20 @@ fn no_files_exits_2() {
     exit: 2
     --- stdout
     --- stderr
-    error: script:1:1: no files to read; pass FILE arguments or use `file PATH`
+    error: script:1:1: no files to read; pass the FILE arguments or use `file PATH`
     ");
     assert_snapshot!(ned(dir.path(), &["-e", "delete 1"], ""), @r"
     exit: 2
     --- stdout
     --- stderr
-    error: script:1:1: no files to edit; pass FILE arguments or use `file PATH`
+    error: script:1:1: no files to edit; pass the FILE arguments or use `file PATH`
     ");
     // `file:` steps don't add to the set, but they name what to add.
     assert_snapshot!(ned(dir.path(), &["-e", "show file:a.rs>1; delete file:b.rs>2"], ""), @r"
     exit: 2
     --- stdout
     --- stderr
-    error: script:1:1: no files to read; pass FILE arguments or use `file PATH`; add the files its `file:` steps name: file a.rs b.rs
+    error: script:1:1: no files to read; pass the FILE arguments or use `file PATH`; add the files its `file:` steps name: file a.rs b.rs
     ");
 }
 
@@ -919,7 +948,10 @@ fn a_created_file_given_as_a_file_argument_is_named() {
         "",
     );
     assert!(
-        out.contains("; drop it from the files given: `create new.rs` adds it to the file set"),
+        out.contains("no such file; paths are relative to ")
+            && out.contains(
+                "; drop it from the FILE arguments: `create new.rs` adds it to the file set"
+            ),
         "{out}"
     );
 }
@@ -955,7 +987,7 @@ fn missing_file_exits_3() {
     exit: 3
     --- stdout
     --- stderr
-    error: cannot read nope.rs: no such file (paths are relative to {dir})
+    error: cannot read nope.rs: no such file; paths are relative to {dir}
     ");
 }
 
@@ -1007,7 +1039,7 @@ fn glob_matching_nothing_exits_3() {
     exit: 3
     --- stdout
     --- stderr
-    error: glob `*.rx` matched nothing (paths are relative to {dir})
+    error: glob `*.rx` matched nothing; paths are relative to {dir}
     ");
     assert_eq!(read(&dir, "a.rs"), "let x = 1;\n");
 }
@@ -1038,7 +1070,7 @@ fn edit_introducing_syntax_error_exits_1() {
     exit: 1
     --- stdout
     --- stderr
-    error: parser.rs:15:31: edit introduces a syntax error (use --force to apply anyway)
+    error: parser.rs:15:31: edit introduces a syntax error; use --force to apply it anyway
     15:        let tok = (self.next();
                                      ^
     ");
@@ -1482,7 +1514,7 @@ fn lang_text_edits_code_as_text() {
     exit: 1
     --- stdout
     --- stderr
-    error: script:1:6: fn:a needs a language, but parsing was disabled with --lang text; drop it, or use a regex or literal
+    error: script:1:6: fn:a needs a language, but parsing is disabled; drop --lang text, or use a regex or literal
     ");
 }
 
@@ -1955,6 +1987,36 @@ fn an_off_by_one_replace_notes_it_on_stderr() {
 }
 
 #[test]
+fn replacing_a_body_with_braces_or_an_item_with_later_attributes_notes_it() {
+    let text = "#[derive(Debug)]\nstruct S {\n    a: u32,\n}\n\nfn f() {\n    g();\n}\n";
+    let dir = dir_with(&[("a.rs", text)]);
+    let out = ned(
+        dir.path(),
+        &["a.rs", "-q", "-n"],
+        "replace fn:f.body with \"{ h(); }\"\n",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    (dry run) a.rs: 1 edit, +1 -1
+    --- stderr
+    note: a.rs:7: the new text starts with `{` and ends with the matching `}`, which fn:f.body leaves out, so they would nest; drop them from the new text, or replace fn:f
+    ");
+    let out = ned(
+        dir.path(),
+        &["a.rs", "-q", "-n"],
+        "replace struct:S with <<END\nstruct T;\n\n#[derive(Clone)]\nstruct S;\nEND\n",
+    );
+    assert_snapshot!(out, @r"
+    exit: 0
+    --- stdout
+    (dry run) a.rs: 1 edit, +4 -3
+    --- stderr
+    note: a.rs:1: the new text has doc comments or attributes after its start (`#[derive(Clone)]`), and the replaced item keeps its own (line 1) above it; to replace them too, select struct:S.whole
+    ");
+}
+
+#[test]
 fn a_command_named_as_a_file_suggests_the_script_form() {
     let dir = dir_with(&[("a.rs", "fn a() {}\n")]);
     assert_snapshot!(ned(dir.path(), &["outline", "a.rs"], ""), @r"
@@ -2031,13 +2093,13 @@ fn a_subcommand_after_no_flag_is_a_file() {
     exit: 3
     --- stdout
     --- stderr
-    error: cannot read undo: no such file (paths are relative to {dir})
+    error: cannot read undo: no such file; paths are relative to {dir}
     ");
     assert_snapshot!(ned(dir.path(), &["--", "undo"], ""), @r"
     exit: 3
     --- stdout
     --- stderr
-    error: cannot read undo: no such file (paths are relative to {dir})
+    error: cannot read undo: no such file; paths are relative to {dir}
     ");
     assert_snapshot!(ned(dir.path(), &["-s", "undo", "a.rs", "-e", "outline"], ""), @r"
     exit: 0

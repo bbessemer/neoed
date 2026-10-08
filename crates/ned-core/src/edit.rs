@@ -45,7 +45,7 @@ impl EditSet {
     /// character, or overlaps an edit already in the set.
     pub fn push(&mut self, edit: Edit) -> Result<(), EditError> {
         self.buffer.check_range(&edit.range)?;
-        if let Some(prior) = self.edits.iter().find(|e| overlaps(&e.range, &edit.range)) {
+        if let Some(prior) = self.overlapping(&edit.range) {
             return Err(EditError::Overlap {
                 first: prior.command,
                 second: edit.command,
@@ -54,6 +54,11 @@ impl EditSet {
         }
         self.edits.push(edit);
         Ok(())
+    }
+
+    /// The edit already in the set that an edit of `range` would overlap.
+    pub fn overlapping(&self, range: &Range<usize>) -> Option<&Edit> {
+        self.edits.iter().find(|e| overlaps(&e.range, range))
     }
 
     /// Removes the edit that `command` made at `range`.
@@ -74,14 +79,9 @@ impl EditSet {
     /// are converted to the buffer's line ending.
     pub fn apply(&self) -> String {
         let original = self.buffer.text();
-        let mut edits: Vec<&Edit> = self.edits.iter().collect();
-        // At one offset, insertions precede a replacement starting there, and
-        // insertions keep command order, then push order (the sort is stable).
-        edits.sort_by_key(|e| (e.range.start, !e.range.is_empty(), e.command));
-
         let mut out = String::with_capacity(original.len());
         let mut pos = 0;
-        for edit in edits {
+        for edit in self.in_order() {
             out.push_str(&original[pos..edit.range.start]);
             match self.buffer.line_ending() {
                 LineEnding::Lf => out.push_str(&edit.text),
@@ -91,6 +91,39 @@ impl EditSet {
         }
         out.push_str(&original[pos..]);
         out
+    }
+
+    /// Where each edit lands in the text `apply` gives, in that text's order,
+    /// with the edit.
+    pub fn applied_spans(&self) -> Vec<(Range<usize>, &Edit)> {
+        // Positions in the original text and in the applied text, after the
+        // last edit.
+        let (mut old, mut new) = (0, 0);
+        self.in_order()
+            .into_iter()
+            .map(|edit| {
+                let len = match self.buffer.line_ending() {
+                    LineEnding::Lf => edit.text.len(),
+                    LineEnding::Crlf => {
+                        let mut text = String::new();
+                        push_crlf(&mut text, &edit.text);
+                        text.len()
+                    }
+                };
+                let start = new + edit.range.start - old;
+                (old, new) = (edit.range.end, start + len);
+                (start..new, edit)
+            })
+            .collect()
+    }
+
+    /// The edits in the order they apply: at one offset, insertions precede a
+    /// replacement starting there, and insertions keep command order, then push
+    /// order (the sort is stable).
+    fn in_order(&self) -> Vec<&Edit> {
+        let mut edits: Vec<&Edit> = self.edits.iter().collect();
+        edits.sort_by_key(|e| (e.range.start, !e.range.is_empty(), e.command));
+        edits
     }
 }
 
@@ -135,6 +168,11 @@ mod tests {
             set.push(e.clone())?;
         }
         Ok(set.apply())
+    }
+
+    fn commands(set: &EditSet) -> Vec<(Range<usize>, usize)> {
+        let spans = set.applied_spans().into_iter();
+        spans.map(|(range, e)| (range, e.command)).collect()
     }
 
     #[test]
@@ -314,5 +352,39 @@ mod tests {
     fn inserted_text_is_untouched_in_lf_buffers() {
         let out = apply("a\nb\n", &[edit(2..2, "x\r\ny\n", 0)]).unwrap();
         assert_eq!(out, "a\nx\r\ny\nb\n");
+    }
+
+    #[test]
+    fn applied_spans_shift_by_the_edits_before_them() {
+        let buf = Buffer::new("abcdef");
+        let mut set = EditSet::new(&buf);
+        set.push(edit(5..6, "", 2)).unwrap();
+        set.push(edit(1..2, "XYZ", 0)).unwrap();
+        set.push(edit(4..4, "Q", 1)).unwrap();
+        assert_eq!(set.apply(), "aXYZcdQe");
+        assert_eq!(commands(&set), [(1..4, 0), (6..7, 1), (8..8, 2)]);
+    }
+
+    #[test]
+    fn applied_spans_count_converted_line_endings() {
+        let buf = Buffer::new("a\r\nb\r\n");
+        let mut set = EditSet::new(&buf);
+        set.push(edit(3..3, "x\n", 0)).unwrap();
+        set.push(edit(3..4, "c", 1)).unwrap();
+        assert_eq!(set.apply(), "a\r\nx\r\nc\r\n");
+        assert_eq!(commands(&set), [(3..6, 0), (6..7, 1)]);
+    }
+
+    #[test]
+    fn overlapping_finds_the_edit_a_range_would_overlap() {
+        let buf = Buffer::new("abcdef");
+        let mut set = EditSet::new(&buf);
+        set.push(edit(1..3, "X", 4)).unwrap();
+        set.push(edit(4..4, "Y", 5)).unwrap();
+        let command = |range| set.overlapping(&range).map(|e| e.command);
+        assert_eq!(command(2..5), Some(4));
+        assert_eq!(command(3..5), Some(5));
+        assert_eq!(command(3..4), None);
+        assert_eq!(command(4..4), None);
     }
 }

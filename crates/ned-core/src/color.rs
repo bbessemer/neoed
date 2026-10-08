@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
+use crate::hint::{self, Fix, Hint};
+
 /// An sRGB colour, written `#rrggbb`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rgb {
@@ -14,11 +16,23 @@ pub struct Rgb {
     pub b: u8,
 }
 
+/// A colour that isn't written `#rrggbb`.
+pub type BadColor = hint::Error<BadColorKind>;
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-#[error(
-    "expected a colour `#rrggbb`, found `{0}`; write `#` and six hex digits, such as `#61afef`"
-)]
-pub struct BadColor(pub String);
+#[error("expected a colour `#rrggbb`, found `{0}`")]
+pub struct BadColorKind(pub String);
+
+impl Hint for BadColorKind {
+    /// As for any invalid config.
+    fn exit_code(&self) -> u8 {
+        2
+    }
+
+    fn fix(&self) -> Option<Fix> {
+        Some("write `#` and six hex digits, such as `#61afef`".into())
+    }
+}
 
 impl FromStr for Rgb {
     type Err = BadColor;
@@ -30,7 +44,7 @@ impl FromStr for Rgb {
         let channel = |i: usize| hex.map(|h| u8::from_str_radix(&h[i..i + 2], 16).unwrap());
         match (channel(0), channel(2), channel(4)) {
             (Some(r), Some(g), Some(b)) => Ok(Rgb { r, g, b }),
-            _ => Err(BadColor(s.to_string())),
+            _ => Err(BadColorKind(s.to_string()).into()),
         }
     }
 }
@@ -142,6 +156,7 @@ fn from_oklab([lightness, a, b]: [f64; 3]) -> Rgb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hint::Frontend;
 
     fn rgb(s: &str) -> Rgb {
         s.parse().unwrap()
@@ -172,7 +187,7 @@ mod tests {
         ] {
             assert_eq!(
                 bad.parse::<Rgb>(),
-                Err(BadColor(bad.to_string())),
+                Err(BadColorKind(bad.to_string()).into()),
                 "{bad:?}"
             );
         }
@@ -181,8 +196,11 @@ mod tests {
     #[test]
     fn a_bad_colour_says_how_to_write_one() {
         assert_eq!(
-            "#fff".parse::<Rgb>().unwrap_err().to_string(),
-            "expected a colour `#rrggbb`, found `#fff`; write `#` and six hex digits, such as `#61afef`"
+            "#fff"
+                .parse::<Rgb>()
+                .unwrap_err()
+                .render(Frontend::Cli, None),
+            "error: expected a colour `#rrggbb`, found `#fff`; write `#` and six hex digits, such as `#61afef`"
         );
     }
 

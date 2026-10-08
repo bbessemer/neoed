@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT"
@@ -11,3 +11,5 @@ repository = "https://github.com/bbessemer/neoed"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+# Errors carry their fix (`hint::Error`) and only travel the failure path.
+result_large_err = "allow"

@@ -80,10 +80,14 @@ fn a_missing_workspace_dir_exits_3() {
     let dir = workspace();
     let out = ned(dir.path(), &["-w", "nowhere", "-e", "show 1"]);
     assert_eq!(out.status.code(), Some(3), "{out:?}");
+    let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(
-        String::from_utf8(out.stderr)
-            .unwrap()
-            .contains("cannot read nowhere")
+        stderr.starts_with("error: cannot read nowhere: "),
+        "{stderr}"
+    );
+    assert!(
+        stderr.ends_with("; check that it exists and you can read it\n"),
+        "{stderr}"
     );
 }
 

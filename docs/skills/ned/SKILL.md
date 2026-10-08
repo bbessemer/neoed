@@ -380,3 +380,14 @@ it too.
   array or a match, `insert after` its current last element.
 - **A Markdown list item is named by its whole first line**: select it with a
   prefix and `*`, as in `item:"Syntax steps skip*"`.
+- **`impl:X` is every impl of `X`**, inherent or a trait's, so it also matches
+  `impl Display for X`: pick one from the error's list, or name the trait impl,
+  `impl:"Display for X"`. Generic arguments aren't part of the name:
+  `impl:"From for X"`, not `impl:"From<A> for X"`.
+- **A grouped `use` is named whole**: `use a::b::{C, D}` is
+  `import:"a::b::{C, D}"`; `import:a::b` doesn't match it.
+- **TEXT takes its target's indentation**, so a `replace` that only changes a
+  line's indentation changes nothing: use `sub LINE /^ +/ with "    "`.
+- **A pattern parses inside a syntax item**, not a line range:
+  ``fn:f>10-20>`x(@a)` `` fails to parse; scope it by the item, or paste the
+  candidate the error lists.

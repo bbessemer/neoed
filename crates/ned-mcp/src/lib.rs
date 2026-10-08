@@ -4,15 +4,15 @@
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use ned_core::help;
-use ned_core::invoke::{self, Failure, Invocation, Output};
+use ned_core::hint::{self, Error, Fix, Hint, Report};
+use ned_core::invoke::{self, Invocation, Output};
 use ned_core::lang::Language;
 use ned_core::lsp::Lsp;
 use ned_core::script::{
     self,
     ast::{Command, CommandKind},
 };
-use ned_core::session::{self, Session};
+use ned_core::session::{self, Session, SessionError};
 use ned_core::style::Style;
 use ned_core::workspace;
 use serde_json::{Value, json};
@@ -45,12 +45,10 @@ pub struct Server<C> {
 
 /// Session `name`, or the first `mcp-N` the workspace at `root` has no log
 /// for, which it creates.
-pub fn open_session(name: Option<&str>, root: &Path) -> Result<Session, Failure> {
+pub fn open_session(name: Option<&str>, root: &Path) -> Result<Session, SessionError> {
     match name {
         Some(name) => invoke::open(name, root),
-        None => session::state_dir()
-            .and_then(|state| session::next_free(&state, root, "mcp"))
-            .map_err(invoke::failure),
+        None => session::state_dir().and_then(|state| session::next_free(&state, root, "mcp")),
     }
 }
 
@@ -163,9 +161,7 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             "show" => {
                 let script = format!("show {}", args.required("selector")?);
                 if shows_more_than_a_selector(&script) {
-                    let error = "error: `selector` holds more than a selector; give a script of several commands to the `ned` tool";
-                    transcript.message(error);
-                    2
+                    finish(Err(UsageError::NotASelector), &mut transcript)
                 } else {
                     self.run(script, &args, &mut transcript)?
                 }
@@ -174,16 +170,17 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             "undo" => self.undo(args.flag("force")?, &mut transcript),
             "cd" => {
                 let dir = args.required("dir")?;
-                self.cd(&dir, &mut transcript)
+                let moved = self.cd(&dir, &mut transcript);
+                finish(moved, &mut transcript)
             }
-            "help" => match help::Frontend::Mcp.text(args.string("topic")?.as_deref()) {
+            "help" => match hint::Frontend::Mcp.text(args.string("topic")?.as_deref()) {
                 Ok(text) => {
                     transcript.out(&text);
                     0
                 }
                 Err(error) => {
-                    transcript.message(&error);
-                    2
+                    transcript.message(&error.render(hint::Frontend::Mcp, None));
+                    error.exit_code()
                 }
             },
             _ => {
@@ -222,24 +219,23 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             lang: self.lang,
             context: self.context,
             commit: args.string("commit")?,
-            frontend: help::Frontend::Mcp,
+            frontend: hint::Frontend::Mcp,
             style: Style::Plain,
             comment: args
                 .string("comment")?
                 .filter(|comment| !comment.is_empty()),
         };
         let usage = if !invocation.files.is_empty() && invocation.workspace {
-            Some("error: give `files` or `workspace`, not both")
+            Some(UsageError::FilesAndWorkspace)
         } else if invocation.commit.is_some() && invocation.dry_run {
-            Some("error: `commit` writes the edits, so it can't go with `dry_run`; drop one")
+            Some(UsageError::CommitDryRun)
         } else if invocation.commit.as_deref() == Some("") {
-            Some("error: `commit` needs a message; give one, or drop `commit`")
+            Some(UsageError::NoMessage)
         } else {
             None
         };
-        if let Some(error) = usage {
-            out.message(error);
-            return Ok(2);
+        if let Some(usage) = usage {
+            return Ok(finish(Err(usage), out));
         }
         let session = Some(&self.session);
         Ok(invoke::invoke(
@@ -253,48 +249,38 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
 
     /// `ned history [--all]` of the session, returning the exit code.
     fn history(&self, all: bool, out: &mut Transcript) -> u8 {
-        match invoke::history(&self.session, all, out) {
-            Ok(()) => 0,
-            Err(failure) => invoke::fail(failure, out),
-        }
+        finish(invoke::history(&self.session, all, out), out)
     }
 
     /// `ned undo [--force]` in the session, returning the exit code.
     fn undo(&self, force: bool, out: &mut Transcript) -> u8 {
         // Canonical, as the paths an undo reverts are, to show them relative to it.
         let cwd = self.cwd.canonicalize().unwrap_or(self.cwd.clone());
-        match invoke::undo(&self.session, cwd, force, Style::Plain, out) {
-            Ok(()) => 0,
-            Err(failure) => invoke::fail(failure, out),
-        }
+        let undone = Report::collect(|notes| {
+            invoke::undo(&self.session, cwd, force, Style::Plain, notes, out)
+        });
+        finish(undone, out)
     }
 
-    /// Moves the server to `dir`, returning the exit code.
-    fn cd(&mut self, dir: &str, out: &mut Transcript) -> u8 {
+    /// Moves the server to `dir`.
+    fn cd(&mut self, dir: &str, out: &mut Transcript) -> Result<(), hint::Errors> {
         let dir = self.cwd.join(dir);
         let cwd = match dir.canonicalize() {
             Ok(cwd) if cwd.is_dir() => cwd,
             Ok(file) => {
                 let parent = file.parent().unwrap_or(&file);
-                let error = format!(
-                    "error: {} isn't a directory; give its directory, {}",
-                    dir.display(),
-                    parent.display()
+                let fix = format!(
+                    "give its directory, {}",
+                    hint::verbatim(&parent.display().to_string())
                 );
-                return invoke::fail((error, 3), out);
+                return Err(Error::new(CdError::NotADirectory(dir)).with_fix(fix).into());
             }
             Err(err) => {
-                return invoke::fail(
-                    (
-                        format!(
-                            "error: cannot read {}: {err}; give a directory relative to {}",
-                            dir.display(),
-                            self.cwd.display()
-                        ),
-                        3,
-                    ),
-                    out,
-                );
+                let cwd = hint::verbatim(&self.cwd.display().to_string());
+                let fix = format!("give a directory relative to {cwd}");
+                return Err(Error::new(CdError::Unreadable(dir, err))
+                    .with_fix(fix)
+                    .into());
             }
         };
         let root = workspace::root(&cwd).unwrap_or(cwd.clone());
@@ -302,24 +288,12 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             None
         } else {
             let name = self.named.then(|| self.session.name().to_string());
-            match open_session(name.as_deref(), &root) {
-                Ok(session) => Some(session),
-                Err(failure) => return invoke::fail(failure, out),
-            }
+            Some(open_session(name.as_deref(), &root)?)
         };
         // Scripts read their files, and git finds its repository, from the
         // process's working directory.
         if let Err(err) = std::env::set_current_dir(&cwd) {
-            return invoke::fail(
-                (
-                    format!(
-                        "error: cannot enter {}: {err}; give a directory you may enter",
-                        cwd.display()
-                    ),
-                    3,
-                ),
-                out,
-            );
+            return Err(CdError::Unenterable(cwd, err).into());
         }
         if let Some(session) = session {
             self.session = session;
@@ -330,7 +304,67 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             self.session.name()
         ));
         (self.cwd, self.root) = (cwd, root);
-        0
+        Ok(())
+    }
+}
+
+/// Prints `report` in the MCP server's terms, returning its exit code.
+fn finish(report: impl Into<Report<()>>, out: &mut Transcript) -> u8 {
+    match invoke::report(report, hint::Frontend::Mcp, None, out) {
+        Ok(()) => 0,
+        Err(failure) => invoke::fail(failure, out),
+    }
+}
+
+/// Tool arguments that can't go together.
+#[derive(Debug, thiserror::Error)]
+enum UsageError {
+    #[error("`selector` holds more than a selector")]
+    NotASelector,
+    #[error("`files` and `workspace` each give the file set")]
+    FilesAndWorkspace,
+    #[error("`commit` writes the edits, so it can't go with `dry_run`")]
+    CommitDryRun,
+    #[error("`commit` needs a message")]
+    NoMessage,
+}
+
+impl Hint for UsageError {
+    fn exit_code(&self) -> u8 {
+        2
+    }
+
+    fn fix(&self) -> Option<Fix> {
+        Some(Fix::new(match self {
+            UsageError::NotASelector => "give a script of several commands to the `ned` tool",
+            UsageError::FilesAndWorkspace => "drop {the FILE arguments} or {-w}",
+            UsageError::CommitDryRun => "drop {--commit} or `dry_run`",
+            UsageError::NoMessage => "give one, or drop {--commit}",
+        }))
+    }
+}
+
+/// A directory `cd` can't move the server to.
+#[derive(Debug, thiserror::Error)]
+enum CdError {
+    #[error("{} isn't a directory", .0.display())]
+    NotADirectory(PathBuf),
+    #[error("cannot read {}: {}", .0.display(), .1)]
+    Unreadable(PathBuf, io::Error),
+    #[error("cannot enter {}: {}", .0.display(), .1)]
+    Unenterable(PathBuf, io::Error),
+}
+
+impl Hint for CdError {
+    fn exit_code(&self) -> u8 {
+        3
+    }
+
+    fn fix(&self) -> Option<Fix> {
+        match self {
+            CdError::Unenterable(..) => Some(Fix::new("give a directory you may enter")),
+            CdError::NotADirectory(_) | CdError::Unreadable(..) => None,
+        }
     }
 }
 
@@ -476,11 +510,11 @@ fn tools() -> Value {
                 "annotations": { "readOnlyHint": read_only },
             })
         };
-    let topics: Vec<&str> = help::Frontend::Mcp.topics().collect();
+    let topics: Vec<&str> = hint::Frontend::Mcp.topics().collect();
     json!([
         tool(
             "ned",
-            &help::Frontend::Mcp.summary(),
+            &hint::Frontend::Mcp.summary(),
             false,
             json!({
                 "script": {
@@ -854,7 +888,7 @@ mod tests {
     fn the_ned_tool_is_described_by_the_help_summary() {
         assert_eq!(
             tool("ned")["description"],
-            ned_core::help::Frontend::Mcp.summary()
+            ned_core::hint::Frontend::Mcp.summary()
         );
     }
 
@@ -867,7 +901,7 @@ mod tests {
         let check = call("check");
         assert_eq!(
             check["content"][0]["text"],
-            ned_core::help::Frontend::Mcp.text(Some("check")).unwrap()
+            ned_core::hint::Frontend::Mcp.text(Some("check")).unwrap()
         );
         assert_eq!(call("repl")["isError"], true);
         let topic = &tool("help")["inputSchema"]["properties"]["topic"]["description"];
@@ -879,7 +913,7 @@ mod tests {
 
     #[test]
     fn the_help_texts_fit_their_budgets() {
-        let frontend = ned_core::help::Frontend::Mcp;
+        let frontend = ned_core::hint::Frontend::Mcp;
         assert!(
             frontend.summary().len() <= 3200,
             "{} bytes",

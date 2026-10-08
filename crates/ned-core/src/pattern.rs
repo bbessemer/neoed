@@ -9,6 +9,7 @@ use tree_sitter::Tree;
 
 use crate::ast::{Ast, Body};
 use crate::fragment::{self, Context, FragmentError, Slot};
+use crate::hint::{Fix, Hint};
 use crate::lang::Language;
 use crate::template::{Count, Template};
 use crate::text::strip_indent;
@@ -32,14 +33,26 @@ pub struct PatternMatch {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PatternError {
-    #[error(
-        "doesn't parse as {lang} where it's searched, at `{at}`; {}", no_parse_fix(.lang)
-    )]
+    #[error("doesn't parse as {lang} where it's searched, at `{at}`")]
     NoParse { lang: Language, at: String },
-    #[error("has `{placeholder}` where a whole node must be; write `@@` for a literal `@`")]
+    #[error("has `{placeholder}` where a whole node must be")]
     Fused { placeholder: String },
-    #[error("has no code; write the code to match between the backquotes")]
+    #[error("has no code")]
     Empty,
+}
+
+impl Hint for PatternError {
+    /// A pattern that can't compile is a usage error (spec §7).
+    fn exit_code(&self) -> u8 {
+        2
+    }
+    fn fix(&self) -> Option<Fix> {
+        Some(Fix::new(match self {
+            PatternError::NoParse { lang, .. } => no_parse_fix(lang),
+            PatternError::Fused { .. } => "write `@@` for a literal `@`",
+            PatternError::Empty => "write the code to match between the backquotes",
+        }))
+    }
 }
 
 /// How to make a pattern parse in `lang`. A match arm, a case or a decorator

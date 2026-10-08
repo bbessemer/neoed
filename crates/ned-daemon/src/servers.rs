@@ -7,7 +7,9 @@ use ned_core::config::Config;
 use ned_core::select::SourceFile;
 use std::time::Duration;
 
-use ned_core::lsp::{Diagnosis, Formatting, Locate, Located, Position, Renamed, Severity};
+use ned_core::lsp::{
+    Diagnosis, Formatting, Locate, Located, LspFailure, Position, Renamed, Severity,
+};
 
 use crate::lsp::{LspError, Server};
 use crate::protocol::{Document, ServerStatus};
@@ -29,6 +31,16 @@ pub enum ServersError {
     Config(#[from] ned_core::config::ConfigError),
     #[error("{0}")]
     Lsp(#[from] LspError),
+}
+
+/// The error as the daemon sends it: its problem and fix.
+impl From<ServersError> for LspFailure {
+    fn from(error: ServersError) -> LspFailure {
+        match error {
+            ServersError::Config(error) => error.into(),
+            ServersError::Lsp(error) => ned_core::hint::Error::new(error).into(),
+        }
+    }
 }
 
 impl Servers {

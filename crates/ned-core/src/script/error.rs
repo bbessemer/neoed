@@ -1,223 +1,191 @@
-//! Script errors and their rendering (command-language spec, §7).
+//! Script errors (command-language spec, §7).
 
-use std::ops::Range;
+use crate::hint::{Error, Fix, Hint, verbatim};
 
-/// An error at `span`, a byte range of the script.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{kind}")]
-pub struct ParseError {
-    pub kind: ParseErrorKind,
-    pub span: Range<usize>,
-}
+use ParseErrorKind as E;
+
+/// An error in the script, located at a byte range of it.
+pub type ParseError = Error<ParseErrorKind>;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ParseErrorKind {
-    #[error("unexpected character `{0}`; {hint}", hint = quote_hint(*.0))]
+    #[error("unexpected character `{0}`")]
     UnexpectedChar(char),
-    /// A comma, with the commands it separates when the line is a list of
-    /// one command's selectors.
-    #[error("unexpected character `,`; {}", comma_hint(.0.as_deref()))]
-    Comma(Option<String>),
-    #[error(
-        "unterminated string; close it with `\"` on the same line (use \\n or a heredoc for multi-line text)"
-    )]
+    #[error("unterminated string")]
     UnterminatedString,
-    #[error(
-        "invalid escape `\\{0}`; write `\\\\{0}` for a backslash and {0} (strings support \\n \\t \\\" \\\\)"
-    )]
+    #[error("invalid escape `\\{0}`")]
     InvalidEscape(char),
-    #[error("unterminated regex; close it with `/` (write `\\/` for a literal slash)")]
+    #[error("unterminated regex")]
     UnterminatedRegex,
-    #[error("unknown regex flag `{0}`; flags are i and s")]
+    #[error("unknown regex flag `{0}`")]
     UnknownRegexFlag(char),
-    #[error("unterminated query; close it with `}}` on the same line")]
+    #[error("unterminated query")]
     UnterminatedQuery,
-    #[error("unterminated pattern; close it with as many backquotes as opened it")]
+    #[error("unterminated pattern")]
     UnterminatedPattern,
-    #[error("unterminated filter; close it with `]` on the same line")]
+    #[error("unterminated filter")]
     UnterminatedFilter,
     #[error("expected {expected} in the filter, found {found}")]
     InFilter {
         expected: &'static str,
         found: String,
     },
-    #[error(
-        "`.{0}` can't be a filter property; use .text, .len or a part, such as .name or .body.len"
-    )]
+    #[error("`.{0}` can't be a filter property")]
     NotAProperty(String),
-    #[error(
-        "{property} is a number; compare it with == != < > <= >= and a number, e.g. {property} > 80"
-    )]
+    #[error("{property} is a number")]
     CompareNumber { property: String },
-    #[error(
-        "{property} is text; compare it with == or != and a \"string\", or with ~= and a /regex/"
-    )]
+    #[error("{property} is text")]
     CompareText { property: String },
-    #[error("a part can't follow a filter; put it first: fn.body[...]")]
+    #[error("a part can't follow a filter")]
     PartAfterFilter,
-    #[error(
-        "unknown part `.{0}`; parts are .body .sig .params .name .doc .attrs .ret .type .value .whole .lines .refs .def"
-    )]
+    #[error("unknown part `.{0}`")]
     UnknownPart(String),
-    /// `selector` is the whole dotted name, quoted.
-    #[error("unknown part `.{part}`; quote a name that has dots: {selector}")]
-    DottedName { selector: String, part: String },
-    /// An unquoted name followed by `-`, as in `import:react-router`; the
-    /// selector is the whole name, quoted.
-    #[error("unexpected character `-`; quote the name: {0}")]
-    DashedName(String),
-    /// `selector` nests the dotted name's segments under a placeholder `KIND`;
-    /// `method` is the quoted Go method name, for `fn:Recv.Name`.
-    #[error(
-        "unknown part `.{part}`; to name a member, nest it: {selector}{}",
-        method.as_ref().map(|m| format!(" (a Go method: {m})")).unwrap_or_default()
-    )]
-    NestedName {
-        selector: String,
-        part: String,
-        method: Option<String>,
-    },
-    /// `selector` is the whole name up to the matching `}`, quoted.
-    #[error("unexpected character `{{`; quote a name that has braces: {selector}")]
-    BracedName { selector: String },
-    #[error("line numbers start at 1; use 1 for the first line")]
+    #[error("line numbers start at 1")]
     ZeroLine,
-    #[error("expected a line number or `$` after `-`, e.g. 12-20 or 12-$")]
+    #[error("expected a line number or `$` after `-`")]
     MissingRangeEnd,
-    #[error("expected a line count after `+`, e.g. show fn:parse +3")]
+    #[error("expected a line count after `+`")]
     MissingContext,
-    /// `show SEL +N..+M`; the fix is `show SEL +M`.
-    #[error("`+N` is one count of lines around each span, not a range; write {0}")]
-    ContextRange(String),
-    /// `show SEL -N`; the fix is `show SEL +N`.
-    #[error("context is written `+N`, not `-N`; write {0}")]
-    MinusContext(String),
-    #[error("line range {start}-{end} is reversed; write {end}-{start}")]
+    #[error("line range {start}-{end} is reversed")]
     ReversedLines { start: usize, end: usize },
-    /// `N,M`, sed's line range; the fix is the `N-M` range it means.
-    #[error("line ranges are written N-M, not sed's N,M; write {0}")]
-    SedRange(String),
-    #[error("line number is too large; use `$` for the last line")]
+    #[error("line number is too large")]
     LineOverflow,
-    #[error("expected a tag after `<<`, e.g. <<END")]
+    #[error("expected a tag after `<<`")]
     MissingHeredocTag,
-    #[error("unterminated heredoc <<{0} (started here); end it with a line holding only {0}")]
+    #[error("unterminated heredoc <<{0} (started here)")]
     UnterminatedHeredoc(String),
-    /// `error`, after a heredoc that ended at a line of its text holding only
-    /// its tag, so the script went on in what was meant as text.
-    #[error(
-        "{error}; the heredoc <<{tag} at line {opener} ended at line {end}, which holds only {tag}: pick a tag its text doesn't hold"
-    )]
-    EarlyHeredoc {
-        error: Box<ParseErrorKind>,
-        tag: String,
-        opener: usize,
-        end: usize,
-    },
     /// A bare word where a selector is expected, followed by `rest` of the
-    /// selector; `kind` is that of an item with that name, if known.
-    #[error("expected a selector, found `{word}`; {}", bare_name_hint(word, rest, *kind))]
-    BareName {
-        word: String,
-        rest: String,
-        kind: Option<&'static str>,
-    },
-    #[error("expected a name after `{0}:`, e.g. {0}:foo or {0}:*")]
+    /// selector.
+    #[error("expected a selector, found `{word}`")]
+    BareName { word: String, rest: String },
+    #[error("expected a name after `{0}:`")]
     MissingName(String),
-    #[error(
-        "`*` alone selects nothing; *:NAME is the item NAME of any kind, e.g. *:parse, and *:* is every item"
-    )]
+    #[error("`*` alone selects nothing")]
     BareStar,
-    #[error("unknown command `{0}`; commands are {list}", list = COMMANDS)]
+    #[error("unknown command `{0}`")]
     UnknownCommand(String),
-    #[error("`{0}:` is a part, not a kind; select the symbol and add .{0}, e.g. fn:NAME.{0}")]
+    #[error("`{0}:` is a part, not a kind")]
     PartAsKind(String),
-    #[error(
-        "`conflict:{0}` isn't a conflict's number; conflicts count from 1 in file order, as in conflict:1, and `conflict` is each of them"
-    )]
+    #[error("`conflict:{0}` isn't a conflict's number")]
     ConflictNumber(String),
-    #[error(
-        "`.lines:{0}` isn't a line's number; lines count from 1 within the span, as in .lines:1, and .lines:$ is the last"
-    )]
+    #[error("`.lines:{0}` isn't a line's number")]
     LineIndex(String),
     /// `.PART:N` for a part other than `.lines`.
-    #[error("`.{part}` takes no number; pick a line of it with .{part}.lines:{number}")]
-    PartNumber { part: String, number: String },
-    /// `hint` is empty, or `; ` and a fix.
-    #[error("expected {expected}, found {found}{hint}")]
+    #[error("`.{0}` takes no number")]
+    PartNumber(String),
+    /// Its fix, if any, depends on where it is.
+    #[error("expected {expected}, found {found}")]
     Expected {
         expected: &'static str,
         found: String,
-        hint: String,
     },
     /// `insert start` or `insert end` with text but no selector.
-    #[error(
-    "`insert {0}` needs a selector before the text, e.g. insert {0} fn:NAME TEXT; {fix}",
-    fix = whole_file_insert(.0)
-)]
+    #[error("`insert {0}` needs a selector before the text, e.g. insert {0} fn:NAME TEXT")]
     InsertNeedsSelector(&'static str),
-    #[error("selectors can't contain spaces; write e.g. `impl:Parser>fn:new`")]
+    #[error("selectors can't contain spaces")]
     SpaceInSelector,
-    #[error("`all` can't be used here; a `move` destination must be a single span")]
+    #[error("`all` can't be used here")]
     AllNotAllowed,
-    #[error("`sub` needs a regex before `with`, e.g. sub fn:parse /old/ with \"new\"")]
+    #[error("`sub` needs a regex before `with`")]
     MissingSubPattern,
-    /// `sub all /re/ with`, holding the regex as written.
-    #[error("`sub` already replaces every match; drop `all`: sub {0} with ...")]
-    SubAll(String),
-    /// `sub SEL /re/text/`, sed's form; the fix is the `sub` it means.
-    #[error("`sub` takes /re/ with TEXT, not sed's /re/text/; write {0}")]
-    SedSub(String),
-    /// `sub [SEL] "lit" with TEXT`; the fix is the `replace all` it means.
-    #[error("`sub` takes a regex, not a literal; write {0}")]
-    LiteralSub(String),
-    /// `all` after a target's selector; the fix puts it before.
-    #[error("`all` goes before the selector; write {0}")]
-    AllAfterSelector(String),
-    /// A regex, string or pattern glued to a selector; the fix nests it with `>`.
-    #[error("a search in a step goes after `>`; write {0}")]
-    GluedStep(String),
-    /// A `$` reference in `sub` TEXT to a group the regex doesn't have; `fix`
-    /// splits off the group it starts with, or lists the groups.
-    #[error("`{reference}` names group `{name}`, which the regex doesn't have; {fix}")]
-    UnknownGroup {
-        reference: String,
-        name: String,
-        fix: String,
-    },
+    /// A `$` reference in `sub` TEXT to a group the regex doesn't have.
+    #[error("`{reference}` names group `{name}`, which the regex doesn't have")]
+    UnknownGroup { reference: String, name: String },
     /// `${}` in `sub` TEXT, which the regex crate expands to nothing.
-    #[error("`${{}}` names no group; write `$$` for a literal `$`")]
+    #[error("`${{}}` names no group")]
     EmptyGroup,
-    #[error(
-        "invalid regex: {0}; escape literal characters such as ( [ . * with \\, or select a \"string\""
-    )]
+    #[error("invalid regex: {0}")]
     InvalidRegex(String),
-    /// `fix` names the levels, or the one meant.
-    #[error("unknown level `{word}`; {fix}")]
-    UnknownLevel { word: String, fix: String },
+    #[error("unknown level `{0}`")]
+    UnknownLevel(String),
     #[error("`|` needs a command on each side")]
     EmptyStage,
     /// A command or part that reads the files on disk, in a stage after the
     /// first (§2.3).
-    #[error(
-        "{0} reads the files on disk, which don't hold the edits before a `|`; run it before the first `|`, or in a separate ned call"
-    )]
+    #[error("{0} reads the files on disk, which don't hold the edits before a `|`")]
     ReadsDisk(&'static str),
+}
+
+impl ParseErrorKind {
+    /// Whether the script ends inside a heredoc or a pattern, so more lines
+    /// could complete it (the REPL's continuation, §1.4).
+    pub fn incomplete(&self) -> bool {
+        matches!(self, E::UnterminatedHeredoc(_) | E::UnterminatedPattern)
+    }
+}
+
+impl Hint for ParseErrorKind {
+    fn exit_code(&self) -> u8 {
+        2
+    }
+
+    fn fix(&self) -> Option<Fix> {
+        let fix = match self {
+            E::UnexpectedChar(c) => quote_hint(*c).to_string(),
+            E::UnterminatedString => "close it with `\"` on the same line (use \\n or a heredoc for multi-line text)".into(),
+            E::InvalidEscape(c) => format!("write `\\\\{c}` for a backslash and {c} (strings support \\n \\t \\\" \\\\)"),
+            E::UnterminatedRegex => "close it with `/` (write `\\/` for a literal slash)".into(),
+            E::UnknownRegexFlag(_) => "flags are i and s".into(),
+            E::UnterminatedQuery => "close it with `}` on the same line".into(),
+            E::UnterminatedPattern => "close it with as many backquotes as opened it".into(),
+            E::UnterminatedFilter => "close it with `]` on the same line".into(),
+            E::NotAProperty(_) => "use .text, .len or a part, such as .name or .body.len".into(),
+            E::CompareNumber { property } => format!("compare it with == != < > <= >= and a number, e.g. {property} > 80"),
+            E::CompareText { .. } => "compare it with == or != and a \"string\", or with ~= and a /regex/".into(),
+            E::PartAfterFilter => "put it first: fn.body[...]".into(),
+            E::UnknownPart(_) => "parts are .body .sig .params .name .doc .attrs .ret .type .value .whole .lines .refs .def".into(),
+            E::ZeroLine => "use 1 for the first line".into(),
+            E::MissingRangeEnd => "write one, e.g. 12-20 or 12-$".into(),
+            E::MissingContext => "write one, e.g. show fn:parse +3".into(),
+            E::ReversedLines { start, end } => format!("write {end}-{start}"),
+            E::LineOverflow => "use `$` for the last line".into(),
+            E::MissingHeredocTag => "write one, e.g. <<END".into(),
+            E::UnterminatedHeredoc(tag) => format!("end it with a line holding only {tag}"),
+            E::BareName { word, rest } => return Some(bare_name_fix(word, rest, None)),
+            E::MissingName(kind) => format!("write one, e.g. {kind}:foo or {kind}:*"),
+            E::BareStar => "*:NAME is the item NAME of any kind, e.g. *:parse, and *:* is every item".into(),
+            E::UnknownCommand(_) => format!("commands are {COMMANDS}"),
+            E::PartAsKind(part) => format!("select the symbol and add .{part}, e.g. fn:NAME.{part}"),
+            E::ConflictNumber(_) => "conflicts count from 1 in file order, as in conflict:1, and `conflict` is each of them".into(),
+            E::LineIndex(_) => "lines count from 1 within the span, as in .lines:1, and .lines:$ is the last".into(),
+            E::InsertNeedsSelector(position) => whole_file_insert(position).into(),
+            E::SpaceInSelector => "write e.g. `impl:Parser>fn:new`".into(),
+            E::MissingSubPattern => "write one, e.g. sub fn:parse /old/ with \"new\"".into(),
+            E::EmptyGroup => "write `$$` for a literal `$`".into(),
+            E::InvalidRegex(_) => "escape literal characters such as ( [ . * with \\, or select a \"string\"".into(),
+            E::UnknownLevel(_) => "levels are error warning info hint".into(),
+            E::ReadsDisk(_) => "run it before the first `|`, or in a separate ned call".into(),
+            E::InFilter { .. }
+            | E::Expected { .. }
+            | E::PartNumber(_)
+            | E::AllNotAllowed
+            | E::UnknownGroup { .. }
+            | E::EmptyStage => return None,
+        };
+        Some(Fix::new(verbatim(&fix)))
+    }
+
+    fn excerpt(&self) -> bool {
+        true
+    }
 }
 
 /// Every command, as error messages list them.
 pub const COMMANDS: &str =
     "show outline check replace insert delete sub move rename resolve file create allow";
 
-fn bare_name_hint(word: &str, rest: &str, kind: Option<&str>) -> String {
-    match kind {
+/// The fix for a bare word where a selector is expected, followed by `rest`
+/// of the selector; `kind` is that of an item with that name, if known.
+pub(crate) fn bare_name_fix(word: &str, rest: &str, kind: Option<&str>) -> Fix {
+    let fix = match kind {
         Some(kind) => format!("select the {kind} by name: {kind}:{word}{rest}"),
         // A lone word is more likely unquoted text than an item.
         None if rest.is_empty() => format!("quote literal text: \"{word}\""),
         None => {
             format!("quote literal text: \"{word}\", or select an item by name: *:{word}{rest}")
         }
-    }
+    };
+    Fix::new(verbatim(&fix))
 }
 
 fn quote_hint(c: char) -> &'static str {
@@ -228,17 +196,17 @@ fn quote_hint(c: char) -> &'static str {
     }
 }
 
-fn comma_hint(split: Option<&str>) -> String {
+/// The fix for a comma at byte `at` of `src`: the commands its line means, as
+/// `delete 3; delete 7`, when the command takes only selectors or levels.
+pub(super) fn comma_fix(src: &str, at: usize) -> String {
     let hint = "a command takes no comma lists; separate commands with `;` or a new line";
-    match split {
-        Some(split) => format!("{hint}: {split}"),
+    match comma_split(src, at) {
+        Some(split) => verbatim(&format!("{hint}: {split}")),
         None => hint.to_string(),
     }
 }
 
-/// For a comma at byte `at` of `src`, the commands its line means, as
-/// `delete 3; delete 7`, when the command takes only selectors or levels.
-pub fn comma_split(src: &str, at: usize) -> Option<String> {
+fn comma_split(src: &str, at: usize) -> Option<String> {
     let start = src[..at].rfind(['\n', ';']).map_or(0, |i| i + 1);
     let before = src[start..at].trim();
     let verb = before.split_whitespace().next()?;
@@ -261,32 +229,6 @@ fn whole_file_insert(position: &str) -> &'static str {
     match position {
         "start" => "insert before 1 TEXT adds to the top of the file",
         _ => "insert after $ TEXT appends to the file",
-    }
-}
-
-impl ParseError {
-    pub fn new(kind: ParseErrorKind, span: Range<usize>) -> Self {
-        ParseError { kind, span }
-    }
-
-    /// Renders the error as `error: script:LINE:COL: message`, followed by the
-    /// offending script line and a caret under the error's start.
-    pub fn render(&self, src: &str) -> String {
-        let (line, column) = location(src, self.span.start);
-        let header = format!("error: script:{line}:{column}: {}", self.kind);
-        match excerpt(src, self.span.start) {
-            Some(excerpt) => format!("{header}\n{excerpt}"),
-            None => header,
-        }
-    }
-
-    /// Whether the script ends inside a heredoc or a pattern, so more lines
-    /// could complete it (the REPL's continuation, §1.4).
-    pub fn incomplete(&self) -> bool {
-        matches!(
-            self.kind,
-            ParseErrorKind::UnterminatedHeredoc(_) | ParseErrorKind::UnterminatedPattern
-        )
     }
 }
 
@@ -320,18 +262,20 @@ pub fn location(src: &str, offset: usize) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::ops::Range;
 
-    fn err(kind: ParseErrorKind, span: Range<usize>) -> ParseError {
-        ParseError { kind, span }
+    use super::*;
+    use crate::hint::Frontend;
+
+    fn render(kind: ParseErrorKind, span: Range<usize>, src: &str) -> String {
+        kind.at(span).render(Frontend::Cli, Some(src))
     }
 
     #[test]
     fn renders_spec_example() {
         let src = "show\nreplace fn:parse.body with <<END\nfoo\n";
-        let e = err(ParseErrorKind::UnterminatedHeredoc("END".into()), 32..37);
         assert_eq!(
-            e.render(src),
+            render(E::UnterminatedHeredoc("END".into()), 32..37, src),
             format!(
                 "error: script:2:28: unterminated heredoc <<END (started here); \
                  end it with a line holding only END\n\
@@ -343,43 +287,90 @@ mod tests {
 
     #[test]
     fn caret_keeps_tabs_aligned() {
-        let e = err(ParseErrorKind::UnterminatedString, 6..10);
         assert_eq!(
-            e.render("\tshow \"abc"),
-            format!(
-                "error: script:1:7: {}\n1:\tshow \"abc\n  \t     ^",
-                ParseErrorKind::UnterminatedString
-            )
+            render(E::ZeroLine, 6..10, "\tshow \"abc"),
+            "error: script:1:7: line numbers start at 1; use 1 for the first line\n1:\tshow \"abc\n  \t     ^"
         );
     }
 
     #[test]
     fn column_counts_characters() {
-        let e = err(ParseErrorKind::UnexpectedChar('@'), 5..6);
         assert_eq!(
-            e.render("\"é\" @"),
-            format!("error: script:1:5: {}\n1:\"é\" @\n      ^", e.kind)
+            render(E::ZeroLine, 5..6, "\"é\" @"),
+            "error: script:1:5: line numbers start at 1; use 1 for the first line\n1:\"é\" @\n      ^"
         );
     }
 
     #[test]
     fn excerpt_strips_line_ending() {
-        let e = err(ParseErrorKind::ZeroLine, 7..8);
         assert_eq!(
-            e.render("show\r\nx 0\r\n"),
-            format!("error: script:2:2: {}\n2:x 0\n   ^", e.kind)
+            render(E::ZeroLine, 7..8, "show\r\nx 0\r\n"),
+            "error: script:2:2: line numbers start at 1; use 1 for the first line\n2:x 0\n   ^"
         );
     }
 
     #[test]
     fn error_past_last_line_has_no_excerpt() {
-        let e = err(ParseErrorKind::ZeroLine, 5..5);
-        assert_eq!(e.render("show\n"), format!("error: script:2:1: {}", e.kind));
+        assert_eq!(
+            render(E::ZeroLine, 5..5, "show\n"),
+            "error: script:2:1: line numbers start at 1; use 1 for the first line"
+        );
+    }
+
+    #[test]
+    fn an_error_without_a_fix_ends_with_its_problem() {
+        let found = E::Expected {
+            expected: "a selector",
+            found: "`;`".into(),
+        };
+        assert_eq!(
+            render(found, 5..6, "show ;"),
+            "error: script:1:6: expected a selector, found `;`\n1:show ;\n       ^"
+        );
+    }
+
+    #[test]
+    fn a_fix_quoting_braces_keeps_them() {
+        let braced = E::UnexpectedChar('{')
+            .at(0..1)
+            .with_fix("quote a name that has braces: import:\"a::{b}\"");
+        let unknown = E::UnknownGroup {
+            reference: "$x".into(),
+            name: "x".into(),
+        }
+        .at(0..1)
+        .with_fix("its groups are `${1}` `${y}`");
+        for frontend in [Frontend::Cli, Frontend::Mcp, Frontend::Repl] {
+            assert_eq!(
+                braced.render(frontend, None),
+                "error: unexpected character `{`; quote a name that has braces: import:\"a::{b}\""
+            );
+            assert_eq!(
+                unknown.render(frontend, None),
+                "error: `$x` names group `x`, which the regex doesn't have; its groups are `${1}` `${y}`"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bare_name_of_a_known_kind_selects_it() {
+        assert_eq!(
+            bare_name_fix("GitError", ".body", Some("enum")).text,
+            "select the enum by name: enum:GitError.body"
+        );
+        assert_eq!(
+            bare_name_fix("x", "", None).text,
+            "quote literal text: \"x\""
+        );
+        assert_eq!(
+            bare_name_fix("x", ">fn:y", None).text,
+            "quote literal text: \"x\", or select an item by name: *:x>fn:y"
+        );
     }
 
     #[test]
     fn a_script_ending_in_a_heredoc_or_pattern_is_incomplete() {
-        let incomplete = |src: &str| crate::script::parse(src).unwrap_err().incomplete();
+        let incomplete = |src: &str| crate::script::parse(src).unwrap_err().kind.incomplete();
         assert!(incomplete("replace 1 with <<END\nfn a() {}"));
         assert!(incomplete("insert after 1 <<'END'"));
         assert!(incomplete("show `foo(@x"));

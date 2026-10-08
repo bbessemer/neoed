@@ -3,7 +3,6 @@
 use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -13,9 +12,11 @@ use tree_sitter::{Node, QueryCursor, StreamingIterator, Tree};
 use crate::conflict::{Conflict, Side};
 use crate::edit::{Edit, EditError, EditSet};
 use crate::highlight;
+use crate::hint::{self, Fix, Hint, Note};
 use crate::lang::{self, Language};
 use crate::lsp::{self, Document, Locate, Located, Lsp, LspFailure, Renamed, Severity, render};
 use crate::outline;
+use crate::pattern::PatternError;
 use crate::script::Script;
 use crate::script::ast::{
     Command, CommandKind, Keep, LineNo, Part, Pattern, Position, Primary, Selector, Step, Target,
@@ -49,7 +50,7 @@ pub struct Run {
     /// The script's most permissive `allow` (§4.4).
     pub allow: Option<Severity>,
     /// Notes for stderr, e.g. from `check`.
-    pub notes: Vec<String>,
+    pub notes: Vec<Note>,
 }
 
 /// A modified file, with the number of spans edited.
@@ -93,22 +94,25 @@ pub fn run<'s, 'l: 's>(
     lsp: Option<&'s mut (dyn Lsp + 'l)>,
 ) -> Run {
     let mut executor = Executor::new(src, options, lsp.map(|lsp| -> &'s mut dyn Lsp { lsp }));
-    let result = executor.run(script, initial).map_err(|mut e| {
-        if let (Some(None), ExecErrorKind::NoLanguage { selector, .. })
-        | (Some(None), ExecErrorKind::NoCodeLanguage { selector, .. }) = (options.lang, &e.kind)
-        {
-            e.kind = ExecErrorKind::ParsingDisabled {
-                selector: selector.clone(),
-            };
-        }
-        e
-    });
+    let result = executor
+        .run(script, initial)
+        .map_err(|e| match (options.lang, &e.kind) {
+            (Some(None), ExecErrorKind::NoLanguage { selector, .. })
+            | (Some(None), ExecErrorKind::NoCodeLanguage { selector, .. }) => {
+                let selector = selector.clone();
+                ExecErrorKind::ParsingDisabled { selector }.at(e.span)
+            }
+            _ => e,
+        });
     if !executor.unknown.is_empty() {
         let extensions: Vec<_> = executor.unknown.into_iter().collect();
-        executor.notes.push(format!(
-            "read {} files as text; syntax selectors skip them",
-            extensions.join(", ")
-        ));
+        executor.notes.push(
+            format!(
+                "read {} files as text; syntax selectors skip them",
+                extensions.join(", ")
+            )
+            .into(),
+        );
     }
     Run {
         output: executor.output,
@@ -142,24 +146,25 @@ pub fn kinds_named(paths: &[String], options: &Options, name: &str) -> Vec<&'sta
 
 /// `err`, from opening the starting file set, with a fix when it names a
 /// missing file that `script` creates (§7).
-fn created(script: &Script, mut err: ExecError) -> ExecError {
-    if let ExecErrorKind::Io { path, message } = &mut err.kind
-        && message.starts_with("no such file")
+fn created(script: &Script, err: ExecError) -> ExecError {
+    if let ExecErrorKind::Io { path, message } = &err.kind
+        && message == "no such file"
         && script
             .commands
             .iter()
             .any(|c| matches!(&c.kind, CommandKind::Create { path: p, .. } if same_path(p, path)))
     {
-        message.push_str(&format!(
-            "; drop it from the files given: `create {path}` adds it to the file set"
-        ));
+        let path = hint::verbatim(path);
+        let fix =
+            format!("drop it from {{the FILE arguments}}: `create {path}` adds it to the file set");
+        return err.and_fix(fix);
     }
     err
 }
 
 /// The fix for a `script` run on no files whose selectors start with `file:`
 /// steps naming files, not globs: the `file` command adding them (§7).
-fn file_steps(script: &Script) -> String {
+fn file_steps(script: &Script) -> Option<Fix> {
     let mut paths: Vec<&str> = Vec::new();
     let steps = script
         .commands
@@ -174,13 +179,13 @@ fn file_steps(script: &Script) -> String {
             paths.push(path);
         }
     }
-    match paths.is_empty() {
-        true => String::new(),
-        false => format!(
-            "; add the files its `file:` steps name: file {}",
-            paths.join(" ")
-        ),
-    }
+    (!paths.is_empty()).then(|| {
+        format!(
+            "add the files its `file:` steps name: file {}",
+            hint::verbatim(&paths.join(" "))
+        )
+        .into()
+    })
 }
 
 struct Loaded {
@@ -226,7 +231,7 @@ struct Executor<'s> {
     /// The current file set, read as commands need it.
     set: Vec<Member>,
     output: String,
-    notes: Vec<String>,
+    notes: Vec<Note>,
     /// The unknown extensions of files read as text, for one note.
     unknown: BTreeSet<String>,
     /// The workspace's language servers, for `check`.
@@ -284,8 +289,10 @@ impl<'s> Executor<'s> {
                 self.commit()?;
             }
             if let Err(mut e) = self.command(index, command) {
-                if let ExecErrorKind::NoFiles { hint, .. } = &mut e.kind {
-                    *hint = file_steps(script);
+                if let (ExecErrorKind::NoFiles { .. }, Some(steps)) = (&e.kind, file_steps(script))
+                {
+                    let own = e.fix.take();
+                    e = e.with_fix(own.map(|fix| fix.and(steps)));
                 }
                 return Err(self.pipe_hint(index, command, e));
             }
@@ -345,8 +352,8 @@ impl<'s> Executor<'s> {
 
     /// Hints at a `|` when `error` is a selector that matches nothing in this
     /// stage's input but matches once the stage's earlier edits apply (§2.3).
-    fn pipe_hint(&mut self, index: usize, command: &Command, mut error: ExecError) -> ExecError {
-        let ExecErrorKind::NoMatch { hint, .. } = &mut error.kind else {
+    fn pipe_hint(&mut self, index: usize, command: &Command, error: ExecError) -> ExecError {
+        let ExecErrorKind::NoMatch { .. } = error.kind else {
             return error;
         };
         if self.files.iter().all(|l| l.edits.is_empty()) {
@@ -365,9 +372,10 @@ impl<'s> Executor<'s> {
         let unmatched =
             |e: &ExecError| e.span == error.span && matches!(e.kind, ExecErrorKind::NoMatch { .. });
         if !retry.as_ref().is_err_and(unmatched) {
-            *hint = "; it matches only after the edits before it, which a stage's selectors \
-                don't see: put a `|` before the command"
-                .into();
+            return error.with_fix(
+                "it matches only after the edits before it, which a stage's selectors \
+                don't see: put a `|` before the command",
+            );
         }
         error
     }
@@ -445,16 +453,14 @@ impl<'s> Executor<'s> {
                     && self.buffer(&path).is_none()
                     && let Err(err) = fs::metadata(&path)
                 {
-                    let message = match err.kind() {
+                    let (message, note) = match err.kind() {
                         std::io::ErrorKind::NotFound => {
-                            format!("no such file{}", relative_note(&path))
+                            ("no such file".to_string(), relative_note(&path))
                         }
-                        _ => err.to_string(),
+                        _ => (err.to_string(), None),
                     };
-                    return Err(ExecError::new(
-                        ExecErrorKind::Io { path, message },
-                        span.cloned(),
-                    ));
+                    let error = ExecErrorKind::Io { path, message }.at(span.cloned());
+                    return Err(error.with_fix(note));
                 }
                 set.push(Member {
                     path,
@@ -509,19 +515,14 @@ impl<'s> Executor<'s> {
             return Ok(i);
         }
         let io = |message: String| {
-            ExecError::new(
-                ExecErrorKind::Io {
-                    path: path.into(),
-                    message,
-                },
-                span.clone(),
-            )
+            let path = path.into();
+            ExecErrorKind::Io { path, message }.at(span.clone())
         };
         if let Some(text) = self.buffer(path).cloned() {
             return Ok(self.push_loaded(path, text));
         }
         let bytes = fs::read(path).map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => io(format!("no such file{}", relative_note(path))),
+            std::io::ErrorKind::NotFound => io("no such file".into()).with_fix(relative_note(path)),
             _ => io(e.to_string()),
         })?;
         let text = String::from_utf8(bytes).map_err(|_| io("not valid UTF-8".into()))?;
@@ -555,7 +556,7 @@ impl<'s> Executor<'s> {
 
     fn command(&mut self, index: usize, command: &Command) -> Result<(), ExecError> {
         let span = &command.span;
-        let error = |kind| ExecError::new(kind, Some(span.clone()));
+        let error = |kind| ExecError::new(kind).at(span.clone());
         match &command.kind {
             CommandKind::Create { path, text } => return self.create(path, text).map_err(error),
             CommandKind::Allow(level) => {
@@ -581,10 +582,7 @@ impl<'s> Executor<'s> {
                     | CommandKind::Check { .. } => "read",
                     _ => "edit",
                 };
-                return Err(error(ExecErrorKind::NoFiles {
-                    verb,
-                    hint: String::new(),
-                }));
+                return Err(error(ExecErrorKind::NoFiles { verb }));
             }
             _ => {}
         }
@@ -598,19 +596,22 @@ impl<'s> Executor<'s> {
             CommandKind::Replace { target, text } => {
                 let last = target.selector.steps.last().and_then(|s| s.parts.last());
                 let whole = last == Some(&Part::Whole);
+                let item = target.selector.steps.last().is_some_and(|s| {
+                    s.parts.is_empty() && matches!(s.primary, Primary::Syntax { .. })
+                });
                 let patterns = target
                     .selector
                     .steps
                     .iter()
                     .any(|s| !s.primary.patterns().is_empty());
-                for m in self.resolve(target, false)? {
+                for m in self.resolve_edit(target)? {
                     let f = &self.files[m.file].file;
                     let filled;
                     let text = match patterns {
                         true => {
-                            filled = substitute(f, &m.captures, text).map_err(|(kind, name)| {
+                            filled = substitute(f, &m.captures, text).map_err(|(err, name)| {
                                 let span = placeholder_span(self.src, &target.selector.span, &name);
-                                ExecError::new(kind, Some(span))
+                                err.at(span)
                             })?;
                             &filled
                         }
@@ -624,9 +625,13 @@ impl<'s> Executor<'s> {
                         continue;
                     }
                     let selector = &self.src[target.selector.span.clone()];
-                    if let Some(note) = off_by_one(f, &m.range, text, selector) {
-                        self.notes.push(note);
-                    }
+                    let notes = [
+                        off_by_one(f, &m.range, text, selector),
+                        nested_braces(f, &m.range, text, selector),
+                        item.then(|| kept_twice(f, &m.range, text, selector))
+                            .flatten(),
+                    ];
+                    self.notes.extend(notes.into_iter().flatten());
                     let after = f.text[m.range.end..].trim_start_matches([' ', '\t']);
                     let sig_end = after.chars().next().filter(|&c| {
                         last == Some(&Part::Sig)
@@ -645,7 +650,7 @@ impl<'s> Executor<'s> {
                 target,
                 text,
             } => {
-                for m in self.resolve(&implied_body(target, *position), false)? {
+                for m in self.resolve_edit(&implied_body(target, *position))? {
                     let f = &self.files[m.file].file;
                     let range = heredoc_lines(f, target, *position, text, m.range);
                     let text = separated(f, target, *position, &range, text);
@@ -654,41 +659,40 @@ impl<'s> Executor<'s> {
                 }
             }
             CommandKind::Delete(target) => {
-                for m in self.resolve(target, false)? {
+                for m in self.resolve_edit(target)? {
                     let f = &self.files[m.file].file;
                     if let Some(side) = empty_side(f, &m.range) {
                         let line = line_numbers(&f.buffer, &m.range);
                         self.notes
-                            .push(format!("{}:{line}: {side} is already empty", f.path));
+                            .push(format!("{}:{line}: {side} is already empty", f.path).into());
                         continue;
                     }
                     self.delete(index, span, m.file, m.range)?;
                 }
             }
             CommandKind::Resolve { target, keep } => {
-                let at = || Some(target.selector.span.clone());
+                let at = || target.selector.span.clone();
                 let sides: &[Side] = match keep {
                     Keep::Ours => &[Side::Ours],
                     Keep::Theirs => &[Side::Theirs],
                     Keep::Base => &[Side::Base],
                     Keep::Both => &[Side::Ours, Side::Theirs],
                 };
-                for m in self.resolve(target, false)? {
+                for m in self.resolve_edit(target)? {
                     let f = &self.files[m.file].file;
                     let Some((n, conflict)) =
                         f.conflict_at(&m.range).filter(|(_, c)| c.span() == m.range)
                     else {
                         let selector = self.src[target.selector.span.clone()].to_string();
-                        return Err(ExecError::new(
-                            ExecErrorKind::NotAConflict { selector },
-                            at(),
-                        ));
+                        return Err(
+                            ExecError::new(ExecErrorKind::NotAConflict { selector }).at(at())
+                        );
                     };
                     let mut new = String::new();
                     for &side in sides {
                         let lines = conflict
                             .side(side)
-                            .ok_or_else(|| ExecError::new(span::missing_base(n), at()))?;
+                            .ok_or_else(|| span::missing_base(n).at(at()))?;
                         new.push_str(&f.text[lines]);
                     }
                     let t = &f.text;
@@ -724,6 +728,50 @@ impl<'s> Executor<'s> {
         Ok(())
     }
 
+    /// `resolve` for an edit, whose ambiguity error says if a match overlaps
+    /// an earlier command's edit in the stage.
+    fn resolve_edit(&mut self, target: &Target) -> Result<Vec<Match>, ExecError> {
+        let err = match self.resolve(target, false) {
+            Err(err)
+                if matches!(
+                    err.kind,
+                    ExecErrorKind::Ambiguous { .. } | ExecErrorKind::AmbiguousLocated { .. }
+                ) =>
+            {
+                err
+            }
+            found => return found,
+        };
+        let every = Target {
+            all: true,
+            selector: target.selector.clone(),
+        };
+        let notes = self.notes.len();
+        let found = self.resolve(&every, false).unwrap_or_default();
+        self.notes.truncate(notes);
+        let overlapped = found.iter().find_map(|m| {
+            let l = &self.files[m.file];
+            let edit = l.edits.overlapping(&m.range)?;
+            let lines = line_numbers(&l.file.buffer, &edit.range);
+            Some((edit.command, format!("{}:{lines}", l.file.path)))
+        });
+        let Some((command, location)) = overlapped else {
+            return Err(err);
+        };
+        let (command, location) = (command + 1, hint::verbatim(&location));
+        let fix = Fix::new(format!(
+            "one of its matches overlaps command {command}'s edit at {location}, so merge the two edits, or put a `|` between them"
+        ));
+        let fix = match err.fix {
+            Some(own) => fix.and(own),
+            None => fix,
+        };
+        Err(ExecError {
+            fix: Some(fix),
+            ..err
+        })
+    }
+
     /// Resolves `target` in the current file set, returning matches whose
     /// `file` indexes `self.files`. A leading `file:` step reads only its
     /// file. `cut` is `select::resolve`'s.
@@ -738,7 +786,7 @@ impl<'s> Executor<'s> {
                 let paths: Vec<&str> = self.set.iter().map(|m| m.path.as_str()).collect();
                 scope
                     .check(&paths)
-                    .map_err(|kind| ExecError::new(kind, Some(target.selector.span.clone())))?;
+                    .map_err(|e| e.at(target.selector.span.clone()))?;
                 Some(scope)
             }
             _ => None,
@@ -829,8 +877,8 @@ impl<'s> Executor<'s> {
                                     captures: captures.clone(),
                                 }))
                             })
-                            .collect::<Result<Vec<_>, _>>()
-                            .map_err(|kind| ExecError::new(kind, Some(span.clone())))?
+                            .collect::<Result<Vec<_>, ExecError>>()
+                            .map_err(|e| e.at(span.clone()))?
                             .into_iter()
                             .flatten()
                             .collect();
@@ -838,7 +886,7 @@ impl<'s> Executor<'s> {
                             && short > 0
                         {
                             let note = select::skipped_spans(*n, short);
-                            self.notes.push(format!("{what}: {note}"));
+                            self.notes.push(format!("{what}: {note}").into());
                         }
                         picked
                     }
@@ -857,7 +905,7 @@ impl<'s> Executor<'s> {
                 let text = &self.files[m.file].file.text;
                 if plain
                     .passes(filters, text)
-                    .map_err(|kind| ExecError::new(kind, Some(span.clone())))?
+                    .map_err(|e| e.at(span.clone()))?
                 {
                     kept.push(m);
                 }
@@ -870,14 +918,13 @@ impl<'s> Executor<'s> {
             };
         }
         let matches = matches.unwrap_or_default();
-        let error = |kind| ExecError::new(kind, Some(span.clone()));
+        let error = |kind| ExecError::new(kind).at(span.clone());
         match matches.len() {
             0 => {
                 let paths: Vec<&str> = self.set.iter().map(|m| m.path.as_str()).collect();
                 Err(error(ExecErrorKind::NoMatch {
                     selector: what.into(),
                     files: select::file_list(&paths),
-                    hint: String::new(),
                     searched: Some(paths.len()),
                 }))
             }
@@ -910,13 +957,15 @@ impl<'s> Executor<'s> {
         what: &str,
         span: &Range<usize>,
     ) -> Result<Vec<Match>, ExecError> {
-        let error = |kind| ExecError::new(kind, Some(span.clone()));
+        let error = |kind| ExecError::new(kind).at(span.clone());
         let mut locations = Vec::new();
         for m in matches {
             let (document, position) = self.symbol(m, what, span)?;
             let Some(lsp) = self.lsp.as_deref_mut() else {
-                let message = "`.refs` and `.def` need the language-server daemon, which is Unix-only for now; select with a /regex/ or kind:NAME instead";
-                return Err(error(ExecErrorKind::Lsp(message.into())));
+                let kind = ExecErrorKind::NoDaemon {
+                    feature: "`.refs` and `.def` need",
+                };
+                return Err(error(kind).with_fix("select with a /regex/ or kind:NAME instead"));
             };
             match lsp.locate(kind, &document, position) {
                 Ok(Located::Locations(found)) => locations.extend(found),
@@ -925,7 +974,7 @@ impl<'s> Executor<'s> {
                         langs: document.lang.name().into(),
                     }));
                 }
-                Err(LspFailure(message)) => return Err(error(ExecErrorKind::Lsp(message))),
+                Err(failure) => return Err(error(ExecErrorKind::Lsp(failure))),
             }
         }
         let paths: Vec<&Path> = locations.iter().map(|l| l.path.as_path()).collect();
@@ -968,7 +1017,7 @@ impl<'s> Executor<'s> {
         what: &str,
         span: &Range<usize>,
     ) -> Result<(Document, lsp::Position), ExecError> {
-        let error = |kind| ExecError::new(kind, Some(span.clone()));
+        let error = |kind| ExecError::new(kind).at(span.clone());
         let file = &self.files[m.file].file;
         let Some(lang) = file.lang else {
             return Err(error(ExecErrorKind::NoLanguage {
@@ -1013,13 +1062,11 @@ impl<'s> Executor<'s> {
         if !outside.is_empty() {
             outside.dedup();
             let shown: Vec<&str> = outside.iter().map(String::as_str).collect();
-            return Err(ExecError::new(
-                ExecErrorKind::Outside {
-                    files: select::file_list(&shown),
-                    workspace: self.workspace.is_some(),
-                },
-                Some(span.clone()),
-            ));
+            return Err(ExecError::new(ExecErrorKind::Outside {
+                files: select::file_list(&shown),
+                workspace: self.workspace.is_some(),
+            })
+            .at(span.clone()));
         }
         let mut files = Vec::new();
         for (path, outside) in reached {
@@ -1045,10 +1092,9 @@ impl<'s> Executor<'s> {
         let loaded = &mut self.files[file];
         if loaded.outside {
             let path = loaded.file.path.clone();
-            return Err(ExecError::new(
-                ExecErrorKind::ReadOnly { path, workspace },
-                Some(span.clone()),
-            ));
+            return Err(
+                ExecError::new(ExecErrorKind::ReadOnly { path, workspace }).at(span.clone())
+            );
         }
         let edit = Edit {
             range,
@@ -1056,17 +1102,16 @@ impl<'s> Executor<'s> {
             command: index,
         };
         loaded.edits.push(edit).map_err(|err| match err {
-            EditError::Overlap { first, range, .. } => ExecError::new(
-                ExecErrorKind::Overlap {
-                    command: first + 1,
-                    location: format!(
-                        "{}:{}",
-                        loaded.file.path,
-                        line_numbers(&loaded.file.buffer, &range)
-                    ),
-                },
-                Some(span.clone()),
-            ),
+            EditError::Overlap { first, range, .. } => ExecError::new(ExecErrorKind::Overlap {
+                first: first + 1,
+                second: index + 1,
+                location: format!(
+                    "{}:{}",
+                    loaded.file.path,
+                    line_numbers(&loaded.file.buffer, &range)
+                ),
+            })
+            .at(span.clone()),
             EditError::Buffer(err) => unreachable!("edits come from resolved spans: {err}"),
         })
     }
@@ -1132,7 +1177,7 @@ impl<'s> Executor<'s> {
         let to = self
             .resolve(&implied_body(&dest, position), false)?
             .remove(0);
-        for from in self.resolve(target, false)? {
+        for from in self.resolve_edit(target)? {
             let source = &self.files[from.file].file;
             let removal = removal(source, from.range.clone());
             let (mut moved, separation) = moved_text(source, &from.range);
@@ -1168,10 +1213,9 @@ impl<'s> Executor<'s> {
                     source.path,
                     line_numbers(&source.buffer, &from.range)
                 );
-                return Err(ExecError::new(
-                    ExecErrorKind::MoveIntoSource { location },
-                    Some(span.clone()),
-                ));
+                return Err(
+                    ExecError::new(ExecErrorKind::MoveIntoSource { location }).at(span.clone())
+                );
             }
             self.delete(index, span, from.file, from.range.clone())?;
             self.push(index, span, to.file, range, new)?;
@@ -1244,9 +1288,10 @@ impl<'s> Executor<'s> {
                             format!("{}-{}", first + 1, last + 1)
                         };
                         let path = &self.files[m.file].file.path;
-                        self.notes.push(format!(
-                            "{path} has {count} {unit}, so showed {showed}; use `$` for the last line"
-                        ));
+                        self.notes.push(Note {
+                            text: format!("{path} has {count} {unit}, so showed {showed}"),
+                            fix: Some(Fix::new("use `$` for the last line")),
+                        });
                     }
                     let empty = empty_side(&self.files[m.file].file, &m.range);
                     let context = if empty.is_some() { 0 } else { context };
@@ -1324,7 +1369,7 @@ impl<'s> Executor<'s> {
     }
 
     fn outline(&mut self, span: &Range<usize>, target: Option<&Target>) -> Result<(), ExecError> {
-        let error = |kind| ExecError::new(kind, Some(span.clone()));
+        let error = |kind| ExecError::new(kind).at(span.clone());
         let spans: Vec<(usize, Option<Range<usize>>)> = match target {
             None => self
                 .read(|_| true)?
@@ -1374,7 +1419,7 @@ impl<'s> Executor<'s> {
         target: Option<&Target>,
         level: Option<Severity>,
     ) -> Result<(), ExecError> {
-        let error = |kind| ExecError::new(kind, Some(span.clone()));
+        let error = |kind| ExecError::new(kind).at(span.clone());
         let spans: Vec<(usize, Option<Range<usize>>)> = match target {
             None => self
                 .read(|_| true)?
@@ -1422,14 +1467,17 @@ impl<'s> Executor<'s> {
             })
             .collect::<Result<Vec<_>, ExecError>>()?;
         let Some(lsp) = self.lsp.as_deref_mut() else {
-            let message = "`check` needs the language-server daemon, which is Unix-only for now; run the project's build or linter";
-            return Err(error(ExecErrorKind::Lsp(message.into())));
+            let fix = "run the project's build or linter";
+            return Err(error(ExecErrorKind::NoDaemon {
+                feature: "`check` needs",
+            })
+            .with_fix(fix));
         };
         let mut diagnosis = lsp
             .diagnose(&documents, true)
-            .map_err(|LspFailure(message)| error(ExecErrorKind::Lsp(message)))?;
+            .map_err(|failure| error(ExecErrorKind::Lsp(failure)))?;
 
-        self.notes.append(&mut diagnosis.notes);
+        self.notes.extend(diagnosis.notes.drain(..).map(Note::from));
         if diagnosis.files.iter().all(Option::is_none) {
             let mut langs: Vec<&str> = documents.iter().map(|d| d.lang.name()).collect();
             langs.dedup();
@@ -1477,7 +1525,7 @@ impl<'s> Executor<'s> {
         selector: &Selector,
         name: &str,
     ) -> Result<(), ExecError> {
-        let error = |kind| ExecError::new(kind, Some(span.clone()));
+        let error = |kind| ExecError::new(kind).at(span.clone());
         let mut steps = selector.steps.clone();
         at_name(&mut steps);
         let target = Target {
@@ -1501,20 +1549,24 @@ impl<'s> Executor<'s> {
             file.text[line_start..m.range.start].chars().count() + 1
         );
         let Some(lsp) = self.lsp.as_deref_mut() else {
-            let message = r#"`rename` needs the language-server daemon, which is Unix-only for now; use sub /\bOLD\b/ with "NEW" over the files"#;
-            return Err(error(ExecErrorKind::Lsp(message.into())));
+            let fix = r#"use sub /\bOLD\b/ with "NEW" over the files"#;
+            return Err(error(ExecErrorKind::NoDaemon {
+                feature: "`rename` needs",
+            })
+            .with_fix(fix));
         };
         let files = match lsp.rename(&document, position, name) {
             Ok(Renamed::Edits(files)) => files,
-            Ok(Renamed::Refused(message)) => {
-                return Err(error(ExecErrorKind::RenameRefused { location, message }));
+            Ok(Renamed::Refused { why, fix }) => {
+                let kind = ExecErrorKind::RenameRefused { location, why };
+                return Err(error(kind).with_fix(fix));
             }
             Ok(Renamed::NoServer) => {
                 return Err(error(ExecErrorKind::NoServer {
                     langs: document.lang.name().into(),
                 }));
             }
-            Err(LspFailure(message)) => return Err(error(ExecErrorKind::Lsp(message))),
+            Err(failure) => return Err(error(ExecErrorKind::Lsp(failure))),
         };
         let paths: Vec<&Path> = files.iter().map(|f| f.path.as_path()).collect();
         let reached = self.reach(&paths, true, span)?;
@@ -1597,6 +1649,12 @@ impl<'s> Executor<'s> {
             let haystack = &self.files[scope.file].file.text[scope.range.clone()];
             let edits: Vec<(Range<usize>, String)> = regex
                 .captures_iter(haystack)
+                // The line after a span's last newline is outside it, though an empty
+                // match (`/^/`, `/$/`, `/.*/`) can start there.
+                .filter(|caps| {
+                    !(haystack.ends_with('\n')
+                        && caps.get(0).is_some_and(|m| m.start() == haystack.len()))
+                })
                 .map(|caps| {
                     let whole = caps.get(0).expect("group 0 always matches");
                     let mut expanded = String::new();
@@ -1640,17 +1698,13 @@ impl<'s> Executor<'s> {
                 span: span.clone(),
             };
             let hint = select::hint(&step, &set, &parents, &selector, 0);
-            return Err(ExecError::new(
-                ExecErrorKind::NoMatch {
-                    selector,
-                    files: select::file_list(
-                        &set.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
-                    ),
-                    hint,
-                    searched: None,
-                },
-                Some(span.clone()),
-            ));
+            return Err(ExecError::new(ExecErrorKind::NoMatch {
+                selector,
+                files: select::file_list(&set.iter().map(|f| f.path.as_str()).collect::<Vec<_>>()),
+                searched: None,
+            })
+            .at(span.clone())
+            .with_fix(hint));
         }
         Ok(())
     }
@@ -1676,22 +1730,15 @@ fn defining_item(f: &SourceFile, offset: usize) -> Option<Range<usize>> {
         .min_by_key(|r| r.len())
 }
 
-/// For a relative `path`, ` (paths are relative to DIR)`, naming the working
-/// directory; otherwise empty.
-fn relative_note(path: &str) -> String {
+/// For a relative `path`, the fix naming the working directory, where paths
+/// start.
+fn relative_note(path: &str) -> Option<String> {
     match std::env::current_dir() {
-        Ok(cwd) if std::path::Path::new(path).is_relative() => {
-            format!(" (paths are relative to {})", cwd.display())
-        }
-        _ => String::new(),
-    }
-}
-
-fn last_line_hint(line: &str) -> &'static str {
-    if line == "$" {
-        ""
-    } else {
-        "; use `$` for the last line"
+        Ok(cwd) if std::path::Path::new(path).is_relative() => Some(format!(
+            "paths are relative to {}",
+            hint::verbatim(&cwd.display().to_string())
+        )),
+        _ => None,
     }
 }
 
@@ -1735,11 +1782,8 @@ fn expand(
         }
     }
     if files.is_empty() {
-        let kind = ExecErrorKind::NoGlobMatch {
-            glob: path.into(),
-            note: relative_note(path),
-        };
-        return Err(ExecError::new(kind, span.cloned()));
+        let error = ExecErrorKind::NoGlobMatch { glob: path.into() }.at(span.cloned());
+        return Err(error.with_fix(relative_note(path)));
     }
     files.sort();
     Ok(files)
@@ -1840,7 +1884,9 @@ fn stage_input(l: &Loaded) -> Cow<'_, SourceFile> {
     }
 }
 
-const GUARD_MESSAGE: &str = "edit introduces a syntax error (use --force to apply anyway)";
+const GUARD_MESSAGE: &str = "edit introduces a syntax error";
+
+const GUARD_FIX: &str = "use {--force} to apply it anyway";
 
 /// Rejects `new`, the edited text of `l`, if it has more syntax errors than
 /// its stage input (§4.3).
@@ -1860,34 +1906,97 @@ fn guard(l: &Loaded, new: &str) -> Result<(), ExecError> {
     let suffix = common_len(f.text.bytes().rev(), new.bytes().rev())
         .min(f.text.len().min(new.len()) - prefix);
     let changed = prefix..new.len() - suffix;
-    let (node, message) = errors
-        .iter()
-        .find(|(n, _)| n.start_byte() <= changed.end && changed.start <= n.end_byte())
-        .unwrap_or(&errors[0]);
+    let mut spans: Vec<(Range<usize>, Option<usize>)> = l
+        .edits
+        .applied_spans()
+        .into_iter()
+        .map(|(range, edit)| {
+            // A replacement can start with the text it replaces.
+            let same = common_len(
+                l.file.text[edit.range.clone()].bytes(),
+                new[range.clone()].bytes(),
+            );
+            (range.start + same..range.end, Some(edit.command))
+        })
+        .collect();
+    let several = spans.windows(2).any(|w| w[0].1 != w[1].1);
+    if spans.is_empty() {
+        spans.push((changed.clone(), None));
+    }
+    let ((node, message, fix), from, command) = locate_error(&errors, &spans);
+    let command = command.filter(|_| several).map(|c| c + 1);
     // An `ERROR` node can start well before the edits, even span the file.
-    let start = node.start_byte().max(changed.start.min(node.end_byte()));
+    let start = node.start_byte().max(from.min(node.end_byte()));
     let (line, column) = location(new, start);
-    Err(ExecError::new(
-        ExecErrorKind::SyntaxError {
-            message: message.unwrap_or(GUARD_MESSAGE),
-            location: format!("{}:{line}:{column}", f.path),
-            hint: match l.sig_end {
-                Some(c) => {
-                    format!("; `.sig` stops before the `{c}`, so leave it out of TEXT")
-                }
-                None => String::new(),
-            } + &escape_hint(&new[changed]),
-            excerpt: excerpt(new, start)
-                .map(|e| format!("\n{e}"))
-                .unwrap_or_default(),
-        },
-        None,
-    ))
+    let message = message.unwrap_or(GUARD_MESSAGE);
+    let sig = l.sig_end.map(|c| {
+        let c = hint::verbatim(&c.to_string());
+        format!("`.sig` stops before the `{c}`, so leave it out of TEXT")
+    });
+    // The query's fix says how to put the error right; failing that, the
+    // others say what may have caused it, and `--force` overrides it.
+    let fixes = [
+        fix.map(Fix::from),
+        sig.map(Fix::from),
+        escape_hint(&new[changed]).map(Fix::from),
+        fix.is_none().then(|| GUARD_FIX.into()),
+    ];
+    let mut fix = fixes.into_iter().flatten().reduce(Fix::and);
+    if let Some(excerpt) = excerpt(new, start) {
+        fix = fix.map(|fix| fix.then(excerpt));
+    }
+    let location = format!("{}:{line}:{column}", f.path);
+    Err(ExecError::new(ExecErrorKind::SyntaxError {
+        message,
+        location,
+        command,
+    })
+    .with_fix(fix))
 }
 
-/// The guard's hint for `text`, edited text that holds an escape such as
-/// `\x27`, which a heredoc takes as written; empty if it holds none.
-fn escape_hint(text: &str) -> String {
+/// The error the guard reports from `errors`, where its edit's change
+/// starts, and the command that made it: the first error starting inside
+/// one of `spans`, the edits' changes, else the nearest after one (a dropped
+/// `}` surfaces later), else the first covering one, else the first.
+fn locate_error<'e, 't>(
+    errors: &'e [GuardError<'t>],
+    spans: &[(Range<usize>, Option<usize>)],
+) -> (&'e GuardError<'t>, usize, Option<usize>) {
+    let inside = errors.iter().find_map(|e| {
+        let start = e.0.start_byte();
+        let (r, command) = spans
+            .iter()
+            .find(|(r, _)| r.contains(&start) || r.end == start)?;
+        Some((e, r.start, *command))
+    });
+    let after = || {
+        errors
+            .iter()
+            .filter_map(|e| {
+                let start = e.0.start_byte();
+                let (r, command) = spans.iter().rev().find(|(r, _)| r.end <= start)?;
+                Some((start - r.end, (e, r.start, *command)))
+            })
+            .min_by_key(|(distance, _)| *distance)
+            .map(|(_, found)| found)
+    };
+    let covering = || {
+        errors.iter().find_map(|e| {
+            let (r, command) = spans
+                .iter()
+                .find(|(r, _)| e.0.start_byte() < r.start && r.start <= e.0.end_byte())?;
+            Some((e, r.start, *command))
+        })
+    };
+    inside
+        .or_else(after)
+        .or_else(covering)
+        .unwrap_or((&errors[0], spans[0].0.start, None))
+}
+
+/// The guard's fix for `text`, edited text that holds an escape such as
+/// `\x27`, which a heredoc takes as written.
+fn escape_hint(text: &str) -> Option<String> {
     text.match_indices("\\x")
         .find_map(|(i, _)| {
             let digits = text.get(i + 2..i + 4)?;
@@ -1895,25 +2004,23 @@ fn escape_hint(text: &str) -> String {
         })
         .map(|digits| {
             format!(
-                "; heredocs read no escapes, so `\\x{digits}` went in as written: pass a script that holds a ' on stdin (ned FILE <<'EOF') instead of escaping it into -e"
+                "heredocs read no escapes, so `\\x{digits}` went in as written: {{cli:pass a script that holds a ' on stdin (ned FILE <<'EOF') instead of escaping it into -e}}{{mcp:write the character itself}}{{repl:write the character itself}}"
             )
         })
-        .unwrap_or_default()
 }
+
+/// An error node, with the `message` and `fix` its query pattern sets.
+type GuardError<'t> = (Node<'t>, Option<&'static str>, Option<&'static str>);
 
 /// The `ERROR` and `MISSING` nodes of `tree`, a parse of `text`, and the
 /// `@error` captures of `lang`'s error query, in source order, each with the
-/// `message` its query pattern sets, if any.
-fn error_nodes<'t>(
-    lang: Language,
-    tree: &'t Tree,
-    text: &str,
-) -> Vec<(Node<'t>, Option<&'static str>)> {
+/// `message` and `fix` its query pattern sets, if any.
+fn error_nodes<'t>(lang: Language, tree: &'t Tree, text: &str) -> Vec<GuardError<'t>> {
     let mut out = Vec::new();
     let mut stack = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
         if node.is_error() || node.is_missing() {
-            out.push((node, None));
+            out.push((node, None, None));
         }
         if node.has_error() {
             stack.extend(node.children(&mut node.walk()));
@@ -1924,21 +2031,24 @@ fn error_nodes<'t>(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
     while let Some(m) = matches.next() {
-        let message = query
-            .property_settings(m.pattern_index)
-            .iter()
-            .find(|s| &*s.key == "message")
-            .and_then(|s| s.value.as_deref());
+        let property = |key: &str| {
+            query
+                .property_settings(m.pattern_index)
+                .iter()
+                .find(|s| &*s.key == key)
+                .and_then(|s| s.value.as_deref())
+        };
+        let (message, fix) = (property("message"), property("fix"));
         out.extend(
             m.captures()
                 .iter()
                 .filter(|c| names[c.index as usize] == "error")
-                .map(|c| (c.node, message)),
+                .map(|c| (c.node, message, fix)),
         );
     }
-    out.sort_by_key(|(n, _)| (n.start_byte(), n.end_byte()));
+    out.sort_by_key(|(n, ..)| (n.start_byte(), n.end_byte()));
     // A query can match one node with each of several siblings.
-    out.dedup_by_key(|(n, _)| n.id());
+    out.dedup_by_key(|(n, ..)| n.id());
     out
 }
 
@@ -1952,7 +2062,7 @@ fn substitute(
     f: &SourceFile,
     captures: &select::Captures,
     text: &Text,
-) -> Result<Text, (ExecErrorKind, String)> {
+) -> Result<Text, (ExecError, String)> {
     let capture = |name: &str| {
         let (_, range) = captures.iter().find(|(n, _)| n == name)?;
         Some((
@@ -1962,21 +2072,19 @@ fn substitute(
     };
     let value = Template::parse(&text.value).fill(capture).map_err(|name| {
         if name == "_" {
-            return (ExecErrorKind::WildcardInText, name);
+            return (ExecErrorKind::WildcardInText.into(), name);
         }
-        let names: Vec<String> = captures.iter().map(|(n, _)| format!("@{n}")).collect();
-        let literal = format!("write `@@{name}` for a literal `@`");
+        let names: Vec<String> = captures
+            .iter()
+            .map(|(n, _)| format!("@{}", hint::verbatim(n)))
+            .collect();
+        let literal = format!("write `@@{}` for a literal `@`", hint::verbatim(&name));
         let fix = match names.is_empty() {
             true => literal,
             false => format!("use {}, or {literal}", names.join(", ")),
         };
-        (
-            ExecErrorKind::UnknownCapture {
-                name: name.clone(),
-                fix,
-            },
-            name,
-        )
+        let kind = ExecErrorKind::UnknownCapture { name: name.clone() };
+        (ExecError::new(kind).with_fix(fix), name)
     })?;
     Ok(Text {
         value,
@@ -2175,7 +2283,7 @@ fn only_leading(f: &SourceFile, text: &str) -> bool {
 /// A note when replacing `range` with `new` looks off by one (§4.2): `new`
 /// repeats the line just outside a whole-line span, or the rest of a partial
 /// span's line, which `selector.lines` would have replaced.
-fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) -> Option<String> {
+fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) -> Option<Note> {
     let t = &f.text;
     let counts = |s: &str| s.chars().any(char::is_alphanumeric);
     // `TEXT` may re-wrap what it repeats, so whitespace doesn't count either.
@@ -2201,10 +2309,13 @@ fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) 
             && counts(line)
             && lines.first() != Some(&line)
         {
-            return Some(format!(
-                "{at}: the new text starts with a copy of line {n} (`{line}`), just above \
-                 the replaced lines; the range may be off by one"
-            ));
+            return Some(
+                format!(
+                    "{at}: the new text starts with a copy of line {n} (`{line}`), just above \
+                     the replaced lines; the range may be off by one"
+                )
+                .into(),
+            );
         }
         if let Some((n, line)) = below
             && full.end < t.len()
@@ -2212,10 +2323,13 @@ fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) 
             && counts(line)
             && lines.last() != Some(&line)
         {
-            return Some(format!(
-                "{at}: the new text ends with a copy of line {n} (`{line}`), just below \
-                 the replaced lines; the range may be off by one"
-            ));
+            return Some(
+                format!(
+                    "{at}: the new text ends with a copy of line {n} (`{line}`), just below \
+                     the replaced lines; the range may be off by one"
+                )
+                .into(),
+            );
         }
         return None;
     }
@@ -2226,23 +2340,116 @@ fn off_by_one(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) 
         t[range.end..line_end].trim(),
     );
     // Across lines, `.lines` would select each line.
-    let fix = match t[range.clone()].trim_end_matches('\n').contains('\n') {
-        true => String::new(),
-        false => format!("; to replace whole lines, select {selector}.lines"),
+    let fix = (!t[range.clone()].trim_end_matches('\n').contains('\n')).then(|| {
+        Fix::new(format!(
+            "to replace whole lines, select {}.lines",
+            hint::verbatim(selector)
+        ))
+    });
+    let text = if counts(after) && squash(value).ends_with(&squash(after)) {
+        format!(
+            "{at}: the new text ends with `{after}`, which already follows the replaced text on its line"
+        )
+    } else if counts(before) && squash(value).starts_with(&squash(before)) {
+        format!(
+            "{at}: the new text starts with `{before}`, which already precedes the replaced text on its line"
+        )
+    } else {
+        return None;
     };
-    if counts(after) && squash(value).ends_with(&squash(after)) {
-        return Some(format!(
-            "{at}: the new text ends with `{after}`, which already follows the replaced \
-             text on its line{fix}"
-        ));
+    Some(Note { text, fix })
+}
+
+/// A note when replacing a delimited `.body`, `range`, with `new` would nest a
+/// second pair of its delimiters (§4.2).
+fn nested_braces(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) -> Option<Note> {
+    let item = body_of(f, range).filter(|i| !i.undelimited)?;
+    let delimited = item.body.clone()?;
+    let t = &f.text;
+    let (open, close) = (
+        t[delimited.start..].chars().next()?,
+        t[..delimited.end].chars().next_back()?,
+    );
+    let start = new.value.len() - new.value.trim_start().len();
+    let end = new.value.trim_end().len();
+    // The delimiter that starts the text must be a token, not part of a string
+    // or comment, whose pair closes at the end, not before a second pair.
+    let tree = f.lang?.parse(&new.value);
+    let first = tree.root_node().descendant_for_byte_range(start, start)?;
+    let parent = first.parent()?;
+    let last = parent.child(parent.child_count().checked_sub(1)?)?;
+    let token = |n: tree_sitter::Node, c: char| n.child_count() == 0 && n.kind() == c.to_string();
+    if !token(first, open) || !token(last, close) || last.end_byte() != end {
+        return None;
     }
-    if counts(before) && squash(value).starts_with(&squash(before)) {
-        return Some(format!(
-            "{at}: the new text starts with `{before}`, which already precedes the \
-             replaced text on its line{fix}"
-        ));
+    let line = f.buffer.byte_to_line(range.start).map_or(0, |l| l + 1);
+    let text = format!(
+        "{}:{line}: the new text starts with `{open}` and ends with the matching `{close}`, which \
+         {selector} leaves out, so they would nest",
+        f.path
+    );
+    let fix = match selector.strip_suffix(".body") {
+        Some(item) => format!(
+            "drop them from the new text, or replace {}",
+            hint::verbatim(item)
+        ),
+        None => "drop them from the new text".to_string(),
+    };
+    Some(Note {
+        text,
+        fix: Some(Fix::new(fix)),
+    })
+}
+
+/// A note when replacing the item at `range` with `new` keeps the item's
+/// leading docs and attributes although an item of `new` has its own (§4.2).
+fn kept_twice(f: &SourceFile, range: &Range<usize>, new: &Text, selector: &str) -> Option<Note> {
+    let kept = range.start..without_leading(f, range.clone(), new).start;
+    if kept.is_empty() {
+        return None;
     }
-    None
+    let lang = f.lang?;
+    let replaced = f.items()?.iter().find(|i| i.range == *range)?;
+    let value = &new.value;
+    let mut end = 0;
+    // Items nested in another keep their own.
+    let outer: Vec<_> = syntax::items(lang.selectors(), &lang.parse(value), value)
+        .into_iter()
+        .filter(|i| {
+            let outer = i.range.start >= end;
+            end = end.max(i.range.end);
+            outer
+        })
+        .collect();
+    let same = |i: &syntax::Item| i.kind == replaced.kind && i.name == replaced.name;
+    // A documented item beside the replaced one, in text that keeps it, has
+    // docs of its own.
+    let renamed = !outer.iter().any(same);
+    let own = outer
+        .iter()
+        .find(|i| i.range.start < i.node.start && (renamed || same(i)))?
+        .range
+        .start;
+    let line_of = |offset: usize| f.buffer.byte_to_line(offset).map_or(0, |l| l + 1);
+    let lines = match (line_of(kept.start), line_of(kept.end - 1)) {
+        (a, b) if a == b => format!("line {a}"),
+        (a, b) => format!("lines {a}-{b}"),
+    };
+    let quote = value[own..].lines().next().unwrap_or_default().trim();
+    let text = format!(
+        "{}:{}: the new text has doc comments or attributes after its start (`{quote}`), and \
+         the replaced item keeps its own ({lines}) above it",
+        f.path,
+        line_of(range.start)
+    );
+    let fix = format!(
+        "to replace them too, select {}.whole",
+        hint::verbatim(selector)
+    );
+    Some(Note {
+        text,
+        fix: Some(Fix::new(fix)),
+    })
 }
 
 /// `new`, with a `,` appended if the item at `range` ends with one and `new`
@@ -2811,143 +3018,107 @@ fn verbatim(new: &Text, indent: &str, unit: &str) -> String {
 }
 
 /// An error that rejects a script, at `span` of the script when it has one.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{kind}")]
-pub struct ExecError {
-    pub kind: ExecErrorKind,
-    pub span: Option<Range<usize>>,
-}
+pub type ExecError = hint::Error<ExecErrorKind>;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExecErrorKind {
-    /// `hint` is empty, or `; did you mean SEL (LINES)?`. `searched` is the
-    /// number of files searched when only a search's last step (a regex,
-    /// literal, heredoc or `.refs`) matched nothing.
-    #[error("{selector} matches nothing in {files}{hint}")]
+    /// `searched` is the number of files searched when only a search's last
+    /// step (a regex, literal, heredoc or `.refs`) matched nothing.
+    #[error("{selector} matches nothing in {files}")]
     NoMatch {
         selector: String,
         files: String,
-        hint: String,
         searched: Option<usize>,
     },
-    #[error("{selector} needs a language, but {files} has none; use --lang")]
+    #[error("{selector} needs a language, but {files} has none")]
     NoLanguage { selector: String, files: String },
-    /// `has` lists the parts the item has, e.g. `.sig .name .lines`.
-    #[error("{item} has no .{part}; it has {has}")]
-    MissingPart {
-        item: String,
-        part: String,
-        has: String,
-    },
-    #[error(".{part} needs a syntax item, e.g. fn:NAME.{part}")]
+    #[error("{item} has no .{part}")]
+    MissingPart { item: String, part: String },
+    #[error(".{part} needs a syntax item")]
     PartNeedsItem { part: String },
-    #[error(".{part} needs a conflict, e.g. conflict:1.{part}")]
+    #[error(".{part} applies to the whole range, which isn't a syntax item")]
+    PartOnRange { part: String, end: Option<String> },
+    #[error(".{part} needs a conflict")]
     PartNeedsConflict { part: String },
-    #[error(
-        "resolve needs a whole conflict, but {selector} isn't one; select one with conflict:N, or use replace"
-    )]
+    #[error("resolve needs a whole conflict, but {selector} isn't one")]
     NotAConflict { selector: String },
     #[error("invalid {lang} query: {message}")]
     InvalidQuery { lang: String, message: String },
-    #[error("{selector} {message}")]
-    InvalidPattern { selector: String, message: String },
-    #[error("`@{name}` is captured by two pattern steps; rename one of them")]
-    DuplicateCapture { name: String },
-    #[error("`@{name}` is nothing the target captured; {fix}")]
-    UnknownCapture { name: String, fix: String },
-    #[error("`@_` captures nothing, so TEXT can't use it; write `@@_` for a literal `@`")]
-    WildcardInText,
-    #[error(
-        "{selector} needs a programming language, but {files} has none; use a regex or literal, or --lang"
-    )]
-    NoCodeLanguage { selector: String, files: String },
-    #[error(
-        "{selector} needs a language, but parsing was disabled with --lang text; drop it, or use a regex or literal"
-    )]
-    ParsingDisabled { selector: String },
-    #[error("{lang} has no `{kind}` items; use one of: {kinds}")]
-    UnknownKind {
-        kind: String,
-        lang: String,
-        kinds: String,
-    },
-    #[error(
-        "{selector} matches {} items; {}",
-        .candidates.total,
-        .candidates
-    )]
-    Ambiguous {
+    #[error("{selector} {error}")]
+    InvalidPattern {
         selector: String,
-        candidates: Candidates,
+        error: PatternError,
     },
-    #[error("line {line} is past the end of {files}{hint}", hint = last_line_hint(line))]
+    #[error("`@{name}` is captured by two pattern steps")]
+    DuplicateCapture { name: String },
+    #[error("`@{name}` is nothing the target captured")]
+    UnknownCapture { name: String },
+    #[error("`@_` captures nothing, so TEXT can't use it")]
+    WildcardInText,
+    #[error("{selector} needs a programming language, but {files} has none")]
+    NoCodeLanguage { selector: String, files: String },
+    #[error("{selector} needs a language, but parsing is disabled")]
+    ParsingDisabled { selector: String },
+    #[error("{lang} has no `{kind}` items")]
+    UnknownKind { kind: String, lang: String },
+    #[error("{selector} matches {total} items")]
+    Ambiguous { selector: String, total: usize },
+    #[error("line {line} is past the end of {files}")]
     LineOutOfRange { line: String, files: String },
-    /// `add` is the fix: the `file` command that adds it, when short.
-    #[error("file:{path} is not in the file set: {files}; {add}")]
-    NotInFileSet {
-        path: String,
-        files: String,
-        add: String,
+    #[error("file:{path} is not in the file set: {files}")]
+    NotInFileSet { path: String, files: String },
+    #[error("file:{glob} matches no file in the file set: {files}")]
+    NoFileMatch { glob: String, files: String },
+    #[error("command {second}'s edit overlaps command {first}'s at {location}")]
+    Overlap {
+        first: usize,
+        second: usize,
+        location: String,
     },
-    /// `add` is the fix: the `file` command that adds the glob's files, if any exist.
-    #[error("file:{glob} matches no file in the file set: {files}; {add}")]
-    NoFileMatch {
-        glob: String,
-        files: String,
-        add: String,
-    },
-    #[error(
-        "edit overlaps command {command} at {location}; merge the two edits, or put a `|` between them"
-    )]
-    Overlap { command: usize, location: String },
-    /// `verb` is `read` or `edit`; `hint` is empty, or `; ` and a fix.
-    #[error("no files to {verb}; pass FILE arguments or use `file PATH`{hint}")]
-    NoFiles { verb: &'static str, hint: String },
+    /// `verb` is `read` or `edit`.
+    #[error("no files to {verb}")]
+    NoFiles { verb: &'static str },
     #[error("cannot read {path}: {message}")]
     Io { path: String, message: String },
-    #[error(
-        "move destination is inside the moved span at {location}; choose a destination outside it"
-    )]
+    #[error("move destination is inside the moved span at {location}")]
     MoveIntoSource { location: String },
-    #[error("{path} already exists; edit it with `file {path}`")]
+    #[error("{path} already exists")]
     FileExists { path: String },
-    /// `note` is empty, or where relative paths start.
-    #[error("glob `{glob}` matched nothing{note}")]
-    NoGlobMatch { glob: String, note: String },
+    #[error("glob `{glob}` matched nothing")]
+    NoGlobMatch { glob: String },
     /// `message` is the generic one, or what the language's error query says
-    /// is wrong, with its fix; `location` is `PATH:LINE:COL`; `hint` is empty
-    /// or a `; ` and a fix; `excerpt` is empty, or a newline and the offending
-    /// line with a caret.
-    #[error("{location}: {message}{hint}{excerpt}")]
+    /// is wrong; `location` is `PATH:LINE:COL`; `command`, the command whose
+    /// edit it's in or follows, when several commands edited the file.
+    #[error("{location}: {message}{}", command.map_or(String::new(), |c| format!(" (command {c})")))]
     SyntaxError {
         message: &'static str,
         location: String,
-        hint: String,
-        excerpt: String,
+        command: Option<usize>,
     },
-    /// The message ends with its fix.
+    /// Its fix is the failure's.
     #[error("{0}")]
-    Lsp(String),
-    #[error("no language server for {langs}; set one with `[lsp] {first} = [\"PROGRAM\", ...]` in .ned.toml", first = langs.split(", ").next().unwrap_or_default())]
+    Lsp(LspFailure),
+    /// `feature` is what needs it, with its verb: "`check` needs".
+    #[error("{feature} the language-server daemon, which is Unix-only for now")]
+    NoDaemon { feature: &'static str },
+    #[error("no language server for {langs}")]
     NoServer { langs: String },
-    /// `message` ends with a fix.
-    #[error("cannot rename at {location}: {message}")]
-    RenameRefused { location: String, message: String },
+    #[error("cannot rename at {location}: {why}")]
+    RenameRefused { location: String, why: String },
     /// `rename`'s; `workspace`: under `-w`, where the boundary is the workspace.
     #[error(
-        "rename reaches files outside the {}: {files}; {}",
-        if *workspace { "workspace" } else { "file set" },
-        if *workspace { "these are ignored or outside the root; use a regex there instead" } else { "add them to the file set, or use -w" }
+        "rename reaches files outside the {}: {files}",
+        if *workspace { "workspace" } else { "file set" }
     )]
     Outside { files: String, workspace: bool },
     /// `workspace`: under `-w`, where the boundary is the workspace.
     #[error(
         "cannot edit {path}: it is {}",
-        if *workspace { "ignored or outside the workspace root; name it in a `file` command" } else { "outside the file set; add it to the file set, or use -w" }
+        if *workspace { "ignored or outside the workspace root" } else { "outside the file set" }
     )]
     ReadOnly { path: String, workspace: bool },
     /// `locations` lists where the matches are.
-    #[error("{selector} matches {total} spans, at {locations}; add `all` to take every one")]
+    #[error("{selector} matches {total} spans, at {locations}")]
     AmbiguousLocated {
         selector: String,
         total: usize,
@@ -2955,47 +3126,62 @@ pub enum ExecErrorKind {
     },
 }
 
-/// Selectors that each pick one of an ambiguous selector's matches, with the
-/// location of that match; `total` counts all matches, listed or not, and
-/// `shared` those that no selector picks alone, since they share a line.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Candidates {
-    pub listed: Vec<(String, String)>,
-    pub total: usize,
-    pub shared: usize,
-}
-
-impl fmt::Display for Candidates {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.listed.is_empty() {
-            return f.write_str(
-                "add `all`, or select longer text; matches on the same line can't be picked by scope",
-            );
-        }
-        f.write_str("add `all` or use one of:")?;
-        let width = self.listed.iter().map(|(s, _)| s.len()).max();
-        for (selector, loc) in &self.listed {
-            write!(f, "\n  {selector:<w$}   {loc}", w = width.unwrap_or(0))?;
-        }
-        let more = self.total - self.shared - self.listed.len();
-        if more > 0 {
-            write!(f, "\n  … and {more} more")?;
-        }
-        if self.shared > 0 {
-            let shared = self.shared;
-            write!(
-                f,
-                "\n  {shared} more share a line with another match; select longer text to pick one"
-            )?;
-        }
-        Ok(())
+impl Hint for ExecErrorKind {
+    fn fix(&self) -> Option<Fix> {
+        use ExecErrorKind as E;
+        let fix = match self {
+            E::Lsp(failure) => return failure.fix(),
+            E::InvalidPattern { error, .. } => return error.fix(),
+            E::NoLanguage { .. } => "use {--lang}".into(),
+            E::PartNeedsItem { part } => format!("select one, e.g. fn:NAME.{part}"),
+            E::PartOnRange { part, end } => match end {
+                Some(end) => format!(
+                    "to take the end's .{part}, select the end alone: {}",
+                    hint::verbatim(end)
+                ),
+                None => format!("select one, e.g. fn:NAME.{part}"),
+            },
+            E::PartNeedsConflict { part } => format!("select one, e.g. conflict:1.{part}"),
+            E::NotAConflict { .. } => "select one with conflict:N, or use replace".into(),
+            E::DuplicateCapture { .. } => "rename one of them".into(),
+            E::WildcardInText => "write `@@_` for a literal `@`".into(),
+            E::NoCodeLanguage { .. } => "use a regex or literal, or {--lang}".into(),
+            E::ParsingDisabled { .. } => "drop {cli:--lang text}{mcp:`--lang text` from `ned mcp`}{repl:`--lang text` from `ned repl`}, or use a regex or literal".into(),
+            E::Ambiguous { .. } => "add `all`, or select longer text; matches on the same line can't be picked by scope".into(),
+            E::LineOutOfRange { line, .. } if line != "$" => "use `$` for the last line".into(),
+            E::Overlap { .. } => "merge the two edits, or put a `|` between them".into(),
+            E::NoFiles { .. } => "pass {the FILE arguments} or use `file PATH`".into(),
+            E::MoveIntoSource { .. } => "choose a destination outside it".into(),
+            E::FileExists { path } => format!("edit it with `file {}`", hint::verbatim(path)),
+            E::NoServer { langs } => {
+                let first = langs.split(", ").next().unwrap_or_default();
+                format!("set one with `[lsp] {first} = [\"PROGRAM\", ...]` in .ned.toml")
+            }
+            E::Outside { workspace: true, .. } => "these are ignored or outside the root; use a regex there instead".into(),
+            E::Outside { workspace: false, .. } => "add them to the file set, or use {-w}".into(),
+            E::ReadOnly { workspace: true, .. } => "name it in a `file` command".into(),
+            E::ReadOnly { workspace: false, .. } => "add it to the file set, or use {-w}".into(),
+            E::AmbiguousLocated { .. } => "add `all` to take every one".into(),
+            E::NoMatch { .. }
+            | E::MissingPart { .. }
+            | E::UnknownKind { .. }
+            | E::LineOutOfRange { .. }
+            | E::InvalidQuery { .. }
+            | E::UnknownCapture { .. }
+            | E::NotInFileSet { .. }
+            | E::NoFileMatch { .. }
+            | E::Io { .. }
+            | E::NoGlobMatch { .. }
+            | E::SyntaxError { .. }
+            | E::NoDaemon { .. }
+            | E::RenameRefused { .. } => return None,
+        };
+        Some(Fix::new(fix))
     }
-}
-
-impl ExecErrorKind {
     /// The exit code for an error that rejected a script (spec §7).
-    pub fn exit_code(&self) -> u8 {
+    fn exit_code(&self) -> u8 {
         match self {
+            ExecErrorKind::InvalidPattern { error, .. } => error.exit_code(),
             ExecErrorKind::NoMatch { .. }
             | ExecErrorKind::Ambiguous { .. }
             | ExecErrorKind::LineOutOfRange { .. }
@@ -3009,6 +3195,7 @@ impl ExecErrorKind {
             | ExecErrorKind::UnknownKind { .. }
             | ExecErrorKind::MissingPart { .. }
             | ExecErrorKind::PartNeedsItem { .. }
+            | ExecErrorKind::PartOnRange { .. }
             | ExecErrorKind::PartNeedsConflict { .. }
             | ExecErrorKind::NotAConflict { .. }
             | ExecErrorKind::MoveIntoSource { .. }
@@ -3019,32 +3206,14 @@ impl ExecErrorKind {
             | ExecErrorKind::AmbiguousLocated { .. } => 1,
             ExecErrorKind::NoFiles { .. }
             | ExecErrorKind::InvalidQuery { .. }
-            | ExecErrorKind::InvalidPattern { .. }
             | ExecErrorKind::DuplicateCapture { .. }
             | ExecErrorKind::UnknownCapture { .. }
             | ExecErrorKind::WildcardInText
             | ExecErrorKind::NoServer { .. } => 2,
             ExecErrorKind::Io { .. }
             | ExecErrorKind::NoGlobMatch { .. }
-            | ExecErrorKind::Lsp(_) => 3,
-        }
-    }
-}
-
-impl ExecError {
-    pub fn new(kind: ExecErrorKind, span: Option<Range<usize>>) -> Self {
-        ExecError { kind, span }
-    }
-
-    /// Renders the error as `error: script:LINE:COL: message`, or
-    /// `error: message` when it has no script position.
-    pub fn render(&self, src: &str) -> String {
-        match &self.span {
-            Some(span) => {
-                let (line, column) = location(src, span.start);
-                format!("error: script:{line}:{column}: {}", self.kind)
-            }
-            None => format!("error: {}", self.kind),
+            | ExecErrorKind::Lsp(_)
+            | ExecErrorKind::NoDaemon { .. } => 3,
         }
     }
 }
@@ -3055,6 +3224,7 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::hint::Frontend;
     use crate::lsp::{
         Diagnosis, Diagnostic, Document, FileEdits, Formatting, Locate, Located, Location,
         LspFailure, Position, Renamed, TextEdit,
@@ -3145,10 +3315,19 @@ mod tests {
                         ..c
                     })
                     .collect()),
-                Err(err) => Err(strip(&err.render(&src))),
+                Err(err) => Err(strip(&err.render(Frontend::Cli, Some(&src)))),
             },
-            notes: run.notes.iter().map(|n| strip(n)).collect(),
+            notes: run.notes.iter().map(|n| strip(&noted(n))).collect(),
         }
+    }
+
+    /// A note as the CLI prints it, without its `note: `.
+    fn noted(note: &Note) -> String {
+        let rendered = note.render(Frontend::Cli);
+        rendered
+            .strip_prefix("note: ")
+            .unwrap_or(&rendered)
+            .to_string()
     }
 
     fn exec(text: &str, script: &str) -> Outcome {
@@ -3524,6 +3703,32 @@ mod tests {
         assert_eq!(changes[0].old, TEXT);
         assert_eq!(changes[0].new, TEXT.replace("= 1;", "= 10;"));
         assert_eq!(changes[0].edits, 1);
+    }
+
+    #[test]
+    fn insert_shifts_a_docstring_with_the_code() {
+        let text = "class A:\n    def f(self):\n        return 0\n";
+        assert_eq!(
+            edited_in(
+                "a.py",
+                text,
+                "insert after fn:f <<END\ndef g(self):\n    \"\"\"Doc.\n\n    More.\n    \"\"\"\n    return 1\nEND",
+            ),
+            "class A:\n    def f(self):\n        return 0\n    def g(self):\n        \"\"\"Doc.\n\n        More.\n        \"\"\"\n        return 1\n"
+        );
+    }
+
+    #[test]
+    fn a_quote_in_a_comment_keeps_later_lines_at_the_target() {
+        let text = "def f(x):\n    if x:\n        pass\n";
+        assert_eq!(
+            edited_in(
+                "a.py",
+                text,
+                "replace 3 with <<END\n# a 5\" pipe\ny = 1\nEND"
+            ),
+            "def f(x):\n    if x:\n        # a 5\" pipe\n        y = 1\n"
+        );
     }
 
     #[test]
@@ -4221,7 +4426,7 @@ mod tests {
         assert!(
             exec(BLOCK, "delete fn:a; delete fn:a")
                 .error()
-                .contains("edit overlaps command 1"),
+                .contains("command 2's edit overlaps command 1's"),
         );
     }
 
@@ -4283,6 +4488,23 @@ mod tests {
             edited(TEXT, "sub all /let \\w/ /let/ with \"var\""),
             TEXT.replace("let", "var")
         );
+    }
+
+    #[test]
+    fn sub_matches_no_further_than_a_scope_s_last_newline() {
+        for (script, want) in [
+            ("sub 1 /$/ with \";\"", "a;\nb\n"),
+            ("sub 1 /.*/ with \"X\"", "X\nb\n"),
+            ("sub 1 /^/ with \"X\"", "Xa\nb\n"),
+            ("sub 1-2 /^/ with \"X\"", "Xa\nXb\n"),
+            ("sub /^/ with \"X\"", "Xa\nXb\n"),
+            ("sub /$/ with \";\"", "a;\nb;\n"),
+            ("sub 1 /\\n/ with \" \"", "a b\n"),
+            ("sub 1-2 /a\\nb\\n/ with \"c\"", "c"),
+        ] {
+            assert_eq!(edited("a\nb\n", script), want, "{script}");
+        }
+        assert_eq!(edited("a\nb", "sub /^/ with \"X\""), "Xa\nXb");
     }
 
     #[test]
@@ -4518,15 +4740,62 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_edits_name_the_earlier_command() {
+    fn overlapping_edits_name_both_commands() {
         assert_eq!(
             exec(TEXT, "replace 2 with \"a\"\ndelete 2-3").error(),
-            "error: script:2:1: edit overlaps command 1 at a.rs:2; merge the two edits, or put a `|` between them"
+            "error: script:2:1: command 2's edit overlaps command 1's at a.rs:2; merge the two edits, or put a `|` between them"
         );
         assert_eq!(
             exec(TEXT, "show 1; delete 2-3; replace \"y\" with \"z\"").error(),
-            "error: script:1:21: edit overlaps command 2 at a.rs:2-3; merge the two edits, or put a `|` between them"
+            "error: script:1:21: command 3's edit overlaps command 2's at a.rs:2-3; merge the two edits, or put a `|` between them"
         );
+    }
+
+    const TWO_CALLS: &str = "fn a() {\n    foo(1);\n}\n\nfn b() {\n    foo(2);\n}\n";
+
+    #[test]
+    fn a_replace_all_after_a_replace_of_one_match_overlaps_it() {
+        let out = exec(
+            TWO_CALLS,
+            "replace fn:a>/foo/ with \"bar\"\nreplace all /foo/ with \"baz\"",
+        );
+        assert_eq!(
+            out.error(),
+            "error: script:2:1: command 2's edit overlaps command 1's at a.rs:2; merge the two edits, or put a `|` between them"
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_selector_names_the_earlier_command_its_matches_overlap() {
+        let out = exec(
+            TWO_CALLS,
+            "replace all /foo/ with \"baz\"\nreplace /foo/ with \"bar\"",
+        );
+        let err = out.error();
+        let expected = "error: script:2:9: /foo/ matches 2 items; one of its matches overlaps command 1's edit at a.rs:2, so merge the two edits, or put a `|` between them; add `all` or use one of:\n";
+        assert!(err.starts_with(expected), "{err}");
+        let out = exec(TWO_CALLS, "replace fn:b with \"fn b() {}\"\ndelete /foo/");
+        assert!(
+            out.error().contains("command 1's edit at a.rs:5-7"),
+            "{}",
+            out.error()
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_selector_after_a_stage_or_a_read_is_only_ambiguous() {
+        let out = exec(
+            TWO_CALLS,
+            "replace all /foo/ with \"foo\" | replace /foo/ with \"bar\"",
+        );
+        assert!(!out.error().contains("command 1"), "{}", out.error());
+        let out = exec(
+            TWO_CALLS,
+            "insert after 2 \"// x\"\nreplace /foo/ with \"bar\"",
+        );
+        assert!(!out.error().contains("command 1"), "{}", out.error());
+        let out = exec(TWO_CALLS, "replace fn:a>/foo/ with \"bar\"\nshow /foo/");
+        assert!(!out.error().contains("command 1"), "{}", out.error());
     }
 
     #[test]
@@ -4650,7 +4919,7 @@ mod tests {
         .result
         .unwrap_err();
         assert!(
-            err.render("show")
+            err.render(Frontend::Cli, Some("show"))
                 .starts_with(&format!("error: cannot read {missing}: "))
         );
     }
@@ -4672,7 +4941,7 @@ mod tests {
         .result
         .unwrap_err();
         assert_eq!(
-            err.render("show"),
+            err.render(Frontend::Cli, Some("show")),
             format!("error: cannot read {path}: not valid UTF-8")
         );
     }
@@ -4690,8 +4959,34 @@ mod tests {
         .result
         .unwrap_err();
         assert_eq!(
-            err.render("show 1"),
-            "error: script:1:1: no files to read; pass FILE arguments or use `file PATH`"
+            err.render(Frontend::Cli, Some("show 1")),
+            "error: script:1:1: no files to read; pass the FILE arguments or use `file PATH`"
+        );
+    }
+
+    #[test]
+    fn fixes_name_options_in_each_frontends_terms() {
+        let outside = ExecError::new(ExecErrorKind::ReadOnly {
+            path: "a.rs".into(),
+            workspace: false,
+        });
+        assert_eq!(
+            outside.render(Frontend::Mcp, None),
+            "error: cannot edit a.rs: it is outside the file set; add it to the file set, or use `workspace`"
+        );
+        let untyped = ExecError::new(ExecErrorKind::NoLanguage {
+            selector: "fn:a".into(),
+            files: "a.txt".into(),
+        });
+        let rendered =
+            [Frontend::Cli, Frontend::Mcp, Frontend::Repl].map(|f| untyped.render(f, None));
+        assert_eq!(
+            rendered.map(|r| r.rsplit("; ").next().unwrap_or_default().to_string()),
+            [
+                "use --lang",
+                "use `ned mcp --lang`",
+                "use `ned repl --lang`"
+            ]
         );
     }
 
@@ -4926,6 +5221,158 @@ mod tests {
             [
                 "a.rs:1: the new text ends with `+ c;`, which already follows the \
               replaced text on its line"
+            ]
+        );
+    }
+
+    #[test]
+    fn replacing_a_body_with_its_braces_leaves_a_note() {
+        let notes = |text: &str, script: &str| exec(text, script).notes;
+        let f = "fn f() {\n    let x = 1;\n}\n";
+        let note = "a.rs:2: the new text starts with `{` and ends with the matching `}`, which \
+                    fn:f.body leaves out, so they would nest; drop them from the new text, or \
+                    replace fn:f";
+        assert_eq!(
+            notes(
+                f,
+                "replace fn:f.body with <<END\n{\n    let y = 2;\n}\nEND\n"
+            ),
+            [note]
+        );
+        assert_eq!(
+            notes(f, "replace fn:f.body with \"{ let y = 2; }\""),
+            [note]
+        );
+        assert_eq!(
+            notes("fn f() {}\n", "replace fn:f.body with \"{ g() }\""),
+            [
+                "a.rs:1: the new text starts with `{` and ends with the matching `}`, which \
+                 fn:f.body leaves out, so they would nest; drop them from the new text, or \
+                 replace fn:f"
+            ]
+        );
+        assert_eq!(
+            notes(
+                "struct S {\n    a: u32,\n}\n",
+                "replace struct:S.body with \"{ b: u32 }\""
+            ),
+            [
+                "a.rs:2: the new text starts with `{` and ends with the matching `}`, which \
+                 struct:S.body leaves out, so they would nest; drop them from the new text, or \
+                 replace struct:S"
+            ]
+        );
+        // Braces in strings and character literals aren't delimiters.
+        for text in [r#""{ s(\"}{\") }""#, r#""{ let c = '}'; g() }""#] {
+            assert_eq!(notes(f, &format!("replace fn:f.body with {text}")), [note]);
+        }
+        assert!(notes(f, r#"replace fn:f.body with "{ a() } // }""#).is_empty());
+        // Two blocks, or braces inside, don't nest the body's.
+        assert!(notes(f, "replace fn:f.body with \"{ a() } { b() }\"").is_empty());
+        assert!(notes(f, "replace fn:f.body with \"if a { b() }\"").is_empty());
+        assert!(notes(f, "replace fn:f with \"fn f() { g() }\"").is_empty());
+        // A Python body has no braces to nest.
+        let py = "def f():\n    x = 1\n";
+        assert!(
+            exec_with(&[("a.py", py)], 1, "replace fn:f.body with \"{1}\"")
+                .notes
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn replacing_an_item_with_text_that_brings_attributes_later_leaves_a_note() {
+        let notes = |text: &str, script: &str| exec(text, script).notes;
+        let s = "/// Docs.\n#[derive(Debug)]\nstruct S {\n    a: u32,\n}\n";
+        assert_eq!(
+            notes(
+                s,
+                "replace struct:S with <<END\nstruct T;\n\n#[derive(Debug)]\nstruct S {\n    b: u32,\n}\nEND\n"
+            ),
+            [
+                "a.rs:1: the new text has doc comments or attributes after its start \
+                 (`#[derive(Debug)]`), and the replaced item keeps its own (lines 1-2) above it; \
+                 to replace them too, select struct:S.whole"
+            ]
+        );
+        assert_eq!(
+            notes(
+                "#[derive(Debug)]\nstruct S;\n",
+                "replace struct:S with <<END\n// Comment.\n#[derive(Debug, Clone)]\nstruct S;\nEND\n"
+            ),
+            [
+                "a.rs:1: the new text has doc comments or attributes after its start \
+                 (`#[derive(Debug, Clone)]`), and the replaced item keeps its own (line 1) above \
+                 it; to replace them too, select struct:S.whole"
+            ]
+        );
+        let alone = "replace struct:S with <<END\n#[derive(Clone)]\nstruct S;\nEND\n";
+        assert!(notes(s, alone).is_empty());
+        assert!(notes(s, "replace struct:S with \"struct S;\"").is_empty());
+        assert!(
+            notes(
+                s,
+                "replace struct:S.whole with <<END\nstruct T;\n\n#[derive(Debug)]\nstruct S;\nEND\n"
+            )
+            .is_empty()
+        );
+        // Nothing is kept from an item without docs or attributes.
+        assert!(
+            notes(
+                "fn f() {}\n",
+                "replace fn:f with <<END\nstruct T;\n\n#[derive(Debug)]\nstruct S;\nEND\n"
+            )
+            .is_empty()
+        );
+        // Attributes nested in the new item are its own.
+        assert!(
+            notes(
+                "#[cfg(test)]\nmod tests {\n    fn a() {}\n}\n",
+                "replace mod:tests with <<END\nmod tests {\n    #[test]\n    fn b() {}\n}\nEND\n"
+            )
+            .is_empty()
+        );
+        // A documented sibling after the replaced item has docs of its own.
+        assert!(
+            notes(
+                s,
+                "replace struct:S with <<END\nstruct S;\n\n/// Docs for T.\nstruct T;\nEND\n"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_notes_fix_comes_apart_from_its_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.rs");
+        fs::write(&path, "a\nb\n").unwrap();
+        let paths = [path.display().to_string()];
+        let src = "show 1-9";
+        let parsed = parse(src).unwrap();
+        let run = run(
+            &parsed,
+            src,
+            Initial::Files(&paths),
+            &Options::default(),
+            None,
+        );
+        assert_eq!(
+            run.notes,
+            [Note {
+                text: format!("{} has 2 lines, so showed 1-2", paths[0]),
+                fix: Some(Fix::new("use `$` for the last line")),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_selector_in_a_notes_fix_prints_as_written() {
+        let out = exec("let a = {-w};\n", "replace \"{-w}\" with \"let a = x\"");
+        assert_eq!(
+            out.notes,
+            [
+                "a.rs:1: the new text starts with `let a =`, which already precedes the replaced text on its line; to replace whole lines, select \"{-w}\".lines"
             ]
         );
     }
@@ -5224,7 +5671,7 @@ fn main() {}
         assert_eq!(changes[1].new, "fn c() {}\n\nfn a() {}\n");
     }
 
-    const GUARD_ERROR: &str = "edit introduces a syntax error (use --force to apply anyway)";
+    const GUARD_ERROR: &str = "edit introduces a syntax error; ";
 
     #[test]
     fn guard_rejects_new_syntax_errors() {
@@ -5232,10 +5679,46 @@ fn main() {}
         let err = out.error();
         assert!(err.starts_with("error: a.rs:3:"), "{err}");
         assert!(err.contains(GUARD_ERROR), "{err}");
+        let problem = err.lines().next().unwrap_or_default();
+        assert!(
+            problem.ends_with("; use --force to apply it anyway"),
+            "{err}"
+        );
         let excerpt: Vec<&str> = err.lines().skip(1).collect();
         assert_eq!(excerpt.len(), 2, "{err}");
         assert_eq!(excerpt[0], "3:    let y = (2;");
         assert!(excerpt[1].trim_start() == "^", "{err}");
+    }
+
+    #[test]
+    fn the_guards_excerpt_prints_as_written() {
+        let out = guarded(
+            "a.rs",
+            TEXT,
+            "replace \"let y = 2;\" with \"let y = (2; // {-w}\"",
+        );
+        let excerpt = out.error().lines().nth(1).unwrap_or_default().to_string();
+        assert_eq!(excerpt, "3:    let y = (2; // {-w}", "{}", out.error());
+    }
+
+    #[test]
+    fn a_path_in_a_fix_prints_as_written() {
+        let out = exec_with(&[("{-w}.rs", TEXT)], 1, "show file:a.rs");
+        assert!(
+            out.error().contains("`file {-w}.rs a.rs`"),
+            "{}",
+            out.error()
+        );
+    }
+
+    #[test]
+    fn a_suggestions_path_prints_as_written() {
+        let out = exec_with(&[("{-w}.rs", TEXT), ("b.txt", "x\n")], 2, "show fn:aa");
+        assert!(
+            out.error().contains("did you mean fn:a ({-w}.rs:1-4)?"),
+            "{}",
+            out.error()
+        );
     }
 
     #[test]
@@ -5419,6 +5902,29 @@ fn main() {}
             out.error().starts_with("error: a.rs:5:6:"),
             "{}",
             out.error()
+        );
+    }
+
+    const GUARDED_FNS: &str = "use std::fmt;\n\nfn first() -> u32 {\n    1\n}\n\nfn second(x: u32) -> u32 {\n    if x > 1 {\n        x + 1\n    } else {\n        x\n    }\n}\n\nfn third() {}\n";
+
+    #[test]
+    fn guard_locates_an_error_after_the_edit_that_dropped_a_brace() {
+        let script = "insert after 1 \"use std::io;\"\nreplace fn:second>/if x/..$ with <<END\nif x > 1 {\n    x + 2\nEND";
+        let out = guarded("a.rs", GUARDED_FNS, script);
+        let err = out.error();
+        let expected = "error: a.rs:12:1: edit introduces a syntax error (command 2); ";
+        assert!(err.starts_with(expected), "{err}");
+    }
+
+    #[test]
+    fn guard_names_the_command_whose_edit_holds_the_error() {
+        let script = "replace \"x + 1\" with \"(x + 1\"\ninsert after 15 \"fn fourth() {}\"";
+        let out = guarded("a.rs", GUARDED_FNS, script);
+        let err = out.error();
+        assert!(err.starts_with("error: a.rs:9:"), "{err}");
+        assert!(
+            err.contains("edit introduces a syntax error (command 1); "),
+            "{err}"
         );
     }
 
@@ -5654,7 +6160,7 @@ fn main() {}
         let out = exec(CONFLICTS, "show fn:b.ours");
         assert!(
             out.error()
-                .contains(".ours needs a conflict, e.g. conflict:1.ours"),
+                .contains(".ours needs a conflict; select one, e.g. conflict:1.ours"),
             "{}",
             out.error()
         );
@@ -5915,12 +6421,12 @@ fn main() {}
         let out = exec_with_options(&[("a.rs", TEXT)], 1, "show fn:main", &text);
         assert_eq!(
             out.error(),
-            "error: script:1:6: fn:main needs a language, but parsing was disabled with --lang text; drop it, or use a regex or literal"
+            "error: script:1:6: fn:main needs a language, but parsing is disabled; drop --lang text, or use a regex or literal"
         );
         let out = exec_with_options(&[("a.rs", TEXT)], 1, "show `let y = @x;`", &text);
         assert!(
             out.error()
-                .contains("`let y = @x;` needs a language, but parsing was disabled"),
+                .contains("`let y = @x;` needs a language, but parsing is disabled"),
             "{}",
             out.error()
         );
@@ -6149,7 +6655,7 @@ fn main() {}
             self.asked.extend_from_slice(documents);
             self.saved.push(saved);
             if let Some(failure) = self.failure {
-                return Err(LspFailure(failure.into()));
+                return Err(LspFailure::from(failure));
             }
             let files = documents
                 .iter()
@@ -6162,7 +6668,7 @@ fn main() {}
                 show: self.show.unwrap_or(Severity::Warning),
                 block: Some(Severity::Error),
                 files,
-                notes: self.notes.iter().map(|n| n.to_string()).collect(),
+                notes: self.notes.iter().map(|&n| n.into()).collect(),
             })
         }
 
@@ -6429,9 +6935,9 @@ fn main() {}
                         ..c
                     })
                     .collect()),
-                Err(err) => Err(strip(&err.render(&src))),
+                Err(err) => Err(strip(&err.render(Frontend::Cli, Some(&src)))),
             },
-            notes: run.notes,
+            notes: run.notes.iter().map(noted).collect(),
         }
     }
 
@@ -6482,9 +6988,9 @@ fn main() {}
                         ..c
                     })
                     .collect()),
-                Err(err) => Err(strip(&err.render(&src))),
+                Err(err) => Err(strip(&err.render(Frontend::Cli, Some(&src)))),
             },
-            notes: run.notes,
+            notes: run.notes.iter().map(noted).collect(),
         }
     }
 
@@ -6674,7 +7180,10 @@ fn main() {}
             &Options::default(),
             None,
         );
-        let err = out.result.unwrap_err().render("show 1");
+        let err = out
+            .result
+            .unwrap_err()
+            .render(Frontend::Cli, Some("show 1"));
         assert!(err.contains("not valid UTF-8"), "{err}");
     }
 
@@ -6774,7 +7283,7 @@ fn main() {}
         ) -> Result<Renamed, LspFailure> {
             self.asked.push((document.clone(), position, name.into()));
             if let Some(failure) = self.failure {
-                return Err(LspFailure(failure.into()));
+                return Err(LspFailure::from(failure));
             }
             Ok(match &self.answer {
                 Renamed::Edits(files) => Renamed::Edits(
@@ -6798,7 +7307,7 @@ fn main() {}
         ) -> Result<Located, LspFailure> {
             self.located.push((kind, position));
             if let Some(failure) = self.failure {
-                return Err(LspFailure(failure.into()));
+                return Err(LspFailure::from(failure));
             }
             if self.no_server {
                 return Ok(Located::NoServer);
@@ -6863,9 +7372,9 @@ fn main() {}
                         ..c
                     })
                     .collect()),
-                Err(err) => Err(strip(&err.render(&src))),
+                Err(err) => Err(strip(&err.render(Frontend::Cli, Some(&src)))),
             },
-            notes: run.notes,
+            notes: run.notes.iter().map(noted).collect(),
         }
     }
 
@@ -6958,7 +7467,8 @@ fn main() {}
         let script = "replace fn:main with \"fn main() {}\"\nrename fn:foo to bar";
         let out = served(&files, Some(2), script, &mut lsp);
         assert!(
-            out.error().contains("edit overlaps command 1 at a.rs:"),
+            out.error()
+                .contains("command 2's edit overlaps command 1's at a.rs:"),
             "{}",
             out.error()
         );
@@ -7034,7 +7544,10 @@ fn main() {}
     #[test]
     fn a_refused_rename_says_where_and_why() {
         let mut lsp = ServerLsp::new(vec![]);
-        lsp.answer = Renamed::Refused("fake can't rename a keyword; select the name itself".into());
+        lsp.answer = Renamed::Refused {
+            why: "fake can't rename a keyword".into(),
+            fix: "select the name itself".into(),
+        };
         let out = served(
             &[("a.rs", FOO_A)],
             Some(1),
