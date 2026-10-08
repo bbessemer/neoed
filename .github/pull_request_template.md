@@ -17,4 +17,4 @@
 
 ## Related Pull Requests
 
-## Deployment Notes/Caveats
+## Notes/Caveats
