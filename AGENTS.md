@@ -208,7 +208,8 @@ Scheme data) that plugins will be written in, is unused for now. The REPL (spec
 merging writes) through `exec`'s overlay and `apply`, the post-exec pipeline the
 CLI shares; it records into a session, and `:attach` follows another session's
 log (`Follower`). An invocation (`invoke`: `!!`, run, write, commit, record, and
-`history`/`undo`) prints through `invoke::Output`, so `ned-mcp` (spec §1.5;
+`history`/`undo`) prints through `invoke::Output`, its notes and errors rendered
+for the frontend at one point (`invoke::report`), so `ned-mcp` (spec §1.5;
 JSON-RPC on stdio, behind `ned mcp`) runs the CLI's pipeline as tools; help
 texts are `ned-core/help/`, shared but for `cli/` and `mcp/`, with placeholders
 each frontend renders in its own terms. MIT-licensed; README has install and

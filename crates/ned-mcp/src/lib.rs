@@ -4,15 +4,15 @@
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use ned_core::hint;
-use ned_core::invoke::{self, Failure, Invocation, Output};
+use ned_core::hint::{self, Report};
+use ned_core::invoke::{self, Invocation, Output};
 use ned_core::lang::Language;
 use ned_core::lsp::Lsp;
 use ned_core::script::{
     self,
     ast::{Command, CommandKind},
 };
-use ned_core::session::{self, Session};
+use ned_core::session::{self, Session, SessionError};
 use ned_core::style::Style;
 use ned_core::workspace;
 use serde_json::{Value, json};
@@ -45,12 +45,10 @@ pub struct Server<C> {
 
 /// Session `name`, or the first `mcp-N` the workspace at `root` has no log
 /// for, which it creates.
-pub fn open_session(name: Option<&str>, root: &Path) -> Result<Session, Failure> {
+pub fn open_session(name: Option<&str>, root: &Path) -> Result<Session, SessionError> {
     match name {
         Some(name) => invoke::open(name, root),
-        None => session::state_dir()
-            .and_then(|state| session::next_free(&state, root, "mcp"))
-            .map_err(|err| invoke::failure(err, hint::Frontend::Mcp)),
+        None => session::state_dir().and_then(|state| session::next_free(&state, root, "mcp")),
     }
 }
 
@@ -253,7 +251,8 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
 
     /// `ned history [--all]` of the session, returning the exit code.
     fn history(&self, all: bool, out: &mut Transcript) -> u8 {
-        match invoke::history(&self.session, all, out) {
+        let history = invoke::history(&self.session, all, out);
+        match invoke::report(history, hint::Frontend::Mcp, None, out) {
             Ok(()) => 0,
             Err(failure) => invoke::fail(failure, out),
         }
@@ -263,7 +262,10 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
     fn undo(&self, force: bool, out: &mut Transcript) -> u8 {
         // Canonical, as the paths an undo reverts are, to show them relative to it.
         let cwd = self.cwd.canonicalize().unwrap_or(self.cwd.clone());
-        match invoke::undo(&self.session, cwd, force, Style::Plain, out) {
+        let undone = Report::collect(|notes| {
+            invoke::undo(&self.session, cwd, force, Style::Plain, notes, out)
+        });
+        match invoke::report(undone, hint::Frontend::Mcp, None, out) {
             Ok(()) => 0,
             Err(failure) => invoke::fail(failure, out),
         }
@@ -302,7 +304,8 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             None
         } else {
             let name = self.named.then(|| self.session.name().to_string());
-            match open_session(name.as_deref(), &root) {
+            let opened = open_session(name.as_deref(), &root);
+            match invoke::report(opened, hint::Frontend::Mcp, None, out) {
                 Ok(session) => Some(session),
                 Err(failure) => return invoke::fail(failure, out),
             }

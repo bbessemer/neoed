@@ -531,9 +531,12 @@ fn undo_reverts_the_last_edit_as_ned_undo_does() {
     assert_eq!(text(&results[1]), twin.printed(&["undo", "-s", "mcp-1"]));
     assert_eq!(ws.read("a.rs"), AB);
     assert!(failed(&results[2]));
+    // The same error, but naming the `history` tool.
     assert_eq!(
         text(&results[2]),
-        twin.printed(&["undo", "-s", "mcp-1"]) + "exit 1\n"
+        twin.printed(&["undo", "-s", "mcp-1"])
+            .replace("`ned history`", "`history`")
+            + "exit 1\n"
     );
     let history = ws.printed(&["history", "-s", "mcp-1"]);
     assert!(history.ends_with("2 undo 1, 1 file\n"), "{history}");

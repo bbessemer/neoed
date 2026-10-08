@@ -5,7 +5,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
-use ned_core::hint::Frontend;
+use ned_core::hint::{Frontend, Report};
 use ned_core::invoke::{self, Failure};
 use ned_core::{session, workspace};
 
@@ -39,20 +39,18 @@ pub fn run(action: Action) -> Result<(), Failure> {
 }
 
 fn list(all: bool) -> Result<(), Failure> {
-    let state_dir = session::state_dir().map_err(|err| invoke::failure(err, Frontend::Cli))?;
+    let state_dir = invoke::report(session::state_dir(), Frontend::Cli, None, &mut Terminal)?;
     if all {
-        for (root, names) in
-            session::workspaces(&state_dir).map_err(|err| invoke::failure(err, Frontend::Cli))?
-        {
+        let workspaces = session::workspaces(&state_dir);
+        for (root, names) in invoke::report(workspaces, Frontend::Cli, None, &mut Terminal)? {
             outln!("{}", root.display());
             for name in names {
                 outln!("  {name}");
             }
         }
     } else {
-        for name in session::sessions(&state_dir, &here(None)?.1)
-            .map_err(|err| invoke::failure(err, Frontend::Cli))?
-        {
+        let sessions = session::sessions(&state_dir, &here(None)?.1);
+        for name in invoke::report(sessions, Frontend::Cli, None, &mut Terminal)? {
             outln!("{name}");
         }
     }
@@ -69,9 +67,7 @@ fn delete(mut names: Vec<String>, dir: Option<PathBuf>) -> Result<(), Failure> {
         .collect::<Result<Vec<_>, _>>()?;
     for session in sessions {
         let name = session.name().to_string();
-        session
-            .delete()
-            .map_err(|err| invoke::failure(err, Frontend::Cli))?;
+        invoke::report(session.delete(), Frontend::Cli, None, &mut Terminal)?;
         outln!("{name}: deleted");
     }
     Ok(())
@@ -80,14 +76,18 @@ fn delete(mut names: Vec<String>, dir: Option<PathBuf>) -> Result<(), Failure> {
 /// `ned history`.
 pub fn history(flag: Option<String>, dir: Option<PathBuf>, all: bool) -> Result<(), Failure> {
     let session = existing(flag, &here(dir)?.1)?;
-    invoke::history(&session, all, &mut Terminal)
+    let history = invoke::history(&session, all, &mut Terminal);
+    invoke::report(history, Frontend::Cli, None, &mut Terminal)
 }
 
 /// `ned undo`.
 pub fn undo(flag: Option<String>, dir: Option<PathBuf>, force: bool) -> Result<(), Failure> {
     let (cwd, root) = here(dir)?;
     let session = existing(flag, &root)?;
-    invoke::undo(&session, cwd, force, crate::styles().0, &mut Terminal)
+    let style = crate::styles().0;
+    let undone =
+        Report::collect(|notes| invoke::undo(&session, cwd, force, style, notes, &mut Terminal));
+    invoke::report(undone, Frontend::Cli, None, &mut Terminal)
 }
 
 /// The working directory, canonical so recorded paths can be shown relative
@@ -114,11 +114,15 @@ fn existing(flag: Option<String>, root: &Path) -> Result<session::Session, Failu
         let error = format!("error: no session; give one with -s NAME or NED_SESSION ({listed})");
         return Err((error, 2));
     };
-    let session = invoke::open(&name, root).map_err(|(error, code)| match code {
-        // An invalid name: the fix is one of the workspace's sessions.
-        2 => (format!("{error}; {}", listing(root)), code),
-        _ => (error, code),
-    })?;
+    let opened = invoke::open(&name, root);
+    let session =
+        invoke::report(opened, Frontend::Cli, None, &mut Terminal).map_err(|(error, code)| {
+            match code {
+                // An invalid name: the fix is one of the workspace's sessions.
+                2 => (format!("{error}; {}", listing(root)), code),
+                _ => (error, code),
+            }
+        })?;
     if !session.exists() {
         let listed = listing(root).replace(" in this workspace", " in it");
         let error = format!("error: no session `{name}` in this workspace; {listed}");

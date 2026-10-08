@@ -213,6 +213,8 @@ pub type RepeatError = Error<RepeatErrorKind>;
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum RepeatErrorKind {
+    #[error("`!!` repeats a session's last script")]
+    NoSession,
     #[error("`!!` repeats the session's last script, but it has none")]
     NoScript,
     #[error("`!!` would apply entry {0}, a dry run")]
@@ -233,6 +235,7 @@ impl Hint for RepeatErrorKind {
     }
     fn fix(&self) -> Option<Fix> {
         Some(Fix::from(match self {
+            RepeatErrorKind::NoSession => "name a session ({-s NAME})",
             RepeatErrorKind::NoScript => "write the script out",
             RepeatErrorKind::DryRun(_) => {
                 "send the script again to apply it{cli:, or add -n to preview it again}{mcp:, or give `dry_run` to preview it again}"

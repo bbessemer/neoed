@@ -313,7 +313,12 @@ fn main() -> ExitCode {
     };
     let session = match invoke::session_name(cli.session.clone()) {
         None => None,
-        Some(name) => match invoke::open(&name, &root) {
+        Some(name) => match invoke::report(
+            invoke::open(&name, &root),
+            hint::Frontend::Cli,
+            None,
+            &mut Terminal,
+        ) {
             Ok(session) => Some(session),
             Err(failure) => return finish(Err(failure)),
         },

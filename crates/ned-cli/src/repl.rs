@@ -16,8 +16,8 @@ use ned_core::diff::{self, DiffStat};
 use ned_core::exec::{Change, Initial, Options};
 use ned_core::format::Outcome;
 use ned_core::git::Repo;
-use ned_core::hint::{self, Frontend, Note};
-use ned_core::invoke::{self, Edited, Ran};
+use ned_core::hint::{self, Errors, Frontend, Note, Report};
+use ned_core::invoke::{self, Edited};
 use ned_core::lang::{self, Language};
 use ned_core::lsp::{Document, Lsp};
 use ned_core::session::{self, Entry, FileChange, Follower, Session};
@@ -268,10 +268,17 @@ impl Repl {
             _ => workspace::root(&cwd).unwrap_or(cwd.clone()),
         };
         let session = match invoke::session_name(args.session.clone()) {
-            Some(name) => invoke::open(&name, &root)?,
-            None => session::state_dir()
-                .and_then(|dir| session::next_free(&dir, &root, "repl"))
-                .map_err(|err| invoke::failure(err, hint::Frontend::Repl))?,
+            Some(name) => invoke::report(
+                invoke::open(&name, &root),
+                Frontend::Repl,
+                None,
+                &mut Terminal,
+            )?,
+            None => {
+                let free =
+                    session::state_dir().and_then(|dir| session::next_free(&dir, &root, "repl"));
+                invoke::report(free, Frontend::Repl, None, &mut Terminal)?
+            }
         };
         Ok(Repl {
             session,
@@ -341,19 +348,20 @@ impl Repl {
             false => (self.files.clone(), self.workspace),
         };
         let mut root = self.root.clone();
-        let repeated = invoke::repeat(
-            Some(self.recording()),
-            src.to_string(),
-            &self.cwd,
-            &mut files,
-            &mut workspace,
-            &mut root,
-            true,
-            hint::Frontend::Repl,
-            None,
-            &mut Terminal,
-        );
-        let src = match repeated {
+        let repeated = Report::collect(|notes| {
+            invoke::repeat(
+                Some(self.recording()),
+                src.to_string(),
+                &self.cwd,
+                &mut files,
+                &mut workspace,
+                &mut root,
+                true,
+                None,
+                notes,
+            )
+        });
+        let src = match invoke::report(repeated, Frontend::Repl, None, &mut Terminal) {
             Ok(src) => src,
             Err(failure) => {
                 invoke::fail(failure, &mut Terminal);
@@ -364,7 +372,14 @@ impl Repl {
             true => Initial::Workspace(root.clone()),
             false => Initial::Files(&files),
         };
-        let ran = self.run_script(&src, initial);
+        let ran = Report::collect(|notes| self.run_script(&src, initial, notes));
+        let (exit, error) = match invoke::report(ran, Frontend::Repl, Some(&src), &mut Terminal) {
+            Ok(()) => (0, None),
+            Err((error, exit)) => {
+                errln!("{error}");
+                (exit, Some(error))
+            }
+        };
         let entry = Entry {
             id: 0,
             time: session::now(),
@@ -375,8 +390,8 @@ impl Repl {
             undoes: None,
             write: false,
             dry_run: false,
-            exit: ran.exit,
-            error: ran.error,
+            exit,
+            error,
             changes: Vec::new(),
             commit: None,
             comment: None,
@@ -384,7 +399,12 @@ impl Repl {
         self.record(entry);
     }
 
-    fn run_script(&mut self, src: &str, initial: Initial) -> Ran {
+    fn run_script(
+        &mut self,
+        src: &str,
+        initial: Initial,
+        notes: &mut Vec<Note>,
+    ) -> Result<(), Errors> {
         // Held while the script runs, so a followed edit merged meanwhile
         // can't slip between what the script read and what it changed.
         let mut buffers = self.buffers.lock().unwrap();
@@ -399,18 +419,15 @@ impl Repl {
             check: !self.args.no_check,
             force: self.args.force,
         };
-        let Edited { changes, finished } = match invoke::execute(
+        let Edited { changes, finished } = invoke::execute(
             src,
             initial,
             &options,
             settings,
-            hint::Frontend::Repl,
             &mut self.daemon,
+            notes,
             &mut Terminal,
-        ) {
-            Ok(edited) => edited,
-            Err(ran) => return ran,
-        };
+        )?;
         buffers.apply(&self.cwd, &changes, &finished.finals(&changes));
         drop(buffers);
         let how = Render {
@@ -420,12 +437,7 @@ impl Repl {
             style: styles().0,
         };
         out!("{}", apply::render(&changes, &finished, how));
-        Ran {
-            exit: 0,
-            error: None,
-            changes: Vec::new(),
-            commit: None,
-        }
+        Ok(())
     }
 
     /// `:write`, and `:commit` with a `message`: writes the buffers, committing
@@ -535,20 +547,15 @@ impl Repl {
     /// Commits `changes`, a write about to be made, after the session's edits
     /// since its last commit, as `--commit` does.
     fn commit_writes(&mut self, changes: &[Change], message: &str) -> Result<Committed, String> {
-        let prior = invoke::uncommitted(self.recording(), hint::Frontend::Repl)
+        let prior = invoke::uncommitted(self.recording());
+        let prior = invoke::report(prior, Frontend::Repl, None, &mut Terminal)
             .map_err(|(error, _)| error)?;
         let head = Repo::discover(&self.root).ok();
         let finals: Vec<&str> = changes.iter().map(|c| c.new.as_str()).collect();
         let commit = apply::commit(
             &self.root, head, &self.cwd, &prior, changes, &finals, message,
         );
-        commit.map_err(|errors| {
-            let rendered: Vec<String> = errors
-                .iter()
-                .map(|e| e.render(Frontend::Repl, None))
-                .collect();
-            rendered.join("\n")
-        })
+        invoke::report(commit, Frontend::Repl, None, &mut Terminal).map_err(|(error, _)| error)
     }
 
     /// `:attach NAME`: prints the session's history, then follows it and
@@ -569,7 +576,9 @@ impl Repl {
                 "error: the workspace has no session {name}; {known}"
             ));
         }
-        let attached = invoke::open(name, &self.root).map_err(|(error, _)| error)?;
+        let opened = invoke::open(name, &self.root);
+        let attached = invoke::report(opened, Frontend::Repl, None, &mut Terminal)
+            .map_err(|(error, _)| error)?;
         let (entries, follower) = attached
             .lock()
             .and_then(|log| log.follow())
@@ -610,7 +619,10 @@ impl Repl {
     /// the entry before it's known as the REPL's.
     fn record(&mut self, entry: Entry) {
         let mut follow = self.follow.lock().unwrap();
-        let id = invoke::record(self.recording(), entry, &mut Terminal);
+        let recorded = Report::collect(|notes| Ok(invoke::record(self.recording(), entry, notes)));
+        let id = invoke::report(recorded, Frontend::Repl, None, &mut Terminal)
+            .ok()
+            .flatten();
         if let (Some(follow), Some(id)) = (follow.as_mut(), id) {
             follow.own.insert(id);
         }

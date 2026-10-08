@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Args;
+use ned_core::hint::Frontend;
 use ned_core::invoke;
 use ned_core::workspace;
 use ned_mcp::Server;
@@ -41,7 +42,8 @@ pub fn run(args: McpArgs) -> ExitCode {
         None => workspace::root(&cwd).unwrap_or(cwd.clone()),
     };
     let name = invoke::session_name(args.session);
-    let session = match ned_mcp::open_session(name.as_deref(), &root) {
+    let opened = ned_mcp::open_session(name.as_deref(), &root);
+    let session = match invoke::report(opened, Frontend::Cli, None, &mut crate::Terminal) {
         Ok(session) => session,
         Err((error, code)) => {
             errln!("{error}");

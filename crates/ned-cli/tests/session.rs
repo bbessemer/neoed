@@ -607,7 +607,7 @@ fn a_repeat_without_a_session_is_a_usage_error() {
     exit: 2
     --- stdout
     --- stderr
-    error: `!!` repeats a session's last script; give the session with -s NAME or NED_SESSION
+    error: `!!` repeats a session's last script; name a session (-s NAME or NED_SESSION)
     ");
 }
 
