@@ -163,6 +163,13 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       first line: `replace fn:run>"executor.run(".."    });" with <<END` dropped
       the `let result = ` before the match. A partial span's TEXT should keep
       the line's text before the match, as a one-line `replace` does.
+- [ ] `sub` over whole lines matches an empty string after the span's last
+      newline, at the start of the next line: `sub 1 /$/ with ";"` on `a\nb`
+      gives `a;\n;b`, and `sub SEL /.*/ with "X"` writes a second `X` there.
+      Matches should end at or before the span's last newline.
+- [ ] Conflict markers shown in a Markdown code block (the tutorial's conflicts
+      section) count as a merge conflict, so formatting the file is skipped ("it
+      has merge conflicts"). Markers inside a fenced block are text.
 
 ## Future improvements
 
