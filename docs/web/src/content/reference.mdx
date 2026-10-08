@@ -604,8 +604,10 @@ Replaces each selected span with `TEXT`. Some details:
   `"\n"` to leave one empty line.
 - `replace` never interprets `$`. With a pattern, it substitutes `@name`
   captures; otherwise it inserts `TEXT` as it is.
-- When the replacement looks off by one line (`TEXT` repeats the line above or
-  below the span, say), ned prints a note. It's only a warning.
+- ned prints a note, only a warning, when the replacement looks wrong: `TEXT`
+  repeats the line above or below the span; `TEXT` for a braced `.body` brings
+  its own `{ }`, which would nest; or `TEXT` brings doc comments or attributes
+  that the kept ones would duplicate (select `ITEM.whole` instead).
 
 ### insert
 
@@ -649,9 +651,9 @@ Replaces every match of the regular expression inside each span of `SEL`, or in
 every file of the set if there's no selector. `$1`, `${name}` and `$0` in `TEXT`
 insert what the expression captured, and `$$` is a literal `$`. A reference
 takes the longest name it can, so write `${1}x` for group 1 followed by `x`.
-`sub` already replaces every match, so it doesn't take `all` before the regular
-expression; `all` before `SEL` applies to the scope. If nothing matches
-anywhere, `sub` fails.
+`/^/` and `/$/` match once on each line a span covers. `sub` already replaces
+every match, so it doesn't take `all` before the regular expression; `all`
+before `SEL` applies to the scope. If nothing matches anywhere, `sub` fails.
 
 ### move
 
@@ -789,6 +791,10 @@ new list item next to an existing one lines up with its marker, prose inserted
 into a list item gets the item's hanging indent, and text inserted in a block
 quote takes its `>` markers. A new `case` or `default` clause goes beside the
 clause it's inserted next to.
+
+Lines inside a multi-line string, such as a Python docstring, move with the code
+around them. Use a `<<'TAG'` heredoc for a string whose lines must stay exactly
+as written.
 
 A file's indentation unit (four spaces, two spaces, a tab…) is measured from its
 existing lines. In an empty file, it's four spaces, two in Markdown, or a tab in

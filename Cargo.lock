@@ -545,7 +545,7 @@ dependencies = [
 
 [[package]]
 name = "ned-cli"
-version = "0.8.2-dev"
+version = "0.8.2"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -560,7 +560,7 @@ dependencies = [
 
 [[package]]
 name = "ned-core"
-version = "0.8.2-dev"
+version = "0.8.2"
 dependencies = [
  "glob",
  "ignore",
@@ -585,7 +585,7 @@ dependencies = [
 
 [[package]]
 name = "ned-daemon"
-version = "0.8.2-dev"
+version = "0.8.2"
 dependencies = [
  "libc",
  "lsp-types",
@@ -600,7 +600,7 @@ dependencies = [
 
 [[package]]
 name = "ned-mcp"
-version = "0.8.2-dev"
+version = "0.8.2"
 dependencies = [
  "ned-core",
  "serde_json",
@@ -610,7 +610,7 @@ dependencies = [
 
 [[package]]
 name = "ned-scheme"
-version = "0.8.2-dev"
+version = "0.8.2"
 dependencies = [
  "thiserror",
 ]

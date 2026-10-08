@@ -5,7 +5,7 @@ too large for one PR: they carry a checklist of coarse chunks to plan with the
 engineer before starting each one; a single-PR item has none, and moves to Done
 when it lands.
 
-Versions follow semver at 0.x (currently 0.8.0): a change to the command
+Versions follow semver at 0.x (currently 0.8.2): a change to the command
 language or any new user-visible feature bumps the minor version, and a release
 that only fixes bugs or adds hints bumps the patch version. Each item below says
 which it is. When to release 1.0 is TBD.
@@ -115,54 +115,9 @@ Version: minor when a first plugin can load; the spike releases nothing.
 Hints and relaxed errors: each is a patch, and they batch into the next release
 of either kind.
 
-- [x] Replacing a braced `.body` (which leaves out the braces) with `TEXT` that
-      starts with `{` and ends with the matching `}` nests a second pair: note
-      it, and suggest dropping the braces from `TEXT` or replacing the whole
-      item
-- [x] `impl:NAME` that names a trait matches nothing, and the hint suggests an
-      item of the trait (`trait:NAME>fn:f`); suggest the trait's impls instead
-      (`impl:"NAME for TYPE"`)
-- [x] Replacing an item keeps its attributes, so `TEXT` that brings its own
-      `#[derive(...)]` (or starts with another item, then the attributes) leaves
-      them twice, which the guard misses until a later edit breaks the build:
-      note it, and suggest `ITEM.whole`
-- [x] Two commands of a script that edit the same span (a `replace` of a match,
-      then a `replace all` of the same regex) fail with a plain ambiguity or
-      overlap error: say that the commands overlap, and suggest merging them or
-      putting a `|` between them
-- [x] A `<<OLD` block selector whose last line is only part of a source line
-      matches nothing, and the error says only that, ignoring case and spacing,
-      it matches elsewhere: say that a block matches whole lines, and suggest
-      the whole last line or a literal
-
 ## Bugs
 
 Each fix is a patch; a fix that changes documented behaviour is a minor.
-
-- [x] In Python, a syntax pattern of several statements matches at top level but
-      not as a nested step: ``show fn:f>`a = 0\nb = 1` `` matches nothing where
-      the statements are in `f`'s body (the Rust equivalent matches). It breaks
-      the tutorial's pattern step (`tutorial.mdx`, the `fn:total>` `replace`),
-      and the output after it.
-- [x] A part after a range's end applies to the whole range:
-      `show /^const X/..fn:f.doc` fails with ".doc needs a syntax item, e.g.
-      fn:NAME.doc", though `fn:f.doc` alone matches. Either bind the part to the
-      end step or say that a part can't follow a range, with the fix.
-- [x] The MCP server's `!!` error for a dry-run entry says "add -n to preview it
-      again", the CLI's flag; it should name `dry_run`. Fix it as part of the
-      move onto `hint`.
-- [x] The parse-error guard can locate an introduced error far from the edit
-      that caused it: in a script whose later edit dropped a function's closing
-      `}` (a nested range ending at `$`), the error named line 7, an unrelated
-      `use` inserted by the script's first edit. Locate it within the edit whose
-      change the error spans, or name that command.
-- [x] A sed-style `sub SEL /re/text$1/`'s parse error suggests `with "…$$1"`,
-      which inserts a literal `$1`, not group 1: the fix should keep `$1` (or
-      write `${1}`), as `sub`'s TEXT expands it.
-- [x] `sub` over whole lines matches an empty string after the span's last
-      newline, at the start of the next line: `sub 1 /$/ with ";"` on `a\nb`
-      gives `a;\n;b`, and `sub SEL /.*/ with "X"` writes a second `X` there.
-      Matches should end at or before the span's last newline.
 
 ### Won't fix
 

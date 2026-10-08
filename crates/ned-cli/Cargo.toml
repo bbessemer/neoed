@@ -15,9 +15,9 @@ workspace = true
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
-ned-core = { version = "0.8.2-dev", path = "../ned-core" }
-ned-daemon = { version = "0.8.2-dev", path = "../ned-daemon" }
-ned-mcp = { version = "0.8.2-dev", path = "../ned-mcp" }
+ned-core = { version = "0.8.2", path = "../ned-core" }
+ned-daemon = { version = "0.8.2", path = "../ned-daemon" }
+ned-mcp = { version = "0.8.2", path = "../ned-mcp" }
 rustyline = { version = "18", default-features = false, features = ["with-file-history"] }
 
 [dev-dependencies]

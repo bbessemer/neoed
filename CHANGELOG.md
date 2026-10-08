@@ -4,6 +4,62 @@ Every tagged release of `ned`. Before 0.6.1, every PR to `main` bumped the
 version, so versions merged in quick succession (0.2.0, 0.3.0) were never tagged
 or released on their own; their changes are listed under the next tag.
 
+## 0.8.2 (2026-10-08)
+
+### Changed
+
+- Every error and note gives its problem, then its fix, in the terms of the
+  frontend that prints it: the CLI's flags, the MCP tools' arguments (`force`,
+  `dry_run`, `files`), or what the REPL takes at the prompt or when it starts
+  (`ned repl --force`). MCP's `history`, `undo` and `!!`, and the REPL's notes,
+  no longer name the CLI's options. Many messages put the fix after a semicolon:
+  `edit introduces a syntax error; use --force to apply it anyway`.
+- `:help` in the REPL describes the REPL: what a line at the prompt is, that
+  flags are given when it starts, and how to give a language or a `'` there.
+- Notes print after the script's output.
+- A line that starts inside a multi-line string, such as a Python docstring's,
+  moves with the code around it, instead of keeping its indentation as written;
+  it doesn't count toward the common indentation or the indent level. Use a
+  `<<'TAG'` heredoc to keep a string exactly as written.
+
+### Fixed
+
+- The parse-error guard reports an introduced error inside (or just after) the
+  edit that caused it, instead of at an unrelated earlier edit, and names that
+  command when several edited the file.
+- `sub` over whole lines no longer matches after the span's last line break:
+  `/$/`, `/^/` and `/.*/` match once on each line, instead of also editing the
+  next one.
+- A Python pattern of several statements matches part of a nested body, not only
+  a body of exactly those statements.
+- The MCP server's `!!` of a dry run says to pass `dry_run`, not `-n`.
+- The REPL's paths are relative to its directory without mangling a sibling
+  directory whose name starts the same (`/cwd-other/x`).
+- The REPL's `:write` prints the notes gathered before it, and when HEAD can't
+  be moved back after a failed write, git's error follows the write's.
+
+### Hints
+
+- Overlap errors name both commands, and an ambiguous selector one of whose
+  matches an earlier command's edit overlaps says so; both suggest merging the
+  two edits or a `|` between them.
+- A `replace` of a braced `.body` whose text brings its own `{ }` gets a note
+  that they would nest.
+- A `replace` of an item whose text brings doc comments or attributes beside the
+  ones it keeps gets a note suggesting `ITEM.whole`.
+- `impl:NAME` where `NAME` is a trait suggests its impls
+  (`impl:"NAME for TYPE"`).
+- A `<<TAG` block that matches only part of a line says blocks match whole
+  lines, and suggests the whole line or a literal.
+- A part after a range (`A..fn:f.doc`) says it applies to the whole range and
+  suggests the selector with the range's start left out.
+- `all` after a `>` in a selector suggests putting it before the selector.
+- A sed-style `sub /re/text/` keeps a `$1` or `$name` the regex captures as
+  `${1}` or `${name}`, instead of a literal `$$1`.
+- A directory that can't be read, a missing script on stdin, an MCP client that
+  went away, and the REPL's `:commit` or `:attach` without an argument each say
+  how to fix it; an ambiguous REPL command lists its choices.
+
 ## 0.8.1 (2026-10-07)
 
 ### Added
