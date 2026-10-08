@@ -882,7 +882,7 @@ fn overlapping_edits_exit_1() {
     exit: 1
     --- stdout
     --- stderr
-    error: script:2:1: edit overlaps command 1 at parser.rs:15; merge the two edits, or put a `|` between them
+    error: script:2:1: command 2's edit overlaps command 1's at parser.rs:15; merge the two edits, or put a `|` between them
     ");
     assert_eq!(read(&dir, "parser.rs"), PARSER);
 }

@@ -994,6 +994,10 @@ The kinds each language supports, and the items they cover there:
 - `all SEL` applies the verb to every match. Zero matches is still an error.
 - An ambiguous `.refs` or `.def` result lists where its matches are instead of
   candidate selectors, since no scope picks one out; add `all`.
+- If a match of an ambiguous selector overlaps the edit of an earlier command in
+  the stage (§2.3), as when a `replace` of a match follows a `replace all` of
+  the same regex, the error says which command's, and suggests merging the two
+  commands or putting a `|` between them.
 - There is no nth-match syntax, except for conflicts (§3.11) and a span's lines
   (`.lines:N`, §3.4). To disambiguate, nest (`impl:Lexer>fn:new`), scope by
   lines (`40-80>fn:new`), or scope by file (`file:src/a.rs>fn:new`). Error
@@ -1414,11 +1418,15 @@ and `MISSING` nodes, and the matches of the language's
 such as an empty Python block, or a Rust macro call like `todo!()` with no `;`
 before another statement), before and after each stage's edits (§2.3). If the
 count rises, the script is rejected (exit 1) and the error shows the first new
-error node the edits touch, from where the text first changes if the node starts
-before that (an `ERROR` node can span the whole file). An error query's match
-may set a `message` saying what is wrong, and a `fix` saying how to put it
-right, which the error gives in place of the generic advice to use `--force`:
-for the Rust macro call,
+error node inside an edit's change, or failing that the nearest after one (a
+dropped `}` surfaces later, often at the end of the file), from where that
+change starts if the node starts before it (an `ERROR` node can span the whole
+file). When several commands edited the file in the stage, the error names the
+command whose change it is in or follows:
+`edit introduces a syntax error (command 2)`. An error query's match may set a
+`message` saying what is wrong, and a `fix` saying how to put it right, which
+the error gives in place of the generic advice to use `--force`: for the Rust
+macro call,
 `macro statement needs a ; before the next statement; add one after its closing bracket`.
 If the edits replace a `.sig` with text ending in the character that follows it
 (Python's `:`, or the `{` of a body), the error adds that `.sig` stops before
@@ -1907,7 +1915,8 @@ The fix each error suggests:
 - Subcommand after a flag: The arguments with the subcommand first, keeping the
   flags it takes
 - Ambiguous selector: Candidate selectors (§3.5), or longer text for matches
-  that share a line
+  that share a line; for a match an earlier command's edit overlaps, merging the
+  two edits or a `|` between them
 - Missing part, part on a non-syntax step: The parts the item has, or an
   example; for a part after a range, that it applies to the whole range, and the
   selector with the range's start left out (`impl:S>fn:f.doc` for
@@ -1981,7 +1990,7 @@ error: script:1:8: fn:new matches 2 items; add `all` or use one of:
 
 error: script:1:8: fn:prase matches nothing in src/parser.rs; did you mean fn:parse (14-17)?
 
-error: script:3:1: edit overlaps command 1 at src/parser.rs:14-17; merge the two edits, or put a `|` between them
+error: script:3:1: command 3's edit overlaps command 1's at src/parser.rs:14-17; merge the two edits, or put a `|` between them
 
 error: src/parser.rs:15:31: edit introduces a syntax error; use --force to apply it anyway
 15:        let tok = (self.next();

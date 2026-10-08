@@ -126,7 +126,7 @@ of either kind.
       `#[derive(...)]` (or starts with another item, then the attributes) leaves
       them twice, which the guard misses until a later edit breaks the build:
       note it, and suggest `ITEM.whole`
-- [ ] Two commands of a script that edit the same span (a `replace` of a match,
+- [x] Two commands of a script that edit the same span (a `replace` of a match,
       then a `replace all` of the same regex) fail with a plain ambiguity or
       overlap error: say that the commands overlap, and suggest merging them or
       putting a `|` between them
@@ -151,7 +151,7 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [x] The MCP server's `!!` error for a dry-run entry says "add -n to preview it
       again", the CLI's flag; it should name `dry_run`. Fix it as part of the
       move onto `hint`.
-- [ ] The parse-error guard can locate an introduced error far from the edit
+- [x] The parse-error guard can locate an introduced error far from the edit
       that caused it: in a script whose later edit dropped a function's closing
       `}` (a nested range ending at `$`), the error named line 7, an unrelated
       `use` inserted by the script's first edit. Locate it within the edit whose

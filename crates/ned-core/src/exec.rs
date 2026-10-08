@@ -604,7 +604,7 @@ impl<'s> Executor<'s> {
                     .steps
                     .iter()
                     .any(|s| !s.primary.patterns().is_empty());
-                for m in self.resolve(target, false)? {
+                for m in self.resolve_edit(target)? {
                     let f = &self.files[m.file].file;
                     let filled;
                     let text = match patterns {
@@ -650,7 +650,7 @@ impl<'s> Executor<'s> {
                 target,
                 text,
             } => {
-                for m in self.resolve(&implied_body(target, *position), false)? {
+                for m in self.resolve_edit(&implied_body(target, *position))? {
                     let f = &self.files[m.file].file;
                     let range = heredoc_lines(f, target, *position, text, m.range);
                     let text = separated(f, target, *position, &range, text);
@@ -659,7 +659,7 @@ impl<'s> Executor<'s> {
                 }
             }
             CommandKind::Delete(target) => {
-                for m in self.resolve(target, false)? {
+                for m in self.resolve_edit(target)? {
                     let f = &self.files[m.file].file;
                     if let Some(side) = empty_side(f, &m.range) {
                         let line = line_numbers(&f.buffer, &m.range);
@@ -678,7 +678,7 @@ impl<'s> Executor<'s> {
                     Keep::Base => &[Side::Base],
                     Keep::Both => &[Side::Ours, Side::Theirs],
                 };
-                for m in self.resolve(target, false)? {
+                for m in self.resolve_edit(target)? {
                     let f = &self.files[m.file].file;
                     let Some((n, conflict)) =
                         f.conflict_at(&m.range).filter(|(_, c)| c.span() == m.range)
@@ -726,6 +726,50 @@ impl<'s> Executor<'s> {
             }
         }
         Ok(())
+    }
+
+    /// `resolve` for an edit, whose ambiguity error says if a match overlaps
+    /// an earlier command's edit in the stage.
+    fn resolve_edit(&mut self, target: &Target) -> Result<Vec<Match>, ExecError> {
+        let err = match self.resolve(target, false) {
+            Err(err)
+                if matches!(
+                    err.kind,
+                    ExecErrorKind::Ambiguous { .. } | ExecErrorKind::AmbiguousLocated { .. }
+                ) =>
+            {
+                err
+            }
+            found => return found,
+        };
+        let every = Target {
+            all: true,
+            selector: target.selector.clone(),
+        };
+        let notes = self.notes.len();
+        let found = self.resolve(&every, false).unwrap_or_default();
+        self.notes.truncate(notes);
+        let overlapped = found.iter().find_map(|m| {
+            let l = &self.files[m.file];
+            let edit = l.edits.overlapping(&m.range)?;
+            let lines = line_numbers(&l.file.buffer, &edit.range);
+            Some((edit.command, format!("{}:{lines}", l.file.path)))
+        });
+        let Some((command, location)) = overlapped else {
+            return Err(err);
+        };
+        let (command, location) = (command + 1, hint::verbatim(&location));
+        let fix = Fix::new(format!(
+            "one of its matches overlaps command {command}'s edit at {location}, so merge the two edits, or put a `|` between them"
+        ));
+        let fix = match err.fix {
+            Some(own) => fix.and(own),
+            None => fix,
+        };
+        Err(ExecError {
+            fix: Some(fix),
+            ..err
+        })
     }
 
     /// Resolves `target` in the current file set, returning matches whose
@@ -1059,7 +1103,8 @@ impl<'s> Executor<'s> {
         };
         loaded.edits.push(edit).map_err(|err| match err {
             EditError::Overlap { first, range, .. } => ExecError::new(ExecErrorKind::Overlap {
-                command: first + 1,
+                first: first + 1,
+                second: index + 1,
                 location: format!(
                     "{}:{}",
                     loaded.file.path,
@@ -1132,7 +1177,7 @@ impl<'s> Executor<'s> {
         let to = self
             .resolve(&implied_body(&dest, position), false)?
             .remove(0);
-        for from in self.resolve(target, false)? {
+        for from in self.resolve_edit(target)? {
             let source = &self.files[from.file].file;
             let removal = removal(source, from.range.clone());
             let (mut moved, separation) = moved_text(source, &from.range);
@@ -1861,12 +1906,27 @@ fn guard(l: &Loaded, new: &str) -> Result<(), ExecError> {
     let suffix = common_len(f.text.bytes().rev(), new.bytes().rev())
         .min(f.text.len().min(new.len()) - prefix);
     let changed = prefix..new.len() - suffix;
-    let (node, message, fix) = errors
-        .iter()
-        .find(|(n, ..)| n.start_byte() <= changed.end && changed.start <= n.end_byte())
-        .unwrap_or(&errors[0]);
+    let mut spans: Vec<(Range<usize>, Option<usize>)> = l
+        .edits
+        .applied_spans()
+        .into_iter()
+        .map(|(range, edit)| {
+            // A replacement can start with the text it replaces.
+            let same = common_len(
+                l.file.text[edit.range.clone()].bytes(),
+                new[range.clone()].bytes(),
+            );
+            (range.start + same..range.end, Some(edit.command))
+        })
+        .collect();
+    let several = spans.windows(2).any(|w| w[0].1 != w[1].1);
+    if spans.is_empty() {
+        spans.push((changed.clone(), None));
+    }
+    let ((node, message, fix), from, command) = locate_error(&errors, &spans);
+    let command = command.filter(|_| several).map(|c| c + 1);
     // An `ERROR` node can start well before the edits, even span the file.
-    let start = node.start_byte().max(changed.start.min(node.end_byte()));
+    let start = node.start_byte().max(from.min(node.end_byte()));
     let (line, column) = location(new, start);
     let message = message.unwrap_or(GUARD_MESSAGE);
     let sig = l.sig_end.map(|c| {
@@ -1886,7 +1946,52 @@ fn guard(l: &Loaded, new: &str) -> Result<(), ExecError> {
         fix = fix.map(|fix| fix.then(excerpt));
     }
     let location = format!("{}:{line}:{column}", f.path);
-    Err(ExecError::new(ExecErrorKind::SyntaxError { message, location }).with_fix(fix))
+    Err(ExecError::new(ExecErrorKind::SyntaxError {
+        message,
+        location,
+        command,
+    })
+    .with_fix(fix))
+}
+
+/// The error the guard reports from `errors`, where its edit's change
+/// starts, and the command that made it: the first error starting inside
+/// one of `spans`, the edits' changes, else the nearest after one (a dropped
+/// `}` surfaces later), else the first covering one, else the first.
+fn locate_error<'e, 't>(
+    errors: &'e [GuardError<'t>],
+    spans: &[(Range<usize>, Option<usize>)],
+) -> (&'e GuardError<'t>, usize, Option<usize>) {
+    let inside = errors.iter().find_map(|e| {
+        let start = e.0.start_byte();
+        let (r, command) = spans
+            .iter()
+            .find(|(r, _)| r.contains(&start) || r.end == start)?;
+        Some((e, r.start, *command))
+    });
+    let after = || {
+        errors
+            .iter()
+            .filter_map(|e| {
+                let start = e.0.start_byte();
+                let (r, command) = spans.iter().rev().find(|(r, _)| r.end <= start)?;
+                Some((start - r.end, (e, r.start, *command)))
+            })
+            .min_by_key(|(distance, _)| *distance)
+            .map(|(_, found)| found)
+    };
+    let covering = || {
+        errors.iter().find_map(|e| {
+            let (r, command) = spans
+                .iter()
+                .find(|(r, _)| e.0.start_byte() < r.start && r.start <= e.0.end_byte())?;
+            Some((e, r.start, *command))
+        })
+    };
+    inside
+        .or_else(after)
+        .or_else(covering)
+        .unwrap_or((&errors[0], spans[0].0.start, None))
 }
 
 /// The guard's fix for `text`, edited text that holds an escape such as
@@ -1904,14 +2009,13 @@ fn escape_hint(text: &str) -> Option<String> {
         })
 }
 
+/// An error node, with the `message` and `fix` its query pattern sets.
+type GuardError<'t> = (Node<'t>, Option<&'static str>, Option<&'static str>);
+
 /// The `ERROR` and `MISSING` nodes of `tree`, a parse of `text`, and the
 /// `@error` captures of `lang`'s error query, in source order, each with the
 /// `message` and `fix` its query pattern sets, if any.
-fn error_nodes<'t>(
-    lang: Language,
-    tree: &'t Tree,
-    text: &str,
-) -> Vec<(Node<'t>, Option<&'static str>, Option<&'static str>)> {
+fn error_nodes<'t>(lang: Language, tree: &'t Tree, text: &str) -> Vec<GuardError<'t>> {
     let mut out = Vec::new();
     let mut stack = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
@@ -2965,8 +3069,12 @@ pub enum ExecErrorKind {
     NotInFileSet { path: String, files: String },
     #[error("file:{glob} matches no file in the file set: {files}")]
     NoFileMatch { glob: String, files: String },
-    #[error("edit overlaps command {command} at {location}")]
-    Overlap { command: usize, location: String },
+    #[error("command {second}'s edit overlaps command {first}'s at {location}")]
+    Overlap {
+        first: usize,
+        second: usize,
+        location: String,
+    },
     /// `verb` is `read` or `edit`.
     #[error("no files to {verb}")]
     NoFiles { verb: &'static str },
@@ -2979,11 +3087,13 @@ pub enum ExecErrorKind {
     #[error("glob `{glob}` matched nothing")]
     NoGlobMatch { glob: String },
     /// `message` is the generic one, or what the language's error query says
-    /// is wrong; `location` is `PATH:LINE:COL`.
-    #[error("{location}: {message}")]
+    /// is wrong; `location` is `PATH:LINE:COL`; `command`, the command whose
+    /// edit it's in or follows, when several commands edited the file.
+    #[error("{location}: {message}{}", command.map_or(String::new(), |c| format!(" (command {c})")))]
     SyntaxError {
         message: &'static str,
         location: String,
+        command: Option<usize>,
     },
     /// Its fix is the failure's.
     #[error("{0}")]
@@ -4290,7 +4400,7 @@ mod tests {
         assert!(
             exec(BLOCK, "delete fn:a; delete fn:a")
                 .error()
-                .contains("edit overlaps command 1"),
+                .contains("command 2's edit overlaps command 1's"),
         );
     }
 
@@ -4604,15 +4714,62 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_edits_name_the_earlier_command() {
+    fn overlapping_edits_name_both_commands() {
         assert_eq!(
             exec(TEXT, "replace 2 with \"a\"\ndelete 2-3").error(),
-            "error: script:2:1: edit overlaps command 1 at a.rs:2; merge the two edits, or put a `|` between them"
+            "error: script:2:1: command 2's edit overlaps command 1's at a.rs:2; merge the two edits, or put a `|` between them"
         );
         assert_eq!(
             exec(TEXT, "show 1; delete 2-3; replace \"y\" with \"z\"").error(),
-            "error: script:1:21: edit overlaps command 2 at a.rs:2-3; merge the two edits, or put a `|` between them"
+            "error: script:1:21: command 3's edit overlaps command 2's at a.rs:2-3; merge the two edits, or put a `|` between them"
         );
+    }
+
+    const TWO_CALLS: &str = "fn a() {\n    foo(1);\n}\n\nfn b() {\n    foo(2);\n}\n";
+
+    #[test]
+    fn a_replace_all_after_a_replace_of_one_match_overlaps_it() {
+        let out = exec(
+            TWO_CALLS,
+            "replace fn:a>/foo/ with \"bar\"\nreplace all /foo/ with \"baz\"",
+        );
+        assert_eq!(
+            out.error(),
+            "error: script:2:1: command 2's edit overlaps command 1's at a.rs:2; merge the two edits, or put a `|` between them"
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_selector_names_the_earlier_command_its_matches_overlap() {
+        let out = exec(
+            TWO_CALLS,
+            "replace all /foo/ with \"baz\"\nreplace /foo/ with \"bar\"",
+        );
+        let err = out.error();
+        let expected = "error: script:2:9: /foo/ matches 2 items; one of its matches overlaps command 1's edit at a.rs:2, so merge the two edits, or put a `|` between them; add `all` or use one of:\n";
+        assert!(err.starts_with(expected), "{err}");
+        let out = exec(TWO_CALLS, "replace fn:b with \"fn b() {}\"\ndelete /foo/");
+        assert!(
+            out.error().contains("command 1's edit at a.rs:5-7"),
+            "{}",
+            out.error()
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_selector_after_a_stage_or_a_read_is_only_ambiguous() {
+        let out = exec(
+            TWO_CALLS,
+            "replace all /foo/ with \"foo\" | replace /foo/ with \"bar\"",
+        );
+        assert!(!out.error().contains("command 1"), "{}", out.error());
+        let out = exec(
+            TWO_CALLS,
+            "insert after 2 \"// x\"\nreplace /foo/ with \"bar\"",
+        );
+        assert!(!out.error().contains("command 1"), "{}", out.error());
+        let out = exec(TWO_CALLS, "replace fn:a>/foo/ with \"bar\"\nshow /foo/");
+        assert!(!out.error().contains("command 1"), "{}", out.error());
     }
 
     #[test]
@@ -5719,6 +5876,29 @@ fn main() {}
             out.error().starts_with("error: a.rs:5:6:"),
             "{}",
             out.error()
+        );
+    }
+
+    const GUARDED_FNS: &str = "use std::fmt;\n\nfn first() -> u32 {\n    1\n}\n\nfn second(x: u32) -> u32 {\n    if x > 1 {\n        x + 1\n    } else {\n        x\n    }\n}\n\nfn third() {}\n";
+
+    #[test]
+    fn guard_locates_an_error_after_the_edit_that_dropped_a_brace() {
+        let script = "insert after 1 \"use std::io;\"\nreplace fn:second>/if x/..$ with <<END\nif x > 1 {\n    x + 2\nEND";
+        let out = guarded("a.rs", GUARDED_FNS, script);
+        let err = out.error();
+        let expected = "error: a.rs:12:1: edit introduces a syntax error (command 2); ";
+        assert!(err.starts_with(expected), "{err}");
+    }
+
+    #[test]
+    fn guard_names_the_command_whose_edit_holds_the_error() {
+        let script = "replace \"x + 1\" with \"(x + 1\"\ninsert after 15 \"fn fourth() {}\"";
+        let out = guarded("a.rs", GUARDED_FNS, script);
+        let err = out.error();
+        assert!(err.starts_with("error: a.rs:9:"), "{err}");
+        assert!(
+            err.contains("edit introduces a syntax error (command 1); "),
+            "{err}"
         );
     }
 
@@ -7261,7 +7441,8 @@ fn main() {}
         let script = "replace fn:main with \"fn main() {}\"\nrename fn:foo to bar";
         let out = served(&files, Some(2), script, &mut lsp);
         assert!(
-            out.error().contains("edit overlaps command 1 at a.rs:"),
+            out.error()
+                .contains("command 2's edit overlaps command 1's at a.rs:"),
             "{}",
             out.error()
         );
