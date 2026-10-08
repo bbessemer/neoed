@@ -122,6 +122,18 @@ of either kind.
 - [ ] `impl:NAME` that names a trait matches nothing, and the hint suggests an
       item of the trait (`trait:NAME>fn:f`); suggest the trait's impls instead
       (`impl:"NAME for TYPE"`)
+- [ ] Replacing an item keeps its attributes, so `TEXT` that brings its own
+      `#[derive(...)]` (or starts with another item, then the attributes) leaves
+      them twice, which the guard misses until a later edit breaks the build:
+      note it, and suggest `ITEM.whole`
+- [ ] Two commands of a script that edit the same span (a `replace` of a match,
+      then a `replace all` of the same regex) fail with a plain ambiguity or
+      overlap error: say that the commands overlap, and suggest merging them or
+      putting a `|` between them
+- [ ] A `<<OLD` block selector whose last line is only part of a source line
+      matches nothing, and the error says only that, ignoring case and spacing,
+      it matches elsewhere: say that a block matches whole lines, and suggest
+      the whole last line or a literal
 
 ## Bugs
 
@@ -139,6 +151,18 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
 - [x] The MCP server's `!!` error for a dry-run entry says "add -n to preview it
       again", the CLI's flag; it should name `dry_run`. Fix it as part of the
       move onto `hint`.
+- [ ] The parse-error guard can locate an introduced error far from the edit
+      that caused it: in a script whose later edit dropped a function's closing
+      `}` (a nested range ending at `$`), the error named line 7, an unrelated
+      `use` inserted by the script's first edit. Locate it within the edit whose
+      change the error spans, or name that command.
+- [ ] A sed-style `sub SEL /re/text$1/`'s parse error suggests `with "…$$1"`,
+      which inserts a literal `$1`, not group 1: the fix should keep `$1` (or
+      write `${1}`), as `sub`'s TEXT expands it.
+- [ ] A heredoc `replace` of a range that starts mid-line replaced the whole
+      first line: `replace fn:run>"executor.run(".."    });" with <<END` dropped
+      the `let result = ` before the match. A partial span's TEXT should keep
+      the line's text before the match, as a one-line `replace` does.
 
 ## Future improvements
 
