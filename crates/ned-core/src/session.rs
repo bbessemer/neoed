@@ -495,6 +495,28 @@ impl Hint for UncommittedErrorKind {
     }
 }
 
+impl UncommittedError {
+    /// The error with its path relative to `dir`, if it's inside it.
+    pub fn relative_to(self, dir: &Path) -> UncommittedError {
+        let relative = |path: PathBuf| {
+            path.strip_prefix(dir)
+                .map(Path::to_path_buf)
+                .unwrap_or(path)
+        };
+        let kind = match self.kind {
+            UncommittedErrorKind::Io { path, source } => UncommittedErrorKind::Io {
+                path: relative(path),
+                source,
+            },
+            UncommittedErrorKind::Changed { path, id } => UncommittedErrorKind::Changed {
+                path: relative(path),
+                id,
+            },
+        };
+        UncommittedError { kind, ..self }
+    }
+}
+
 /// What `ned undo` writes: the files of entry `id`, restored. Each change's
 /// `before` is the file's current text, and `after` what the undo leaves.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1936,6 +1958,28 @@ mod tests {
             err.relative_to(Path::new("/p"))
                 .render(Frontend::Cli, None)
                 .starts_with("error: /q/a.rs ")
+        );
+    }
+
+    #[test]
+    fn uncommitted_errors_name_paths_relative_to_a_dir() {
+        let err = Error::new(UncommittedErrorKind::Changed {
+            path: PathBuf::from("/p/src/a.rs"),
+            id: 3,
+        });
+        assert!(
+            err.relative_to(Path::new("/p"))
+                .render(Frontend::Repl, None)
+                .starts_with("error: src/a.rs changed since session entry 3")
+        );
+        let err = Error::new(UncommittedErrorKind::Changed {
+            path: PathBuf::from("/pq/a.rs"),
+            id: 3,
+        });
+        assert!(
+            err.relative_to(Path::new("/p"))
+                .render(Frontend::Repl, None)
+                .starts_with("error: /pq/a.rs ")
         );
     }
 

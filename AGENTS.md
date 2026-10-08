@@ -235,7 +235,7 @@ usage; CI (`.github/workflows/`) gates PRs.
 | `glob`, `ignore`                  | File-set globs; `-w` workspace walk         |
 | `similar`                         | Diff output                                 |
 | `serde` + `toml`                  | Config (`.ned.toml`)                        |
-| `thiserror` / `anyhow`            | Errors in core / CLI                        |
+| `thiserror`                       | Error kinds, made `hint` errors             |
 | `clap` (derive)                   | CLI arguments                               |
 | `tokio`, `serde_json`, `libc`     | Daemon, MCP: event loop, protocol, `getuid` |
 | `lsp-types`, `url`                | LSP messages and file URIs                  |
@@ -283,7 +283,8 @@ All logic lives in `ned-core` so frontends stay thin.
 ## Coding Conventions
 
 - `cargo fmt` defaults; `cargo clippy --all-targets -- -D warnings` clean.
-- `thiserror` error enums in `ned-core`; `anyhow` only in binaries.
+- Errors are kinds implementing `hint::Hint`; libraries derive their `Display`
+  with `thiserror`.
 - Unit tests beside code; CLI end-to-end tests in `crates/ned-cli/tests/` using
   `assert_cmd` + `insta` snapshots (review snapshots with `cargo insta review`).
 - Query files under `queries/` are code: every selector kind needs a test per

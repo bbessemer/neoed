@@ -2,6 +2,7 @@
 //! (command-language spec §1.4).
 
 use std::collections::HashSet;
+use std::fmt;
 use std::io::{self, BufRead, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -16,7 +17,7 @@ use ned_core::diff::{self, DiffStat};
 use ned_core::exec::{Change, Initial, Options};
 use ned_core::format::Outcome;
 use ned_core::git::Repo;
-use ned_core::hint::{self, Errors, Frontend, Note, Report};
+use ned_core::hint::{self, Errors, Fix, Frontend, Hint, Note, Report};
 use ned_core::invoke::{self, Edited};
 use ned_core::lang::{self, Language};
 use ned_core::lsp::{Document, Lsp};
@@ -103,9 +104,9 @@ pub fn run(args: ReplArgs) -> ExitCode {
         error::recording(repl.session.name()).render(Frontend::Repl)
     );
     if let Some(name) = repl.args.attach.clone()
-        && let Err(error) = repl.attach(&[name.as_str()])
+        && let Err(errors) = repl.attach(&[name.as_str()])
     {
-        errln!("{error}");
+        errln!("{}", errors.render(Frontend::Repl, None));
         return ExitCode::from(2);
     }
     let mut input = Input::new();
@@ -140,7 +141,7 @@ const COMMANDS: [&str; 11] = [
 ];
 
 /// The command `word` names: in full, or by a prefix of only one.
-fn command_name(word: &str) -> Result<&'static str, String> {
+fn command_name(word: &str) -> Result<&'static str, ReplError> {
     if word == "wq" {
         return Ok("wq");
     }
@@ -148,22 +149,88 @@ fn command_name(word: &str) -> Result<&'static str, String> {
         .into_iter()
         .filter(|c| !word.is_empty() && c.starts_with(word))
         .collect();
+    let word = word.to_string();
     match named[..] {
         [name] => Ok(name),
-        [] => {
-            let all: Vec<String> = COMMANDS.iter().map(|c| format!(":{c}")).collect();
-            Err(format!(
-                "error: unknown command `:{word}`; commands are {} :wq",
-                all.join(" ")
-            ))
-        }
+        [] => Err(ReplError::new(ReplErrorKind::UnknownCommand(word))),
         [ref rest @ .., last] => {
             let rest: Vec<String> = rest.iter().map(|c| format!(":{c}")).collect();
-            Err(format!(
-                "error: `:{word}` could be {} or :{last}",
-                rest.join(", ")
-            ))
+            let fix = format!("write {} or :{last}", rest.join(", "));
+            Err(ReplError::new(ReplErrorKind::Ambiguous(word)).with_fix(fix))
         }
+    }
+}
+
+/// What a REPL command can't do.
+#[derive(Debug)]
+enum ReplErrorKind {
+    UnknownCommand(String),
+    Ambiguous(String),
+    NoMessage,
+    NoName,
+    NoSession(String),
+    NotAttached,
+    FilesFlag,
+    Unwritten(Vec<String>),
+    /// The input ended with unwritten edits to these files.
+    Ended(Vec<String>),
+    Terminal(String),
+}
+
+type ReplError = hint::Error<ReplErrorKind>;
+
+impl fmt::Display for ReplErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReplErrorKind::UnknownCommand(word) => write!(f, "unknown command `:{word}`"),
+            ReplErrorKind::Ambiguous(word) => write!(f, "ambiguous command `:{word}`"),
+            ReplErrorKind::NoMessage => f.write_str("`:commit` needs a message"),
+            ReplErrorKind::NoName => f.write_str("`:attach` takes a session's name"),
+            ReplErrorKind::NoSession(name) => write!(f, "the workspace has no session {name}"),
+            ReplErrorKind::NotAttached => f.write_str("not attached to a session"),
+            ReplErrorKind::FilesFlag => {
+                f.write_str("`:files` takes FILE... or -w, the REPL's workspace")
+            }
+            ReplErrorKind::Unwritten(names) => {
+                write!(f, "unwritten edits to {}", names.join(", "))
+            }
+            ReplErrorKind::Ended(names) => write!(
+                f,
+                "the input ended with unwritten edits to {}, which were discarded",
+                names.join(", ")
+            ),
+            ReplErrorKind::Terminal(err) => write!(f, "cannot read the terminal: {err}"),
+        }
+    }
+}
+
+impl Hint for ReplErrorKind {
+    fn exit_code(&self) -> u8 {
+        match self {
+            ReplErrorKind::Unwritten(_) | ReplErrorKind::Ended(_) => 1,
+            ReplErrorKind::Terminal(_) => 3,
+            _ => 2,
+        }
+    }
+
+    fn fix(&self) -> Option<Fix> {
+        Some(Fix::from(match self {
+            ReplErrorKind::UnknownCommand(_) => {
+                let all: Vec<String> = COMMANDS.iter().map(|c| format!(":{c}")).collect();
+                return Some(format!("commands are {} :wq", all.join(" ")).into());
+            }
+            ReplErrorKind::NoMessage => "give one: `:commit MSG`",
+            ReplErrorKind::NoName => "give one: `:attach NAME`",
+            ReplErrorKind::NotAttached => "`:attach NAME` follows one",
+            ReplErrorKind::Unwritten(_) => "`:write` them, or `:quit!` to discard them",
+            ReplErrorKind::Ended(_) => {
+                "end it with `:write` to write them, or `:quit!` to discard them"
+            }
+            ReplErrorKind::Terminal(_) => "pipe the REPL's input instead",
+            ReplErrorKind::Ambiguous(_)
+            | ReplErrorKind::NoSession(_)
+            | ReplErrorKind::FilesFlag => return None,
+        }))
     }
 }
 
@@ -190,14 +257,12 @@ impl Follow {
             Err(_) if self.failed => return Default::default(),
             Err(err) => {
                 self.failed = true;
-                let note = hint::Note::from(err)
-                    .context(format!("stopped following session {}", self.name))
-                    .render(hint::Frontend::Repl)
-                    + "\n";
-                return (String::new(), styles().1.message(&note).into_owned());
+                let note =
+                    Note::from(err).context(format!("stopped following session {}", self.name));
+                return (String::new(), painted(&[note]));
             }
         };
-        let (mut printed, mut notes) = (String::new(), String::new());
+        let (mut printed, mut notes) = (String::new(), Vec::new());
         let style = styles().0;
         for entry in entries.iter().filter(|e| !self.own.contains(&e.id)) {
             let line = session::history(std::slice::from_ref(entry), true);
@@ -223,21 +288,30 @@ impl Follow {
                 let Some(key) = buffers.unwritten().find(same).map(Path::to_path_buf) else {
                     continue;
                 };
-                let note = match buffers.rebase(&key, after) {
-                    Ok(_) => format!(
-                        "note: merged the change into your unwritten edits to {}\n",
+                notes.push(match buffers.rebase(&key, after) {
+                    Ok(_) => Note::from(format!(
+                        "merged the change into your unwritten edits to {}",
                         path.display()
-                    ),
-                    Err(err) => format!(
-                        "{}\n",
-                        Note::from(err.relative_to(&self.cwd)).render(Frontend::Repl)
-                    ),
-                };
-                notes.push_str(&styles().1.message(&note));
+                    )),
+                    Err(err) => Note::from(err.relative_to(&self.cwd)),
+                });
             }
         }
-        (printed, notes)
+        (printed, painted(&notes))
     }
+}
+
+/// `notes` in the REPL's terms, each on a line, painted for stderr.
+fn painted(notes: &[Note]) -> String {
+    notes
+        .iter()
+        .map(|note| {
+            styles()
+                .1
+                .message(&format!("{}\n", note.render(Frontend::Repl)))
+                .into_owned()
+        })
+        .collect()
 }
 
 struct Repl {
@@ -315,28 +389,28 @@ impl Repl {
             None => (word, false),
         };
         let args: Vec<&str> = rest.split_whitespace().collect();
-        let done = command_name(word).and_then(|name| match name {
-            "write" => self.write(&args, force, None).map(|()| None),
-            "commit" => self.commit(rest).map(|()| None),
+        let done = Report::collect(|notes| match command_name(word)? {
+            "write" => self.write(&args, force, None, notes).map(|()| None),
+            "commit" => self.commit(rest, notes).map(|()| None),
             "attach" => self.attach(&args).map(|()| None),
             "detach" => self.detach().map(|()| None),
             "wq" => self
-                .write(&args, force, None)
+                .write(&args, force, None, notes)
                 .and_then(|()| self.quit(false))
                 .map(Some),
             "quit" => self.quit(force).map(Some),
             "undo" => self.undo().map(|()| None),
-            "diff" => self.diff(&args).map(|()| None),
+            "diff" => self.diff(&args, notes).map(|()| None),
             "reload" => self.reload(&args).map(|()| None),
             "files" => self.set_files(&args).map(|()| None),
             "history" => self.history(args.contains(&"--all")).map(|()| None),
-            "help" => help(&args).map(|()| None),
+            "help" => help(&args).map(|()| None).map_err(Into::into),
             _ => unreachable!("every command is handled"),
         });
-        match done {
+        match invoke::report(done, Frontend::Repl, None, &mut Terminal) {
             Ok(quit) => quit,
-            Err(error) => {
-                errln!("{error}");
+            Err(failure) => {
+                invoke::fail(failure, &mut Terminal);
                 None
             }
         }
@@ -446,39 +520,43 @@ impl Repl {
     /// them first with the session's earlier edits (spec §1.3), then reports
     /// what the checks run on save find the write introduced (spec §6.5), and
     /// records it.
-    fn write(&mut self, args: &[&str], force: bool, message: Option<&str>) -> Result<(), String> {
+    fn write(
+        &mut self,
+        args: &[&str],
+        force: bool,
+        message: Option<&str>,
+        notes: &mut Vec<Note>,
+    ) -> Result<(), Errors> {
         let paths = self.paths(args);
         let writes = self
             .buffers()
             .plan_write(paths.as_deref(), fs::read, force)
-            .map_err(|err| err.relative_to(&self.cwd).render(Frontend::Repl, None))?;
+            .map_err(|err| err.relative_to(&self.cwd))?;
         if writes.is_empty() && message.is_none() {
             outln!("no unwritten edits");
             return Ok(());
         }
         let changes: Vec<Change> = writes.iter().map(|w| self.change(w)).collect();
-        let mut notes = Vec::new();
         let committed = match message {
             None => None,
             Some(message) => Some(self.commit_writes(&changes, message)?),
         };
         let before = match self.args.no_check || !self.daemon.running() {
             true => None,
-            false => apply::before_save(&mut self.daemon, &changes, &mut notes),
+            false => apply::before_save(&mut self.daemon, &changes, notes),
         };
         let files: Vec<(PathBuf, String)> = writes
             .iter()
             .map(|w| (w.path.clone(), w.after.clone().unwrap_or_default()))
             .collect();
         if let Err(err) = fs::write_atomic(&files, &[]) {
+            let mut errors = Errors::from(invoke::WriteError(err.to_string()));
             if let Some(Committed { repo, prepared }) = &committed
                 && let Err(git) = repo.retreat(prepared)
             {
-                errln!("{}", git.render(hint::Frontend::Repl, None));
+                errors.push(git);
             }
-            return Err(format!(
-                "error: cannot write files: {err}; no file was changed"
-            ));
+            return Err(errors);
         }
         self.buffers().written(&writes);
         let style = styles().0;
@@ -495,21 +573,12 @@ impl Repl {
                 outcomes: vec![Outcome::Unchanged; changes.len()],
                 checked: None,
             };
-            let found = apply::after_save(
-                &mut self.daemon,
-                before,
-                &changes,
-                &finished,
-                style,
-                &mut notes,
-            );
+            let found =
+                apply::after_save(&mut self.daemon, before, &changes, &finished, style, notes);
             out!("{found}");
         }
         if let Some(committed) = &committed {
             outln!("{}", committed.line(message.unwrap_or_default()));
-        }
-        for note in notes {
-            errln!("{}", note.render(Frontend::Repl));
         }
         let written = writes
             .into_iter()
@@ -539,52 +608,43 @@ impl Repl {
     }
 
     /// `:commit MSG` (spec §1.4).
-    fn commit(&mut self, message: &str) -> Result<(), String> {
+    fn commit(&mut self, message: &str, notes: &mut Vec<Note>) -> Result<(), Errors> {
         match message.trim() {
-            "" => Err("error: :commit needs a message: `:commit MSG`".into()),
-            message => self.write(&[], false, Some(message)),
+            "" => Err(ReplErrorKind::NoMessage.into()),
+            message => self.write(&[], false, Some(message), notes),
         }
     }
 
     /// Commits `changes`, a write about to be made, after the session's edits
     /// since its last commit, as `--commit` does.
-    fn commit_writes(&mut self, changes: &[Change], message: &str) -> Result<Committed, String> {
-        let prior = invoke::uncommitted(self.recording());
-        let prior = invoke::report(prior, Frontend::Repl, None, &mut Terminal)
-            .map_err(|(error, _)| error)?;
+    fn commit_writes(&mut self, changes: &[Change], message: &str) -> Result<Committed, Errors> {
+        let entries = self.recording().lock().and_then(|log| log.entries())?;
+        let prior =
+            session::uncommitted(&entries, fs::read).map_err(|err| err.relative_to(&self.cwd))?;
         let head = Repo::discover(&self.root).ok();
         let finals: Vec<&str> = changes.iter().map(|c| c.new.as_str()).collect();
-        let commit = apply::commit(
+        apply::commit(
             &self.root, head, &self.cwd, &prior, changes, &finals, message,
-        );
-        invoke::report(commit, Frontend::Repl, None, &mut Terminal).map_err(|(error, _)| error)
+        )
     }
 
     /// `:attach NAME`: prints the session's history, then follows it and
     /// records into it.
-    fn attach(&mut self, args: &[&str]) -> Result<(), String> {
+    fn attach(&mut self, args: &[&str]) -> Result<(), Errors> {
         let [name] = args else {
-            return Err("error: :attach takes a session's name: `:attach NAME`".into());
+            return Err(ReplErrorKind::NoName.into());
         };
-        let names = session::state_dir()
-            .and_then(|dir| session::sessions(&dir, &self.root))
-            .map_err(|err| err.render(hint::Frontend::Repl, None))?;
+        let names = session::state_dir().and_then(|dir| session::sessions(&dir, &self.root))?;
         if !names.iter().any(|n| n == name) {
             let known = match names.is_empty() {
                 true => "it has none".to_string(),
-                false => format!("its sessions are {}", names.join(", ")),
+                false => format!("its sessions are {}", hint::verbatim(&names.join(", "))),
             };
-            return Err(format!(
-                "error: the workspace has no session {name}; {known}"
-            ));
+            let kind = ReplErrorKind::NoSession(name.to_string());
+            return Err(ReplError::new(kind).with_fix(known).into());
         }
-        let opened = invoke::open(name, &self.root);
-        let attached = invoke::report(opened, Frontend::Repl, None, &mut Terminal)
-            .map_err(|(error, _)| error)?;
-        let (entries, follower) = attached
-            .lock()
-            .and_then(|log| log.follow())
-            .map_err(|err| err.render(hint::Frontend::Repl, None))?;
+        let attached = invoke::open(name, &self.root)?;
+        let (entries, follower) = attached.lock().and_then(|log| log.follow())?;
         out!("{}", session::history(&entries, false));
         *self.follow.lock().unwrap() = Some(Follow {
             name: name.to_string(),
@@ -599,9 +659,9 @@ impl Repl {
         Ok(())
     }
 
-    fn detach(&mut self) -> Result<(), String> {
+    fn detach(&mut self) -> Result<(), Errors> {
         if self.attached.take().is_none() {
-            return Err("error: not attached to a session; `:attach NAME` follows one".into());
+            return Err(ReplErrorKind::NotAttached.into());
         }
         *self.follow.lock().unwrap() = None;
         Ok(())
@@ -657,11 +717,11 @@ impl Repl {
         }
     }
 
-    fn undo(&mut self) -> Result<(), String> {
+    fn undo(&mut self) -> Result<(), Errors> {
         let changes = self
             .buffers()
             .undo(fs::read)
-            .map_err(|err| err.relative_to(&self.cwd).render(Frontend::Repl, None))?;
+            .map_err(|err| err.relative_to(&self.cwd))?;
         let style = styles().0;
         out!(
             "{}",
@@ -674,7 +734,7 @@ impl Repl {
 
     /// `:diff`: what `:write` would write, against the files on disk (spec
     /// §1.4).
-    fn diff(&self, args: &[&str]) -> Result<(), String> {
+    fn diff(&self, args: &[&str], notes: &mut Vec<Note>) -> Result<(), Errors> {
         let paths = self.paths(args).unwrap_or_else(|| self.unwritten());
         if paths.is_empty() {
             outln!("no unwritten edits");
@@ -692,10 +752,7 @@ impl Repl {
                     },
                 ) => {
                     let err = err.with_fix("this is what `:write!` writes");
-                    errln!(
-                        "{}",
-                        Note::from(err.relative_to(&self.cwd)).render(Frontend::Repl)
-                    );
+                    notes.push(err.relative_to(&self.cwd).into());
                     buffers.plan_write(Some(one), fs::read, true)
                 }
                 Err(
@@ -704,17 +761,12 @@ impl Repl {
                         ..
                     },
                 ) => {
-                    errln!(
-                        "{}",
-                        Note::from(err.relative_to(&self.cwd)).render(Frontend::Repl)
-                    );
+                    notes.push(err.relative_to(&self.cwd).into());
                     buffers.plan_write(Some(one), fs::read, true)
                 }
                 writes => writes,
             };
-            changes.extend(
-                writes.map_err(|err| err.relative_to(&self.cwd).render(Frontend::Repl, None))?,
-            );
+            changes.extend(writes.map_err(|err| err.relative_to(&self.cwd))?);
         }
         let style = styles().0;
         out!(
@@ -724,12 +776,12 @@ impl Repl {
         Ok(())
     }
 
-    fn reload(&mut self, args: &[&str]) -> Result<(), String> {
+    fn reload(&mut self, args: &[&str]) -> Result<(), Errors> {
         let paths = self.paths(args);
         let reloaded = paths.clone().unwrap_or_else(|| self.unwritten());
         self.buffers()
             .reload(paths.as_deref())
-            .map_err(|err| err.relative_to(&self.cwd).render(Frontend::Repl, None))?;
+            .map_err(|err| err.relative_to(&self.cwd))?;
         for path in &reloaded {
             outln!("{}: reloaded", self.shown(path));
         }
@@ -739,7 +791,7 @@ impl Repl {
 
     /// `:files`: prints the file set and the buffers with unwritten edits, or
     /// replaces the set.
-    fn set_files(&mut self, args: &[&str]) -> Result<(), String> {
+    fn set_files(&mut self, args: &[&str]) -> Result<(), Errors> {
         match args {
             [] => {}
             ["-w" | "--workspace"] => {
@@ -748,10 +800,11 @@ impl Repl {
                 return Ok(());
             }
             [flag, ..] if flag.starts_with('-') => {
-                return Err(format!(
-                    "error: :files takes FILE... or -w (the REPL's workspace, {}); start another REPL for another workspace",
-                    self.root.display()
-                ));
+                let root = hint::verbatim(&self.root.display().to_string());
+                let fix = format!("start another REPL for a workspace other than {root}");
+                return Err(ReplError::new(ReplErrorKind::FilesFlag)
+                    .with_fix(fix)
+                    .into());
             }
             files => {
                 self.files = files.iter().map(|f| f.to_string()).collect();
@@ -772,24 +825,17 @@ impl Repl {
         Ok(())
     }
 
-    fn history(&self, all: bool) -> Result<(), String> {
-        let entries = self
-            .recording()
-            .lock()
-            .and_then(|log| log.entries())
-            .map_err(|err| err.render(hint::Frontend::Repl, None))?;
+    fn history(&self, all: bool) -> Result<(), Errors> {
+        let entries = self.recording().lock().and_then(|log| log.entries())?;
         out!("{}", session::history(&entries, all));
         Ok(())
     }
 
-    fn quit(&mut self, force: bool) -> Result<u8, String> {
+    fn quit(&mut self, force: bool) -> Result<u8, Errors> {
         let unwritten = self.unwritten();
         if !unwritten.is_empty() && !force {
             let names: Vec<String> = unwritten.iter().map(|p| self.shown(p)).collect();
-            return Err(format!(
-                "error: unwritten edits to {}; `:write` them, or `:quit!` to discard them",
-                names.join(", ")
-            ));
+            return Err(ReplErrorKind::Unwritten(names).into());
         }
         self.discard();
         Ok(0)
@@ -803,12 +849,10 @@ impl Repl {
             return 0;
         }
         let names: Vec<String> = unwritten.iter().map(|p| self.shown(p)).collect();
-        errln!(
-            "error: the input ended with unwritten edits to {}, which were discarded",
-            names.join(", ")
-        );
+        let error = ReplError::new(ReplErrorKind::Ended(names));
+        errln!("{}", error.render(Frontend::Repl, None));
         self.discard();
-        1
+        error.exit_code()
     }
 
     /// Drops every unwritten edit, and tells the servers.
@@ -864,10 +908,8 @@ impl Repl {
 }
 
 /// `:help [TOPIC]`.
-fn help(args: &[&str]) -> Result<(), String> {
-    let text = Frontend::Repl.text(args.first().copied());
-    let text = text.map_err(|error| error.render(Frontend::Repl, None))?;
-    out!("{text}");
+fn help(args: &[&str]) -> Result<(), hint::Error<ned_core::help::UnknownTopic>> {
+    out!("{}", Frontend::Repl.text(args.first().copied())?);
     Ok(())
 }
 
@@ -982,7 +1024,8 @@ impl Input {
                 Err(ReadlineError::Interrupted) => Read::Interrupted,
                 Err(ReadlineError::Eof) => Read::End,
                 Err(err) => {
-                    errln!("error: cannot read the terminal: {err}");
+                    let error = ReplError::new(ReplErrorKind::Terminal(err.to_string()));
+                    errln!("{}", error.render(Frontend::Repl, None));
                     Read::End
                 }
             },

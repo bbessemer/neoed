@@ -30,7 +30,7 @@ pub type Failure = (String, u8);
 /// Files that couldn't be written, so none was.
 #[derive(Debug, thiserror::Error)]
 #[error("cannot write files: {0}; no file was changed")]
-struct WriteError(String);
+pub struct WriteError(pub String);
 
 impl Hint for WriteError {
     fn exit_code(&self) -> u8 {
@@ -380,7 +380,7 @@ fn unrecorded(session: &Session, err: SessionError) -> Note {
 
 /// The changes `--commit` commits in `session` besides the invocation's own,
 /// each with its entry's id (spec §1.3).
-pub fn uncommitted(session: &Session) -> Result<Vec<(u64, FileChange)>, Errors> {
+fn uncommitted(session: &Session) -> Result<Vec<(u64, FileChange)>, Errors> {
     let entries = session.lock().and_then(|log| log.entries())?;
     Ok(session::uncommitted(&entries, fs::read)?)
 }
