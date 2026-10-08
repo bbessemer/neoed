@@ -579,7 +579,7 @@ fn diff_shows_what_write_would_write() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("so this is what `:write!` writes"),
+        stderr.contains("since; this is what `:write!` writes"),
         "{stderr}"
     );
 }

@@ -11,17 +11,18 @@ use std::time::Duration;
 
 use clap::Args;
 use ned_core::apply::{self, Committed, Finished, Render, Settings};
-use ned_core::buffers::{Buffers, BuffersError};
+use ned_core::buffers::{Buffers, BuffersError, BuffersErrorKind};
 use ned_core::diff::{self, DiffStat};
 use ned_core::exec::{Change, Initial, Options};
 use ned_core::format::Outcome;
 use ned_core::git::{GitErrorKind, Repo};
+use ned_core::hint::{self, Frontend, Note};
 use ned_core::invoke::{self, Edited, Ran};
 use ned_core::lang::{self, Language};
 use ned_core::lsp::{Document, Lsp};
 use ned_core::session::{self, Entry, FileChange, Follower, Session};
 use ned_core::style::Role;
-use ned_core::{fs, hint, script, workspace};
+use ned_core::{fs, script, workspace};
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, ExternalPrinter};
 
@@ -225,10 +226,10 @@ impl Follow {
                         "note: merged the change into your unwritten edits to {}\n",
                         path.display()
                     ),
-                    Err(err) => {
-                        let prefix = format!("{}/", self.cwd.display());
-                        format!("note: {}\n", err.to_string().replace(&prefix, ""))
-                    }
+                    Err(err) => format!(
+                        "{}\n",
+                        Note::from(err.relative_to(&self.cwd)).render(Frontend::Repl)
+                    ),
                 };
                 notes.push_str(&styles().1.message(&note));
             }
@@ -326,8 +327,7 @@ impl Repl {
         match done {
             Ok(quit) => quit,
             Err(error) => {
-                let prefix = format!("{}/", self.cwd.display());
-                errln!("{}", error.replace(&prefix, ""));
+                errln!("{error}");
                 None
             }
         }
@@ -437,7 +437,7 @@ impl Repl {
         let writes = self
             .buffers()
             .plan_write(paths.as_deref(), fs::read, force)
-            .map_err(|err| format!("error: {err}"))?;
+            .map_err(|err| err.relative_to(&self.cwd).render(Frontend::Repl, None))?;
         if writes.is_empty() && message.is_none() {
             outln!("no unwritten edits");
             return Ok(());
@@ -649,7 +649,7 @@ impl Repl {
         let changes = self
             .buffers()
             .undo(fs::read)
-            .map_err(|err| format!("error: {err}"))?;
+            .map_err(|err| err.relative_to(&self.cwd).render(Frontend::Repl, None))?;
         let style = styles().0;
         out!(
             "{}",
@@ -673,21 +673,36 @@ impl Repl {
         for path in paths {
             let one = std::slice::from_ref(&path);
             let writes = match buffers.plan_write(Some(one), fs::read, false) {
-                Err(BuffersError::Overlap { path, line }) => {
+                Err(
+                    err @ BuffersError {
+                        kind: BuffersErrorKind::Overlap { .. },
+                        ..
+                    },
+                ) => {
+                    let err = err.with_fix("this is what `:write!` writes");
                     errln!(
-                        "note: {}:{line}: the edit overlaps a change made to the file since, so this is what `:write!` writes",
-                        self.shown(&path)
+                        "{}",
+                        Note::from(err.relative_to(&self.cwd)).render(Frontend::Repl)
                     );
                     buffers.plan_write(Some(one), fs::read, true)
                 }
-                Err(err @ (BuffersError::Exists { .. } | BuffersError::Removed { .. })) => {
-                    let prefix = format!("{}/", self.cwd.display());
-                    errln!("note: {}", err.to_string().replace(&prefix, ""));
+                Err(
+                    err @ BuffersError {
+                        kind: BuffersErrorKind::Exists { .. } | BuffersErrorKind::Removed { .. },
+                        ..
+                    },
+                ) => {
+                    errln!(
+                        "{}",
+                        Note::from(err.relative_to(&self.cwd)).render(Frontend::Repl)
+                    );
                     buffers.plan_write(Some(one), fs::read, true)
                 }
                 writes => writes,
             };
-            changes.extend(writes.map_err(|err| format!("error: {err}"))?);
+            changes.extend(
+                writes.map_err(|err| err.relative_to(&self.cwd).render(Frontend::Repl, None))?,
+            );
         }
         let style = styles().0;
         out!(
@@ -702,7 +717,7 @@ impl Repl {
         let reloaded = paths.clone().unwrap_or_else(|| self.unwritten());
         self.buffers()
             .reload(paths.as_deref())
-            .map_err(|err| format!("error: {err}"))?;
+            .map_err(|err| err.relative_to(&self.cwd).render(Frontend::Repl, None))?;
         for path in &reloaded {
             outln!("{}: reloaded", self.shown(path));
         }

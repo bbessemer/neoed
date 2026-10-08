@@ -9,6 +9,7 @@ use thiserror::Error;
 
 use crate::diff;
 use crate::exec::{Change, Overlay};
+use crate::hint::{self, Fix, Hint};
 use crate::session::FileChange;
 
 /// Files with unwritten edits, by absolute path, and the edits' history.
@@ -32,39 +33,93 @@ struct Edited {
     after: String,
 }
 
+pub type BuffersError = hint::Error<BuffersErrorKind>;
+
 #[derive(Debug, Error)]
-pub enum BuffersError {
-    #[error("nothing to undo; `:history` lists the session's entries, which `ned undo` reverts")]
+pub enum BuffersErrorKind {
+    #[error("nothing to undo")]
     Nothing,
-    #[error("{} has no unwritten edits; `:files` lists the buffers that have", path.display())]
+    #[error("{} has no unwritten edits", path.display())]
     NotBuffered { path: PathBuf },
     #[error("{}: {source}", path.display())]
     Io { path: PathBuf, source: io::Error },
     #[error(
-        "{}:{line}: the edit overlaps a change made to the file since; `:diff` shows the edits, and `:write!` writes them over it",
+        "{}:{line}: the edit overlaps a change made to the file since",
         path.display()
     )]
     Overlap { path: PathBuf, line: usize },
     #[error(
-        "{}:{line}: undoing the edit conflicts with a later change; edit the text by hand",
+        "{}:{line}: undoing the edit conflicts with a later change",
         path.display()
     )]
     UndoOverlap { path: PathBuf, line: usize },
-    #[error("{} exists now; `:write!` writes over it", path.display())]
+    #[error("{} exists now", path.display())]
     Exists { path: PathBuf },
-    #[error("{} was removed since its buffer was read; `:write!` writes it again", path.display())]
+    #[error("{} was removed since its buffer was read", path.display())]
     Removed { path: PathBuf },
     #[error(
-        "{} was written since the script created it, so `:undo` can't remove it; remove it by hand, or with `ned undo`",
+        "{} was written since the script created it, so `:undo` can't remove it",
         path.display()
     )]
     Written { path: PathBuf },
-    #[error(
-        "{} and {} are the same file; `:reload` one of them to drop its edits, then `:write` the other",
-        path.display(),
-        other.display()
-    )]
+    #[error("{} and {} are the same file", path.display(), other.display())]
     SameFile { path: PathBuf, other: PathBuf },
+}
+
+impl BuffersError {
+    /// The error, naming the paths under `dir` relative to it.
+    pub fn relative_to(mut self, dir: &Path) -> BuffersError {
+        let paths = match &mut self.kind {
+            BuffersErrorKind::Nothing => vec![],
+            BuffersErrorKind::NotBuffered { path }
+            | BuffersErrorKind::Io { path, .. }
+            | BuffersErrorKind::Overlap { path, .. }
+            | BuffersErrorKind::UndoOverlap { path, .. }
+            | BuffersErrorKind::Exists { path }
+            | BuffersErrorKind::Removed { path }
+            | BuffersErrorKind::Written { path } => vec![path],
+            BuffersErrorKind::SameFile { path, other } => vec![path, other],
+        };
+        for path in paths {
+            if let Ok(relative) = path.strip_prefix(dir) {
+                *path = relative.to_path_buf();
+            }
+        }
+        self
+    }
+}
+
+impl Hint for BuffersErrorKind {
+    /// 1 for a write or undo refused (spec §7), 2 for a file named without a
+    /// buffer, 3 for a file that can't be read.
+    fn exit_code(&self) -> u8 {
+        match self {
+            BuffersErrorKind::NotBuffered { .. } => 2,
+            BuffersErrorKind::Io { .. } => 3,
+            _ => 1,
+        }
+    }
+
+    fn fix(&self) -> Option<Fix> {
+        let fix = match self {
+            BuffersErrorKind::Nothing => {
+                "`:history` lists the session's entries, which `ned undo` reverts"
+            }
+            BuffersErrorKind::NotBuffered { .. } => "`:files` lists the buffers that have",
+            BuffersErrorKind::Io { .. } => return None,
+            BuffersErrorKind::Overlap { .. } => {
+                "`:diff` shows the edits, and `:write!` writes them over it"
+            }
+            BuffersErrorKind::UndoOverlap { .. } => "edit the text by hand",
+            BuffersErrorKind::Exists { .. } => "`:write!` writes over it",
+            BuffersErrorKind::Removed { .. } => "`:write!` writes it again",
+            BuffersErrorKind::Written { .. } => "remove it by hand, or with `ned undo`",
+            BuffersErrorKind::SameFile { .. } => {
+                "`:reload` one of them to drop its edits, then `:write` the other"
+            }
+        };
+        Some(fix.into())
+    }
 }
 
 impl Buffers {
@@ -112,12 +167,12 @@ impl Buffers {
         &mut self,
         mut read: impl FnMut(&Path) -> io::Result<Option<String>>,
     ) -> Result<Vec<FileChange>, BuffersError> {
-        let step = self.history.last().ok_or(BuffersError::Nothing)?;
+        let step = self.history.last().ok_or(BuffersErrorKind::Nothing)?;
         // Every file is planned before any changes, so an error changes nothing.
         let mut plans = Vec::new();
         for edit in step {
             let path = edit.path.clone();
-            let disk = read(&path).map_err(|source| BuffersError::Io {
+            let disk = read(&path).map_err(|source| BuffersErrorKind::Io {
                 path: path.clone(),
                 source,
             })?;
@@ -130,14 +185,14 @@ impl Buffers {
                     current.as_deref().unwrap_or_default(),
                     edit.before.as_deref().unwrap_or_default(),
                 )
-                .map_err(|line| BuffersError::UndoOverlap {
+                .map_err(|line| BuffersErrorKind::UndoOverlap {
                     path: path.clone(),
                     line,
                 })?;
                 (edit.before.is_some() || !merged.is_empty()).then_some(merged)
             };
             if restored.is_none() && disk.is_some() {
-                return Err(BuffersError::Written { path });
+                return Err(BuffersErrorKind::Written { path }.into());
             }
             plans.push((path, disk, current, restored));
         }
@@ -199,25 +254,30 @@ impl Buffers {
         let mut canonical = BTreeMap::new();
         for path in &paths {
             if let Some(other) = canonical.insert(crate::fs::canonical(path), *path) {
-                return Err(BuffersError::SameFile {
+                return Err(BuffersErrorKind::SameFile {
                     path: other.clone(),
                     other: (*path).clone(),
-                });
+                }
+                .into());
             }
         }
         let mut writes = Vec::new();
         for path in paths {
             let text = &self.texts[path];
-            let disk = read(path).map_err(|source| BuffersError::Io {
+            let disk = read(path).map_err(|source| BuffersErrorKind::Io {
                 path: path.clone(),
                 source,
             })?;
             let after = match (&self.bases[path], &disk) {
                 _ if force || disk == self.bases[path] => text.clone(),
-                (None, _) => return Err(BuffersError::Exists { path: path.clone() }),
-                (Some(_), None) => return Err(BuffersError::Removed { path: path.clone() }),
+                (None, _) => {
+                    return Err(BuffersErrorKind::Exists { path: path.clone() }.into());
+                }
+                (Some(_), None) => {
+                    return Err(BuffersErrorKind::Removed { path: path.clone() }.into());
+                }
                 (Some(base), Some(disk)) => {
-                    diff::merge(base, text, disk).map_err(|line| BuffersError::Overlap {
+                    diff::merge(base, text, disk).map_err(|line| BuffersErrorKind::Overlap {
                         path: path.clone(),
                         line,
                     })?
@@ -250,14 +310,17 @@ impl Buffers {
         };
         let merged = match &self.bases[path] {
             None => {
-                return Err(BuffersError::Exists {
+                return Err(BuffersErrorKind::Exists {
                     path: path.to_path_buf(),
-                });
+                }
+                .into());
             }
-            Some(base) => diff::merge(base, text, disk).map_err(|line| BuffersError::Overlap {
-                path: path.to_path_buf(),
-                line,
-            })?,
+            Some(base) => {
+                diff::merge(base, text, disk).map_err(|line| BuffersErrorKind::Overlap {
+                    path: path.to_path_buf(),
+                    line,
+                })?
+            }
         };
         self.bases
             .insert(path.to_path_buf(), Some(disk.to_string()));
@@ -279,7 +342,7 @@ impl Buffers {
     /// An error unless every one of `paths` has a buffer.
     fn check_buffered(&self, paths: &[PathBuf]) -> Result<(), BuffersError> {
         match paths.iter().find(|p| !self.texts.contains_key(*p)) {
-            Some(path) => Err(BuffersError::NotBuffered { path: path.clone() }),
+            Some(path) => Err(BuffersErrorKind::NotBuffered { path: path.clone() }.into()),
             None => Ok(()),
         }
     }
@@ -408,7 +471,10 @@ mod tests {
         assert_eq!(buffers.unwritten().count(), 0);
         assert!(matches!(
             buffers.undo(disk(&files)),
-            Err(BuffersError::Nothing)
+            Err(BuffersError {
+                kind: BuffersErrorKind::Nothing,
+                ..
+            })
         ));
     }
 
@@ -455,7 +521,10 @@ mod tests {
             .unwrap();
         buffers.written(&writes);
         match buffers.undo(disk(&[("a.rs", "z\n2\n3\n")])) {
-            Err(BuffersError::UndoOverlap { line: 1, .. }) => {}
+            Err(BuffersError {
+                kind: BuffersErrorKind::UndoOverlap { line: 1, .. },
+                ..
+            }) => {}
             other => panic!("{other:?}"),
         }
         assert_eq!(buffers.unwritten().count(), 0);
@@ -469,7 +538,10 @@ mod tests {
         buffers.written(&writes);
         assert!(matches!(
             buffers.undo(disk(&[("n.rs", "n\n")])),
-            Err(BuffersError::Written { .. })
+            Err(BuffersError {
+                kind: BuffersErrorKind::Written { .. },
+                ..
+            })
         ));
     }
 
@@ -514,7 +586,10 @@ mod tests {
         script(&mut buffers, &[change("a.rs", "1\n2\n3\n", "x\n2\n3\n")]);
         let files = [("a.rs", "z\n2\n3\n")];
         match buffers.plan_write(None, disk(&files), false) {
-            Err(BuffersError::Overlap { line: 1, .. }) => {}
+            Err(BuffersError {
+                kind: BuffersErrorKind::Overlap { line: 1, .. },
+                ..
+            }) => {}
             other => panic!("{other:?}"),
         }
         assert_eq!(
@@ -530,7 +605,10 @@ mod tests {
         let files = [("n.rs", "m\n")];
         assert!(matches!(
             buffers.plan_write(None, disk(&files), false),
-            Err(BuffersError::Exists { .. })
+            Err(BuffersError {
+                kind: BuffersErrorKind::Exists { .. },
+                ..
+            })
         ));
         assert_eq!(
             buffers.plan_write(None, disk(&files), true).unwrap(),
@@ -544,7 +622,10 @@ mod tests {
         script(&mut buffers, &[change("a.rs", "a\n", "b\n")]);
         assert!(matches!(
             buffers.plan_write(None, disk(&[]), false),
-            Err(BuffersError::Removed { .. })
+            Err(BuffersError {
+                kind: BuffersErrorKind::Removed { .. },
+                ..
+            })
         ));
         assert_eq!(
             buffers.plan_write(None, disk(&[]), true).unwrap(),
@@ -574,7 +655,10 @@ mod tests {
         let read = |p: &Path| Ok(std::fs::read_to_string(p).ok());
         assert!(matches!(
             buffers.plan_write(None, read, true),
-            Err(BuffersError::SameFile { .. })
+            Err(BuffersError {
+                kind: BuffersErrorKind::SameFile { .. },
+                ..
+            })
         ));
     }
 
@@ -592,13 +676,19 @@ mod tests {
         assert_eq!(writes, [file_change("b.rs", Some("x\n"), Some("y\n"))]);
         assert!(matches!(
             buffers.plan_write(Some(&[path("c.rs")]), disk(&files), false),
-            Err(BuffersError::NotBuffered { .. })
+            Err(BuffersError {
+                kind: BuffersErrorKind::NotBuffered { .. },
+                ..
+            })
         ));
         buffers.reload(Some(&[path("a.rs")])).unwrap();
         assert_eq!(buffers.unwritten().collect::<Vec<_>>(), [path("b.rs")]);
         assert!(matches!(
             buffers.reload(Some(&[path("a.rs")])),
-            Err(BuffersError::NotBuffered { .. })
+            Err(BuffersError {
+                kind: BuffersErrorKind::NotBuffered { .. },
+                ..
+            })
         ));
         buffers.reload(None).unwrap();
         assert_eq!(buffers.unwritten().count(), 0);
@@ -634,7 +724,10 @@ mod tests {
         let mut buffers = Buffers::default();
         script(&mut buffers, &[change("a.rs", "1\n2\n3\n", "x\n2\n3\n")]);
         match buffers.rebase(&path("a.rs"), "z\n2\n3\n") {
-            Err(BuffersError::Overlap { line: 1, .. }) => {}
+            Err(BuffersError {
+                kind: BuffersErrorKind::Overlap { line: 1, .. },
+                ..
+            }) => {}
             other => panic!("{other:?}"),
         }
         assert_eq!(text(&buffers, "a.rs"), Some("x\n2\n3\n"));
@@ -647,8 +740,23 @@ mod tests {
         script(&mut buffers, &[created("n.rs", "n\n")]);
         assert!(matches!(
             buffers.rebase(&path("n.rs"), "m\n"),
-            Err(BuffersError::Exists { .. })
+            Err(BuffersError {
+                kind: BuffersErrorKind::Exists { .. },
+                ..
+            })
         ));
         assert_eq!(text(&buffers, "n.rs"), Some("n\n"));
+    }
+
+    #[test]
+    fn errors_name_the_paths_under_a_dir_relative_to_it() {
+        let err = BuffersError::from(BuffersErrorKind::SameFile {
+            path: PathBuf::from("/cwd/src/a.rs"),
+            other: PathBuf::from("/cwd-other/x"),
+        });
+        assert_eq!(
+            err.relative_to(Path::new("/cwd")).kind.to_string(),
+            "src/a.rs and /cwd-other/x are the same file"
+        );
     }
 }
