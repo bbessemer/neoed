@@ -4,7 +4,7 @@
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use ned_core::hint::{self, Report};
+use ned_core::hint::{self, Error, Fix, Hint, Report};
 use ned_core::invoke::{self, Invocation, Output};
 use ned_core::lang::Language;
 use ned_core::lsp::Lsp;
@@ -161,9 +161,7 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             "show" => {
                 let script = format!("show {}", args.required("selector")?);
                 if shows_more_than_a_selector(&script) {
-                    let error = "error: `selector` holds more than a selector; give a script of several commands to the `ned` tool";
-                    transcript.message(error);
-                    2
+                    finish(Err(UsageError::NotASelector), &mut transcript)
                 } else {
                     self.run(script, &args, &mut transcript)?
                 }
@@ -172,7 +170,8 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             "undo" => self.undo(args.flag("force")?, &mut transcript),
             "cd" => {
                 let dir = args.required("dir")?;
-                self.cd(&dir, &mut transcript)
+                let moved = self.cd(&dir, &mut transcript);
+                finish(moved, &mut transcript)
             }
             "help" => match hint::Frontend::Mcp.text(args.string("topic")?.as_deref()) {
                 Ok(text) => {
@@ -227,17 +226,16 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
                 .filter(|comment| !comment.is_empty()),
         };
         let usage = if !invocation.files.is_empty() && invocation.workspace {
-            Some("error: give `files` or `workspace`, not both")
+            Some(UsageError::FilesAndWorkspace)
         } else if invocation.commit.is_some() && invocation.dry_run {
-            Some("error: `commit` writes the edits, so it can't go with `dry_run`; drop one")
+            Some(UsageError::CommitDryRun)
         } else if invocation.commit.as_deref() == Some("") {
-            Some("error: `commit` needs a message; give one, or drop `commit`")
+            Some(UsageError::NoMessage)
         } else {
             None
         };
-        if let Some(error) = usage {
-            out.message(error);
-            return Ok(2);
+        if let Some(usage) = usage {
+            return Ok(finish(Err(usage), out));
         }
         let session = Some(&self.session);
         Ok(invoke::invoke(
@@ -251,11 +249,7 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
 
     /// `ned history [--all]` of the session, returning the exit code.
     fn history(&self, all: bool, out: &mut Transcript) -> u8 {
-        let history = invoke::history(&self.session, all, out);
-        match invoke::report(history, hint::Frontend::Mcp, None, out) {
-            Ok(()) => 0,
-            Err(failure) => invoke::fail(failure, out),
-        }
+        finish(invoke::history(&self.session, all, out), out)
     }
 
     /// `ned undo [--force]` in the session, returning the exit code.
@@ -265,38 +259,28 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
         let undone = Report::collect(|notes| {
             invoke::undo(&self.session, cwd, force, Style::Plain, notes, out)
         });
-        match invoke::report(undone, hint::Frontend::Mcp, None, out) {
-            Ok(()) => 0,
-            Err(failure) => invoke::fail(failure, out),
-        }
+        finish(undone, out)
     }
 
-    /// Moves the server to `dir`, returning the exit code.
-    fn cd(&mut self, dir: &str, out: &mut Transcript) -> u8 {
+    /// Moves the server to `dir`.
+    fn cd(&mut self, dir: &str, out: &mut Transcript) -> Result<(), hint::Errors> {
         let dir = self.cwd.join(dir);
         let cwd = match dir.canonicalize() {
             Ok(cwd) if cwd.is_dir() => cwd,
             Ok(file) => {
                 let parent = file.parent().unwrap_or(&file);
-                let error = format!(
-                    "error: {} isn't a directory; give its directory, {}",
-                    dir.display(),
-                    parent.display()
+                let fix = format!(
+                    "give its directory, {}",
+                    hint::verbatim(&parent.display().to_string())
                 );
-                return invoke::fail((error, 3), out);
+                return Err(Error::new(CdError::NotADirectory(dir)).with_fix(fix).into());
             }
             Err(err) => {
-                return invoke::fail(
-                    (
-                        format!(
-                            "error: cannot read {}: {err}; give a directory relative to {}",
-                            dir.display(),
-                            self.cwd.display()
-                        ),
-                        3,
-                    ),
-                    out,
-                );
+                let cwd = hint::verbatim(&self.cwd.display().to_string());
+                let fix = format!("give a directory relative to {cwd}");
+                return Err(Error::new(CdError::Unreadable(dir, err))
+                    .with_fix(fix)
+                    .into());
             }
         };
         let root = workspace::root(&cwd).unwrap_or(cwd.clone());
@@ -304,25 +288,12 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             None
         } else {
             let name = self.named.then(|| self.session.name().to_string());
-            let opened = open_session(name.as_deref(), &root);
-            match invoke::report(opened, hint::Frontend::Mcp, None, out) {
-                Ok(session) => Some(session),
-                Err(failure) => return invoke::fail(failure, out),
-            }
+            Some(open_session(name.as_deref(), &root)?)
         };
         // Scripts read their files, and git finds its repository, from the
         // process's working directory.
         if let Err(err) = std::env::set_current_dir(&cwd) {
-            return invoke::fail(
-                (
-                    format!(
-                        "error: cannot enter {}: {err}; give a directory you may enter",
-                        cwd.display()
-                    ),
-                    3,
-                ),
-                out,
-            );
+            return Err(CdError::Unenterable(cwd, err).into());
         }
         if let Some(session) = session {
             self.session = session;
@@ -333,7 +304,67 @@ impl<L: Lsp, C: FnMut(PathBuf) -> L> Server<C> {
             self.session.name()
         ));
         (self.cwd, self.root) = (cwd, root);
-        0
+        Ok(())
+    }
+}
+
+/// Prints `report` in the MCP server's terms, returning its exit code.
+fn finish(report: impl Into<Report<()>>, out: &mut Transcript) -> u8 {
+    match invoke::report(report, hint::Frontend::Mcp, None, out) {
+        Ok(()) => 0,
+        Err(failure) => invoke::fail(failure, out),
+    }
+}
+
+/// Tool arguments that can't go together.
+#[derive(Debug, thiserror::Error)]
+enum UsageError {
+    #[error("`selector` holds more than a selector")]
+    NotASelector,
+    #[error("`files` and `workspace` each give the file set")]
+    FilesAndWorkspace,
+    #[error("`commit` writes the edits, so it can't go with `dry_run`")]
+    CommitDryRun,
+    #[error("`commit` needs a message")]
+    NoMessage,
+}
+
+impl Hint for UsageError {
+    fn exit_code(&self) -> u8 {
+        2
+    }
+
+    fn fix(&self) -> Option<Fix> {
+        Some(Fix::new(match self {
+            UsageError::NotASelector => "give a script of several commands to the `ned` tool",
+            UsageError::FilesAndWorkspace => "drop {the FILE arguments} or {-w}",
+            UsageError::CommitDryRun => "drop {--commit} or `dry_run`",
+            UsageError::NoMessage => "give one, or drop {--commit}",
+        }))
+    }
+}
+
+/// A directory `cd` can't move the server to.
+#[derive(Debug, thiserror::Error)]
+enum CdError {
+    #[error("{} isn't a directory", .0.display())]
+    NotADirectory(PathBuf),
+    #[error("cannot read {}: {}", .0.display(), .1)]
+    Unreadable(PathBuf, io::Error),
+    #[error("cannot enter {}: {}", .0.display(), .1)]
+    Unenterable(PathBuf, io::Error),
+}
+
+impl Hint for CdError {
+    fn exit_code(&self) -> u8 {
+        3
+    }
+
+    fn fix(&self) -> Option<Fix> {
+        match self {
+            CdError::Unenterable(..) => Some(Fix::new("give a directory you may enter")),
+            CdError::NotADirectory(_) | CdError::Unreadable(..) => None,
+        }
     }
 }
 

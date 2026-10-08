@@ -442,10 +442,12 @@ fn conflicting_arguments_are_usage_errors() {
             ),
         ],
     );
-    for result in &results {
+    let both = "error: `files` and `workspace` each give the file set; drop `files` or `workspace`\nexit 2\n";
+    let commit = "error: `commit` writes the edits, so it can't go with `dry_run`; drop `commit` or `dry_run`\nexit 2\n";
+    let empty = "error: `commit` needs a message; give one, or drop `commit`\nexit 2\n";
+    for (result, expected) in results.iter().zip([both, both, commit, empty]) {
         assert!(failed(result), "{result}");
-        assert!(text(result).starts_with("error: "), "{result}");
-        assert!(text(result).ends_with("\nexit 2\n"), "{result}");
+        assert_eq!(text(result), expected);
     }
     assert_eq!(ws.read("a.rs"), AB);
 }
@@ -717,6 +719,18 @@ fn cd_to_somewhere_it_cant_go_fails_and_stays() {
         text(&results[1])
     );
     assert_eq!(text(&results[2]), ws.printed(&["a.rs", "-e", "outline"]));
+}
+
+#[test]
+fn cd_quotes_a_directory_as_it_is_named() {
+    let ws = Workspace::new(&[]);
+    ws.nest("x{-w}", &[("a.rs", AB)]);
+    let results = ws.calls(&[], &[("cd", json!({ "dir": "x{-w}/a.rs" }))]);
+    let fix = format!(
+        "; give its directory, {}\n",
+        ws.root().join("x{-w}").display()
+    );
+    assert!(text(&results[0]).contains(&fix), "{}", text(&results[0]));
 }
 
 #[test]

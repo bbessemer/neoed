@@ -605,6 +605,7 @@ dependencies = [
  "ned-core",
  "serde_json",
  "tempfile",
+ "thiserror",
 ]
 
 [[package]]
