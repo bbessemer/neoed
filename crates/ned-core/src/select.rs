@@ -12,8 +12,9 @@ use tree_sitter::{Node, Query, QueryCursor, QueryError, QueryErrorKind, Streamin
 
 use crate::buffer::{Buffer, LineEnding};
 use crate::conflict::{self, Conflict};
-use crate::exec::{Candidates, ExecError, ExecErrorKind as E};
+use crate::exec::{ExecError, ExecErrorKind as E};
 use crate::fragment::Context;
+use crate::hint::{self, Candidates, Fix};
 use crate::lang::Language;
 use crate::pattern;
 use crate::script::ast::{
@@ -42,7 +43,8 @@ pub(crate) fn file_list(paths: &[&str]) -> String {
 /// The fix for `path` not being in the set `paths`.
 pub(crate) fn add_to_set(paths: &[&str], path: &str) -> String {
     if paths.len() <= MAX_LISTED_FILES {
-        format!("add it with `file {} {path}`", paths.join(" "))
+        let files = hint::verbatim(&format!("{} {path}", paths.join(" ")));
+        format!("add it with `file {files}`")
     } else {
         "add it with `file`, which replaces the set".into()
     }
@@ -208,7 +210,7 @@ pub fn resolve_within(
     notes: &mut Vec<String>,
 ) -> Result<Vec<Match>, ExecError> {
     let span = &target.selector.span;
-    let error = |kind| ExecError::new(kind, Some(span.clone()));
+    let error = |kind| ExecError::new(kind).at(span.clone());
     // A name may repeat within a pattern, but not across patterns: steps, or
     // a range's ends (§3.10).
     let mut named = HashSet::new();
@@ -243,22 +245,22 @@ pub fn resolve_within(
             &mut skipped,
             &mut short,
         )
-        .map_err(error)?;
+        .map_err(|e| e.at(span.clone()))?;
         scopes = found.iter().map(|f| f.scope.clone()).collect();
         let next = found.iter().map(|f| f.m.clone()).collect();
         parents = std::mem::replace(&mut matches, next);
         let short = too_short(&short);
         if matches.is_empty() {
-            let mut kind = no_match(target, i, files, &parents, &start, src);
-            if let (E::NoMatch { hint, .. }, Some((n, count))) = (&mut kind, short.first()) {
+            let mut err = no_match(target, i, files, &parents, &start, src);
+            if let (E::NoMatch { .. }, Some((n, count))) = (&err.kind, short.first()) {
                 let fix = match min_lines(*n) {
                     1 if *count == 1 => format!("drop {} to select the span", line_part(*n)),
                     1 => format!("drop {} to select the spans", line_part(*n)),
                     _ => "use .lines:$ for the last line".into(),
                 };
-                *hint = format!("; it {}; {fix}", skipped_spans(*n, *count));
+                err = err.with_fix(format!("it {}; {fix}", skipped_spans(*n, *count)));
             }
-            return Err(error(kind));
+            return Err(err.at(span.clone()));
         }
         notes.extend(
             short
@@ -279,10 +281,18 @@ pub fn resolve_within(
     match matches.len() {
         1 => Ok(matches),
         _ if target.all => Ok(matches),
-        _ => Err(error(E::Ambiguous {
-            selector: selector.into(),
-            candidates: candidates(&found, &parents, files, &target.selector, src),
-        })),
+        total => {
+            let kind = E::Ambiguous {
+                selector: selector.into(),
+                total,
+            };
+            let candidates = candidates(&found, &parents, files, &target.selector, src);
+            let err = error(kind);
+            Err(match candidates.listed.is_empty() {
+                true => err,
+                false => err.with_fix(Fix::choose("add `all` or use one of:", candidates)),
+            })
+        }
     }
 }
 
@@ -334,7 +344,7 @@ fn no_match(
     parents: &[Match],
     start: &[Match],
     src: &str,
-) -> E {
+) -> ExecError {
     let selector = &target.selector;
     let step = &selector.steps[failed];
     let whole = &src[selector.span.clone()];
@@ -355,12 +365,12 @@ fn no_match(
         ),
     };
     let last = failed + 1 == selector.steps.len();
-    E::NoMatch {
+    let kind = E::NoMatch {
         selector: named.into(),
         files: file_list(&files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>()),
-        hint,
         searched: last.then(|| searched(step, parents)).flatten(),
-    }
+    };
+    ExecError::new(kind).or_fix(|_| hint.strip_prefix("; ").map(String::from))
 }
 
 /// The fix for a search `step` of `target`, the one at `failed`, that matched
@@ -516,7 +526,7 @@ fn resolve_step(
     cut: bool,
     skipped: &mut Vec<(usize, usize, usize)>,
     short: &mut Vec<LineNo>,
-) -> Result<Vec<Found>, E> {
+) -> Result<Vec<Found>, ExecError> {
     // Only a syntax item has parts other than `.lines`, and a conflict its
     // sides; a part's span is neither.
     let mut primary = Some(&step.primary);
@@ -527,14 +537,12 @@ fn resolve_step(
             Some(Primary::Conflict(_)) if side => {}
             Some(Primary::Syntax { .. }) if !side => {}
             _ if side => {
-                return Err(E::PartNeedsConflict {
-                    part: part_name(part).into(),
-                });
+                let part = part_name(part).into();
+                return Err(ExecError::new(E::PartNeedsConflict { part }));
             }
             _ => {
-                return Err(E::PartNeedsItem {
-                    part: part_name(part).into(),
-                });
+                let part = part_name(part).into();
+                return Err(ExecError::new(E::PartNeedsItem { part }));
             }
         }
         primary = None;
@@ -571,7 +579,7 @@ fn resolve_step(
             for &part in &step.parts {
                 let mut picked = Vec::new();
                 for s in &spans {
-                    let parts = s.part(part, &f.text)?;
+                    let parts = s.part(part, &f.text).map_err(ExecError::new)?;
                     if let Part::Line(n) = part
                         && parts.is_empty()
                     {
@@ -583,7 +591,10 @@ fn resolve_step(
             }
             let line = spans.len() > 1;
             for span in spans {
-                if !span.passes(&step.filters, &f.text)? {
+                if !span
+                    .passes(&step.filters, &f.text)
+                    .map_err(ExecError::new)?
+                {
                     continue;
                 }
                 let m = Match {
@@ -644,11 +655,12 @@ impl<'a> Matcher<'a> {
         parents: &[Match],
         scopes: &[Option<Scope>],
         cut: bool,
-    ) -> Result<Self, E> {
+    ) -> Result<Self, ExecError> {
         Ok(match primary {
             Primary::Lines { start, end } => {
                 let end = end.unwrap_or(*start);
-                check_lines(*start, if cut { *start } else { end }, files, parents)?;
+                check_lines(*start, if cut { *start } else { end }, files, parents)
+                    .map_err(ExecError::new)?;
                 Matcher::Lines {
                     start: *start,
                     end,
@@ -675,11 +687,15 @@ impl<'a> Matcher<'a> {
             }
             Primary::Conflict(n) => Matcher::Conflict(*n),
             Primary::Syntax { kind, name } => {
-                check_syntax(kind, name, files, parents)?;
+                check_syntax(kind, name, files, parents).map_err(ExecError::new)?;
                 Matcher::Syntax { kind, name }
             }
-            Primary::Query(source) => Matcher::Query(compile_query(source, files, parents)?),
-            Primary::Code(code) => compile_pattern(code, files, parents, scopes)?,
+            Primary::Query(source) => {
+                Matcher::Query(compile_query(source, files, parents).map_err(ExecError::new)?)
+            }
+            Primary::Code(code) => {
+                compile_pattern(code, files, parents, scopes).map_err(ExecError::new)?
+            }
             Primary::Range { from, to } => Matcher::Range(
                 Box::new(Matcher::new(from, files, parents, scopes, false)?),
                 Box::new(Matcher::new(to, files, parents, scopes, false)?),
@@ -1692,26 +1708,25 @@ impl<'a> FileScope<'a> {
     }
 
     /// An error unless some of `paths`, the file set, match.
-    pub(crate) fn check(&self, paths: &[&str]) -> Result<(), E> {
+    pub(crate) fn check(&self, paths: &[&str]) -> Result<(), ExecError> {
         if paths.iter().any(|p| self.matches(p)) {
             return Ok(());
         }
         let (files, add) = (file_list(paths), add_to_set(paths, self.path));
         Err(match self.glob {
-            None => E::NotInFileSet {
+            None => ExecError::new(E::NotInFileSet {
                 path: self.path.into(),
                 files,
-                add,
-            },
-            Some(_) => E::NoFileMatch {
+            })
+            .with_fix(add),
+            Some(_) => ExecError::new(E::NoFileMatch {
                 glob: self.path.into(),
                 files,
-                add: if on_disk(self.path) {
-                    add
-                } else {
-                    "no file on disk matches it either; correct the glob".into()
-                },
-            },
+            })
+            .with_fix(match on_disk(self.path) {
+                true => add,
+                false => "no file on disk matches it either; correct the glob".into(),
+            }),
         })
     }
 }
@@ -2016,6 +2031,7 @@ pub(crate) fn scope(text: &str, parent: &Range<usize>) -> Range<usize> {
 mod tests {
     use super::*;
     use crate::exec::ExecErrorKind;
+    use crate::hint::Frontend;
     use crate::script::ast::CommandKind;
     use crate::script::parse;
 
@@ -2070,7 +2086,7 @@ mod tests {
     fn error(script: &str, texts: &[(&str, &str)]) -> String {
         resolve_in(script, &files(texts))
             .unwrap_err()
-            .render(script)
+            .render(Frontend::Cli, Some(script))
     }
 
     #[test]
@@ -2496,7 +2512,7 @@ mod tests {
         assert!(e.contains("matches nothing"), "{e}");
         assert_eq!(
             error("delete /one/[.name == \"\"]", &[("a.rs", FILTERED)]),
-            "error: script:1:8: .name needs a syntax item, e.g. fn:NAME.name"
+            "error: script:1:8: .name needs a syntax item; select one, e.g. fn:NAME.name"
         );
     }
 
@@ -2974,7 +2990,7 @@ mod tests {
             "{err:?}"
         );
         assert!(
-            err.render("delete `fn (@a`")
+            err.render(Frontend::Cli, Some("delete `fn (@a`"))
                 .contains("doesn't parse as rust"),
             "{err:?}"
         );
@@ -3042,15 +3058,15 @@ mod tests {
         );
         assert_eq!(
             error("delete /x/.body", &[("a.rs", RUST)]),
-            "error: script:1:8: .body needs a syntax item, e.g. fn:NAME.body"
+            "error: script:1:8: .body needs a syntax item; select one, e.g. fn:NAME.body"
         );
         assert_eq!(
             error("delete fn:main.body.name", &[("a.rs", RUST)]),
-            "error: script:1:8: .name needs a syntax item, e.g. fn:NAME.name"
+            "error: script:1:8: .name needs a syntax item; select one, e.g. fn:NAME.name"
         );
         assert_eq!(
             error("delete fn:main.lines.body", &[("a.rs", RUST)]),
-            "error: script:1:8: .body needs a syntax item, e.g. fn:NAME.body"
+            "error: script:1:8: .body needs a syntax item; select one, e.g. fn:NAME.body"
         );
         assert_eq!(
             error("delete fn:main.ret", &[("a.rs", RUST)]),
@@ -3058,7 +3074,7 @@ mod tests {
         );
         assert_eq!(
             error("delete /x/.type", &[("a.rs", RUST)]),
-            "error: script:1:8: .type needs a syntax item, e.g. fn:NAME.type"
+            "error: script:1:8: .type needs a syntax item; select one, e.g. fn:NAME.type"
         );
     }
 
@@ -3218,8 +3234,15 @@ fn main() {
     fn listed(script: &str, texts: &[(&str, &str)]) -> Vec<String> {
         let set = files(texts);
         let err = resolve_in(script, &set).unwrap_err();
-        let ExecErrorKind::Ambiguous { candidates, .. } = err.kind else {
-            panic!("not ambiguous: {}", err.render(script));
+        let (
+            ExecErrorKind::Ambiguous { .. },
+            Some(Fix {
+                candidates: Some(candidates),
+                ..
+            }),
+        ) = (&err.kind, err.fix.clone())
+        else {
+            panic!("not ambiguous: {}", err.render(Frontend::Cli, Some(script)));
         };
         let listed: Vec<String> = candidates.listed.into_iter().map(|(c, _)| c).collect();
         for c in &listed {

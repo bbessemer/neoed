@@ -189,7 +189,13 @@ pub fn execute(
     }
     let changes = match run.result {
         Ok(changes) => changes,
-        Err(err) => return Err(Ran::failed(err.kind.exit_code(), err.render(src), out)),
+        Err(err) => {
+            return Err(Ran::failed(
+                err.exit_code(),
+                err.render(frontend, Some(src)),
+                out,
+            ));
+        }
     };
     let running: Option<&mut dyn Lsp> = lsp.running().then_some(lsp);
     let mut messages = Vec::new();

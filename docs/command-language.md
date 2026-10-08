@@ -1403,8 +1403,9 @@ before another statement), before and after each stage's edits (§2.3). If the
 count rises, the script is rejected (exit 1) and the error shows the first new
 error node the edits touch, from where the text first changes if the node starts
 before that (an `ERROR` node can span the whole file). An error query's match
-may set a message saying what is wrong and how to fix it, which the error gives
-in place of the generic advice to use `--force`: for the Rust macro call,
+may set a `message` saying what is wrong, and a `fix` saying how to put it
+right, which the error gives in place of the generic advice to use `--force`:
+for the Rust macro call,
 `macro statement needs a ; before the next statement; add one after its closing bracket`.
 If the edits replace a `.sig` with text ending in the character that follows it
 (Python's `:`, or the `{` of a body), the error adds that `.sig` stops before
@@ -1961,7 +1962,7 @@ error: script:1:8: fn:prase matches nothing in src/parser.rs; did you mean fn:pa
 
 error: script:3:1: edit overlaps command 1 at src/parser.rs:14-17; merge the two edits, or put a `|` between them
 
-error: src/parser.rs:15:31: edit introduces a syntax error (use --force to apply anyway)
+error: src/parser.rs:15:31: edit introduces a syntax error; use --force to apply it anyway
 15:        let tok = (self.next();
                                  ^
 
