@@ -245,7 +245,7 @@ fn main() -> ExitCode {
         }
         Err(err) => {
             let _ = STYLES.set(styles);
-            errln!("error: {err}");
+            errln!("{}", err.render(hint::Frontend::Cli, None));
             return ExitCode::from(2);
         }
     }

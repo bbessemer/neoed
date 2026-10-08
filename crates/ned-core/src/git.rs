@@ -9,6 +9,9 @@ use std::process::{Command, Output, Stdio};
 use thiserror::Error;
 
 use crate::diff;
+use crate::hint::{self, Fix, Hint};
+
+use GitErrorKind as K;
 
 /// A git repository's working tree, and the commit `HEAD` named when it was
 /// found.
@@ -75,56 +78,71 @@ struct Entry {
     path: String,
 }
 
+/// A commit that can't be made (spec §1.3).
+pub type GitError = hint::Error<GitErrorKind>;
+
 #[derive(Debug, Error, PartialEq, Eq)]
-pub enum GitError {
-    #[error("--commit needs git, but it isn't installed; install it, or leave out --commit")]
+pub enum GitErrorKind {
+    #[error("git isn't installed")]
     NoGit,
-    #[error(
-        "--commit needs a git repository, but {0} isn't in one; run git init, or leave out --commit"
-    )]
+    #[error("{0} isn't in a git repository")]
     NotARepo(String),
-    #[error("a merge is in progress; finish it with git commit, or leave out --commit")]
+    #[error("a merge is in progress")]
     Merging,
     /// `edit` is the index of the edit.
-    #[error(
-        "{path} isn't in the repository at {top}; commit it in a ned call of its own, or leave out --commit"
-    )]
+    #[error("{path} isn't in the repository at {top}")]
     Outside {
         path: String,
         top: String,
         edit: usize,
     },
     /// `edit` is the index of the file's first edit.
-    #[error("{path} is ignored by git; edit it without --commit, or stop ignoring it")]
+    #[error("{path} is ignored by git")]
     Ignored { path: String, edit: usize },
-    #[error(
-        "the edit to {path} overlaps its uncommitted changes at line {line}; commit or stash them first, or leave out --commit"
-    )]
+    #[error("the edit to {path} overlaps its uncommitted changes at line {line}")]
     Overlap { path: String, line: usize },
-    #[error(
-        "{0} isn't UTF-8 text in HEAD or the index; commit it with git instead, or leave out --commit"
-    )]
+    #[error("{0} isn't UTF-8 text in HEAD or the index")]
     NotUtf8(String),
     #[error("nothing to commit: the script leaves every file as HEAD has it")]
     NothingToCommit,
-    #[error("HEAD moved while ned ran; nothing was written, so rerun the script")]
+    #[error("HEAD moved while ned ran")]
     HeadMoved,
-    #[error(
-        "{0} exists, so another git process is using the index; rerun once it's done, or remove {0} if none is running"
-    )]
+    #[error("{0} exists, so another git process is using the index")]
     IndexLocked(String),
     #[error("git {command} failed: {message}")]
     Failed { command: String, message: String },
 }
 
-impl GitError {
+impl Hint for GitErrorKind {
     /// The exit code for a refused commit (spec §1.3).
-    pub fn exit_code(&self) -> u8 {
+    fn exit_code(&self) -> u8 {
         match self {
-            GitError::NoGit | GitError::NotARepo(_) => 2,
-            GitError::Failed { .. } | GitError::IndexLocked(_) => 3,
+            K::NoGit | K::NotARepo(_) => 2,
+            K::Failed { .. } | K::IndexLocked(_) => 3,
             _ => 1,
         }
+    }
+
+    fn fix(&self) -> Option<Fix> {
+        let leave_out = "{cli:leave out --commit}{mcp:leave out `commit`}{repl:use `:write` in place of `:commit`}";
+        let fix = match self {
+            K::NoGit => format!("install it, or {leave_out}"),
+            K::NotARepo(_) => format!("run git init, or {leave_out}"),
+            K::Merging => format!("finish it with git commit, or {leave_out}"),
+            K::Outside { .. } => format!("commit it in a ned call of its own, or {leave_out}"),
+            K::Ignored { .. } => "edit it without {--commit}, or stop ignoring it".into(),
+            K::Overlap { .. } => format!("commit or stash them first, or {leave_out}"),
+            K::NotUtf8(_) => format!("commit it with git instead, or {leave_out}"),
+            K::HeadMoved => "nothing was written, so rerun the script".into(),
+            K::IndexLocked(lock) => {
+                format!(
+                    "rerun once it's done, or remove {} if none is running",
+                    hint::verbatim(lock)
+                )
+            }
+            K::NothingToCommit | K::Failed { .. } => return None,
+        };
+        Some(fix.into())
     }
 }
 
@@ -133,7 +151,7 @@ impl Repo {
     /// may not exist yet.
     pub fn discover(path: &Path) -> Result<Repo, GitError> {
         let dir = existing_dir(path);
-        let top = toplevel(dir)?.ok_or_else(|| GitError::NotARepo(dir.display().to_string()))?;
+        let top = toplevel(dir)?.ok_or_else(|| K::NotARepo(dir.display().to_string()))?;
         let mut repo = Repo { top, head: None };
         repo.head = repo.verify("HEAD^{commit}")?;
         Ok(repo)
@@ -144,15 +162,15 @@ impl Repo {
     /// edits to one file apply one after another.
     pub fn prepare(&self, edits: &[FileEdit], message: &str) -> Result<Prepared, GitError> {
         if edits.is_empty() {
-            return Err(GitError::NothingToCommit);
+            return Err(K::NothingToCommit.into());
         }
         if self.verify("MERGE_HEAD")?.is_some() {
-            return Err(GitError::Merging);
+            return Err(K::Merging.into());
         }
         let mut index = self.lock_index()?;
         let parent = self.verify("HEAD^{commit}")?;
         if parent != self.head {
-            return Err(GitError::HeadMoved);
+            return Err(K::HeadMoved.into());
         }
         let mut committed = Vec::new();
         let mut staged = Vec::new();
@@ -160,7 +178,7 @@ impl Repo {
         // index of its first edit.
         let mut files: Vec<(String, usize, Vec<&FileEdit>)> = Vec::new();
         for (i, edit) in edits.iter().enumerate() {
-            let path = self.relative(edit.path)?.ok_or_else(|| GitError::Outside {
+            let path = self.relative(edit.path)?.ok_or_else(|| K::Outside {
                 path: edit.path.display().to_string(),
                 top: self.top.display().to_string(),
                 edit: i,
@@ -195,7 +213,7 @@ impl Repo {
             .iter()
             .any(|(path, _, _)| entries(path)[1].is_some_and(|e| e.stage.as_deref() != Some("0")))
         {
-            return Err(GitError::Merging);
+            return Err(K::Merging.into());
         }
         let wanted: Vec<(&Listed, &str)> = files
             .iter()
@@ -233,7 +251,7 @@ impl Repo {
                     .as_ref()
                     .map(|_| {
                         let text = texts.next().expect("a text for each entry");
-                        text.ok_or_else(|| GitError::NotUtf8(path.clone()))
+                        text.ok_or_else(|| K::NotUtf8(path.clone()))
                     })
                     .transpose()
             };
@@ -253,7 +271,7 @@ impl Repo {
                 let before = edit.before.unwrap_or_default();
                 let (next_commit, next_stage) =
                     apply_edit(before, after, commit.as_deref(), index_text.as_deref()).map_err(
-                        |line| GitError::Overlap {
+                        |line| K::Overlap {
                             path: path.clone(),
                             line,
                         },
@@ -265,7 +283,7 @@ impl Repo {
                 }
             }
             if commit.is_some() && head.is_none() && index.is_none() && ignored.contains(&path) {
-                return Err(GitError::Ignored { path, edit: first });
+                return Err(K::Ignored { path, edit: first }.into());
             }
             let mode = head
                 .as_ref()
@@ -299,7 +317,7 @@ impl Repo {
         }
         let tree = self.tree(parent.as_deref(), &committed)?;
         if parent.is_some() && self.verify("HEAD^{tree}")?.as_deref() == Some(tree.as_str()) {
-            return Err(GitError::NothingToCommit);
+            return Err(K::NothingToCommit.into());
         }
         let mut args = vec!["commit-tree", tree.as_str(), "-m", message];
         if let Some(parent) = &parent {
@@ -333,7 +351,7 @@ impl Repo {
             return Ok(());
         }
         if self.verify("HEAD")? != prepared.parent {
-            return Err(GitError::HeadMoved);
+            return Err(K::HeadMoved.into());
         }
         Err(failed(&args, &out))
     }
@@ -399,9 +417,11 @@ impl Repo {
         if !out.status.success() {
             return Err(failed(args, &out));
         }
-        String::from_utf8(out.stdout).map_err(|_| GitError::Failed {
-            command: args[0].into(),
-            message: "its output isn't UTF-8".into(),
+        String::from_utf8(out.stdout).map_err(|_| {
+            GitError::new(K::Failed {
+                command: args[0].into(),
+                message: "its output isn't UTF-8".into(),
+            })
         })
     }
 
@@ -571,9 +591,11 @@ impl Repo {
             }
             rest = &out.stdout;
         }
-        let malformed = |message: String| GitError::Failed {
-            command: args[0].into(),
-            message,
+        let malformed = |message: String| {
+            GitError::new(K::Failed {
+                command: args[0].into(),
+                message,
+            })
         };
         entries
             .iter()
@@ -644,7 +666,7 @@ impl Repo {
                 replaced: None,
             }),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                Err(GitError::IndexLocked(lock.display().to_string()))
+                Err(K::IndexLocked(lock.display().to_string()).into())
             }
             Err(err) => Err(io_failed("update-index", err)),
         }
@@ -752,10 +774,10 @@ fn beside(path: &Path, suffix: &str) -> PathBuf {
 }
 
 fn io_failed(command: &str, err: std::io::Error) -> GitError {
-    GitError::Failed {
+    GitError::new(K::Failed {
         command: command.into(),
         message: err.to_string(),
-    }
+    })
 }
 
 /// Runs `git ARGS` in `dir`, with literal pathspecs, `env` and `input`.
@@ -782,7 +804,7 @@ fn run(
     }
     let io_failed = |err| io_failed(args[0], err);
     let mut child = cmd.spawn().map_err(|err| match err.kind() {
-        std::io::ErrorKind::NotFound => GitError::NoGit,
+        std::io::ErrorKind::NotFound => K::NoGit.into(),
         _ => io_failed(err),
     })?;
     // Write the input while git's output is read, so a batch can't fill both
@@ -803,10 +825,10 @@ fn run(
 }
 
 fn failed(args: &[&str], out: &Output) -> GitError {
-    GitError::Failed {
+    GitError::new(K::Failed {
         command: args[0].into(),
         message: String::from_utf8_lossy(&out.stderr).trim_end().to_string(),
-    }
+    })
 }
 
 /// The text to commit for an edit from `before` to `after`, given `HEAD`'s
@@ -943,7 +965,7 @@ mod tests {
         };
         assert_eq!(
             repo.prepare(&[edit], "m").map(|_| ()),
-            Err(GitError::HeadMoved)
+            Err(K::HeadMoved.into())
         );
     }
 
@@ -960,7 +982,7 @@ mod tests {
         let moved = repo.git(&tree, &[], None).unwrap().trim_end().to_string();
         repo.git(&["update-ref", "HEAD", &moved], &[], None)
             .unwrap();
-        assert_eq!(repo.advance(&prepared), Err(GitError::HeadMoved));
+        assert_eq!(repo.advance(&prepared), Err(K::HeadMoved.into()));
         assert_eq!(repo.verify("HEAD").unwrap(), Some(moved));
     }
 
@@ -1180,11 +1202,37 @@ mod tests {
             after: Some("x\n"),
         });
         assert_eq!(
-            repo.prepare(&edits, "m").unwrap_err(),
-            GitError::Ignored {
+            repo.prepare(&edits, "m").unwrap_err().kind,
+            K::Ignored {
                 path: "x.log".into(),
                 edit: 1
             }
+        );
+    }
+
+    #[test]
+    fn a_refused_commit_says_how_to_go_without_one_in_each_frontends_terms() {
+        use crate::hint::Frontend;
+
+        let error = GitError::new(K::Merging);
+        let rendered =
+            [Frontend::Cli, Frontend::Mcp, Frontend::Repl].map(|f| error.render(f, None));
+        assert_eq!(
+            rendered,
+            [
+                "error: a merge is in progress; finish it with git commit, or leave out --commit",
+                "error: a merge is in progress; finish it with git commit, or leave out `commit`",
+                "error: a merge is in progress; finish it with git commit, or use `:write` in place of `:commit`",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_path_in_a_fix_prints_as_it_is() {
+        let error = GitError::new(K::IndexLocked("/tmp/{-w}/index.lock".into()));
+        assert_eq!(
+            error.render(crate::hint::Frontend::Mcp, None),
+            "error: /tmp/{-w}/index.lock exists, so another git process is using the index; rerun once it's done, or remove /tmp/{-w}/index.lock if none is running"
         );
     }
 }

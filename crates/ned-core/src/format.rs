@@ -489,9 +489,9 @@ mod tests {
     fn unknown_language() {
         let root = tree(&[(".ned.toml", "[format]\nruby = [\"rubocop\"]\n")]);
         let err = error(&root, None, "a.rs");
-        assert_eq!(err.location, format!("{}:2:1", at(&root, ".ned.toml")));
+        assert_eq!(err.kind.location, format!("{}:2:1", at(&root, ".ned.toml")));
         assert_eq!(
-            err.message,
+            err.kind.message,
             "unknown language `ruby`; expected one of rust, python, typescript, tsx, javascript, go, markdown"
         );
     }
@@ -501,11 +501,12 @@ mod tests {
         let root = tree(&[(".ned.toml", "[lint]\nrust = [\"clippy\"]\n")]);
         let err = error(&root, None, "a.rs");
         assert!(
-            err.location
+            err.kind
+                .location
                 .starts_with(&format!("{}:1:", at(&root, ".ned.toml"))),
-            "{err}"
+            "{err:?}"
         );
-        assert!(err.message.contains("unknown field `lint`"), "{err}");
+        assert!(err.kind.message.contains("unknown field `lint`"), "{err:?}");
     }
 
     #[test]
@@ -528,11 +529,11 @@ mod tests {
             let root = tree(&[(".ned.toml", &format!("[format]\nrust = {value}\n"))]);
             let err = error(&root, None, "a.rs");
             assert_eq!(
-                err.location,
+                err.kind.location,
                 format!("{}:2:8", at(&root, ".ned.toml")),
                 "{value}"
             );
-            assert_eq!(err.message, message, "{value}");
+            assert_eq!(err.kind.message, message, "{value}");
         }
     }
 
@@ -541,11 +542,12 @@ mod tests {
         let root = tree(&[(".ned.toml", "[format\n")]);
         let err = error(&root, None, "a.rs");
         assert!(
-            err.location
+            err.kind
+                .location
                 .starts_with(&format!("{}:1:", at(&root, ".ned.toml"))),
-            "{err}"
+            "{err:?}"
         );
-        assert!(!err.message.contains('\n'), "{err}");
+        assert!(!err.kind.message.contains('\n'), "{err:?}");
     }
 
     #[test]
@@ -553,9 +555,10 @@ mod tests {
         let root = tree(&[]);
         let err = error(&root, Some("format = 1\n"), "a.rs");
         assert!(
-            err.location
+            err.kind
+                .location
                 .starts_with(&format!("{}:1:", at(&root, "home/.config/ned/config.toml"))),
-            "{err}"
+            "{err:?}"
         );
     }
 
@@ -789,7 +792,7 @@ mod tests {
         let changes = [change(&root.path().join("a.rs"), Some(Language::Rust), "")];
         let err = run(&changes, &mut Config::new(None).unwrap()).unwrap_err();
         assert_eq!(
-            err.message,
+            err.kind.message,
             "`rust` must be a command (an array of strings) or false"
         );
     }

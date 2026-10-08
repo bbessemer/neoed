@@ -1412,7 +1412,10 @@ mod tests {
         assert!(
             matches!(
                 err.kind,
-                SessionErrorKind::Dir(crate::fs::PrivateDirError::Unsafe { .. })
+                SessionErrorKind::Dir(crate::fs::PrivateDirError {
+                    kind: crate::fs::PrivateDirErrorKind::Unsafe { .. },
+                    ..
+                })
             ),
             "{err:?}"
         );

@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use toml::Spanned;
 
-use crate::color::{BadColor, Rgb};
+use crate::color::Rgb;
 use crate::config::{ConfigError, error_at, io_error};
 use crate::highlight::prefixes;
 use crate::style::Role;
@@ -143,8 +143,9 @@ pub(crate) fn resolve(
     };
     let theme = layer(raw, file, text, themes, &mut Vec::new())?;
     let missing = |key: &str| {
-        let message = format!("the theme has no `{key}`; set it, or `from` a theme that does");
+        let message = format!("the theme has no `{key}`");
         error_at(file, text, Some(span.clone()), message)
+            .with_fix("set it, or `from` a theme that does")
     };
     Ok(Theme {
         dark: theme.dark.ok_or_else(|| missing("dark"))?,
@@ -198,17 +199,20 @@ fn layer(
                     match fs::read_to_string(&file) {
                         Ok(source) => (file, source),
                         Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                            let message = match is_path {
-                                true => format!(
-                                    "no theme file {}; fix the path, which is relative to this file",
-                                    file.display()
+                            let (message, fix) = match is_path {
+                                true => (
+                                    format!("no theme file {}", file.display()),
+                                    "fix the path, which is relative to this file",
                                 ),
-                                false => format!(
-                                    "no theme `{name}`: it isn't built in (default-dark, default-light) and there is no {}; write it, or use a built-in",
-                                    file.display()
+                                false => (
+                                    format!(
+                                        "no theme `{name}`: it isn't built in (default-dark, default-light) and there is no {}",
+                                        file.display()
+                                    ),
+                                    "write it, or use a built-in",
                                 ),
                             };
-                            return Err(error(from.span(), message));
+                            return Err(error(from.span(), message).with_fix(fix));
                         }
                         Err(err) => return Err(io_error(&file, &err)),
                     }
@@ -216,8 +220,8 @@ fn layer(
             };
             let id = fs::canonicalize(&file).unwrap_or(file.clone());
             if chain.contains(&id) {
-                let message = format!("theme `{name}` inherits from itself; remove a `from`");
-                return Err(error(from.span(), message));
+                let message = format!("theme `{name}` inherits from itself");
+                return Err(error(from.span(), message).with_fix("remove a `from`"));
             }
             chain.push(id);
             let raw: RawTheme = toml::from_str(&source)
@@ -229,9 +233,9 @@ fn layer(
         value
             .get_ref()
             .parse::<Rgb>()
-            .map_err(|e| error(value.span(), e.to_string()))
+            .map_err(|e| e.map_kind(|bad| error(value.span(), bad.to_string()).kind))
     };
-    let look = |value: &Spanned<String>| look(value.get_ref()).map_err(|m| error(value.span(), m));
+    let look = |value: &Spanned<String>| look(value.get_ref(), |m| error(value.span(), m));
     theme.dark = raw.dark.or(theme.dark);
     if let Some(added) = &raw.added {
         theme.added = Some(color(added)?);
@@ -244,24 +248,22 @@ fn layer(
     }
     for (key, value) in &raw.ui {
         let Some(key) = UI_KEYS.iter().find(|k| *k == key.get_ref()) else {
-            let message = format!(
-                "unknown ui key `{}`; use {}",
-                key.get_ref(),
-                UI_KEYS.join(", ")
-            );
-            return Err(error(key.span(), message));
+            let message = format!("unknown ui key `{}`", key.get_ref());
+            let fix = format!("use {}", UI_KEYS.join(", "));
+            return Err(error(key.span(), message).with_fix(fix));
         };
         theme.ui.insert(key, look(value)?);
     }
     Ok(theme)
 }
 
-/// The look a `[theme]` value writes: a colour and attributes.
-fn look(value: &str) -> Result<Look, String> {
+/// The look a `[theme]` value writes: a colour and attributes; `error` makes
+/// the error at the value.
+fn look(value: &str, error: impl Fn(String) -> ConfigError) -> Result<Look, ConfigError> {
     const FIX: &str = "use `#rrggbb`, bold, dim, italic or underline";
     let mut look = Look::default();
     if value.trim().is_empty() {
-        return Err(format!("empty look; {FIX}"));
+        return Err(error("empty look".into()).with_fix(FIX));
     }
     for word in value.split_whitespace() {
         match word {
@@ -271,11 +273,17 @@ fn look(value: &str) -> Result<Look, String> {
             "underline" => look.underline = true,
             _ if word.starts_with('#') => {
                 if look.color.is_some() {
-                    return Err(format!("two colours in `{value}`; keep one"));
+                    let message = format!("two colours in `{value}`");
+                    return Err(error(message).with_fix("keep one"));
                 }
-                look.color = Some(word.parse().map_err(|e: BadColor| e.to_string())?);
+                let color = word.parse::<Rgb>();
+                look.color =
+                    Some(color.map_err(|e| e.map_kind(|bad| error(bad.to_string()).kind))?);
             }
-            _ => return Err(format!("`{word}` is not a colour or attribute; {FIX}")),
+            _ => {
+                let message = format!("`{word}` is not a colour or attribute");
+                return Err(error(message).with_fix(FIX));
+            }
         }
     }
     Ok(look)
@@ -288,6 +296,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::config::error_at;
     use crate::config::tests::tree;
+    use crate::hint::Frontend;
 
     /// The theme the user config `config.toml` among `files` sets.
     fn theme(files: &[(&str, &str)]) -> Result<Theme, ConfigError> {
@@ -323,11 +332,13 @@ pub(crate) mod tests {
         }
     }
 
+    /// Asserts the error is at `location`, and `text` is in its problem or fix.
     #[track_caller]
-    fn assert_error(result: Result<Theme, ConfigError>, location: &str, message: &str) {
+    fn assert_error(result: Result<Theme, ConfigError>, location: &str, text: &str) {
         let err = result.unwrap_err();
-        assert!(err.location.ends_with(location), "{err}");
-        assert!(err.message.contains(message), "{err}");
+        assert!(err.kind.location.ends_with(location), "{err:?}");
+        let rendered = err.render(Frontend::Cli, None);
+        assert!(rendered.contains(text), "{rendered}");
     }
 
     const INLINE: &str = r##"
@@ -542,9 +553,9 @@ hunk-header = "#56b6c2"
             "default-dark",
         );
         let err = config("theme = \"nope\"\n").unwrap_err();
-        assert!(err.message.contains("themes/nope.toml"), "{err}");
+        assert!(err.kind.message.contains("themes/nope.toml"), "{err:?}");
         let err = config("theme = \"gone.toml\"\n").unwrap_err();
-        assert!(err.location.ends_with("config.toml:1:9"), "{err}");
+        assert!(err.kind.location.ends_with("config.toml:1:9"), "{err:?}");
     }
 
     #[test]

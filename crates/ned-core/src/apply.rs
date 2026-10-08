@@ -10,7 +10,8 @@ use crate::config::{self, Config, ConfigError};
 use crate::diff::{self, DiffStat};
 use crate::exec::Change;
 use crate::format::{self, Failure, Outcome};
-use crate::git::{FileEdit, GitError, Prepared, Repo};
+use crate::git::{FileEdit, GitError, GitErrorKind, Prepared, Repo};
+use crate::hint::{self, Fix, Frontend, Hint};
 use crate::lang::Language;
 use crate::lsp::{self, Checked, Diagnostic, Lsp, LspFailure, Severity};
 use crate::session::FileChange;
@@ -40,6 +41,35 @@ pub struct Finished {
 pub struct Rejected {
     pub exit: u8,
     pub message: String,
+}
+
+/// Why edits are rejected; a [`Rejected`] message joins these, rendered.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+enum Rejection {
+    #[error("{path}: edit makes {formatter} fail: {why}")]
+    BreaksFormatter {
+        path: String,
+        formatter: String,
+        why: String,
+    },
+    /// Counts of the blocking diagnostics, such as `2 errors and 1 warning`.
+    #[error("edit introduces {0}")]
+    Introduces(String),
+}
+
+impl Hint for Rejection {
+    fn exit_code(&self) -> u8 {
+        1
+    }
+
+    fn fix(&self) -> Option<Fix> {
+        match self {
+            Rejection::BreaksFormatter { .. } => {
+                Some("fix it, or use {--force} to apply anyway".into())
+            }
+            Rejection::Introduces(_) => None,
+        }
+    }
 }
 
 impl Finished {
@@ -74,7 +104,7 @@ pub fn finish(
             .and_then(|mut config| format::run(changes, &mut config))
             .map_err(|err: ConfigError| Rejected {
                 exit: 2,
-                message: format!("error: {err}"),
+                message: err.render(Frontend::Cli, None),
             })?,
     };
     if let Some(lsp) = lsp.as_deref_mut() {
@@ -87,10 +117,12 @@ pub fn finish(
                 messages.push(format!("note: {note}"));
             }
             Outcome::Failed(failure) if !settings.force && introduces(change, failure) => {
-                introduced.push(format!(
-                    "error: {}: edit makes {} fail: {}; fix it, or use --force to apply anyway",
-                    change.path, failure.name, failure.why
-                ));
+                let rejection = Rejection::BreaksFormatter {
+                    path: change.path.clone(),
+                    formatter: failure.name.clone(),
+                    why: failure.why.clone(),
+                };
+                introduced.push(hint::Error::new(rejection).render(Frontend::Cli, None));
             }
             Outcome::Failed(failure) => messages.push(format!("note: {}", failure.note())),
             Outcome::Formatted { name, text } if !change.created => {
@@ -269,19 +301,15 @@ fn blocked(changes: &[Change], finals: &[&str], checked: &Checked) -> String {
     } else {
         "warnings"
     };
-    let mut text = format!(
-        "error: edit introduces {}; fix {them}, or add `allow {allow}` to the script to apply it anyway\n",
-        counts.join(" and ")
-    );
-    for (i, d) in &checked.blocking {
-        text.push_str(&lsp::render(
-            &changes[*i].path,
-            &Buffer::new(finals[*i]),
-            d,
-            Style::Plain,
-        ));
-    }
-    text
+    let listing: String = checked
+        .blocking
+        .iter()
+        .map(|(i, d)| lsp::render(&changes[*i].path, &Buffer::new(finals[*i]), d, Style::Plain))
+        .collect();
+    let fix = format!("fix {them}, or add `allow {allow}` to the script to apply it anyway");
+    hint::Error::new(Rejection::Introduces(counts.join(" and ")))
+        .with_fix(Fix::new(fix).then(listing))
+        .render(Frontend::Cli, None)
 }
 
 /// How finished edits are printed.
@@ -416,34 +444,32 @@ pub fn commit(
     let found = Repo::discover(paths.first().map_or(top, PathBuf::as_path))?;
     let repo = before.filter(|b| b.top == found.top).unwrap_or(found);
     if edits.is_empty() {
-        return Err(GitError::NothingToCommit);
+        return Err(GitErrorKind::NothingToCommit.into());
     }
-    let mut prepared = repo.prepare(&edits, message)?;
+    let mut prepared = repo
+        .prepare(&edits, message)
+        .map_err(|err| in_session(err, prior))?;
     repo.advance(&prepared)?;
     if let Err(err) = repo.stage(&mut prepared) {
         if let Err(git) = repo.retreat(&prepared) {
-            messages.push(format!("error: {git}"));
+            messages.push(git.render(Frontend::Cli, None));
         }
         return Err(err);
     }
     Ok(Committed { repo, prepared })
 }
 
-/// The message for a failed commit, naming the session entry whose edit it
-/// concerns, if `prior` (§1.3) holds that edit.
-pub fn commit_error(err: &GitError, prior: &[(u64, FileChange)]) -> String {
-    let (problem, edit) = match err {
-        GitError::Ignored { path, edit } => (format!("{path} is ignored by git"), edit),
-        GitError::Outside { path, top, edit } => {
-            (format!("{path} isn't in the repository at {top}"), edit)
-        }
-        _ => return format!("error: {err}"),
+/// `err`, with the fix for an edit git can't commit that `prior` (§1.3), a
+/// session's earlier changes, holds.
+fn in_session(err: GitError, prior: &[(u64, FileChange)]) -> GitError {
+    let (GitErrorKind::Ignored { edit, .. } | GitErrorKind::Outside { edit, .. }) = err.kind else {
+        return err;
     };
-    match prior.get(*edit) {
-        Some((id, _)) => format!(
-            "error: {problem}, and session entry {id} edited it, so the session's edits can't be committed; start a new session (-s NAME) to commit only the edits from then on"
-        ),
-        None => format!("error: {err}"),
+    match prior.get(edit) {
+        Some((id, _)) => err.with_fix(format!(
+            "session entry {id} edited it, so start a new session ({{-s NAME}}) to commit only the edits from then on"
+        )),
+        None => err,
     }
 }
 
@@ -544,5 +570,43 @@ mod tests {
             }]
         );
         assert!(messages.is_empty(), "{messages:?}");
+    }
+
+    #[test]
+    fn blocking_diagnostics_are_listed_as_the_server_wrote_them() {
+        let change = Change {
+            path: "a.rs".into(),
+            old: String::new(),
+            new: "fn a() {}\n".into(),
+            edits: 1,
+            lang: Some(Language::Rust),
+            created: false,
+        };
+        let diagnostic = Diagnostic {
+            start: lsp::Position {
+                line: 0,
+                character: 3,
+            },
+            end: lsp::Position {
+                line: 0,
+                character: 4,
+            },
+            severity: Severity::Error,
+            message: "expected `{-w}`".into(),
+            source: None,
+            code: None,
+        };
+        let checked = Checked {
+            files: vec![vec![diagnostic.clone()]],
+            blocking: vec![(0, diagnostic)],
+        };
+        let message = blocked(&[change], &["fn a() {}\n"], &checked);
+        assert!(
+            message.starts_with(
+                "error: edit introduces 1 error; fix it, or add `allow errors` to the script to apply it anyway\n"
+            ),
+            "{message}"
+        );
+        assert!(message.contains("expected `{-w}`"), "{message}");
     }
 }

@@ -15,7 +15,7 @@ use ned_core::buffers::{Buffers, BuffersError};
 use ned_core::diff::{self, DiffStat};
 use ned_core::exec::{Change, Initial, Options};
 use ned_core::format::Outcome;
-use ned_core::git::{GitError, Repo};
+use ned_core::git::{GitErrorKind, Repo};
 use ned_core::invoke::{self, Edited, Ran};
 use ned_core::lang::{self, Language};
 use ned_core::lsp::{Document, Lsp};
@@ -460,7 +460,7 @@ impl Repl {
             if let Some(Committed { repo, prepared }) = &committed
                 && let Err(git) = repo.retreat(prepared)
             {
-                errln!("error: {git}");
+                errln!("{}", git.render(hint::Frontend::Repl, None));
             }
             return Err(format!(
                 "error: cannot write files: {err}; no file was changed"
@@ -547,9 +547,9 @@ impl Repl {
         let commit = apply::commit(
             &self.root, head, &self.cwd, &prior, changes, &finals, message, messages,
         );
-        commit.map_err(|err| match err {
-            GitError::NothingToCommit => "error: nothing to commit: the session's edits leave every file as HEAD has it; edit a file, then `:commit MSG`".into(),
-            err => apply::commit_error(&err, &prior),
+        commit.map_err(|err| match err.kind {
+            GitErrorKind::NothingToCommit => "error: nothing to commit: the session's edits leave every file as HEAD has it; edit a file, then `:commit MSG`".into(),
+            _ => err.render(hint::Frontend::Repl, None),
         })
     }
 

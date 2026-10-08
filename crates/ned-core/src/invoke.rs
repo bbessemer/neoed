@@ -279,7 +279,8 @@ fn run(
                     for message in messages {
                         out.message(&message);
                     }
-                    return Ran::failed(err.exit_code(), apply::commit_error(&err, prior), out);
+                    let error = err.render(invocation.frontend, None);
+                    return Ran::failed(err.exit_code(), error, out);
                 }
             }
         }
@@ -306,7 +307,7 @@ fn run(
             if let Some(Committed { repo, prepared }) = &committed
                 && let Err(git) = repo.retreat(prepared)
             {
-                out.message(&format!("error: {git}"));
+                out.message(&git.render(invocation.frontend, None));
             }
             let error = format!("error: cannot write files: {err}; no file was changed");
             return Ran::failed(3, error, out);

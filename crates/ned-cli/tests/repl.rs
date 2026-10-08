@@ -633,7 +633,12 @@ fn a_refused_commit_writes_nothing() {
         out.contains("error: :commit needs a message: `:commit MSG`\n"),
         "{out}"
     );
-    assert!(out.contains("isn't in one"), "{out}");
+    assert!(
+        out.contains(
+            "isn't in a git repository; run git init, or use `:write` in place of `:commit`"
+        ),
+        "{out}"
+    );
     assert!(out.contains("error: unwritten edits to a.rs"), "{out}");
     assert_eq!(ws.read("a.rs"), AB);
 }
