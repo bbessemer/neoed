@@ -884,7 +884,7 @@ impl Repl {
             })
             .collect();
         if let Err(err) = self.daemon.sync(&documents) {
-            errln!("note: {}", err.0);
+            errln!("{}", Note::from(err).render(Frontend::Repl));
         }
     }
 

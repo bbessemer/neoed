@@ -923,7 +923,7 @@ impl<'s> Executor<'s> {
                         langs: document.lang.name().into(),
                     }));
                 }
-                Err(LspFailure(message)) => return Err(error(ExecErrorKind::Lsp(message))),
+                Err(failure) => return Err(error(ExecErrorKind::Lsp(failure))),
             }
         }
         let paths: Vec<&Path> = locations.iter().map(|l| l.path.as_path()).collect();
@@ -1423,7 +1423,7 @@ impl<'s> Executor<'s> {
         };
         let mut diagnosis = lsp
             .diagnose(&documents, true)
-            .map_err(|LspFailure(message)| error(ExecErrorKind::Lsp(message)))?;
+            .map_err(|failure| error(ExecErrorKind::Lsp(failure)))?;
 
         self.notes.extend(diagnosis.notes.drain(..).map(Note::from));
         if diagnosis.files.iter().all(Option::is_none) {
@@ -1514,7 +1514,7 @@ impl<'s> Executor<'s> {
                     langs: document.lang.name().into(),
                 }));
             }
-            Err(LspFailure(message)) => return Err(error(ExecErrorKind::Lsp(message))),
+            Err(failure) => return Err(error(ExecErrorKind::Lsp(failure))),
         };
         let paths: Vec<&Path> = files.iter().map(|f| f.path.as_path()).collect();
         let reached = self.reach(&paths, true, span)?;
@@ -2878,9 +2878,9 @@ pub enum ExecErrorKind {
         message: &'static str,
         location: String,
     },
-    /// The message ends with its fix.
+    /// Its fix is the failure's.
     #[error("{0}")]
-    Lsp(String),
+    Lsp(LspFailure),
     /// `feature` is what needs it, with its verb: "`check` needs".
     #[error("{feature} the language-server daemon, which is Unix-only for now")]
     NoDaemon { feature: &'static str },
@@ -2913,6 +2913,7 @@ impl Hint for ExecErrorKind {
     fn fix(&self) -> Option<Fix> {
         use ExecErrorKind as E;
         let fix = match self {
+            E::Lsp(failure) => return failure.fix(),
             E::InvalidPattern { error, .. } => return error.fix(),
             E::NoLanguage { .. } => "use {--lang}".into(),
             E::PartNeedsItem { part } => format!("select one, e.g. fn:NAME.{part}"),
@@ -2948,7 +2949,6 @@ impl Hint for ExecErrorKind {
             | E::Io { .. }
             | E::NoGlobMatch { .. }
             | E::SyntaxError { .. }
-            | E::Lsp(_)
             | E::NoDaemon { .. }
             | E::RenameRefused { .. } => return None,
         };
@@ -6200,7 +6200,7 @@ fn main() {}
             self.asked.extend_from_slice(documents);
             self.saved.push(saved);
             if let Some(failure) = self.failure {
-                return Err(LspFailure(failure.into()));
+                return Err(LspFailure::from(failure));
             }
             let files = documents
                 .iter()
@@ -6213,7 +6213,7 @@ fn main() {}
                 show: self.show.unwrap_or(Severity::Warning),
                 block: Some(Severity::Error),
                 files,
-                notes: self.notes.iter().map(|n| n.to_string()).collect(),
+                notes: self.notes.iter().map(|&n| n.into()).collect(),
             })
         }
 
@@ -6828,7 +6828,7 @@ fn main() {}
         ) -> Result<Renamed, LspFailure> {
             self.asked.push((document.clone(), position, name.into()));
             if let Some(failure) = self.failure {
-                return Err(LspFailure(failure.into()));
+                return Err(LspFailure::from(failure));
             }
             Ok(match &self.answer {
                 Renamed::Edits(files) => Renamed::Edits(
@@ -6852,7 +6852,7 @@ fn main() {}
         ) -> Result<Located, LspFailure> {
             self.located.push((kind, position));
             if let Some(failure) = self.failure {
-                return Err(LspFailure(failure.into()));
+                return Err(LspFailure::from(failure));
             }
             if self.no_server {
                 return Ok(Located::NoServer);

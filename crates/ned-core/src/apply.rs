@@ -102,7 +102,8 @@ pub fn finish(
     let mut introduced: Option<Errors> = None;
     for (change, outcome) in changes.iter().zip(&outcomes) {
         match outcome {
-            Outcome::NotFound(note) | Outcome::Skipped(note) => notes.push(note.clone().into()),
+            Outcome::NotFound(note) => notes.push(note.clone()),
+            Outcome::Skipped(note) => notes.push(note.clone().into()),
             Outcome::Failed(failure) if !settings.force && introduces(change, failure) => {
                 let rejection = hint::Error::new(Rejection::BreaksFormatter {
                     path: change.path.clone(),
@@ -147,9 +148,9 @@ pub fn finish(
     let finals = finished.finals(changes);
     let checked = match lsp::check_changes(lsp, changes, &finals, allow, settings.force) {
         Ok(checked) => checked,
-        Err(LspFailure(message)) => {
+        Err(failure) => {
             let paths: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
-            notes.push(format!("{message}; skipped checking {}", paths.join(", ")).into());
+            notes.push(failure.note(&format!("skipped checking {}", paths.join(", "))));
             return Ok(finished);
         }
     };
@@ -194,8 +195,8 @@ fn introduces(change: &Change, failure: &Failure) -> bool {
 /// Sends the servers the original texts of `changes` back, after an edit that
 /// wasn't written, adding a note to `notes` if that fails.
 pub fn restore(lsp: &mut dyn Lsp, changes: &[Change], notes: &mut Vec<Note>) {
-    if let Err(LspFailure(message)) = lsp::restore(lsp, changes) {
-        notes.push(message.into());
+    if let Err(failure) = lsp::restore(lsp, changes) {
+        notes.push(failure.into());
     }
 }
 
@@ -209,8 +210,8 @@ pub fn before_save(
 ) -> Option<lsp::BeforeSave> {
     match lsp::before_save(lsp, changes) {
         Ok(before) => Some(before),
-        Err(LspFailure(message)) => {
-            notes.push(skipped_on_save(&message, changes));
+        Err(failure) => {
+            notes.push(skipped_on_save(failure, changes));
             None
         }
     }
@@ -229,8 +230,8 @@ pub fn after_save(
     let finals = finished.finals(changes);
     let saved = match lsp::check_saved(lsp, before, changes, &finals, finished.checked.as_ref()) {
         Ok(saved) => saved,
-        Err(LspFailure(message)) => {
-            notes.push(skipped_on_save(&message, changes));
+        Err(failure) => {
+            notes.push(skipped_on_save(failure, changes));
             return String::new();
         }
     };
@@ -243,13 +244,12 @@ pub fn after_save(
 }
 
 /// The note for checks on save that failed.
-fn skipped_on_save(message: &str, changes: &[Change]) -> Note {
+fn skipped_on_save(failure: LspFailure, changes: &[Change]) -> Note {
     let paths: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
-    format!(
-        "{message}; skipped the checks run on save of {}",
+    failure.note(&format!(
+        "skipped the checks run on save of {}",
         paths.join(", ")
-    )
-    .into()
+    ))
 }
 
 /// `found`, diagnostics of the file at `path` holding `text`, in `check`'s

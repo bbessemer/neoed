@@ -11,9 +11,11 @@ use std::time::Duration;
 
 use lsp_types::{DiagnosticSeverity, NumberOrString};
 
+use ned_core::hint::{Fix, Hint};
 use ned_core::lang::Language;
 use ned_core::lsp::{
-    Diagnostic, FileEdits, Locate, Location, Position, Renamed, Severity, TextEdit, language_id,
+    Diagnostic, FileEdits, Locate, Location, LspFailure, Position, Renamed, Severity, TextEdit,
+    language_id,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -103,18 +105,16 @@ struct State {
 
 #[derive(Debug, Error)]
 pub enum LspError {
-    #[error("`{program}` not found; install it, or set `[lsp] {lang} = [...]` in .ned.toml")]
+    #[error("`{program}` not found")]
     NotFound { program: String, lang: Language },
     #[error("cannot start `{program}`: {source}")]
     Spawn {
         program: String,
         source: std::io::Error,
     },
-    #[error("{name} exited{detail}; check that it runs, then rerun")]
+    #[error("{name} exited{detail}")]
     Exited { name: String, detail: String },
-    #[error(
-        "{name} didn't answer {method} within {secs}s; it may still be indexing, so rerun in a few seconds"
-    )]
+    #[error("{name} didn't answer {method} within {secs}s")]
     Timeout {
         name: String,
         method: String,
@@ -127,12 +127,32 @@ pub enum LspError {
         message: String,
         code: i64,
     },
-    #[error("{name} sent an invalid {method} reply ({message}); check that it's up to date")]
+    #[error("{name} sent an invalid {method} reply ({message})")]
     Invalid {
         name: String,
         method: String,
         message: String,
     },
+}
+
+impl Hint for LspError {
+    fn exit_code(&self) -> u8 {
+        3
+    }
+
+    fn fix(&self) -> Option<Fix> {
+        Some(Fix::from(match self {
+            LspError::NotFound { lang, .. } => {
+                return Some(
+                    format!("install it, or set `[lsp] {lang} = [...]` in .ned.toml").into(),
+                );
+            }
+            LspError::Exited { .. } => "check that it runs, then rerun",
+            LspError::Timeout { .. } => "it may still be indexing, so rerun in a few seconds",
+            LspError::Invalid { .. } => "check that it's up to date",
+            LspError::Spawn { .. } | LspError::Failed { .. } => return None,
+        }))
+    }
 }
 
 impl Server {
@@ -424,7 +444,7 @@ impl Server {
         &self,
         begun: u64,
         timeout: Duration,
-    ) -> Result<Option<String>, LspError> {
+    ) -> Result<Option<LspFailure>, LspError> {
         let name = self.name.clone();
         let timed_out = move || LspError::Timeout {
             name: name.clone(),
@@ -446,11 +466,14 @@ impl Server {
             .await
         {
             Ok(()) => Ok(None),
-            Err(LspError::Timeout { .. }) => Ok(Some(format!(
-                "{}'s check on save didn't finish within {}s; raise [lsp] timeout",
-                self.name,
-                timeout.as_secs()
-            ))),
+            Err(LspError::Timeout { .. }) => Ok(Some(LspFailure {
+                problem: format!(
+                    "{}'s check on save didn't finish within {}s",
+                    self.name,
+                    timeout.as_secs()
+                ),
+                fix: Some("raise [lsp] timeout".into()),
+            })),
             Err(err) => Err(err),
         }
     }

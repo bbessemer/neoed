@@ -52,7 +52,7 @@ fn daemon(action: Action) -> Result<(), AnyError> {
     use ned_daemon::protocol::{Request, Response};
     use ned_daemon::{Client, Paths, paths, server};
 
-    let runtime_dir = || paths::runtime_dir().map_err(DaemonError::Paths);
+    let runtime_dir = paths::runtime_dir;
     let dir = match action {
         Action::Run { root, idle_timeout } => {
             let user_config = config::user_config();
@@ -82,7 +82,7 @@ fn daemon(action: Action) -> Result<(), AnyError> {
     let client = match action {
         Action::Start { .. } => {
             let exe = env::current_exe().map_err(DaemonError::Io)?;
-            Some(Client::connect_or_spawn(&paths, &exe, &root).map_err(DaemonError::Client)?)
+            Some(Client::connect_or_spawn(&paths, &exe, &root)?)
         }
         _ => Client::connect(&paths),
     };
@@ -95,7 +95,7 @@ fn daemon(action: Action) -> Result<(), AnyError> {
         Action::Stop { .. } => Request::Stop,
         _ => Request::Status,
     };
-    match client.request(&request).map_err(DaemonError::Client)? {
+    match client.request(&request)? {
         Response::Status(status) => out!("{}", status_text(&status)),
         Response::Opened
         | Response::Diagnosis(_)
@@ -115,18 +115,14 @@ fn daemon(_: Action) -> Result<(), AnyError> {
     Err(DaemonError::UnixOnly.into())
 }
 
-/// What stopped `ned daemon`; ned-daemon's errors carry their own fixes.
+/// What stopped `ned daemon`, besides ned-daemon's own errors.
 #[derive(Debug)]
 enum DaemonError {
-    #[cfg(unix)]
-    Paths(ned_daemon::paths::PathsError),
-    #[cfg(unix)]
-    Client(ned_daemon::client::ClientError),
     #[cfg(unix)]
     Io(std::io::Error),
     /// The daemon answered with an error.
     #[cfg(unix)]
-    Refused(String),
+    Refused(ned_core::lsp::LspFailure),
     #[cfg(not(unix))]
     UnixOnly,
 }
@@ -135,13 +131,9 @@ impl fmt::Display for DaemonError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             #[cfg(unix)]
-            DaemonError::Paths(err) => write!(f, "{err}"),
-            #[cfg(unix)]
-            DaemonError::Client(err) => write!(f, "{err}"),
-            #[cfg(unix)]
             DaemonError::Io(err) => write!(f, "{err}"),
             #[cfg(unix)]
-            DaemonError::Refused(err) => write!(f, "the daemon refused the request: {err}"),
+            DaemonError::Refused(failure) => write!(f, "the daemon refused the request: {failure}"),
             #[cfg(not(unix))]
             DaemonError::UnixOnly => f.write_str("the daemon is Unix-only for now"),
         }
@@ -156,7 +148,9 @@ impl Hint for DaemonError {
     fn fix(&self) -> Option<Fix> {
         match self {
             #[cfg(unix)]
-            DaemonError::Refused(_) => Some("run `ned daemon stop`, then retry".into()),
+            DaemonError::Refused(failure) => failure
+                .fix()
+                .or_else(|| Some("run `ned daemon stop`, then retry".into())),
             _ => None,
         }
     }
@@ -212,7 +206,7 @@ impl ned_core::lsp::Lsp for Workspace {
 
 #[cfg(not(unix))]
 fn unix_only() -> LspFailure {
-    LspFailure("language servers run through the daemon, which needs Unix".into())
+    LspFailure::from("language servers run through the daemon, which needs Unix")
 }
 
 /// A status line for the daemon, then one per server.

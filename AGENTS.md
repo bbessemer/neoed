@@ -173,35 +173,35 @@ selector (including `A..B` ranges, bare kinds and `[...]` filters) and verb
 formatting, `-w` (every workspace file; files are read lazily), and `ned help`.
 Every error ends with a fix; `hint` (`Error`, `Fix`, `Frontend`, whose
 placeholders name options in each frontend's terms; `Report` carries notes
-beside a result) is the type every error will move onto; script parse errors use
-it so far. `ned-daemon` has the per-workspace daemon (socket, lock, lazy spawn,
-idle exit) behind `ned daemon`, and starts language servers (`lsp`, `servers`;
-`[lsp]` config in `ned-core`) for `open` requests and diagnostics, through the
-`Lsp` trait in `ned-core`: `check [SEL] [LEVEL]`, and edits checked while a
-daemon runs (introduced errors block unless `allow errors`), `rename`, and the
-`.refs`/`.def` parts (within the file set or `-w` workspace); the version names
-the build commit, and a daemon serves only its own build. With a daemon running,
-language servers format files whose formatters aren't installed, `check` also
-waits for save-time checks (`cargo check`), and written edits report what those
-checks find they introduced. §9 is done. Sessions (spec §1.2): `session` in
-`ned-core` keeps the per-workspace log, plans `undo` (`--force` merges with
-`diff::merge`) and expands `!!`; the CLI records every script run under
-`-s`/`NED_SESSION` and has `ned history`, `ned undo` and
-`ned session list|delete`. `--commit MSG` (`git` in `ned-core`) commits exactly
-an invocation's edits (in a session, every edit since its last commit) with
-git's plumbing, leaving other staged and unstaged changes alone. Terminal output
-(spec §6.6): `style` paints output under `--color`/`NO_COLOR`, and `highlight`
-colours `show` and diff hunks from the grammars' highlight queries; piped output
-is unchanged. On truecolor and 256-colour terminals, a `theme` from the user
-config (built-ins in `crates/ned-core/themes/`) colours each capture and tints
-changed lines (`color`). Syntax selectors cover Rust, Python, Go, JavaScript,
-TypeScript/TSX and Markdown; `conflict` hides merge-conflict markers from every
-parse and finds the conflicts (`conflict:N`, `.ours`/`.theirs`/`.base`), which
-`resolve` resolves. Syntax patterns (spec §3.10) select code by writing it:
-`template` lexes `@` placeholders, `fragment` parses a pattern in place of the
-code its previous step selected (or alone, for a whole file), `ast` lowers it
-and the file to abstract syntax trees (`queries/<lang>/ast.scm` names the tokens
-they leave out), and `pattern` matches them; `replace` substitutes its captures.
+beside a result) is every error's type. `ned-daemon` has the per-workspace
+daemon (socket, lock, lazy spawn, idle exit) behind `ned daemon`, and starts
+language servers (`lsp`, `servers`; `[lsp]` config in `ned-core`) for `open`
+requests and diagnostics, through the `Lsp` trait in `ned-core`:
+`check [SEL] [LEVEL]`, and edits checked while a daemon runs (introduced errors
+block unless `allow errors`), `rename`, and the `.refs`/`.def` parts (within the
+file set or `-w` workspace); the version names the build commit, and a daemon
+serves only its own build. With a daemon running, language servers format files
+whose formatters aren't installed, `check` also waits for save-time checks
+(`cargo check`), and written edits report what those checks find they
+introduced. §9 is done. Sessions (spec §1.2): `session` in `ned-core` keeps the
+per-workspace log, plans `undo` (`--force` merges with `diff::merge`) and
+expands `!!`; the CLI records every script run under `-s`/`NED_SESSION` and has
+`ned history`, `ned undo` and `ned session list|delete`. `--commit MSG` (`git`
+in `ned-core`) commits exactly an invocation's edits (in a session, every edit
+since its last commit) with git's plumbing, leaving other staged and unstaged
+changes alone. Terminal output (spec §6.6): `style` paints output under
+`--color`/`NO_COLOR`, and `highlight` colours `show` and diff hunks from the
+grammars' highlight queries; piped output is unchanged. On truecolor and
+256-colour terminals, a `theme` from the user config (built-ins in
+`crates/ned-core/themes/`) colours each capture and tints changed lines
+(`color`). Syntax selectors cover Rust, Python, Go, JavaScript, TypeScript/TSX
+and Markdown; `conflict` hides merge-conflict markers from every parse and finds
+the conflicts (`conflict:N`, `.ours`/`.theirs`/`.base`), which `resolve`
+resolves. Syntax patterns (spec §3.10) select code by writing it: `template`
+lexes `@` placeholders, `fragment` parses a pattern in place of the code its
+previous step selected (or alone, for a whole file), `ast` lowers it and the
+file to abstract syntax trees (`queries/<lang>/ast.scm` names the tokens they
+leave out), and `pattern` matches them; `replace` substitutes its captures.
 `ned-scheme`, a reader for the Scheme dialect (tree-sitter query syntax plus
 Scheme data) that plugins will be written in, is unused for now. The REPL (spec
 §1.4, `ned-cli/src/repl.rs`) runs scripts on `buffers` (in-memory edits, undo,

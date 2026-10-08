@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use ned_core::hint::{self, Fix, Hint};
 use ned_core::lsp::{
     Diagnosis, Document, Formatting, Locate, Located, Lsp, LspFailure, Position, Renamed,
 };
@@ -34,19 +35,37 @@ pub struct Client {
 
 #[derive(Debug, Error)]
 pub enum ClientError {
-    #[error("cannot reach the daemon: {0}; run `ned daemon stop`, then retry")]
+    #[error("cannot reach the daemon: {0}")]
     Io(#[from] io::Error),
     #[error("cannot start the daemon: {source}")]
     Spawn { source: io::Error },
-    #[error("the daemon didn't start; see its log, {}", log.display())]
+    #[error("the daemon didn't start")]
     NotStarted { log: PathBuf },
     #[error(
-        "daemon socket path {} is {len} bytes, over the platform's limit of {MAX_SOCKET_LEN}; set XDG_RUNTIME_DIR to a shorter directory",
+        "daemon socket path {} is {len} bytes, over the platform's limit of {MAX_SOCKET_LEN}",
         socket.display()
     )]
     SocketTooLong { socket: PathBuf, len: usize },
-    #[error("the daemon sent an invalid response: {0}; run `ned daemon stop`, then retry")]
+    #[error("the daemon sent an invalid response: {0}")]
     Protocol(String),
+}
+
+impl Hint for ClientError {
+    fn exit_code(&self) -> u8 {
+        3
+    }
+
+    fn fix(&self) -> Option<Fix> {
+        Some(Fix::from(match self {
+            ClientError::Io(_) | ClientError::Protocol(_) => "run `ned daemon stop`, then retry",
+            ClientError::NotStarted { log } => {
+                let log = hint::verbatim(&log.display().to_string());
+                return Some(format!("see its log, {log}").into());
+            }
+            ClientError::SocketTooLong { .. } => "set XDG_RUNTIME_DIR to a shorter directory",
+            ClientError::Spawn { .. } => return None,
+        }))
+    }
 }
 
 impl Client {
@@ -154,18 +173,18 @@ impl Workspace {
             return Ok(client.clone());
         }
 
-        let runtime = runtime_dir().map_err(|err| LspFailure(err.to_string()))?;
+        let runtime = runtime_dir().map_err(hint::Error::new)?;
         let paths = Paths::new(&runtime, &self.root, &self.version);
-        let client = Client::connect_or_spawn(&paths, &self.exe, &self.root)
-            .map_err(|err| LspFailure(err.to_string()))?;
+        let client =
+            Client::connect_or_spawn(&paths, &self.exe, &self.root).map_err(hint::Error::new)?;
         Ok(self.client.insert(client).clone())
     }
 
     fn request(&mut self, request: &Request) -> Result<Response, LspFailure> {
         match self.client()?.request(request) {
-            Ok(Response::Error(message)) => Err(LspFailure(message)),
+            Ok(Response::Error(failure)) => Err(failure),
             Ok(response) => Ok(response),
-            Err(err) => Err(LspFailure(err.to_string())),
+            Err(err) => Err(hint::Error::new(err).into()),
         }
     }
 }
@@ -185,9 +204,7 @@ impl Lsp for Workspace {
         let documents = documents.to_vec();
         match self.request(&Request::Diagnose { documents, saved })? {
             Response::Diagnosis(diagnosis) => Ok(diagnosis),
-            other => Err(LspFailure(
-                ClientError::Protocol(format!("{other:?}")).to_string(),
-            )),
+            other => Err(hint::Error::new(ClientError::Protocol(format!("{other:?}"))).into()),
         }
     }
 
@@ -195,9 +212,7 @@ impl Lsp for Workspace {
         let documents = documents.to_vec();
         match self.request(&Request::Open { documents })? {
             Response::Opened => Ok(()),
-            other => Err(LspFailure(
-                ClientError::Protocol(format!("{other:?}")).to_string(),
-            )),
+            other => Err(hint::Error::new(ClientError::Protocol(format!("{other:?}"))).into()),
         }
     }
 
@@ -214,9 +229,7 @@ impl Lsp for Workspace {
         };
         match self.request(&request)? {
             Response::Renamed(renamed) => Ok(renamed),
-            other => Err(LspFailure(
-                ClientError::Protocol(format!("{other:?}")).to_string(),
-            )),
+            other => Err(hint::Error::new(ClientError::Protocol(format!("{other:?}"))).into()),
         }
     }
 
@@ -233,9 +246,7 @@ impl Lsp for Workspace {
         };
         match self.request(&request)? {
             Response::Located(located) => Ok(located),
-            other => Err(LspFailure(
-                ClientError::Protocol(format!("{other:?}")).to_string(),
-            )),
+            other => Err(hint::Error::new(ClientError::Protocol(format!("{other:?}"))).into()),
         }
     }
 
@@ -245,9 +256,7 @@ impl Lsp for Workspace {
         };
         match self.request(&request)? {
             Response::Formatted(formatting) => Ok(formatting),
-            other => Err(LspFailure(
-                ClientError::Protocol(format!("{other:?}")).to_string(),
-            )),
+            other => Err(hint::Error::new(ClientError::Protocol(format!("{other:?}"))).into()),
         }
     }
 }
@@ -266,7 +275,7 @@ mod tests {
             matches!(&err, ClientError::SocketTooLong { socket, len } if *socket == long && *len == MAX_SOCKET_LEN + 1),
             "{err}"
         );
-        let message = err.to_string();
+        let message = hint::Error::new(err).render(hint::Frontend::Cli, None);
         assert!(
             message.contains(&format!("is {} bytes", MAX_SOCKET_LEN + 1)),
             "{message}"
