@@ -1597,6 +1597,12 @@ impl<'s> Executor<'s> {
             let haystack = &self.files[scope.file].file.text[scope.range.clone()];
             let edits: Vec<(Range<usize>, String)> = regex
                 .captures_iter(haystack)
+                // The line after a span's last newline is outside it, though an empty
+                // match (`/^/`, `/$/`, `/.*/`) can start there.
+                .filter(|caps| {
+                    !(haystack.ends_with('\n')
+                        && caps.get(0).is_some_and(|m| m.start() == haystack.len()))
+                })
                 .map(|caps| {
                     let whole = caps.get(0).expect("group 0 always matches");
                     let mut expanded = String::new();
@@ -4237,6 +4243,23 @@ mod tests {
             edited(TEXT, "sub all /let \\w/ /let/ with \"var\""),
             TEXT.replace("let", "var")
         );
+    }
+
+    #[test]
+    fn sub_matches_no_further_than_a_scope_s_last_newline() {
+        for (script, want) in [
+            ("sub 1 /$/ with \";\"", "a;\nb\n"),
+            ("sub 1 /.*/ with \"X\"", "X\nb\n"),
+            ("sub 1 /^/ with \"X\"", "Xa\nb\n"),
+            ("sub 1-2 /^/ with \"X\"", "Xa\nXb\n"),
+            ("sub /^/ with \"X\"", "Xa\nXb\n"),
+            ("sub /$/ with \";\"", "a;\nb;\n"),
+            ("sub 1 /\\n/ with \" \"", "a b\n"),
+            ("sub 1-2 /a\\nb\\n/ with \"c\"", "c"),
+        ] {
+            assert_eq!(edited("a\nb\n", script), want, "{script}");
+        }
+        assert_eq!(edited("a\nb", "sub /^/ with \"X\""), "Xa\nXb");
     }
 
     #[test]

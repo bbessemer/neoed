@@ -1297,7 +1297,9 @@ END
 - `delete SEL`: Removes each span.
 - `sub [SEL] /re/ with TEXT`: Replaces every match of `re` inside each span of
   `SEL` (default: each whole file in the set). `$1`, `${name}` and `$0` expand
-  to captures; `$$` is a literal `$`. Zero matches in total is an error.
+  to captures; `$$` is a literal `$`. A match can't start after a span's last
+  newline, so `/^/` and `/$/` match once on each line it covers. Zero matches in
+  total is an error.
 - `move SEL before|after|start|end DEST`: Deletes each span of `SEL` and inserts
   its text at `DEST`, which must resolve to one span. The destination may be in
   another file in the set. Moved text is re-based.
@@ -1857,8 +1859,10 @@ The fix each error suggests:
   before `insert`'s text or `sub`'s regex, which may follow the selector
   directly); the rest of the command on a heredoc selector's line, before its
   body, e.g. `replace <<END with TEXT`; `sub /re/ with TEXT` for sed's
-  `sub /re/text/`; the line range `N-M` for sed's `N,M`; otherwise the command's
-  usage, e.g. `usage: replace [all] SEL with TEXT`
+  `sub /re/text/` (sed's `\1` and `&` as `${1}` and `${0}`, its `$1` and `$name`
+  as `${1}` and `${name}` when the regex has that group, and any other `$` as
+  `$$`); the line range `N-M` for sed's `N,M`; otherwise the command's usage,
+  e.g. `usage: replace [all] SEL with TEXT`
 - `check`, `rename`, `.refs` or `.def` after a `|`: Running it before the first
   `|`, or in a separate `ned` call
 - `all` in `sub` (`sub all /re/ with TEXT`, or after its regex or TEXT):

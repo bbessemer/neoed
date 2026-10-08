@@ -2,6 +2,8 @@
 
 use std::ops::Range;
 
+use regex::Regex;
+
 use super::ast::*;
 use super::error::{COMMANDS, ParseError, ParseErrorKind as E};
 use super::lexer::{Lexer, Token, TokenKind, is_ident_char, part_named};
@@ -819,10 +821,13 @@ impl Parser<'_> {
             // GNU sed writes `i` as `I` too.
             .filter(|&f| flags.contains(f) || (f == 'i' && flags.contains('I')))
             .collect();
+        let groups = Regex::new(&self.src[regex.start + 1..regex.end - 1].replace("\\/", "/")).ok();
         let fix = format!(
             "{lead} {}{flags} with \"{}\"",
             &self.src[regex.clone()],
-            sed_text(text)
+            sed_text(text, |name| groups
+                .as_ref()
+                .is_some_and(|r| has_group(r, name)))
         );
         error.with_fix(verbatim(&format!(
             "`sub` takes /re/ with TEXT, not sed's /re/text/; write {fix}"
@@ -838,10 +843,7 @@ impl Parser<'_> {
         at: Range<usize>,
     ) -> Result<(), ParseError> {
         let regex = pattern.regex();
-        let has = |name: &str| match name.parse::<usize>() {
-            Ok(i) => i < regex.captures_len(),
-            Err(_) => regex.capture_names().flatten().any(|n| n == name),
-        };
+        let has = |name: &str| has_group(regex, name);
         let Some((range, name)) = group_refs(&text.value)
             .into_iter()
             .find(|(_, name)| !has(name))
@@ -1110,8 +1112,17 @@ fn sed_tail(rest: &str) -> Option<(&str, &str, usize)> {
     ))
 }
 
-/// sed's replacement `text` as the inside of a string for `sub`.
-fn sed_text(text: &str) -> String {
+/// Whether `regex` has the group `name`, a number or a name.
+fn has_group(regex: &Regex, name: &str) -> bool {
+    match name.parse::<usize>() {
+        Ok(i) => i < regex.captures_len(),
+        Err(_) => regex.capture_names().flatten().any(|n| n == name),
+    }
+}
+
+/// sed's replacement `text` as the inside of a string for `sub` on a regex
+/// that has the groups `has` accepts.
+fn sed_text(text: &str, has: impl Fn(&str) -> bool) -> String {
     fn escaped(out: &mut String, c: char) {
         match c {
             '$' => out.push_str("$$"),
@@ -1125,6 +1136,15 @@ fn sed_text(text: &str) -> String {
     while let Some(c) = chars.next() {
         match c {
             '&' => out.push_str("${0}"),
+            // A `$1` in sed's text is literal, but whoever wrote it here meant
+            // group 1, if the regex has one.
+            '$' => match sed_group(chars.as_str()).filter(|(name, _)| has(name)) {
+                Some((name, len)) => {
+                    out.push_str(&format!("${{{name}}}"));
+                    chars = chars.as_str()[len..].chars();
+                }
+                None => out.push_str("$$"),
+            },
             '\\' => match chars.next() {
                 Some(d @ '0'..='9') => out.extend(['$', '{', d, '}']),
                 Some('n') => out.push_str("\\n"),
@@ -1136,6 +1156,28 @@ fn sed_text(text: &str) -> String {
         }
     }
     out
+}
+
+/// The group a `$` reference at the start of `rest` (after its `$`) names, as
+/// whoever wrote it in sed's text meant it, and the reference's length: `{N}`,
+/// `{name}`, or else digits or a name, so `$1x` is group 1 then `x`.
+fn sed_group(rest: &str) -> Option<(&str, usize)> {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let braced = rest
+        .strip_prefix('{')
+        .and_then(|r| r.split_once('}'))
+        .map(|(name, _)| name)
+        .filter(|name| !name.is_empty() && name.chars().all(word));
+    if let Some(name) = braced {
+        return Some((name, name.len() + 2));
+    }
+    let end = if rest.starts_with(|c: char| c.is_ascii_digit()) {
+        rest.find(|c: char| !c.is_ascii_digit())
+    } else {
+        rest.find(|c: char| !word(c))
+    }
+    .unwrap_or(rest.len());
+    (end > 0).then(|| (&rest[..end], end))
 }
 
 /// The script offset of byte `offset` of the value of the string token at
@@ -2312,6 +2354,17 @@ mod tests {
                 r#"sub /(a)b/\1&$\/"\n/"#,
                 r#"sub /(a)b/ with "${1}${0}$$/\"\n""#,
             ),
+            (r"sub /(a)/x$1/", r#"sub /(a)/ with "x${1}""#),
+            (r"sub /(a)(b)/$12$1x/", r#"sub /(a)(b)/ with "$$12${1}x""#),
+            (
+                r"sub /(?<n>a)/$n.${n}/",
+                r#"sub /(?<n>a)/ with "${n}.${n}""#,
+            ),
+            (r"sub /a/$ $$ ${ $}/", r#"sub /a/ with "$$ $$$$ $${ $$}""#),
+            (r"sub /a/${}/", r#"sub /a/ with "$${}""#),
+            (r"sub /PATH/$PATH:x/", r#"sub /PATH/ with "$$PATH:x""#),
+            (r"sub /cost/$5.00/", r#"sub /cost/ with "$$5.00""#),
+            (r"sub /(?<n>a)/$nx/", r#"sub /(?<n>a)/ with "$$nx""#),
         ] {
             let fix = format!("`sub` takes /re/ with TEXT, not sed's /re/text/; write {fix}");
             assert_eq!(fix_of(src), fix, "{src:?}");

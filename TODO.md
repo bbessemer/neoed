@@ -156,20 +156,19 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       `}` (a nested range ending at `$`), the error named line 7, an unrelated
       `use` inserted by the script's first edit. Locate it within the edit whose
       change the error spans, or name that command.
-- [ ] A sed-style `sub SEL /re/text$1/`'s parse error suggests `with "…$$1"`,
+- [x] A sed-style `sub SEL /re/text$1/`'s parse error suggests `with "…$$1"`,
       which inserts a literal `$1`, not group 1: the fix should keep `$1` (or
       write `${1}`), as `sub`'s TEXT expands it.
-- [ ] A heredoc `replace` of a range that starts mid-line replaced the whole
-      first line: `replace fn:run>"executor.run(".."    });" with <<END` dropped
-      the `let result = ` before the match. A partial span's TEXT should keep
-      the line's text before the match, as a one-line `replace` does.
-- [ ] `sub` over whole lines matches an empty string after the span's last
+- [x] `sub` over whole lines matches an empty string after the span's last
       newline, at the start of the next line: `sub 1 /$/ with ";"` on `a\nb`
       gives `a;\n;b`, and `sub SEL /.*/ with "X"` writes a second `X` there.
       Matches should end at or before the span's last newline.
-- [ ] Conflict markers shown in a Markdown code block (the tutorial's conflicts
-      section) count as a merge conflict, so formatting the file is skipped ("it
-      has merge conflicts"). Markers inside a fenced block are text.
+
+### Won't fix
+
+- Conflict-shaped text in a Markdown code fence is a merge conflict (§3.11, as
+  git counts it), so formatting skips the file: `tutorial.mdx` shows conflict
+  markers in its conflicts section, so it is never formatted.
 
 ## Future improvements
 
