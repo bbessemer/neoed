@@ -1887,14 +1887,17 @@ The fix each error suggests:
   literal that matches as escaped source text (`"\\n"` for `"\n"`); a literal
   match that differs only in case or spacing; a Markdown item's name without its
   `[ ]` checkbox (`item:done` for `item:"[x] done"`); a regex that matches with
-  `i`; for a range whose end matches only where it starts before its start's
-  match ends (an item whose span takes in the doc comment the start matched),
-  where each is, and to start the range earlier or select the item alone; for a
-  nested search that matches across spans of the step before it
-  (`import>"use a;\nuse b;"`), the selector without that step, or with an `A..B`
-  of their items or a line range in its place; the spans a nested step searched;
-  a `|` before the command, when the stage's earlier edits make it match; or
-  `outline`
+  `i`; for `impl:NAME` where `NAME` is a trait, its impls
+  (`impl:"NAME for TYPE"`); for a `<<TAG` block that matches only where its
+  first or last line is part of a source line, that a block matches whole lines,
+  and the whole line or a literal; for a range whose end matches only where it
+  starts before its start's match ends (an item whose span takes in the doc
+  comment the start matched), where each is, and to start the range earlier or
+  select the item alone; for a nested search that matches across spans of the
+  step before it (`import>"use a;\nuse b;"`), the selector without that step, or
+  with an `A..B` of their items or a line range in its place; the spans a nested
+  step searched; a `|` before the command, when the stage's earlier edits make
+  it match; or `outline`
 - A `conflict` step that matches nothing: The conflicts each searched file has
   (`a.rs has 2 conflicts (conflict:1, conflict:2)`), or that it has none; or a
   conflict that overlaps a searched span without lying inside it, with both
@@ -1905,7 +1908,10 @@ The fix each error suggests:
   flags it takes
 - Ambiguous selector: Candidate selectors (§3.5), or longer text for matches
   that share a line
-- Missing part, part on a non-syntax step: The parts the item has, or an example
+- Missing part, part on a non-syntax step: The parts the item has, or an
+  example; for a part after a range, that it applies to the whole range, and the
+  selector with the range's start left out (`impl:S>fn:f.doc` for
+  `impl:S>/^const X/..fn:f.doc`)
 - `.lines:N` that skipped every span as too short: How many it skipped, and
   `.lines:$` for the last line (dropping `.lines:N`, for spans with no lines); a
   number or `$` for `.lines:` with anything else; for another part followed by

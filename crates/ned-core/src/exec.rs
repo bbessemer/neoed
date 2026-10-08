@@ -2932,6 +2932,8 @@ pub enum ExecErrorKind {
     MissingPart { item: String, part: String },
     #[error(".{part} needs a syntax item")]
     PartNeedsItem { part: String },
+    #[error(".{part} applies to the whole range, which isn't a syntax item")]
+    PartOnRange { part: String, end: Option<String> },
     #[error(".{part} needs a conflict")]
     PartNeedsConflict { part: String },
     #[error("resolve needs a whole conflict, but {selector} isn't one")]
@@ -3022,6 +3024,13 @@ impl Hint for ExecErrorKind {
             E::InvalidPattern { error, .. } => return error.fix(),
             E::NoLanguage { .. } => "use {--lang}".into(),
             E::PartNeedsItem { part } => format!("select one, e.g. fn:NAME.{part}"),
+            E::PartOnRange { part, end } => match end {
+                Some(end) => format!(
+                    "to take the end's .{part}, select the end alone: {}",
+                    hint::verbatim(end)
+                ),
+                None => format!("select one, e.g. fn:NAME.{part}"),
+            },
             E::PartNeedsConflict { part } => format!("select one, e.g. conflict:1.{part}"),
             E::NotAConflict { .. } => "select one with conflict:N, or use replace".into(),
             E::DuplicateCapture { .. } => "rename one of them".into(),
@@ -3076,6 +3085,7 @@ impl Hint for ExecErrorKind {
             | ExecErrorKind::UnknownKind { .. }
             | ExecErrorKind::MissingPart { .. }
             | ExecErrorKind::PartNeedsItem { .. }
+            | ExecErrorKind::PartOnRange { .. }
             | ExecErrorKind::PartNeedsConflict { .. }
             | ExecErrorKind::NotAConflict { .. }
             | ExecErrorKind::MoveIntoSource { .. }

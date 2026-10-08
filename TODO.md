@@ -119,7 +119,7 @@ of either kind.
       starts with `{` and ends with the matching `}` nests a second pair: note
       it, and suggest dropping the braces from `TEXT` or replacing the whole
       item
-- [ ] `impl:NAME` that names a trait matches nothing, and the hint suggests an
+- [x] `impl:NAME` that names a trait matches nothing, and the hint suggests an
       item of the trait (`trait:NAME>fn:f`); suggest the trait's impls instead
       (`impl:"NAME for TYPE"`)
 - [x] Replacing an item keeps its attributes, so `TEXT` that brings its own
@@ -130,7 +130,7 @@ of either kind.
       then a `replace all` of the same regex) fail with a plain ambiguity or
       overlap error: say that the commands overlap, and suggest merging them or
       putting a `|` between them
-- [ ] A `<<OLD` block selector whose last line is only part of a source line
+- [x] A `<<OLD` block selector whose last line is only part of a source line
       matches nothing, and the error says only that, ignoring case and spacing,
       it matches elsewhere: say that a block matches whole lines, and suggest
       the whole last line or a literal
@@ -144,7 +144,7 @@ Each fix is a patch; a fix that changes documented behaviour is a minor.
       the statements are in `f`'s body (the Rust equivalent matches). It breaks
       the tutorial's pattern step (`tutorial.mdx`, the `fn:total>` `replace`),
       and the output after it.
-- [ ] A part after a range's end applies to the whole range:
+- [x] A part after a range's end applies to the whole range:
       `show /^const X/..fn:f.doc` fails with ".doc needs a syntax item, e.g.
       fn:NAME.doc", though `fn:f.doc` alone matches. Either bind the part to the
       end step or say that a part can't follow a range, with the fix.

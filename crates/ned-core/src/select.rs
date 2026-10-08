@@ -18,7 +18,7 @@ use crate::hint::{self, Candidates, Fix, Note};
 use crate::lang::Language;
 use crate::pattern;
 use crate::script::ast::{
-    CommandKind, LineNo, Part, Pattern, Primary, RegexFlags, Selector, Step, Target, TextKind,
+    CommandKind, LineNo, Part, Pattern, Primary, RegexFlags, Selector, Step, Target, Text, TextKind,
 };
 use crate::span::{Of, Span};
 use crate::syntax::{self, Item};
@@ -26,6 +26,8 @@ use crate::template::Template;
 use crate::text::{self, full_lines, is_whole_line, strip_indent};
 
 const MAX_CANDIDATES: usize = 10;
+/// The longest literal a hint writes out.
+const MAX_LITERAL: usize = 60;
 
 /// The most files an error lists by name.
 pub(crate) const MAX_LISTED_FILES: usize = 5;
@@ -245,7 +247,19 @@ pub fn resolve_within(
             &mut skipped,
             &mut short,
         )
-        .map_err(|e| e.at(span.clone()))?;
+        .map_err(|e| match e.kind {
+            // The end alone keeps the steps around the range.
+            E::PartOnRange { part, end: Some(_) } => {
+                let written = &src[step.span.clone()];
+                let from = written.rfind("..").map_or(0, |i| i + 2);
+                let end = with_step(selector, step.span.start - span.start, &written[..from], "");
+                error(E::PartOnRange {
+                    part,
+                    end: Some(end),
+                })
+            }
+            _ => e.at(span.clone()),
+        })?;
         scopes = found.iter().map(|f| f.scope.clone()).collect();
         let next = found.iter().map(|f| f.m.clone()).collect();
         parents = std::mem::replace(&mut matches, next);
@@ -544,6 +558,17 @@ fn resolve_step(
             _ if side => {
                 let part = part_name(part).into();
                 return Err(E::PartNeedsConflict { part }.into());
+            }
+            Some(Primary::Range { to, .. }) => {
+                let part = part_name(part);
+                let end = match to.as_ref() {
+                    Primary::Syntax { kind, name } => {
+                        Some(format!("{}.{part}", syntax::selector(kind, name)))
+                    }
+                    _ => None,
+                };
+                let part = part.into();
+                return Err(E::PartOnRange { part, end }.into());
             }
             _ => {
                 let part = part_name(part).into();
@@ -1203,7 +1228,8 @@ pub(crate) fn hint(
     selector: &str,
     at: usize,
 ) -> Fix {
-    if let Some(hint) = other_kind(step, files, parents, selector, at)
+    if let Some(hint) = trait_impls(step, files, parents, selector, at)
+        .or_else(|| other_kind(step, files, parents, selector, at))
         .or_else(|| unparsed_name(step, files, parents))
         .or_else(|| close_name(step, files, parents, selector, at))
     {
@@ -1235,6 +1261,24 @@ pub(crate) fn hint(
                 let quoted = hint::verbatim(&escaped.replace('\\', "\\\\").replace('"', "\\\""));
                 let fix = format!(
                     "as source text it matches at {}: \"{quoted}\"",
+                    location(&m)
+                );
+                return fix.into();
+            }
+            if let Some(m) = partial_block(text, files, &scopes) {
+                let source = files[m.file].text[m.range.clone()].replace("\r\n", "\n");
+                let literal = source
+                    .replace('\\', "\\\\")
+                    .replace('\n', "\\n")
+                    .replace('\t', "\\t")
+                    .replace('"', "\\\"");
+                let literal = match literal.chars().count() <= MAX_LITERAL {
+                    true => format!(": \"{}\"", hint::verbatim(&literal)),
+                    false => ", with \\n between its lines".to_string(),
+                };
+                let fix = format!(
+                    "a block matches whole lines, but at {} it matches only part of a line: \
+                     write whole lines, or use a literal{literal}",
                     location(&m)
                 );
                 return fix.into();
@@ -1335,6 +1379,68 @@ fn overlapping_conflict<'a>(
             captures: Vec::new(),
         };
         Some((i + 1, conflict, p))
+    })
+}
+
+/// The first place within `parents` where a block's lines match once
+/// spacing at their ends is ignored, but its first or last line is only
+/// part of a source line, so the block, which matches whole lines, doesn't.
+fn partial_block(text: &Text, files: &[&SourceFile], parents: &[Match]) -> Option<Match> {
+    let body = match text.kind {
+        TextKind::Str => return None,
+        TextKind::Heredoc => strip_indent(&text.value),
+        TextKind::RawHeredoc => text.value.split('\n').map(String::from).collect(),
+    };
+    let body: Vec<&str> = body.iter().map(|l| l.trim()).collect();
+    let (first, last) = (body.first()?, body.last()?);
+    if first.is_empty() || last.is_empty() {
+        return None;
+    }
+    parents.iter().find_map(|p| {
+        let f = files[p.file];
+        let mut lines = Vec::new();
+        let mut start = p.range.start;
+        for line in f.text[p.range.clone()].split_inclusive('\n') {
+            lines.push((start, line.trim()));
+            start += line.len();
+        }
+        lines.windows(body.len()).find_map(|window| {
+            let (start, head) = window[0];
+            let (end, tail) = window[window.len() - 1];
+            let fits = match window {
+                [_] => head.contains(first),
+                _ => {
+                    head.ends_with(first)
+                        && tail.starts_with(last)
+                        && window[1..window.len() - 1]
+                            .iter()
+                            .zip(&body[1..])
+                            .all(|((_, line), b)| line == b)
+                }
+            };
+            if !fits || (head == *first && tail == *last) {
+                return None;
+            }
+            let from = match window {
+                [_] => head.find(first)?,
+                _ => head.len() - first.len(),
+            };
+            let line_start = |at: usize, trimmed: &str| {
+                at + f.text[at..]
+                    .find(trimmed)
+                    .expect("a line holds its trimmed text")
+            };
+            let from = line_start(start, head) + from;
+            let to = match window {
+                [_] => from + first.len(),
+                _ => line_start(end, tail) + last.len(),
+            };
+            Some(Match {
+                file: p.file,
+                range: from..to,
+                captures: Vec::new(),
+            })
+        })
     })
 }
 
@@ -1532,6 +1638,79 @@ fn bare_name(name: &str) -> String {
         .join(" ")
 }
 
+/// For an `impl:NAME` step that matched nothing within `parents`, where
+/// `NAME` is a trait, its impls there: `impl:"NAME for TYPE"`.
+fn trait_impls(
+    step: &Step,
+    files: &[&SourceFile],
+    parents: &[Match],
+    selector: &str,
+    at: usize,
+) -> Option<Fix> {
+    let Primary::Syntax { kind, name } = &step.primary else {
+        return None;
+    };
+    if kind != "impl" {
+        return None;
+    }
+    let bare = bare_name(name);
+    let impls: Vec<(usize, &Item)> = parents
+        .iter()
+        .flat_map(|p| {
+            files[p.file]
+                .items()
+                .unwrap_or_default()
+                .iter()
+                .filter(|i| i.kind == "impl")
+                .filter(|i| p.range.start <= i.range.start && i.range.end <= p.range.end)
+                .filter(|i| {
+                    i.name.split_once(" for ").is_some_and(|(t, _)| {
+                        syntax::name_matches(name, t) || syntax::name_matches(&bare, t)
+                    })
+                })
+                .map(|i| (p.file, i))
+        })
+        .collect();
+    let written = syntax::selector(kind, name);
+    match impls.as_slice() {
+        [] => None,
+        [(file, item)] => Some(did_you_mean(
+            selector,
+            at,
+            &written,
+            &syntax::selector(kind, &item.name),
+            files,
+            *file,
+            item,
+        )),
+        _ => {
+            let listed = impls
+                .iter()
+                .take(MAX_CANDIDATES)
+                .map(|(file, item)| {
+                    let f = files[*file];
+                    let fixed = syntax::selector(kind, &item.name);
+                    let lines = line_numbers(&f.buffer, &item.range);
+                    (
+                        with_step(selector, at, &written, &fixed),
+                        format!("{}:{lines}", f.path),
+                    )
+                })
+                .collect();
+            let candidates = Candidates {
+                listed,
+                total: impls.len(),
+                shared: 0,
+            };
+            let text = format!(
+                "{} is a trait, so use one of its impls:",
+                hint::verbatim(&bare)
+            );
+            Some(Fix::choose(text, candidates))
+        }
+    }
+}
+
 /// `did you mean SEL (LINES)?`, naming an item of another kind with the name
 /// of a syntax `step` that matched nothing within `parents`, taking kinds in
 /// their order in `KINDS`.
@@ -1628,14 +1807,7 @@ fn did_you_mean(
     file: usize,
     item: &Item,
 ) -> Fix {
-    let suggestion = match selector[at..].find(written).map(|i| at + i) {
-        Some(i) => format!(
-            "{}{fixed}{}",
-            &selector[..i],
-            &selector[i + written.len()..]
-        ),
-        None => fixed.to_string(),
-    };
+    let suggestion = with_step(selector, at, written, fixed);
     let f = files[file];
     let lines = line_numbers(&f.buffer, &item.range);
     let location = if files.len() > 1 {
@@ -1645,6 +1817,19 @@ fn did_you_mean(
     };
     let (suggestion, location) = (hint::verbatim(&suggestion), hint::verbatim(&location));
     format!("did you mean {suggestion} ({location})?").into()
+}
+
+/// `selector` with the first `written` from byte `at` replaced by `fixed`,
+/// or `fixed` alone if `written` isn't there.
+fn with_step(selector: &str, at: usize, written: &str, fixed: &str) -> String {
+    match selector[at..].find(written).map(|i| at + i) {
+        Some(i) => format!(
+            "{}{fixed}{}",
+            &selector[..i],
+            &selector[i + written.len()..]
+        ),
+        None => fixed.to_string(),
+    }
 }
 
 /// The index of line `n` in a file of `count` lines whose `$` is `last`.
@@ -2588,7 +2773,31 @@ mod tests {
         assert_eq!(
             error("delete <<END\nlet x\nEND\n", &[("a.rs", TEXT)]),
             "error: script:1:8: <<END matches nothing in a.rs; \
-             ignoring case and spacing, it matches at 2"
+         a block matches whole lines, but at 2 it matches only part of a line: \
+         write whole lines, or use a literal: \"let x\""
+        );
+        assert_eq!(
+            error("delete <<END\nx = 1;\nlet y = 2;\nEND\n", &[("a.rs", TEXT)]),
+            "error: script:1:8: <<END matches nothing in a.rs; \
+         a block matches whole lines, but at 2-3 it matches only part of a line: \
+         write whole lines, or use a literal: \"x = 1;\\n    let y = 2;\""
+        );
+        assert_eq!(
+            error("delete <<'END'\nb() {\nEND\n", &[("a.rs", TEXT)]),
+            "error: script:1:8: <<'END' matches nothing in a.rs; \
+         a block matches whole lines, but at 6 it matches only part of a line: \
+         write whole lines, or use a literal: \"b() {\""
+        );
+        let long = "fn a() {\n    let x = 1;\n    let y = 2;\n    let z = 3;\n    let w = 4;\n    let v = 5;\n}\n";
+        assert!(
+            error(
+                "delete <<END\nlet x = 1;\nlet y = 2;\nlet z = 3;\nlet w = 4;\nlet v\nEND\n",
+                &[("a.rs", long)]
+            )
+            .ends_with(
+                "at 2-6 it matches only part of a line: \
+             write whole lines, or use a literal, with \\n between its lines"
+            )
         );
     }
 
@@ -3105,6 +3314,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_part_after_a_range_applies_to_the_whole_range() {
+        assert_eq!(
+            error("delete /^use/..fn:main.body", &[("a.rs", RUST)]),
+            "error: script:1:8: .body applies to the whole range, which isn't a syntax item; \
+         to take the end's .body, select the end alone: fn:main.body"
+        );
+        assert_eq!(
+            error("delete fn:main../x/.body", &[("a.rs", RUST)]),
+            "error: script:1:8: .body applies to the whole range, which isn't a syntax item; \
+         select one, e.g. fn:NAME.body"
+        );
+        assert_eq!(
+            error(
+                "delete impl:S>fn:a..fn:b.body",
+                &[(
+                    "a.rs",
+                    "struct S;\nimpl S {\n    fn a() {}\n    fn b() {}\n}\n"
+                )]
+            ),
+            "error: script:1:8: .body applies to the whole range, which isn't a syntax item; \
+            to take the end's .body, select the end alone: impl:S>fn:b.body"
+        );
+    }
+
     const RUST: &str = "\
 use std::fmt;
 
@@ -3371,6 +3605,29 @@ fn main() {
                 "impl:\"Display for S\"",
                 "impl:\"Debug for S\""
             ]
+        );
+    }
+
+    #[test]
+    fn a_trait_named_as_an_impl_suggests_its_impls() {
+        assert_eq!(
+            error("delete impl:Display>fn:fmt", &[("a.rs", IMPLS)]),
+            "error: script:1:8: impl:Display matches nothing in a.rs; \
+         did you mean impl:\"Display for S\">fn:fmt (5-7)?"
+        );
+        let text =
+            "trait Shape {\n    fn area(&self);\n}\nimpl Shape for S {}\nimpl Shape for T {}\n";
+        assert_eq!(
+            error("delete impl:Shape", &[("a.rs", text)]),
+            "error: script:1:8: impl:Shape matches nothing in a.rs; \
+         Shape is a trait, so use one of its impls:\n  \
+         impl:\"Shape for S\"   a.rs:4\n  \
+         impl:\"Shape for T\"   a.rs:5"
+        );
+        let generic = "struct S;\nimpl fmt::Display for S {}\nimpl From<u8> for S {}\n";
+        assert!(
+            error("delete impl:From", &[("a.rs", generic)])
+                .ends_with("did you mean impl:\"From for S\" (3)?")
         );
     }
 
