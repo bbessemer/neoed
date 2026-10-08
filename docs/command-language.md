@@ -1489,8 +1489,11 @@ Every line-oriented `TEXT` is re-based, except a `<<'TAG'` heredoc.
    aligns to: a continuation aligned to the text after an unclosed bracket
    (`f(a,` then `  b)`), a block comment's `*` line, a list item's continuation
    under its text (and lines level with it), or a line of a fenced code block. A
-   line that starts inside a `"` string an earlier line opens is kept as
-   written, and counts toward no level.
+   line that starts inside a `"` string an earlier line opens (a Python
+   docstring's, say) counts toward neither the common indentation nor the level:
+   it loses at most its own indentation, keeps its indent style, and is prefixed
+   like the code around it. A blank one keeps its whitespace. Use a `<<'TAG'`
+   heredoc for a string whose lines must stay exactly as written.
 3. **Prefix** every non-blank line with the target indentation:
 
    - `replace`, `insert before`, `move` (before): indentation of the target

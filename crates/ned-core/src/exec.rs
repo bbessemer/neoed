@@ -3706,6 +3706,32 @@ mod tests {
     }
 
     #[test]
+    fn insert_shifts_a_docstring_with_the_code() {
+        let text = "class A:\n    def f(self):\n        return 0\n";
+        assert_eq!(
+            edited_in(
+                "a.py",
+                text,
+                "insert after fn:f <<END\ndef g(self):\n    \"\"\"Doc.\n\n    More.\n    \"\"\"\n    return 1\nEND",
+            ),
+            "class A:\n    def f(self):\n        return 0\n    def g(self):\n        \"\"\"Doc.\n\n        More.\n        \"\"\"\n        return 1\n"
+        );
+    }
+
+    #[test]
+    fn a_quote_in_a_comment_keeps_later_lines_at_the_target() {
+        let text = "def f(x):\n    if x:\n        pass\n";
+        assert_eq!(
+            edited_in(
+                "a.py",
+                text,
+                "replace 3 with <<END\n# a 5\" pipe\ny = 1\nEND"
+            ),
+            "def f(x):\n    if x:\n        # a 5\" pipe\n        y = 1\n"
+        );
+    }
+
+    #[test]
     fn replace_whole_lines_rebases_text() {
         assert_eq!(
             edited(TEXT, "replace 2 with \"let z = 0;\""),
