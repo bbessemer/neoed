@@ -325,6 +325,31 @@ fn bang_bang_repeats_the_last_script_on_its_files() {
 }
 
 #[test]
+fn bang_bang_of_a_dry_run_names_dry_run() {
+    let ws = Workspace::new(&[("a.rs", AB)]);
+    let script = r#"replace fn:a.name with "c""#;
+    let results = ws.calls(
+        &[],
+        &[
+            (
+                "ned",
+                json!({ "script": script, "files": ["a.rs"], "dry_run": true }),
+            ),
+            ("ned", json!({ "script": "!!" })),
+        ],
+    );
+    assert!(failed(&results[1]));
+    assert!(
+        text(&results[1]).starts_with(
+            "error: `!!` would apply entry 1, a dry run; send the script again to apply it, or give `dry_run` to preview it again\n"
+        ),
+        "{}",
+        text(&results[1])
+    );
+    assert_eq!(ws.read("a.rs"), AB);
+}
+
+#[test]
 fn outline_and_show_run_their_verbs() {
     let ws = Workspace::new(&[("a.rs", AB)]);
     let results = ws.calls(
@@ -387,7 +412,7 @@ fn help_prints_the_summary_or_a_topic() {
         ],
     );
     let summary = text(&results[0]);
-    assert_eq!(summary, ned_core::help::Frontend::Mcp.summary());
+    assert_eq!(summary, ned_core::hint::Frontend::Mcp.summary());
     assert_ne!(summary, ws.printed(&["help"]));
     assert_eq!(text(&results[1]), ws.printed(&["help", "show"]));
     assert!(failed(&results[2]));
@@ -417,10 +442,12 @@ fn conflicting_arguments_are_usage_errors() {
             ),
         ],
     );
-    for result in &results {
+    let both = "error: `files` and `workspace` each give the file set; drop `files` or `workspace`\nexit 2\n";
+    let commit = "error: `commit` writes the edits, so it can't go with `dry_run`; drop `commit` or `dry_run`\nexit 2\n";
+    let empty = "error: `commit` needs a message; give one, or drop `commit`\nexit 2\n";
+    for (result, expected) in results.iter().zip([both, both, commit, empty]) {
         assert!(failed(result), "{result}");
-        assert!(text(result).starts_with("error: "), "{result}");
-        assert!(text(result).ends_with("\nexit 2\n"), "{result}");
+        assert_eq!(text(result), expected);
     }
     assert_eq!(ws.read("a.rs"), AB);
 }
@@ -506,9 +533,12 @@ fn undo_reverts_the_last_edit_as_ned_undo_does() {
     assert_eq!(text(&results[1]), twin.printed(&["undo", "-s", "mcp-1"]));
     assert_eq!(ws.read("a.rs"), AB);
     assert!(failed(&results[2]));
+    // The same error, but naming the `history` tool.
     assert_eq!(
         text(&results[2]),
-        twin.printed(&["undo", "-s", "mcp-1"]) + "exit 1\n"
+        twin.printed(&["undo", "-s", "mcp-1"])
+            .replace("`ned history`", "`history`")
+            + "exit 1\n"
     );
     let history = ws.printed(&["history", "-s", "mcp-1"]);
     assert!(history.ends_with("2 undo 1, 1 file\n"), "{history}");
@@ -689,6 +719,18 @@ fn cd_to_somewhere_it_cant_go_fails_and_stays() {
         text(&results[1])
     );
     assert_eq!(text(&results[2]), ws.printed(&["a.rs", "-e", "outline"]));
+}
+
+#[test]
+fn cd_quotes_a_directory_as_it_is_named() {
+    let ws = Workspace::new(&[]);
+    ws.nest("x{-w}", &[("a.rs", AB)]);
+    let results = ws.calls(&[], &[("cd", json!({ "dir": "x{-w}/a.rs" }))]);
+    let fix = format!(
+        "; give its directory, {}\n",
+        ws.root().join("x{-w}").display()
+    );
+    assert!(text(&results[0]).contains(&fix), "{}", text(&results[0]));
 }
 
 #[test]

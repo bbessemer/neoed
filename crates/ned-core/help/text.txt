@@ -7,7 +7,7 @@ TEXT is a string, "..." on one line, or a heredoc:
   <<'END'    verbatim.
 A heredoc reads no escapes: `\x27` stays four characters{cli:, so pass a
 script that holds a ' on stdin (ned FILE <<'EOF') rather than escaping it
-into -e}.
+into -e}{repl:, so type the character itself}.
 Line-oriented text (for whole-line spans) gets a final newline and is
 indented to the target: the span's first line for replace/before/after (its
 last line after a literal or regex), the first line inside the span for

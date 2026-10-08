@@ -16,6 +16,7 @@ pub mod fs;
 pub mod git;
 pub mod help;
 pub mod highlight;
+pub mod hint;
 pub mod invoke;
 pub mod lang;
 pub mod lsp;

@@ -14,7 +14,6 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 ned-core = { version = "0.8.2-dev", path = "../ned-core" }
 ned-daemon = { version = "0.8.2-dev", path = "../ned-daemon" }

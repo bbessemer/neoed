@@ -9,6 +9,7 @@ use std::ops::Range;
 
 use super::ast::{Filter, LineNo, Part, RegexFlags};
 use super::error::{ParseError, ParseErrorKind as E};
+use crate::hint::{Hint, verbatim};
 use crate::syntax;
 
 mod filter;
@@ -137,17 +138,14 @@ impl<'a> Lexer<'a> {
                 self.pos += 1;
                 self.syntax(start, "*")?
             }
-            '*' => return Err(ParseError::new(E::BareStar, start..start + 1)),
+            '*' => return Err(E::BareStar.at(start..start + 1)),
             ',' => {
-                let split = super::error::comma_split(self.src, start);
-                return Err(ParseError::new(E::Comma(split), start..start + 1));
+                let fix = super::error::comma_fix(self.src, start);
+                return Err(E::UnexpectedChar(',').at(start..start + 1).with_fix(fix));
             }
             c if c.is_ascii_alphabetic() || c == '_' => self.word()?,
             c => {
-                return Err(ParseError::new(
-                    E::UnexpectedChar(c),
-                    start..start + c.len_utf8(),
-                ));
+                return Err(E::UnexpectedChar(c).at(start..start + c.len_utf8()));
             }
         };
         Ok(Token {
@@ -217,7 +215,7 @@ impl<'a> Lexer<'a> {
         let mut out = String::new();
         loop {
             let Some(c) = self.peek().filter(|&c| c != '\n') else {
-                return Err(ParseError::new(E::UnterminatedString, start..self.pos));
+                return Err(E::UnterminatedString.at(start..self.pos));
             };
             self.pos += c.len_utf8();
             match c {
@@ -225,7 +223,7 @@ impl<'a> Lexer<'a> {
                 '\\' => {
                     let escape = self.peek().filter(|&c| c != '\n');
                     let Some(e) = escape else {
-                        return Err(ParseError::new(E::UnterminatedString, start..self.pos));
+                        return Err(E::UnterminatedString.at(start..self.pos));
                     };
                     out.push(match e {
                         'n' => '\n',
@@ -234,7 +232,7 @@ impl<'a> Lexer<'a> {
                         '\\' => '\\',
                         _ => {
                             let span = self.pos - 1..self.pos + e.len_utf8();
-                            return Err(ParseError::new(E::InvalidEscape(e), span));
+                            return Err(E::InvalidEscape(e).at(span));
                         }
                     });
                     self.pos += e.len_utf8();
@@ -250,13 +248,13 @@ impl<'a> Lexer<'a> {
         let mut pattern = String::new();
         loop {
             let Some(c) = self.peek().filter(|&c| c != '\n') else {
-                return Err(ParseError::new(E::UnterminatedRegex, start..self.pos));
+                return Err(E::UnterminatedRegex.at(start..self.pos));
             };
             self.pos += c.len_utf8();
             match c {
                 '/' => break,
                 '\\' => match self.peek().filter(|&c| c != '\n') {
-                    None => return Err(ParseError::new(E::UnterminatedRegex, start..self.pos)),
+                    None => return Err(E::UnterminatedRegex.at(start..self.pos)),
                     Some('/') => {
                         pattern.push('/');
                         self.pos += 1;
@@ -277,10 +275,7 @@ impl<'a> Lexer<'a> {
                 'i' => flags.case_insensitive = true,
                 's' => flags.dot_all = true,
                 _ => {
-                    return Err(ParseError::new(
-                        E::UnknownRegexFlag(c),
-                        self.pos..self.pos + 1,
-                    ));
+                    return Err(E::UnknownRegexFlag(c).at(self.pos..self.pos + 1));
                 }
             }
             self.pos += 1;
@@ -299,7 +294,7 @@ impl<'a> Lexer<'a> {
         }
         self.pos += 1;
         if !matches!(self.peek(), Some('$' | '0'..='9')) {
-            return Err(ParseError::new(E::MissingRangeEnd, self.pos - 1..self.pos));
+            return Err(E::MissingRangeEnd.at(self.pos - 1..self.pos));
         }
         let end_start = self.pos;
         let end = self.line_no()?;
@@ -307,7 +302,7 @@ impl<'a> Lexer<'a> {
             && a > b
         {
             let span = end_start..self.pos;
-            return Err(ParseError::new(E::ReversedLines { start: a, end: b }, span));
+            return Err(E::ReversedLines { start: a, end: b }.at(span));
         }
         Ok(TokenKind::Lines {
             start,
@@ -315,8 +310,8 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    /// The error for sed's `N,M` after `N` (`start`, from `start_pos`), naming
-    /// the `N-M` it means.
+    /// The error for sed's `N,M` after `N` (`start`, from `start_pos`), with the
+    /// fix naming the `N-M` it means.
     fn sed_range(&mut self, start_pos: usize, start: LineNo) -> ParseError {
         let comma = self.pos;
         self.pos += 1;
@@ -330,7 +325,11 @@ impl<'a> Lexer<'a> {
             (LineNo::Last, LineNo::Number(_)) => format!("{last}-{first}"),
             _ => format!("{first}-{last}"),
         };
-        ParseError::new(E::SedRange(fix), comma..self.pos)
+        E::UnexpectedChar(',')
+            .at(comma..self.pos)
+            .with_fix(verbatim(&format!(
+                "line ranges are written N-M, not sed's N,M; write {fix}"
+            )))
     }
 
     fn context(&mut self) -> Result<usize, ParseError> {
@@ -338,10 +337,10 @@ impl<'a> Lexer<'a> {
         self.pos += 1;
         let digits = self.take_while(|c| c.is_ascii_digit());
         match digits {
-            "" => Err(ParseError::new(E::MissingContext, start..self.pos)),
+            "" => Err(E::MissingContext.at(start..self.pos)),
             _ => digits
                 .parse()
-                .map_err(|_| ParseError::new(E::LineOverflow, start..self.pos)),
+                .map_err(|_| E::LineOverflow.at(start..self.pos)),
         }
     }
 
@@ -353,9 +352,9 @@ impl<'a> Lexer<'a> {
         }
         let digits = self.take_while(|c| c.is_ascii_digit());
         match digits.parse::<usize>() {
-            Ok(0) => Err(ParseError::new(E::ZeroLine, start..self.pos)),
+            Ok(0) => Err(E::ZeroLine.at(start..self.pos)),
             Ok(n) => Ok(LineNo::Number(n)),
-            Err(_) => Err(ParseError::new(E::LineOverflow, start..self.pos)),
+            Err(_) => Err(E::LineOverflow.at(start..self.pos)),
         }
     }
 
@@ -364,9 +363,8 @@ impl<'a> Lexer<'a> {
         self.pos += 1;
         let name = self.take_while(is_ident_char);
         let part = match name {
-            "" => return Err(ParseError::new(E::UnexpectedChar('.'), start..start + 1)),
-            _ => part_named(name)
-                .ok_or_else(|| ParseError::new(E::UnknownPart(name.into()), start..self.pos))?,
+            "" => return Err(E::UnexpectedChar('.').at(start..start + 1)),
+            _ => part_named(name).ok_or_else(|| E::UnknownPart(name.into()).at(start..self.pos))?,
         };
         if self.peek() != Some(':') {
             return Ok(part);
@@ -376,7 +374,7 @@ impl<'a> Lexer<'a> {
         let number = self
             .take_while(|c| !c.is_whitespace() && !matches!(c, '>' | ';' | '|' | '.' | '['))
             .to_string();
-        let error = |kind| Err(ParseError::new(kind, start..self.pos));
+        let error = |kind: E| Err(kind.at(start..self.pos));
         match (part, number.as_str()) {
             (Part::Lines, "$") => Ok(Part::Line(LineNo::Last)),
             (Part::Lines, n) => match n.parse() {
@@ -385,10 +383,11 @@ impl<'a> Lexer<'a> {
                 }
                 _ => error(E::LineIndex(number)),
             },
-            _ => error(E::PartNumber {
-                part: name.into(),
-                number,
-            }),
+            _ => Err(E::PartNumber(name.into())
+                .at(start..self.pos)
+                .with_fix(verbatim(&format!(
+                    "pick a line of it with .{name}.lines:{number}"
+                )))),
         }
     }
 
@@ -421,10 +420,7 @@ impl<'a> Lexer<'a> {
                 .to_string(),
         };
         if name.is_empty() && word != "conflict" {
-            return Err(ParseError::new(
-                E::MissingName(word.into()),
-                start..self.pos,
-            ));
+            return Err(E::MissingName(word.into()).at(start..self.pos));
         }
         if !quoted
             && word != "file"
@@ -471,9 +467,9 @@ impl<'a> Lexer<'a> {
             .collect();
         let part = tail[0].to_string();
         let span = self.pos..self.pos + 1 + tail.join(".").len();
-        let error = if kind == "import" {
+        let fix = if kind == "import" {
             let selector = syntax::selector(kind, &format!("{name}.{}", tail.join("."))) + &parts;
-            E::DottedName { selector, part }
+            format!("quote a name that has dots: {selector}")
         } else {
             let (last, parents) = tail.split_last()?;
             let mut selector: String = std::iter::once(name)
@@ -483,13 +479,13 @@ impl<'a> Lexer<'a> {
             selector += &(syntax::selector(kind, last) + &parts);
             let method = (kind == "fn" && parents.is_empty())
                 .then(|| syntax::selector(kind, &format!("{name}.{last}")) + &parts);
-            E::NestedName {
-                selector,
-                part,
-                method,
-            }
+            let method = method.map(|m| format!(" (a Go method: {m})"));
+            format!(
+                "to name a member, nest it: {selector}{}",
+                method.unwrap_or_default()
+            )
         };
-        Some(ParseError::new(error, span))
+        Some(E::UnknownPart(part).at(span).with_fix(verbatim(&fix)))
     }
 
     /// For an unquoted `kind:name` directly followed by `-` and more of the name,
@@ -504,10 +500,12 @@ impl<'a> Lexer<'a> {
             return None;
         }
         let selector = syntax::selector(kind, &format!("{name}-{}", &rest[..end]));
-        Some(ParseError::new(
-            E::DashedName(selector),
-            self.pos..self.pos + 1,
-        ))
+        let fix = verbatim(&format!("quote the name: {selector}"));
+        Some(
+            E::UnexpectedChar('-')
+                .at(self.pos..self.pos + 1)
+                .with_fix(fix),
+        )
     }
 
     /// For an unquoted `kind:name` followed by `{`, such as Rust's
@@ -529,10 +527,12 @@ impl<'a> Lexer<'a> {
         }
         let braced = &self.src[self.pos..self.pos + end + 2];
         let selector = syntax::selector(kind, &format!("{name}{braced}"));
-        Some(ParseError::new(
-            E::BracedName { selector },
-            self.pos..self.pos + braced.len(),
-        ))
+        let fix = verbatim(&format!("quote a name that has braces: {selector}"));
+        Some(
+            E::UnexpectedChar('{')
+                .at(self.pos..self.pos + braced.len())
+                .with_fix(fix),
+        )
     }
 
     fn query(&mut self, start: usize) -> Result<TokenKind, ParseError> {
@@ -540,7 +540,7 @@ impl<'a> Lexer<'a> {
         let mut query = String::new();
         loop {
             let Some(c) = self.peek().filter(|&c| c != '\n') else {
-                return Err(ParseError::new(E::UnterminatedQuery, start..self.pos));
+                return Err(E::UnterminatedQuery.at(start..self.pos));
             };
             self.pos += c.len_utf8();
             match c {
@@ -579,10 +579,7 @@ impl<'a> Lexer<'a> {
             at += len;
         }
         self.pos = self.src.len();
-        Err(ParseError::new(
-            E::UnterminatedPattern,
-            start..self.src.len(),
-        ))
+        Err(E::UnterminatedPattern.at(start..self.src.len()))
     }
 
     /// Lexes `<<TAG` and reads its body from the lines after the command line
@@ -590,7 +587,7 @@ impl<'a> Lexer<'a> {
     fn heredoc(&mut self) -> Result<TokenKind, ParseError> {
         let start = self.pos;
         if self.peek_second() != Some('<') {
-            return Err(ParseError::new(E::UnexpectedChar('<'), start..start + 1));
+            return Err(E::UnexpectedChar('<').at(start..start + 1));
         }
         self.pos += 2;
         let raw = self.peek() == Some('\'');
@@ -599,7 +596,7 @@ impl<'a> Lexer<'a> {
         }
         let tag = self.take_while(is_ident_char);
         if tag.is_empty() || (raw && self.peek() != Some('\'')) {
-            return Err(ParseError::new(E::MissingHeredocTag, start..self.pos));
+            return Err(E::MissingHeredocTag.at(start..self.pos));
         }
         if raw {
             self.pos += 1;
@@ -632,10 +629,7 @@ impl<'a> Lexer<'a> {
             body.push(line);
             line_start = next;
         }
-        Err(ParseError::new(
-            E::UnterminatedHeredoc(tag.into()),
-            start..self.pos,
-        ))
+        Err(E::UnterminatedHeredoc(tag.into()).at(start..self.pos))
     }
 }
 
@@ -672,6 +666,7 @@ pub(super) fn is_ident_char(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hint::Frontend;
     use crate::script::ParseErrorKind as E;
     use TokenKind as T;
 
@@ -681,7 +676,7 @@ mod tests {
         loop {
             let token = lexer
                 .next_token()
-                .unwrap_or_else(|e| panic!("{src:?}: {e}"));
+                .unwrap_or_else(|e| panic!("{src:?}: {}", e.render(Frontend::Cli, Some(src))));
             if token.kind == T::Eof {
                 return out;
             }
@@ -702,6 +697,18 @@ mod tests {
                 Err(e) => return e,
             }
         }
+    }
+
+    /// The kind of `src`'s error and its fix, as the CLI prints it.
+    fn fixed(src: &str) -> (E, String) {
+        let e = error(src);
+        (e.kind, Frontend::Cli.render(&e.fix.expect("a fix").text))
+    }
+
+    /// `kind`, with the fix it gives alone.
+    fn plain(kind: E) -> (E, String) {
+        let fix = kind.fix().expect("a fix").text;
+        (kind, fix)
     }
 
     fn word(s: &str) -> TokenKind {
@@ -807,7 +814,7 @@ mod tests {
     fn missing_syntax_name() {
         let e = error("delete fn: x");
         assert_eq!(e.kind, E::MissingName("fn".into()));
-        assert_eq!(e.span.start, 7);
+        assert_eq!(e.span.unwrap().start, 7);
     }
 
     #[test]
@@ -827,7 +834,7 @@ mod tests {
         );
         let e = error("show *");
         assert_eq!(e.kind, E::BareStar);
-        assert_eq!(e.span, 5..6);
+        assert_eq!(e.span, Some(5..6));
         assert_eq!(error("show all *>fn:a").kind, E::BareStar);
         assert_eq!(error("show *: x").kind, E::MissingName("*".into()));
     }
@@ -862,13 +869,18 @@ mod tests {
             ("$,2", "2-$"),
             ("1,2>fn:a", "1-2"),
         ] {
-            assert_eq!(error(src).kind, E::SedRange(fix.into()), "{src:?}");
+            let fix = format!("line ranges are written N-M, not sed's N,M; write {fix}");
+            assert_eq!(fixed(src), (E::UnexpectedChar(','), fix), "{src:?}");
         }
-        assert_eq!(error("show 10,20").span, 7..10);
+        assert_eq!(error("show 10,20").span, Some(7..10));
         // Not a range: a `,` before anything but a line number keeps its error.
-        assert_eq!(error("3, 4").kind, E::Comma(None));
-        assert_eq!(error("3,a").kind, E::Comma(None));
-        assert_eq!(error("3,").kind, E::Comma(None));
+        for src in ["3, 4", "3,a", "3,"] {
+            assert_eq!(fixed(src).0, E::UnexpectedChar(','), "{src}");
+            assert!(
+                fixed(src).1.starts_with("a command takes no comma lists"),
+                "{src}"
+            );
+        }
         let hint = "a command takes no comma lists; separate commands with `;` or a new line";
         for (src, split) in [
             ("show 31-35, 118-124", ": show 31-35; show 118-124"),
@@ -882,9 +894,11 @@ mod tests {
             ("show 1,", ""),
         ] {
             assert!(
-                error(src).to_string().ends_with(&format!("{hint}{split}")),
-                "{src}: {}",
                 error(src)
+                    .render(Frontend::Cli, None)
+                    .ends_with(&format!("{hint}{split}")),
+                "{src}: {}",
+                error(src).render(Frontend::Cli, None)
             );
         }
     }
@@ -911,7 +925,7 @@ mod tests {
     fn bad_regexes() {
         let e = error("/x/g");
         assert_eq!(e.kind, E::UnknownRegexFlag('g'));
-        assert_eq!(e.span, 3..4);
+        assert_eq!(e.span, Some(3..4));
         assert_eq!(error("/abc\n/").kind, E::UnterminatedRegex);
         assert_eq!(error(r"/abc\/").kind, E::UnterminatedRegex);
     }
@@ -941,7 +955,7 @@ mod tests {
     fn bad_line_of_a_span() {
         let e = error("fn:a.lines:0");
         assert_eq!(e.kind, E::LineIndex("0".into()));
-        assert_eq!(e.span, 4..12);
+        assert_eq!(e.span, Some(4..12));
         assert_eq!(error("fn:a.lines:x").kind, E::LineIndex("x".into()));
         assert_eq!(error("fn:a.lines:").kind, E::LineIndex(String::new()));
         assert_eq!(error("fn:a.lines:2x>b").kind, E::LineIndex("2x".into()));
@@ -950,11 +964,11 @@ mod tests {
             E::LineIndex("99999999999999999999999".into())
         );
         assert_eq!(
-            error("fn:a.body:2").kind,
-            E::PartNumber {
-                part: "body".into(),
-                number: "2".into()
-            }
+            fixed("fn:a.body:2"),
+            (
+                E::PartNumber("body".into()),
+                "pick a line of it with .body.lines:2".into()
+            )
         );
     }
 
@@ -968,7 +982,7 @@ mod tests {
     fn bad_strings() {
         let e = error(r#"show "a\qb""#);
         assert_eq!(e.kind, E::InvalidEscape('q'));
-        assert_eq!(e.span, 7..9);
+        assert_eq!(e.span, Some(7..9));
         assert_eq!(error(r#""abc"#).kind, E::UnterminatedString);
         assert_eq!(error("\"ab\ncd\"").kind, E::UnterminatedString);
     }
@@ -997,7 +1011,7 @@ mod tests {
         assert_eq!(kinds("`a # b`"), [T::Code("a # b".into())]);
         let e = error("show `foo(");
         assert_eq!(e.kind, E::UnterminatedPattern);
-        assert_eq!(e.span, 5..10);
+        assert_eq!(e.span, Some(5..10));
     }
 
     #[test]
@@ -1011,7 +1025,7 @@ mod tests {
         assert_eq!(kinds("`  `"), [T::Code("  ".into())]);
         let e = error("show ``foo`");
         assert_eq!(e.kind, E::UnterminatedPattern);
-        assert_eq!(e.span, 5..11);
+        assert_eq!(e.span, Some(5..11));
     }
 
     #[test]
@@ -1034,45 +1048,34 @@ mod tests {
         );
         let e = error("fn:f.bodyy");
         assert_eq!(e.kind, E::UnknownPart("bodyy".into()));
-        assert_eq!(e.span, 4..10);
+        assert_eq!(e.span, Some(4..10));
     }
 
     #[test]
     fn dotted_names_suggest_quoting_or_nesting() {
         let dotted = |src, selector: &str, part: &str| {
-            let e = error(src);
-            assert_eq!(
-                e.kind,
-                E::DottedName {
-                    selector: selector.into(),
-                    part: part.into()
-                },
-                "{src}"
-            );
-            e.span
+            let fix = format!("quote a name that has dots: {selector}");
+            assert_eq!(fixed(src), (E::UnknownPart(part.into()), fix), "{src}");
+            error(src).span
         };
         let span = dotted(
             "show import:app.models.user",
             r#"import:"app.models.user""#,
             "models",
         );
-        assert_eq!(span, 15..27);
+        assert_eq!(span, Some(15..27));
         dotted("import:os.path", r#"import:"os.path""#, "path");
         // Two letters are too short to be a misspelt `.doc`.
         dotted("show import:app.db", r#"import:"app.db""#, "db");
         // Other kinds' names have no dots: the name is a member.
         let nested = |src, selector: &str, part: &str, method: Option<&str>| {
-            let e = error(src);
-            assert_eq!(
-                e.kind,
-                E::NestedName {
-                    selector: selector.into(),
-                    part: part.into(),
-                    method: method.map(Into::into),
-                },
-                "{src}"
+            let method = method.map(|m| format!(" (a Go method: {m})"));
+            let fix = format!(
+                "to name a member, nest it: {selector}{}",
+                method.unwrap_or_default()
             );
-            e.span
+            assert_eq!(fixed(src), (E::UnknownPart(part.into()), fix), "{src}");
+            error(src).span
         };
         let span = nested(
             "show fn:App.handle",
@@ -1080,7 +1083,7 @@ mod tests {
             "handle",
             Some(r#"fn:"App.handle""#),
         );
-        assert_eq!(span, 11..18);
+        assert_eq!(span, Some(11..18));
         nested(
             "fn:a.b.body",
             "KIND:a>fn:b.body",
@@ -1106,49 +1109,42 @@ mod tests {
 
     #[test]
     fn dashed_names_suggest_quoting() {
-        let kind = |src| error(src).kind;
-        let e = error("show import:react-router");
-        assert_eq!(e.kind, E::DashedName(r#"import:"react-router""#.into()));
-        assert_eq!(e.span, 17..18);
+        let quote = |name: &str| (E::UnexpectedChar('-'), format!("quote the name: {name}"));
         assert_eq!(
-            kind("import:react-router-dom.name"),
-            E::DashedName(r#"import:"react-router-dom""#.into())
+            fixed("show import:react-router"),
+            quote(r#"import:"react-router""#)
         );
-        assert_eq!(kind("fn:a-b"), E::DashedName(r#"fn:"a-b""#.into()));
+        assert_eq!(error("show import:react-router").span, Some(17..18));
+        assert_eq!(
+            fixed("import:react-router-dom.name"),
+            quote(r#"import:"react-router-dom""#)
+        );
+        assert_eq!(fixed("fn:a-b"), quote(r#"fn:"a-b""#));
         // Not a name: a malformed range, or a `-` after a quoted name or a space.
-        assert_eq!(kind("fn:a-fn:b"), E::UnexpectedChar('-'));
-        assert_eq!(kind("fn:a-/b/"), E::UnexpectedChar('-'));
-        assert_eq!(kind(r#"import:"a"-b"#), E::UnexpectedChar('-'));
-        assert_eq!(kind("fn:a -b"), E::UnexpectedChar('-'));
+        for src in ["fn:a-fn:b", "fn:a-/b/", r#"import:"a"-b"#, "fn:a -b"] {
+            assert_eq!(fixed(src), plain(E::UnexpectedChar('-')), "{src}");
+        }
     }
 
     #[test]
     fn braced_names_suggest_quoting() {
         let braced = |src, selector: &str| {
-            let e = error(src);
-            assert_eq!(
-                e.kind,
-                E::BracedName {
-                    selector: selector.into()
-                },
-                "{src}"
-            );
-            e.span
+            let fix = format!("quote a name that has braces: {selector}");
+            assert_eq!(fixed(src), (E::UnexpectedChar('{'), fix), "{src}");
+            error(src).span
         };
         let span = braced("show import:a::b::{A, B}", r#"import:"a::b::{A, B}""#);
-        assert_eq!(span, 18..24);
+        assert_eq!(span, Some(18..24));
         braced("import:c::{d::{E, F}, G}", r#"import:"c::{d::{E, F}, G}""#);
         braced("show import:a::{b} | show fn:x", r#"import:"a::{b}""#);
         // Without a matching `}` on the line, the `{` isn't part of a name.
-        assert_eq!(error("show import:a::{b").kind, E::UnexpectedChar('{'));
-        assert_eq!(
-            error("show import:a::{b\nshow c}").kind,
-            E::UnexpectedChar('{')
-        );
-        assert_eq!(
-            error("show import:a::{b | show c}").kind,
-            E::UnexpectedChar('{')
-        );
+        for src in [
+            "show import:a::{b",
+            "show import:a::{b\nshow c}",
+            "show import:a::{b | show c}",
+        ] {
+            assert_eq!(fixed(src), plain(E::UnexpectedChar('{')), "{src}");
+        }
     }
 
     #[test]
@@ -1255,7 +1251,7 @@ mod tests {
         assert_eq!(error("replace 1 <<'A\nx\nA\n").kind, E::MissingHeredocTag);
         let e = error("show\nreplace fn:parse.body <<END\nfoo\n");
         assert_eq!(e.kind, E::UnterminatedHeredoc("END".into()));
-        assert_eq!(e.span.start, 27);
+        assert_eq!(e.span.unwrap().start, 27);
         assert_eq!(
             error("replace 1 <<END").kind,
             E::UnterminatedHeredoc("END".into())

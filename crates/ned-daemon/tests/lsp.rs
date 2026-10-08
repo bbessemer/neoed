@@ -265,15 +265,22 @@ async fn languages_with_the_same_server_share_it() {
     servers.shutdown().await;
 }
 
+/// `err` as the CLI prints it, from what the daemon sends: its problem and fix.
+fn message(err: ned_daemon::servers::ServersError) -> String {
+    let failure = ned_core::lsp::LspFailure::from(err);
+    ned_core::hint::Error::new(failure).message(ned_core::hint::Frontend::Cli, None)
+}
+
 #[tokio::test]
 async fn a_missing_server_names_the_setting() {
     let ws = Workspace::with_config("go = [\"no-such-server-for-ned\"]\n");
     let mut servers = ws.servers();
-    let err = servers
-        .open(&[ws.doc("a.go", Language::Go, "")])
-        .await
-        .unwrap_err()
-        .to_string();
+    let err = message(
+        servers
+            .open(&[ws.doc("a.go", Language::Go, "")])
+            .await
+            .unwrap_err(),
+    );
     assert!(err.contains("`no-such-server-for-ned` not found"), "{err}");
     assert!(err.contains("[lsp] go ="), "{err}");
 }
@@ -285,7 +292,7 @@ async fn a_server_that_fails_to_start_says_why() {
     fs::write(ws.dir.path().join(".ned.toml"), config).unwrap();
     let err = ws.servers().open(&[ws.rust("a.rs", "")]).await.unwrap_err();
     assert_eq!(
-        err.to_string(),
+        message(err),
         "fake_lsp.py exited: fake: cannot start: broken on purpose; check that it runs, then rerun"
     );
 }
@@ -382,11 +389,12 @@ async fn diagnose_waits_for_indexing_up_to_the_timeout() {
     let ws = Workspace::with_config("timeout = 1\n");
     let mut servers = ws.servers();
     let started = Instant::now();
-    let err = servers
-        .diagnose(&[ws.rust("a.rs", "still indexing ERROR")], false)
-        .await
-        .unwrap_err()
-        .to_string();
+    let err = message(
+        servers
+            .diagnose(&[ws.rust("a.rs", "still indexing ERROR")], false)
+            .await
+            .unwrap_err(),
+    );
     assert!(started.elapsed() < Duration::from_secs(5));
     assert!(err.contains("fake_lsp.py"), "{err}");
     assert!(err.contains("rerun"), "{err}");
@@ -406,7 +414,8 @@ async fn rust_analyzer_is_busy_until_it_says_it_is_quiescent() {
         .diagnose(&[ws.rust("a.rs", "ERROR")], false)
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("rerun"), "{err}");
+    let err = message(err);
+    assert!(err.contains("rerun"), "{err}");
     let diagnosis = servers
         .diagnose(&[ws.rust("a.rs", "done ERROR")], false)
         .await
@@ -589,7 +598,10 @@ async fn an_unfinished_save_time_check_is_a_note() {
     assert_eq!(diagnosis.files, [Some(vec![cargo(1, 8)])]);
     assert_eq!(
         diagnosis.notes,
-        ["fake_lsp.py's check on save didn't finish within 1s; raise [lsp] timeout"]
+        [ned_core::lsp::LspFailure {
+            problem: "fake_lsp.py's check on save didn't finish within 1s".into(),
+            fix: Some("raise [lsp] timeout".into()),
+        }]
     );
     servers.shutdown().await;
 }
@@ -778,7 +790,9 @@ async fn rename_refusals_say_why() {
         let config = format!("[lsp]\nrust = [{FAKE:?}, {:?}, {flag:?}]\n", ws.log);
         fs::write(ws.dir.path().join(".ned.toml"), config).unwrap();
         match rename_foo(&ws).await {
-            Renamed::Refused(message) => assert!(message.contains(why), "{message}"),
+            Renamed::Refused { why: refused, .. } => {
+                assert!(refused.contains(why), "{refused}")
+            }
             other => panic!("{flag}: {other:?}"),
         }
     }
@@ -797,7 +811,7 @@ async fn rename_refusals_say_why() {
         .await
         .unwrap();
     match renamed {
-        Renamed::Refused(message) => assert!(message.contains("nothing to rename"), "{message}"),
+        Renamed::Refused { why, .. } => assert!(why.contains("nothing to rename"), "{why}"),
         other => panic!("{other:?}"),
     }
     let md = ws.doc("a.md", Language::Markdown, "# A\n");

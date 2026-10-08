@@ -138,7 +138,7 @@ pub enum FragmentError {
         /// Where parsing failed, in the template's text.
         at: usize,
     },
-    #[error("a placeholder must stand for a whole node; write `@@` for a literal `@`")]
+    #[error("a placeholder must stand for a whole node")]
     Fused {
         /// The placeholder, in the template's text.
         span: Range<usize>,

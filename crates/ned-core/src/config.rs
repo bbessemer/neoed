@@ -3,11 +3,12 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::{env, fmt, fs, io};
+use std::{env, fs, io};
 
 use serde::Deserialize;
 use toml::{Spanned, Value};
 
+use crate::hint::{self, Hint};
 use crate::lang::Language;
 use crate::lsp::Severity;
 use crate::theme::{self, Setting, Theme};
@@ -86,20 +87,22 @@ enum RawBlock {
     Off(bool),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigError {
+/// An invalid config file.
+pub type ConfigError = hint::Error<ConfigErrorKind>;
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{location}: invalid config: {message}")]
+pub struct ConfigErrorKind {
     /// The config file, with the line and column when known.
     pub location: String,
     pub message: String,
 }
 
-impl fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: invalid config: {}", self.location, self.message)
+impl Hint for ConfigErrorKind {
+    fn exit_code(&self) -> u8 {
+        2
     }
 }
-
-impl std::error::Error for ConfigError {}
 
 impl Config {
     /// Reads the user config at `user`, if it exists.
@@ -247,9 +250,10 @@ fn parse(path: &Path, text: &str, user: bool) -> Result<Layer, ConfigError> {
     let raw: RawConfig =
         toml::from_str(text).map_err(|err| error(err.span(), err.message().trim().into()))?;
     if let Some(theme) = raw.theme.as_ref().filter(|_| !user) {
-        let message =
-            "only the user config sets a theme; move it to ~/.config/ned/config.toml".into();
-        return Err(error(Some(theme.span()), message));
+        let message = "only the user config sets a theme".into();
+        return Err(
+            error(Some(theme.span()), message).with_fix("move it to ~/.config/ned/config.toml")
+        );
     }
     let entries = |table: BTreeMap<Spanned<String>, Spanned<Value>>| {
         let mut entries = HashMap::new();
@@ -344,14 +348,15 @@ pub(crate) fn error_at(
         let (line, col) = crate::script::error::location(text, span.start);
         location = format!("{location}:{line}:{col}");
     }
-    ConfigError { location, message }
+    ConfigErrorKind { location, message }.into()
 }
 
 pub(crate) fn io_error(path: &Path, err: &io::Error) -> ConfigError {
-    ConfigError {
+    ConfigErrorKind {
         location: display(path),
         message: err.to_string(),
     }
+    .into()
 }
 
 /// `path`, relative to the working directory if it's inside it.
@@ -421,7 +426,7 @@ pub(crate) mod tests {
             "\n[lsp]\nrust = \"rust-analyzer\"\n",
         )]));
         let err = config.layers(root.path()).map(|_| ()).unwrap_err();
-        assert!(err.location.ends_with(".ned.toml:3:8"), "{err}");
+        assert!(err.kind.location.ends_with(".ned.toml:3:8"), "{err:?}");
     }
 
     #[test]
@@ -440,8 +445,8 @@ pub(crate) mod tests {
             .unwrap()
             .idle_timeout(root.path())
             .unwrap_err();
-        assert!(err.location.ends_with(".ned.toml:2:1"), "{err}");
-        assert!(err.message.contains("unknown field `idle`"), "{err}");
+        assert!(err.kind.location.ends_with(".ned.toml:2:1"), "{err:?}");
+        assert!(err.kind.message.contains("unknown field `idle`"), "{err:?}");
     }
 
     #[test]
@@ -452,8 +457,8 @@ pub(crate) mod tests {
             .layers(root.path())
             .map(|_| ())
             .unwrap_err();
-        assert!(err.location.ends_with(".ned.toml:2:8"), "{err}");
-        assert!(err.message.contains("must be a command"), "{err}");
+        assert!(err.kind.location.ends_with(".ned.toml:2:8"), "{err:?}");
+        assert!(err.kind.message.contains("must be a command"), "{err:?}");
     }
 
     #[test]
@@ -495,14 +500,17 @@ pub(crate) mod tests {
             .unwrap()
             .lsp_timeout(root.path())
             .unwrap_err();
-        assert!(err.message.contains("unknown field `timeout`"), "{err}");
+        assert!(
+            err.kind.message.contains("unknown field `timeout`"),
+            "{err:?}"
+        );
         let root = tree(&[(".ned.toml", "[lsp]\ntimeout = \"soon\"\n")]);
         let err = Config::new(None)
             .unwrap()
             .lsp_timeout(root.path())
             .unwrap_err();
-        assert!(err.location.ends_with(".ned.toml:2:11"), "{err}");
-        assert!(err.message.contains("seconds"), "{err}");
+        assert!(err.kind.location.ends_with(".ned.toml:2:11"), "{err:?}");
+        assert!(err.kind.message.contains("seconds"), "{err:?}");
     }
 
     #[test]
@@ -512,8 +520,8 @@ pub(crate) mod tests {
             .unwrap()
             .check_show(root.path())
             .unwrap_err();
-        assert!(err.location.ends_with(".ned.toml:2:8"), "{err}");
-        assert!(err.message.contains("warning"), "{err}");
+        assert!(err.kind.location.ends_with(".ned.toml:2:8"), "{err:?}");
+        assert!(err.kind.message.contains("warning"), "{err:?}");
     }
 
     #[test]
@@ -538,7 +546,7 @@ pub(crate) mod tests {
                 .unwrap()
                 .check_block(root.path())
                 .unwrap_err();
-            assert!(err.message.contains("level"), "{bad}: {err}");
+            assert!(err.kind.message.contains("level"), "{bad}: {err:?}");
         }
     }
 
@@ -549,8 +557,8 @@ pub(crate) mod tests {
             .unwrap()
             .idle_timeout(root.path())
             .unwrap_err();
-        assert!(err.location.ends_with(".ned.toml:1:9"), "{err}");
-        assert!(err.message.contains("user config"), "{err}");
+        assert!(err.kind.location.ends_with(".ned.toml:1:9"), "{err:?}");
+        assert!(err.kind.message.contains("user config"), "{err:?}");
     }
 
     #[test]
@@ -570,8 +578,8 @@ pub(crate) mod tests {
         let path = root.path().join("config.toml");
         assert!(Config::new(Some(&path)).is_ok());
         let err = user_theme(Some(&path), None).unwrap_err();
-        assert!(err.location.ends_with("config.toml:1:9"), "{err}");
-        assert!(err.message.contains("default-dark"), "{err}");
+        assert!(err.kind.location.ends_with("config.toml:1:9"), "{err:?}");
+        assert!(err.kind.message.contains("default-dark"), "{err:?}");
     }
 
     #[test]
@@ -592,8 +600,8 @@ pub(crate) mod tests {
         let path = root.path().join("config.toml");
         assert!(Config::new(Some(&path)).is_ok());
         let err = user_theme(Some(&path), None).unwrap_err();
-        assert!(err.location.ends_with("config.toml:3:1"), "{err}");
-        assert!(err.message.contains("bad"), "{err}");
+        assert!(err.kind.location.ends_with("config.toml:3:1"), "{err:?}");
+        assert!(err.kind.message.contains("bad"), "{err:?}");
     }
 
     #[test]
@@ -648,11 +656,11 @@ pub(crate) mod tests {
     #[test]
     fn ned_theme_errors_name_the_variable() {
         let err = user_theme(None, Some("nope")).unwrap_err();
-        assert_eq!(err.location, "NED_THEME");
-        assert!(err.message.contains("default-dark"), "{err}");
+        assert_eq!(err.kind.location, "NED_THEME");
+        assert!(err.kind.message.contains("default-dark"), "{err:?}");
         let root = tree(&[("bad.toml", "dark = 1\n")]);
         let bad = root.path().join("bad.toml");
         let err = user_theme(None, bad.to_str()).unwrap_err();
-        assert!(err.location.ends_with("bad.toml:1:8"), "{err}");
+        assert!(err.kind.location.ends_with("bad.toml:1:8"), "{err:?}");
     }
 }

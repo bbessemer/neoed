@@ -11,3 +11,5 @@ repository = "https://github.com/bbessemer/neoed"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+# Errors carry their fix (`hint::Error`) and only travel the failure path.
+result_large_err = "allow"

@@ -502,7 +502,7 @@ fn outside_a_repository_is_a_usage_error() {
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert!(
-        stderr(&out).contains("--commit needs a git repository"),
+        stderr(&out).contains("isn't in a git repository; run git init, or leave out --commit"),
         "{}",
         stderr(&out)
     );
@@ -795,7 +795,7 @@ fn a_session_edit_git_cant_commit_names_its_entry() {
         ];
         let out = edit(&commit);
         assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-        for expected in [problem, ", and session entry 1 edited it"] {
+        for expected in [problem, "; session entry 1 edited it"] {
             assert!(stderr(&out).contains(expected), "{}", stderr(&out));
         }
         assert!(

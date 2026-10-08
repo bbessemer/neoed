@@ -5,6 +5,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use ned_core::fs::{PrivateDirError, private_dir, uid};
+use ned_core::hint::{Fix, Hint};
 use thiserror::Error;
 
 /// The files of one workspace's daemon, for one build of `ned`.
@@ -20,8 +21,18 @@ pub struct Paths {
 
 #[derive(Debug, Error)]
 pub enum PathsError {
-    #[error("{0}; remove it, or set XDG_RUNTIME_DIR to a private directory")]
+    #[error("{0}")]
     Dir(#[from] PrivateDirError),
+}
+
+impl Hint for PathsError {
+    fn exit_code(&self) -> u8 {
+        3
+    }
+
+    fn fix(&self) -> Option<Fix> {
+        Some("remove it, or set XDG_RUNTIME_DIR to a private directory".into())
+    }
 }
 
 impl Paths {

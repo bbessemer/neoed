@@ -102,12 +102,12 @@ impl Daemon<'_> {
                 }
                 Ok(Request::Open { documents }) => match self.servers.open(&documents).await {
                     Ok(()) => Response::Opened,
-                    Err(err) => Response::Error(err.to_string()),
+                    Err(err) => Response::Error(err.into()),
                 },
                 Ok(Request::Diagnose { documents, saved }) => {
                     match self.servers.diagnose(&documents, saved).await {
                         Ok(diagnosis) => Response::Diagnosis(diagnosis),
-                        Err(err) => Response::Error(err.to_string()),
+                        Err(err) => Response::Error(err.into()),
                     }
                 }
                 Ok(Request::Rename {
@@ -116,7 +116,7 @@ impl Daemon<'_> {
                     name,
                 }) => match self.servers.rename(&document, position, &name).await {
                     Ok(renamed) => Response::Renamed(renamed),
-                    Err(err) => Response::Error(err.to_string()),
+                    Err(err) => Response::Error(err.into()),
                 },
                 Ok(Request::Locate {
                     kind,
@@ -124,13 +124,13 @@ impl Daemon<'_> {
                     position,
                 }) => match self.servers.locate(kind, &document, position).await {
                     Ok(located) => Response::Located(located),
-                    Err(err) => Response::Error(err.to_string()),
+                    Err(err) => Response::Error(err.into()),
                 },
                 Ok(Request::Format { document }) => match self.servers.format(&document).await {
                     Ok(formatting) => Response::Formatted(formatting),
-                    Err(err) => Response::Error(err.to_string()),
+                    Err(err) => Response::Error(err.into()),
                 },
-                Err(err) => Response::Error(format!("invalid request: {err}")),
+                Err(err) => Response::Error(format!("invalid request: {err}").into()),
             };
             reply(&mut write, &response).await;
         }

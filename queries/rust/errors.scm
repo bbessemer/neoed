@@ -9,4 +9,5 @@
   (macro_invocation (token_tree . ["(" "["])) @error
   (_) @next)
   (#not-match? @next "^/[/*]")
-  (#set! message "macro statement needs a `;` before the next statement; add one after its closing bracket"))
+  (#set! message "macro statement needs a `;` before the next statement")
+  (#set! fix "add one after its closing bracket"))

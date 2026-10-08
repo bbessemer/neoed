@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::buffer::Buffer;
 use crate::config::{Config, ConfigError, Entry, program};
 use crate::exec::Change;
+use crate::hint::{self, Fix, Hint, Note};
 use crate::lang::Language;
 use crate::style::{Role, Style};
 
@@ -62,7 +63,7 @@ pub struct Diagnosis {
     /// Why some diagnostics may be missing, e.g. a save-time check that
     /// didn't finish.
     #[serde(default)]
-    pub notes: Vec<String>,
+    pub notes: Vec<LspFailure>,
 }
 
 /// What an edit's changed files introduced (spec §6.5).
@@ -75,9 +76,79 @@ pub struct Checked {
     pub blocking: Vec<(usize, Diagnostic)>,
 }
 
-/// Why language servers couldn't answer; the message ends with a fix.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LspFailure(pub String);
+/// Why language servers couldn't answer, or what they couldn't do, and the
+/// fix: a template, rendered for the frontend that prints it. It crosses the
+/// daemon's socket as it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspFailure {
+    pub problem: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix: Option<String>,
+}
+
+impl LspFailure {
+    /// The note that `consequence` followed the failure, such as `skipped
+    /// checking a.rs`: the problem, its fix, then the consequence (spec §6.5).
+    pub fn note(self, consequence: &str) -> Note {
+        match self.fix {
+            Some(fix) => Note {
+                text: self.problem,
+                fix: Some(Fix::new(fix).and(hint::verbatim(consequence))),
+            },
+            None => Note {
+                text: format!("{}; {consequence}", self.problem),
+                fix: None,
+            },
+        }
+    }
+}
+
+impl From<&str> for LspFailure {
+    fn from(problem: &str) -> LspFailure {
+        problem.to_string().into()
+    }
+}
+
+impl From<String> for LspFailure {
+    fn from(problem: String) -> LspFailure {
+        LspFailure { problem, fix: None }
+    }
+}
+
+/// An error's problem and fix, as the daemon sends it.
+impl<K: Hint> From<hint::Error<K>> for LspFailure {
+    fn from(error: hint::Error<K>) -> LspFailure {
+        LspFailure {
+            problem: error.kind.to_string(),
+            fix: error.fix.map(|fix| fix.text),
+        }
+    }
+}
+
+impl From<LspFailure> for Note {
+    fn from(failure: LspFailure) -> Note {
+        Note {
+            text: failure.problem,
+            fix: failure.fix.map(Fix::new),
+        }
+    }
+}
+
+impl fmt::Display for LspFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.problem)
+    }
+}
+
+impl Hint for LspFailure {
+    fn exit_code(&self) -> u8 {
+        3
+    }
+
+    fn fix(&self) -> Option<Fix> {
+        self.fix.as_deref().map(Fix::new)
+    }
+}
 
 /// A replacement of the text between two positions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,8 +171,11 @@ pub struct FileEdits {
 #[serde(rename_all = "snake_case")]
 pub enum Renamed {
     Edits(Vec<FileEdits>),
-    /// Why the server can't rename there; the message ends with a fix.
-    Refused(String),
+    /// Why the server can't rename there, and the fix.
+    Refused {
+        why: String,
+        fix: String,
+    },
     /// The document's language has no server.
     NoServer,
 }
@@ -283,7 +357,7 @@ pub struct BeforeSave {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Saved {
     pub files: Vec<Vec<Diagnostic>>,
-    pub notes: Vec<String>,
+    pub notes: Vec<LspFailure>,
 }
 
 /// Diagnoses the original text of each of `changes` that a file holds, as
@@ -369,7 +443,7 @@ fn documents(
             let path = &changes[i].path;
             Ok(Document {
                 path: std::path::absolute(path)
-                    .map_err(|err| LspFailure(format!("cannot read {path}: {err}")))?,
+                    .map_err(|err| LspFailure::from(format!("cannot read {path}: {err}")))?,
                 lang: changes[i].lang.expect("typed"),
                 text: text(i),
             })
@@ -692,7 +766,7 @@ mod tests {
             self.asked
                 .push(documents.iter().map(|d| d.text.clone()).collect());
             if let Some(failure) = self.failure {
-                return Err(LspFailure(failure.into()));
+                return Err(LspFailure::from(failure));
             }
             let files = documents
                 .iter()
@@ -719,7 +793,7 @@ mod tests {
                 show: self.show.unwrap_or(Severity::Warning),
                 block: self.block.unwrap_or(Some(Severity::Error)),
                 files,
-                notes: self.notes.clone(),
+                notes: self.notes.iter().map(|n| n.as_str().into()).collect(),
             })
         }
 
@@ -867,7 +941,7 @@ mod tests {
         };
         let changes = [change("a.rs", "a\n", "ERROR\n")];
         let err = check_changes(&mut lsp, &changes, &["ERROR\n"], None, false).unwrap_err();
-        assert_eq!(err, LspFailure("fake didn't answer".into()));
+        assert_eq!(err, LspFailure::from("fake didn't answer"));
     }
 
     #[test]
@@ -942,6 +1016,38 @@ mod tests {
             ..TextLsp::default()
         };
         let out = saved(&mut lsp, &[change("a.rs", "a\n", "b\n")], None);
-        assert_eq!(out.notes, ["cargo check didn't finish"]);
+        assert_eq!(out.notes, [LspFailure::from("cargo check didn't finish")]);
+    }
+
+    #[test]
+    fn a_failure_keeps_its_problem_and_fix_apart() {
+        let failure = LspFailure {
+            problem: "rust-analyzer exited".into(),
+            fix: Some("check that it runs, then use {--force}".into()),
+        };
+        assert_eq!(
+            hint::Error::new(failure.clone()).render(hint::Frontend::Mcp, None),
+            "error: rust-analyzer exited; check that it runs, then use `force`"
+        );
+        assert_eq!(
+            failure
+                .clone()
+                .note("skipped checking a.rs")
+                .render(hint::Frontend::Cli),
+            "note: rust-analyzer exited; check that it runs, then use --force; skipped checking a.rs"
+        );
+        let sent = serde_json::to_string(&failure).unwrap();
+        assert_eq!(serde_json::from_str::<LspFailure>(&sent).unwrap(), failure);
+        let bare = LspFailure::from("no answer");
+        assert_eq!(
+            serde_json::to_string(&bare).unwrap(),
+            r#"{"problem":"no answer"}"#
+        );
+        assert_eq!(
+            failure
+                .note("skipped checking {-w}.rs")
+                .render(hint::Frontend::Mcp),
+            "note: rust-analyzer exited; check that it runs, then use `force`; skipped checking {-w}.rs"
+        );
     }
 }

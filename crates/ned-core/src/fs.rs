@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use thiserror::Error;
 
+use crate::hint::{self, Hint};
+
 /// The text of the file at `path`, `None` if it's missing.
 pub fn read(path: &Path) -> io::Result<Option<String>> {
     match fs::read_to_string(path) {
@@ -126,13 +128,23 @@ fn temp_path(target: &Path) -> PathBuf {
     target.with_file_name(format!(".{name}.ned-{}-{n}.tmp", std::process::id()))
 }
 
-/// Why [`private_dir`] refused or couldn't make a directory.
+/// Why [`private_dir`] refused or couldn't make a directory. The caller gives
+/// the fix, which depends on what the directory is for.
+pub type PrivateDirError = hint::Error<PrivateDirErrorKind>;
+
 #[derive(Debug, Error)]
-pub enum PrivateDirError {
+pub enum PrivateDirErrorKind {
     #[error("cannot make {}: {source}", dir.display())]
     Io { dir: PathBuf, source: io::Error },
     #[error("{} is {why}", dir.display())]
     Unsafe { dir: PathBuf, why: &'static str },
+}
+
+impl Hint for PrivateDirErrorKind {
+    /// Not the user's input: the state it runs in.
+    fn exit_code(&self) -> u8 {
+        3
+    }
 }
 
 /// Creates `dir` accessible only to the user if it's missing; otherwise
@@ -142,14 +154,14 @@ pub fn private_dir(dir: &Path) -> Result<(), PrivateDirError> {
     use std::fs::DirBuilder;
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 
-    let io_error = |source| PrivateDirError::Io {
+    let io_error = |source| PrivateDirErrorKind::Io {
         dir: dir.to_path_buf(),
         source,
     };
     match DirBuilder::new().mode(0o700).create(dir) {
         Ok(()) => return Ok(()),
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(err) => return Err(io_error(err)),
+        Err(err) => return Err(io_error(err).into()),
     }
     let meta = fs::symlink_metadata(dir).map_err(io_error)?;
     let why = if !meta.is_dir() {
@@ -161,10 +173,11 @@ pub fn private_dir(dir: &Path) -> Result<(), PrivateDirError> {
     } else {
         return Ok(());
     };
-    Err(PrivateDirError::Unsafe {
+    Err(PrivateDirErrorKind::Unsafe {
         dir: dir.to_path_buf(),
         why,
-    })
+    }
+    .into())
 }
 
 /// The user's id.
@@ -322,8 +335,8 @@ mod tests {
         fs::create_dir(&dir).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o770)).unwrap();
         assert!(matches!(
-            private_dir(&dir),
-            Err(PrivateDirError::Unsafe {
+            private_dir(&dir).map_err(|err| err.kind),
+            Err(PrivateDirErrorKind::Unsafe {
                 why: "accessible to other users",
                 ..
             })
@@ -337,8 +350,8 @@ mod tests {
         let dir = tmp.path().join("ned");
         fs::write(&dir, "").unwrap();
         assert!(matches!(
-            private_dir(&dir),
-            Err(PrivateDirError::Unsafe {
+            private_dir(&dir).map_err(|err| err.kind),
+            Err(PrivateDirErrorKind::Unsafe {
                 why: "not a directory",
                 ..
             })

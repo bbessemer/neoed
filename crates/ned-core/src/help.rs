@@ -1,16 +1,7 @@
 //! `ned help [TOPIC]` (command-language spec, §1) and the MCP server's `help`
-//! tool (§1.5).
-//!
-//! Each frontend renders the same texts in its own terms: `{KEY}` is an option
-//! named in `OPTIONS`, and `{cli:TEXT}` and `{mcp:TEXT}` are TEXT for that
-//! frontend alone.
+//! tool (§1.5), rendered in each frontend's terms (`hint::Frontend::render`).
 
-/// Who reads the help.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Frontend {
-    Cli,
-    Mcp,
-}
+use crate::hint::{self, Fix, Frontend, Hint};
 
 /// Every frontend's topics, by name, in the order they're listed.
 const SHARED: &[(&str, &str)] = &[
@@ -45,17 +36,18 @@ const CLI: &[(&str, &str)] = &[
 /// The MCP server's own topics, listed after the shared ones.
 const MCP: &[(&str, &str)] = &[("session", include_str!("../help/mcp/session.txt"))];
 
-const SUMMARY: &str = include_str!("../help/summary.txt");
+/// A topic the frontend's help doesn't have.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("unknown topic `{0}`")]
+pub struct UnknownTopic(String);
 
-/// Each option's placeholder key, then what the CLI and the MCP server call it.
-const OPTIONS: &[(&str, &str, &str)] = &[
-    ("-w", "-w", "`workspace`"),
-    ("--force", "--force", "`force`"),
-    ("--no-check", "--no-check", "`no_check`"),
-    ("--no-fmt", "--no-fmt", "`no_fmt`"),
-    ("the FILE arguments", "the FILE arguments", "`files`"),
-    ("ned help", "ned help", "`help`"),
-];
+impl Hint for UnknownTopic {
+    fn exit_code(&self) -> u8 {
+        2
+    }
+}
+
+const SUMMARY: &str = include_str!("../help/summary.txt");
 
 impl Frontend {
     /// The topics' names, in the order they're listed.
@@ -70,7 +62,7 @@ impl Frontend {
 
     /// The summary, or the text of the topic named whatever its case; or the
     /// error naming the topics.
-    pub fn text(self, topic: Option<&str>) -> Result<String, String> {
+    pub fn text(self, topic: Option<&str>) -> Result<String, hint::Error<UnknownTopic>> {
         let Some(topic) = topic else {
             return Ok(self.summary());
         };
@@ -78,56 +70,27 @@ impl Frontend {
             .texts()
             .find(|(name, _)| name.eq_ignore_ascii_case(topic));
         found.map(|(_, text)| self.render(text)).ok_or_else(|| {
-            let names: Vec<&str> = self.topics().collect();
-            format!(
-                "error: unknown topic `{topic}`; topics are {}",
-                names.join(" ")
-            )
+            let topics: Vec<&str> = self.topics().collect();
+            let fix = Fix::new(format!("topics are {}", topics.join(" ")));
+            hint::Error::new(UnknownTopic(topic.to_string())).with_fix(fix)
         })
     }
 
     fn texts(self) -> impl Iterator<Item = (&'static str, &'static str)> {
         let own = match self {
-            Frontend::Cli => CLI,
+            Frontend::Cli | Frontend::Repl => CLI,
             Frontend::Mcp => MCP,
         };
         SHARED.iter().chain(own).copied()
-    }
-
-    /// `text` with its placeholders replaced.
-    fn render(self, mut text: &str) -> String {
-        let (mine, other) = match self {
-            Frontend::Cli => ("{cli:", "{mcp:"),
-            Frontend::Mcp => ("{mcp:", "{cli:"),
-        };
-        let mut out = String::with_capacity(text.len());
-        while let Some(start) = text.find('{') {
-            let Some(len) = text[start..].find('}') else {
-                break;
-            };
-            out.push_str(&text[..start]);
-            let placeholder = &text[start..=start + len];
-            let option = OPTIONS
-                .iter()
-                .find(|(key, ..)| *key == &placeholder[1..len]);
-            if let Some((_, cli, mcp)) = option {
-                out.push_str(if self == Frontend::Cli { cli } else { mcp });
-            } else if let Some(only) = placeholder[..len].strip_prefix(mine) {
-                out.push_str(only);
-            } else if !placeholder.starts_with(other) {
-                out.push_str(placeholder);
-            }
-            text = &text[start + len + 1..];
-        }
-        out + text
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hint::OPTIONS;
 
-    const FRONTENDS: [Frontend; 2] = [Frontend::Cli, Frontend::Mcp];
+    const FRONTENDS: [Frontend; 3] = [Frontend::Cli, Frontend::Mcp, Frontend::Repl];
 
     /// The summary and every topic's text.
     fn texts(frontend: Frontend) -> Vec<(String, String)> {
@@ -162,6 +125,8 @@ mod tests {
         assert_eq!(cli[..cli.len() - 2], mcp[..]);
         assert_eq!(cli[cli.len() - 3..], ["session", "repl", "mcp"]);
         let error = Frontend::Mcp.text(Some("repl")).unwrap_err();
+        assert_eq!(error.exit_code(), 2);
+        let error = error.render(Frontend::Mcp, None);
         assert!(
             error.starts_with("error: unknown topic `repl`; topics are show "),
             "{error}"
@@ -211,7 +176,9 @@ mod tests {
         for frontend in FRONTENDS {
             for (topic, text) in texts(frontend) {
                 assert!(
-                    !text.contains("{cli:") && !text.contains("{mcp:"),
+                    !["{cli:", "{mcp:", "{repl:"]
+                        .iter()
+                        .any(|p| text.contains(p)),
                     "{frontend:?} {topic}"
                 );
                 for (key, ..) in OPTIONS {
@@ -235,10 +202,35 @@ mod tests {
     }
 
     #[test]
-    fn braces_that_arent_placeholders_are_kept() {
-        assert_eq!(
-            Frontend::Mcp.render("{path} {-w} {"),
-            "{path} `workspace` {"
+    fn the_repl_has_the_clis_topics_in_its_own_terms() {
+        assert!(Frontend::Repl.topics().eq(Frontend::Cli.topics()));
+        let summary = Frontend::Repl.summary();
+        assert!(!summary.contains("ned [FLAGS]"), "{summary}");
+        assert!(
+            summary.contains("\nEach line at the prompt is a script"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("\nFlags are given when the REPL starts: "),
+            "{summary}"
+        );
+        assert!(summary.ends_with(" config session repl mcp\n"), "{summary}");
+        let outline = Frontend::Repl.text(Some("outline")).unwrap();
+        assert!(
+            outline.contains("are skipped (start the REPL with --lang).\n"),
+            "{outline}"
+        );
+        let text = Frontend::Repl.text(Some("text")).unwrap();
+        assert!(
+            text.contains("stays four characters, so type the character itself"),
+            "{text}"
+        );
+        let selectors = Frontend::Repl.text(Some("selectors")).unwrap();
+        assert!(selectors.contains("(:help filters)"), "{selectors}");
+        let check = Frontend::Repl.text(Some("check")).unwrap();
+        assert!(
+            check.contains("`ned repl --no-check` skips checking"),
+            "{check}"
         );
     }
 }

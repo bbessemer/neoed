@@ -1403,8 +1403,9 @@ before another statement), before and after each stage's edits (§2.3). If the
 count rises, the script is rejected (exit 1) and the error shows the first new
 error node the edits touch, from where the text first changes if the node starts
 before that (an `ERROR` node can span the whole file). An error query's match
-may set a message saying what is wrong and how to fix it, which the error gives
-in place of the generic advice to use `--force`: for the Rust macro call,
+may set a `message` saying what is wrong, and a `fix` saying how to put it
+right, which the error gives in place of the generic advice to use `--force`:
+for the Rust macro call,
 `macro statement needs a ; before the next statement; add one after its closing bracket`.
 If the edits replace a `.sig` with text ending in the character that follows it
 (Python's `:`, or the `{` of a body), the error adds that `.sig` stops before
@@ -1847,9 +1848,10 @@ The fix each error suggests:
   it, `*:NAME`, or the kind of the item with that name in the `FILE` set
   (`enum:GitError.body` for `GitError.body`); after a heredoc that ended at a
   line of its text holding only its tag, where it ended, and another tag; `all`
-  before the selector, not after it, e.g. `show all /re/`; `;` or a new line
-  between commands for a second selector, e.g. `show fn:a; show fn:b`, and for a
-  `,` the commands it separates when they take only selectors or levels
+  before the selector, not after it or after a `>` in it, e.g. `show all /re/`,
+  or `show all fn:a>/re/` for `show fn:a>all /re/`; `;` or a new line between
+  commands for a second selector, e.g. `show fn:a; show fn:b`, and for a `,` the
+  commands it separates when they take only selectors or levels
   (`delete 3; delete 7`); `>` before a regex, literal or pattern glued to a
   selector in any command, e.g. `show fn:a>/re/` for `show fn:a/re/` (but not
   before `insert`'s text or `sub`'s regex, which may follow the selector
@@ -1960,7 +1962,7 @@ error: script:1:8: fn:prase matches nothing in src/parser.rs; did you mean fn:pa
 
 error: script:3:1: edit overlaps command 1 at src/parser.rs:14-17; merge the two edits, or put a `|` between them
 
-error: src/parser.rs:15:31: edit introduces a syntax error (use --force to apply anyway)
+error: src/parser.rs:15:31: edit introduces a syntax error; use --force to apply it anyway
 15:        let tok = (self.next();
                                  ^
 
